@@ -5,56 +5,144 @@
       "name": "Workflow Author",
       "role": "Writing Gleam Workflows",
       "stories": [
-        {"id": "S1", "text": "As a workflow author, I want to write workflow steps as typed Gleam functions that compile to .beam bytecode so that I get compile-time type checking on my entire pipeline."},
-        {"id": "S2", "text": "As a workflow author, I want each workflow step to run in its own isolated process so that a crash in one step does not corrupt the state of another."},
-        {"id": "S3", "text": "As a workflow author, I want to use Gleam's pattern matching and case expressions for routing so that the compiler catches unhandled cases at build time, not at runtime."},
-        {"id": "S4", "text": "As a workflow author, I want to call Rust-native operations (git, AST merge, dependency graph) from Gleam via registered functions so that I get zero-overhead access to the host's capabilities."},
-        {"id": "S5", "text": "As a workflow author, I want workflow steps to communicate via typed message passing so that data flows between steps without shared mutable state or serialization."},
-        {"id": "S6", "text": "As a workflow author, I want to define supervision trees over my workflow steps so that failed steps are automatically restarted according to a declared strategy."},
-        {"id": "S7", "text": "As a workflow author, I want to set timeouts on receive expressions so that a step waiting for input does not hang indefinitely if its dependency fails silently."},
-        {"id": "S8", "text": "As a workflow author, I want to update a workflow module at runtime and have new dispatches use the new version while running workflows finish on the old so that I can deploy without restarting."}
+        {
+          "id": "S1",
+          "text": "As a workflow author, I want to write workflow steps as typed Gleam functions that compile to .beam bytecode so that I get compile-time type checking on my entire pipeline."
+        },
+        {
+          "id": "S2",
+          "text": "As a workflow author, I want each workflow step to run in its own isolated process so that a crash in one step does not corrupt the state of another."
+        },
+        {
+          "id": "S3",
+          "text": "As a workflow author, I want to use Gleam's pattern matching and case expressions for routing so that the compiler catches unhandled cases at build time, not at runtime."
+        },
+        {
+          "id": "S4",
+          "text": "As a workflow author, I want to call Rust-native operations (git, AST merge, dependency graph) from Gleam via registered functions so that I get zero-overhead access to the host's capabilities."
+        },
+        {
+          "id": "S5",
+          "text": "As a workflow author, I want workflow steps to communicate via typed message passing so that data flows between steps without shared mutable state or serialization."
+        },
+        {
+          "id": "S6",
+          "text": "As a workflow author, I want to define supervision trees over my workflow steps so that failed steps are automatically restarted according to a declared strategy."
+        },
+        {
+          "id": "S7",
+          "text": "As a workflow author, I want to set timeouts on receive expressions so that a step waiting for input does not hang indefinitely if its dependency fails silently."
+        }
       ]
     },
     {
       "name": "Meridian Runtime",
       "role": "Embedding beamr for Workflow Execution",
       "stories": [
-        {"id": "S9", "text": "As the Meridian runtime, I want to create a beamr VM instance, load .beam modules, and spawn processes from Rust so that I can embed workflow execution in the server process."},
-        {"id": "S10", "text": "As the Meridian runtime, I want to register Rust functions as callable BIFs and NIFs before loading modules so that Gleam code can call Yggdrasil, git, and Meridian operations."},
-        {"id": "S11", "text": "As the Meridian runtime, I want a reduction-boundary hook that fires at every process yield so that the conventions-and-diagnostics pipeline can inspect and intervene in running workflows."},
-        {"id": "S12", "text": "As the Meridian runtime, I want long-running native calls to execute on a dirty scheduler pool so that they do not block the normal scheduler threads or starve other processes."},
-        {"id": "S13", "text": "As the Meridian runtime, I want to hot-swap a loaded module at runtime so that workflow definitions can be updated without restarting the VM."},
-        {"id": "S14", "text": "As the Meridian runtime, I want the scheduler to use one thread per CPU core with work-stealing so that all cores are utilized and no core sits idle while others are backlogged."},
-        {"id": "S15", "text": "As the Meridian runtime, I want the VM to guarantee preemptive fairness via reduction counting so that no single workflow can monopolize CPU and starve other workflows."},
-        {"id": "S16", "text": "As the Meridian runtime, I want beamr to have zero dependencies on Meridian, Yggdrasil, or norn crates so that the VM is testable and buildable in isolation."},
-        {"id": "S17", "text": "As the Meridian runtime, I want to shut down the VM cleanly, terminating all scheduler threads and processes, so that there are no leaked threads or orphan resources."}
+        {
+          "id": "S8",
+          "text": "As the Meridian runtime, I want to create a beamr VM instance, load .beam modules, and spawn processes from Rust so that I can embed workflow execution in the server process."
+        },
+        {
+          "id": "S9",
+          "text": "As the Meridian runtime, I want to register Rust functions as callable BIFs and NIFs before loading modules so that Gleam code can call Yggdrasil, git, and Meridian operations."
+        },
+        {
+          "id": "S10",
+          "text": "As the Meridian runtime, I want a reduction-boundary hook that fires at every process yield so that the conventions-and-diagnostics pipeline can inspect and intervene in running workflows."
+        },
+        {
+          "id": "S11",
+          "text": "As the Meridian runtime, I want long-running native calls to execute on a dirty scheduler pool so that they do not block the normal scheduler threads or starve other processes."
+        },
+        {
+          "id": "S12",
+          "text": "As the Meridian runtime, I want the scheduler to use one thread per CPU core with work-stealing so that all cores are utilized and no core sits idle while others are backlogged."
+        },
+        {
+          "id": "S13",
+          "text": "As the Meridian runtime, I want the VM to guarantee preemptive fairness via reduction counting so that no single workflow can monopolize CPU and starve other workflows."
+        },
+        {
+          "id": "S14",
+          "text": "As the Meridian runtime, I want beamr to have zero dependencies on Meridian, Yggdrasil, or norn crates so that the VM is testable and buildable in isolation."
+        },
+        {
+          "id": "S15",
+          "text": "As the Meridian runtime, I want to shut down the VM cleanly, terminating all scheduler threads and processes, so that there are no leaked threads or orphan resources."
+        }
       ]
     },
     {
       "name": "Implementation Agent",
       "role": "Building beamr from Briefs",
       "stories": [
-        {"id": "S18", "text": "As an implementation agent, I want the loader to be a well-encapsulated module within the beamr crate so that I can test .beam parsing via module-level tests without needing external harnesses."},
-        {"id": "S19", "text": "As an implementation agent, I want the loader's unresolved-import report to tell me exactly which BIFs a given .beam file needs so that I build only the natives required, not the entire erlang: module."},
-        {"id": "S20", "text": "As an implementation agent, I want each validation gate to have a concrete test suite so that I can verify my work against defined pass/fail criteria before moving to the next gate."},
-        {"id": "S21", "text": "As an implementation agent, I want the term representation, heap, and GC to be defined in a single crate with clear module boundaries so that I can understand the term lifecycle without cross-crate indirection."},
-        {"id": "S22", "text": "As an implementation agent, I want the interpreter's opcode dispatch to be organized by instruction category so that I can implement opcodes incrementally (calls first, then branching, then binary matching) without touching unrelated code."},
-        {"id": "S23", "text": "As an implementation agent, I want the native function interface to accept standard Rust closures so that registering a new BIF requires only one function call with a module name, function name, arity, and closure."},
-        {"id": "S24", "text": "As an implementation agent, I want explicit error types rather than panics for all loader and interpreter failures so that test failures produce actionable diagnostics."}
+        {
+          "id": "S16",
+          "text": "As an implementation agent, I want the loader to be a well-encapsulated module within the beamr crate so that I can test .beam parsing via module-level tests without needing external harnesses."
+        },
+        {
+          "id": "S17",
+          "text": "As an implementation agent, I want the loader's unresolved-import report to tell me exactly which BIFs a given .beam file needs so that I build only the natives required, not the entire erlang: module."
+        },
+        {
+          "id": "S18",
+          "text": "As an implementation agent, I want each validation gate to have a concrete test suite so that I can verify my work against defined pass/fail criteria before moving to the next gate."
+        },
+        {
+          "id": "S19",
+          "text": "As an implementation agent, I want the term representation, heap, and GC to be defined in a single crate with clear module boundaries so that I can understand the term lifecycle without cross-crate indirection."
+        },
+        {
+          "id": "S20",
+          "text": "As an implementation agent, I want the interpreter's opcode dispatch to be organized by instruction category so that I can implement opcodes incrementally (calls first, then branching, then binary matching) without touching unrelated code."
+        },
+        {
+          "id": "S21",
+          "text": "As an implementation agent, I want the native function interface to accept standard Rust closures so that registering a new BIF requires only one function call with a module name, function name, arity, and closure."
+        },
+        {
+          "id": "S22",
+          "text": "As an implementation agent, I want explicit error types rather than panics for all loader and interpreter failures so that test failures produce actionable diagnostics."
+        }
       ]
     },
     {
       "name": "Reviewer",
       "role": "Verifying beamr Implementation",
       "stories": [
-        {"id": "S25", "text": "As a reviewer, I want each validation gate's test suite to run as a standard cargo test target so that I can verify gate passage with a single command."},
-        {"id": "S26", "text": "As a reviewer, I want property tests on the GC that verify all reachable terms survive collection unchanged so that I can have confidence in the collector's correctness beyond handwritten cases."},
-        {"id": "S27", "text": "As a reviewer, I want a fairness test that spawns N processes in a tight computational loop and measures that all N make progress within 2x the expected time so that I can verify no process is starved."},
-        {"id": "S28", "text": "As a reviewer, I want the loader to produce snapshot-testable output from known .beam files so that I can diff the decoded instructions against a verified baseline."},
-        {"id": "S29", "text": "As a reviewer, I want to verify that beamr's Cargo.toml has no dependency on any Meridian, Yggdrasil, or norn crate so that the isolation rule is machine-checkable."},
-        {"id": "S30", "text": "As a reviewer, I want to run real Gleam test suites (compiled to .beam) on beamr so that correctness is validated against the language's own expectations, not just handwritten bytecode."},
-        {"id": "S31", "text": "As a reviewer, I want the exit signal propagation to be tested with multi-level link chains so that I can verify cascading failures propagate correctly through supervision trees."},
-        {"id": "S32", "text": "As a reviewer, I want the reduction boundary hook to be tested with a callback that records every yield so that I can verify the hook fires at every yield point and receives correct process metadata."}
+        {
+          "id": "S23",
+          "text": "As a reviewer, I want each validation gate's test suite to run as a standard cargo test target so that I can verify gate passage with a single command."
+        },
+        {
+          "id": "S24",
+          "text": "As a reviewer, I want property tests on the GC that verify all reachable terms survive collection unchanged so that I can have confidence in the collector's correctness beyond handwritten cases."
+        },
+        {
+          "id": "S25",
+          "text": "As a reviewer, I want a fairness test that spawns N processes in a tight computational loop and measures that all N make progress within 2x the expected time so that I can verify no process is starved."
+        },
+        {
+          "id": "S26",
+          "text": "As a reviewer, I want the loader to produce snapshot-testable output from known .beam files so that I can diff the decoded instructions against a verified baseline."
+        },
+        {
+          "id": "S27",
+          "text": "As a reviewer, I want to verify that beamr's Cargo.toml has no dependency on any Meridian, Yggdrasil, or norn crate so that the isolation rule is machine-checkable."
+        },
+        {
+          "id": "S28",
+          "text": "As a reviewer, I want to run real Gleam test suites (compiled to .beam) on beamr so that correctness is validated against the language's own expectations, not just handwritten bytecode."
+        },
+        {
+          "id": "S29",
+          "text": "As a reviewer, I want the exit signal propagation to be tested with multi-level link chains so that I can verify cascading failures propagate correctly through supervision trees."
+        },
+        {
+          "id": "S30",
+          "text": "As a reviewer, I want the reduction boundary hook to be tested with a callback that records every yield so that I can verify the hook fires at every yield point and receives correct process metadata."
+        }
       ]
     }
   ]

@@ -757,45 +757,75 @@
       ]
     },
     {
-      "name": "Native Boundary",
+      "name": "Module Registry",
       "items": [
         {
           "id": "C142",
-          "text": "BIF registry maps (Module, Function, Arity) to a Rust function pointer",
+          "text": "Module registry stores loaded modules indexed by atom name",
           "done": false
         },
         {
           "id": "C143",
-          "text": "NIF registry maps (Module, Function, Arity) to a Rust function pointer",
+          "text": "Module lookup by name returns the current version of the module or an error if not loaded",
           "done": false
         },
         {
           "id": "C144",
-          "text": "Native functions receive arguments as a slice of Term values and a mutable reference to the calling process",
+          "text": "Loading a module with the same name as an already-loaded module replaces the current version",
           "done": false
         },
         {
           "id": "C145",
-          "text": "Native functions return Result<Term, Term> where Err becomes the process exit reason",
+          "text": "Function lookup by MFA (module, function, arity) resolves to a code pointer in the target module",
           "done": false
         },
         {
           "id": "C146",
-          "text": "Native function registration is available before any module is loaded, so BIFs are present for import resolution",
+          "text": "Function lookup for an unloaded module or missing export returns an undef error",
           "done": false
-        },
+        }
+      ]
+    },
+    {
+      "name": "Native Boundary",
+      "items": [
         {
           "id": "C147",
-          "text": "A native call marked as dirty causes the process to be migrated to the dirty scheduler pool for the duration of the call",
+          "text": "BIF registry maps (Module, Function, Arity) to a Rust function pointer",
           "done": false
         },
         {
           "id": "C148",
-          "text": "The set of required native functions is derived from the loader's unresolved-import report, not hardcoded",
+          "text": "NIF registry maps (Module, Function, Arity) to a Rust function pointer",
           "done": false
         },
         {
           "id": "C149",
+          "text": "Native functions receive arguments as a slice of Term values and a mutable reference to the calling process",
+          "done": false
+        },
+        {
+          "id": "C150",
+          "text": "Native functions return Result<Term, Term> where Err becomes the process exit reason",
+          "done": false
+        },
+        {
+          "id": "C151",
+          "text": "Native function registration is available before any module is loaded, so BIFs are present for import resolution",
+          "done": false
+        },
+        {
+          "id": "C152",
+          "text": "A native call marked as dirty causes the process to be migrated to the dirty scheduler pool for the duration of the call",
+          "done": false
+        },
+        {
+          "id": "C153",
+          "text": "The set of required native functions is derived from the loader's unresolved-import report, not hardcoded",
+          "done": false
+        },
+        {
+          "id": "C154",
           "text": "Minimum BIFs for Gate 1: erlang:+/2, erlang:-/2, erlang:*/2, erlang:div/2, erlang:rem/2, erlang:</2, erlang:>=/2, erlang:=:=/2, erlang:=/=/2, erlang:error/1, erlang:display/1",
           "done": false
         }
@@ -805,32 +835,32 @@
       "name": "Reduction Boundary Hook",
       "items": [
         {
-          "id": "C150",
+          "id": "C155",
           "text": "A configurable hook callback fires at process yield points (reduction budget exhausted or blocking on receive)",
           "done": false
         },
         {
-          "id": "C151",
+          "id": "C156",
           "text": "The hook receives the process pid, its current module/function/arity, and the reduction count consumed",
           "done": false
         },
         {
-          "id": "C152",
+          "id": "C157",
           "text": "The hook can return 'continue' (process resumes normally) or 'suspend' (process is held until explicitly resumed)",
           "done": false
         },
         {
-          "id": "C153",
+          "id": "C158",
           "text": "The hook callback is set per VM instance and can be changed at runtime",
           "done": false
         },
         {
-          "id": "C154",
-          "text": "When no hook is registered, the yield path incurs no additional overhead (no function pointer call, no branch)",
+          "id": "C159",
+          "text": "When no hook is registered, the hook registration slot is None and the yield path skips hook invocation",
           "done": false
         },
         {
-          "id": "C155",
+          "id": "C160",
           "text": "The hook cannot modify the process's registers, heap, or mailbox \u2014 it is read-only inspection plus a continue/suspend decision",
           "done": false
         }
@@ -840,37 +870,37 @@
       "name": "Timer",
       "items": [
         {
-          "id": "C156",
-          "text": "Timer wheel provides efficient scheduling and expiry of timeouts",
-          "done": false
-        },
-        {
-          "id": "C157",
-          "text": "wait_timeout instruction registers a timer; if it expires before a matching message arrives, the process resumes at the timeout label",
-          "done": false
-        },
-        {
-          "id": "C158",
-          "text": "Timer is cancelled automatically when the process receives a matching message before expiry",
-          "done": false
-        },
-        {
-          "id": "C159",
-          "text": "erlang:send_after/3 BIF sends a message to a process after a delay",
-          "done": false
-        },
-        {
-          "id": "C160",
-          "text": "erlang:start_timer/3 BIF sends a {timeout, Ref, Msg} tuple after a delay",
-          "done": false
-        },
-        {
           "id": "C161",
-          "text": "erlang:cancel_timer/1 BIF cancels a pending timer and returns remaining time",
+          "text": "Timer wheel supports scheduling, cancellation, and expiry of timeouts with O(1) insertion and cancellation",
           "done": false
         },
         {
           "id": "C162",
+          "text": "wait_timeout instruction registers a timer; if it expires before a matching message arrives, the process resumes at the timeout label",
+          "done": false
+        },
+        {
+          "id": "C163",
+          "text": "Timer is cancelled automatically when the process receives a matching message before expiry",
+          "done": false
+        },
+        {
+          "id": "C164",
+          "text": "erlang:send_after/3 BIF sends a message to a process after a delay",
+          "done": false
+        },
+        {
+          "id": "C165",
+          "text": "erlang:start_timer/3 BIF sends a {timeout, Ref, Msg} tuple after a delay",
+          "done": false
+        },
+        {
+          "id": "C166",
+          "text": "erlang:cancel_timer/1 BIF cancels a pending timer and returns remaining time",
+          "done": false
+        },
+        {
+          "id": "C167",
           "text": "Timer resolution is millisecond-granularity or better",
           "done": false
         }
@@ -880,32 +910,32 @@
       "name": "CLI",
       "items": [
         {
-          "id": "C163",
+          "id": "C168",
           "text": "beamr-cli binary accepts a path to a .beam file and a module:function/arity to execute",
           "done": false
         },
         {
-          "id": "C164",
-          "text": "Loads the specified .beam file via beamr-loader and spawns a process calling the specified function",
+          "id": "C169",
+          "text": "Loads the specified .beam file via beamr::loader and spawns a process calling the specified function",
           "done": false
         },
         {
-          "id": "C165",
+          "id": "C170",
           "text": "Registers basic I/O natives: erlang:display/1 prints a term to stdout",
           "done": false
         },
         {
-          "id": "C166",
+          "id": "C171",
           "text": "Prints the exit reason when the initial process terminates",
           "done": false
         },
         {
-          "id": "C167",
+          "id": "C172",
           "text": "Returns exit code 0 on normal termination, non-zero on crash",
           "done": false
         },
         {
-          "id": "C168",
+          "id": "C173",
           "text": "Prints the unresolved-import report if loading fails due to missing imports",
           "done": false
         }
