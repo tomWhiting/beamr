@@ -1,0 +1,8 @@
+[package]
+name = "beamr-meridian"
+version = "0.1.0"
+edition = "2024"
+description = "Meridian integration — registers Yggdrasil, Meridian, and filesystem NIFs into beamr"
+
+[dependencies]
+beamr = { path = "../beamr" }

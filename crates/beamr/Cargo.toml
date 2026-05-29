@@ -1,0 +1,7 @@
+[package]
+name = "beamr"
+version = "0.1.0"
+edition = "2024"
+description = "A Rust runtime with the BEAM's execution model, targeting Gleam"
+
+[dependencies]
