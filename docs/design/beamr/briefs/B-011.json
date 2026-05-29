@@ -2,27 +2,12 @@
   "id": "B-011",
   "cluster": "beamr",
   "title": "Implement mailbox with selective receive",
-  "depends_on": [
-    "B-005",
-    "B-006",
-    "B-010"
-  ],
+  "depends_on": ["B-005", "B-006", "B-010"],
   "blocked_by": [],
-  "checklist": [
-    "C125",
-    "C126",
-    "C127",
-    "C128",
-    "C129",
-    "C130",
-    "C131",
-    "C132"
-  ],
-  "stories": [
-    "S5"
-  ],
-  "purpose": "Message passing is how processes communicate \u2014 there is no shared state. The mailbox is a per-process queue where messages arrive from any sender and are consumed by selective receive (pattern matching against the queue, taking the first match, deferring the rest). Without this brief, processes are deaf. This brief delivers the two-part mailbox (MPSC arrival queue + scan list for selective receive), message copying into the receiver's heap, and the save-pointer mechanism that avoids rescanning already-tested messages.",
-  "task": "Implement the Mailbox struct in crates/beamr/src/mailbox/. The mailbox has two parts: (1) an arrival queue backed by a lock-free MPSC channel (crossbeam-channel SegQueue or similar) where any process can deposit messages, and (2) a scan list (VecDeque<Term>) owned by the receiving process for selective receive. When the process begins a receive, pending messages are drained from the arrival queue into the scan list. The process scans the list with a save pointer \u2014 messages before the pointer have already been tested and failed to match. When a message matches, it is removed from the list and the save pointer resets. When no message matches and the list is exhausted, the process suspends (Waiting status). Implement message send as a deep copy of the term into the receiver's heap.",
+  "checklist": ["C59", "C60", "C61", "C62", "C63", "C64"],
+  "stories": ["S5", "S7"],
+  "purpose": "Message passing is how processes communicate — there is no shared state. The mailbox is a per-process queue where messages arrive from any sender and are consumed by selective receive (pattern matching against the queue, taking the first match, deferring the rest). Without this brief, processes are deaf. This brief delivers the two-part mailbox (MPSC arrival queue + scan list for selective receive), message copying into the receiver's heap, and the save-pointer mechanism that avoids rescanning already-tested messages.",
+  "task": "Implement the Mailbox struct in crates/beamr/src/mailbox/. The mailbox has two parts: (1) an arrival queue backed by a lock-free MPSC channel (crossbeam-channel SegQueue or similar) where any process can deposit messages, and (2) a scan list (VecDeque<Term>) owned by the receiving process for selective receive. When the process begins a receive, pending messages are drained from the arrival queue into the scan list. The process scans the list with a save pointer — messages before the pointer have already been tested and failed to match. When a message matches, it is removed from the list and the save pointer resets. When no message matches and the list is exhausted, the process suspends (Waiting status). Implement message send as a deep copy of the term into the receiver's heap.",
   "requirements": [
     {
       "id": "R1",
@@ -34,22 +19,15 @@
         "The scan list is private to the owning process"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/mailbox/mod.rs",
-          "crates/beamr/Cargo.toml"
-        ]
+        "modify": ["crates/beamr/src/mailbox/mod.rs", "crates/beamr/Cargo.toml"]
       },
-      "checklist": [
-        "C125"
-      ],
-      "stories": [
-        "S5"
-      ]
+      "checklist": ["C59"],
+      "stories": ["S5"]
     },
     {
       "id": "R2",
       "title": "Message send with deep copy",
-      "spec": "WHEN process A sends a message to process B THE SYSTEM SHALL deep-copy the term from A's heap into B's arrival queue. The copy SHALL be independent \u2014 modifying A's original SHALL NOT affect B's copy. For immediates (small int, atom, pid, nil), copying is trivial (they are values, not pointers). For boxed terms (tuples, lists, binaries), the copy SHALL recursively copy all heap-allocated data. The send operation SHALL NOT require the sender to hold a lock on the receiver's mailbox.",
+      "spec": "WHEN process A sends a message to process B THE SYSTEM SHALL deep-copy the term from A's heap into B's arrival queue. The copy SHALL be independent — modifying A's original SHALL NOT affect B's copy. For immediates (small int, atom, pid, nil), copying is trivial (they are values, not pointers). For boxed terms (tuples, lists, binaries), the copy SHALL recursively copy all heap-allocated data. The send operation SHALL NOT require the sender to hold a lock on the receiver's mailbox.",
       "acceptance": [
         "Sending a small integer arrives as the same value in the receiver's mailbox",
         "Sending a tuple deep-copies the tuple and its elements",
@@ -58,16 +36,10 @@
         "Multiple senders can send concurrently to the same mailbox"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/mailbox/mod.rs"
-        ]
+        "modify": ["crates/beamr/src/mailbox/mod.rs"]
       },
-      "checklist": [
-        "C126"
-      ],
-      "stories": [
-        "S5"
-      ]
+      "checklist": ["C60"],
+      "stories": ["S5"]
     },
     {
       "id": "R3",
@@ -82,22 +54,15 @@
         "Messages before the save pointer are not re-tested"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/mailbox/selective.rs"
-        ]
+        "modify": ["crates/beamr/src/mailbox/selective.rs"]
       },
-      "checklist": [
-        "C127",
-        "C128",
-        "C129",
-        "C130"
-      ],
-      "stories": []
+      "checklist": ["C61", "C62"],
+      "stories": ["S7"]
     },
     {
       "id": "R4",
       "title": "Mailbox message count and drain",
-      "spec": "Mailbox SHALL provide message_count() returning the total number of messages (arrival queue + scan list). Mailbox SHALL provide drain_arrival() that moves all pending messages from the arrival queue into the scan list. drain_arrival is called at the start of each receive attempt. NOTE: C131 is split \u2014 this brief delivers the re-scan mechanism (drain arrival queue into scan buffer on wake); the actual scheduler wake-up (moving process from wait set to run queue) is scheduler scope (B-012 R5).",
+      "spec": "Mailbox SHALL provide message_count() returning the total number of messages (arrival queue + scan list). Mailbox SHALL provide drain_arrival() that moves all pending messages from the arrival queue into the scan list. drain_arrival is called at the start of each receive attempt.",
       "acceptance": [
         "message_count() returns 0 for an empty mailbox",
         "After sending 3 messages, message_count() returns 3",
@@ -105,13 +70,9 @@
         "After drain, messages are accessible via selective receive"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/mailbox/mod.rs"
-        ]
+        "modify": ["crates/beamr/src/mailbox/mod.rs"]
       },
-      "checklist": [
-        "C131"
-      ],
+      "checklist": ["C63"],
       "stories": []
     },
     {
@@ -128,25 +89,16 @@
           "crates/beamr/src/mailbox/selective.rs"
         ]
       },
-      "checklist": [
-        "C125",
-        "C126",
-        "C127",
-        "C128",
-        "C129",
-        "C130",
-        "C131",
-        "C132"
-      ],
+      "checklist": ["C59", "C60", "C61", "C62", "C63", "C64"],
       "stories": []
     }
   ],
   "boundaries": [
-    "SHALL NOT implement receive timeouts (after N milliseconds) \u2014 timer brief scope",
-    "SHALL NOT implement process suspension/resume \u2014 scheduler brief manages when a waiting process is re-run",
-    "SHALL NOT implement monitoring or exit signal delivery to mailbox \u2014 supervision brief scope",
-    "SHALL NOT implement binary-optimised message copying \u2014 deep copy all terms uniformly",
-    "SHALL NOT implement mailbox size limits or back-pressure \u2014 add later if needed"
+    "SHALL NOT implement receive timeouts (after N milliseconds) — timer brief scope",
+    "SHALL NOT implement process suspension/resume — scheduler brief manages when a waiting process is re-run",
+    "SHALL NOT implement monitoring or exit signal delivery to mailbox — supervision brief scope",
+    "SHALL NOT implement binary-optimised message copying — deep copy all terms uniformly",
+    "SHALL NOT implement mailbox size limits or back-pressure — add later if needed"
   ],
   "verification": [
     "cargo check --workspace passes",

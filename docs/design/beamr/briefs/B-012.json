@@ -2,30 +2,12 @@
   "id": "B-012",
   "cluster": "beamr",
   "title": "Implement scheduler with work-stealing run queues",
-  "depends_on": [
-    "B-010",
-    "B-011"
-  ],
+  "depends_on": ["B-010", "B-011"],
   "blocked_by": [],
-  "checklist": [
-    "C101",
-    "C102",
-    "C103",
-    "C104",
-    "C105",
-    "C106",
-    "C107",
-    "C110",
-    "C111",
-    "C114"
-  ],
-  "stories": [
-    "S12",
-    "S13",
-    "S15"
-  ],
-  "purpose": "The scheduler is what makes fairness real. Without it, processes are data structures with no heartbeat. This brief delivers the scheduler thread pool (one thread per core by default), per-thread run queues, the schedule-execute-yield loop, work stealing (idle threads take half from the busiest queue), and clean shutdown. No async runtime in the hot path \u2014 plain OS threads plus lock-free queues. This is the piece that turns 'we have processes' into 'processes actually run fairly.'",
-  "task": "Implement the scheduler in crates/beamr/src/scheduler/. The Scheduler creates N OS threads (default: available_parallelism). Each thread owns a RunQueue (lock-free deque). The main loop: pop a process from the run queue, set its status to Running, call the interpreter for one time slice (reduction budget), handle the result (Yielded \u2192 push back to run queue, Waiting \u2192 move to wait set, Exited \u2192 run exit handlers + remove). Work stealing: when a thread's queue is empty, it tries to steal half the processes from a random other thread's queue. Implement Scheduler::spawn(entry_module, entry_function, args) to create and enqueue a new process. Implement Scheduler::shutdown() for clean termination.",
+  "checklist": ["C65", "C66", "C67", "C68", "C69", "C70", "C71", "C72"],
+  "stories": ["S12", "S13", "S15"],
+  "purpose": "The scheduler is what makes fairness real. Without it, processes are data structures with no heartbeat. This brief delivers the scheduler thread pool (one thread per core by default), per-thread run queues, the schedule-execute-yield loop, work stealing (idle threads take half from the busiest queue), and clean shutdown. No async runtime in the hot path — plain OS threads plus lock-free queues. This is the piece that turns 'we have processes' into 'processes actually run fairly.'",
+  "task": "Implement the scheduler in crates/beamr/src/scheduler/. The Scheduler creates N OS threads (default: available_parallelism). Each thread owns a RunQueue (lock-free deque). The main loop: pop a process from the run queue, set its status to Running, call the interpreter for one time slice (reduction budget), handle the result (Yielded → push back to run queue, Waiting → move to wait set, Exited → run exit handlers + remove). Work stealing: when a thread's queue is empty, it tries to steal half the processes from a random other thread's queue. Implement Scheduler::spawn(entry_module, entry_function, args) to create and enqueue a new process. Implement Scheduler::shutdown() for clean termination.",
   "requirements": [
     {
       "id": "R1",
@@ -38,16 +20,10 @@
         "Scheduler::shutdown() joins all threads cleanly"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/scheduler/mod.rs"
-        ]
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
       },
-      "checklist": [
-        "C101"
-      ],
-      "stories": [
-        "S12"
-      ]
+      "checklist": ["C65"],
+      "stories": ["S12"]
     },
     {
       "id": "R2",
@@ -60,20 +36,15 @@
         "Push and steal from different threads do not race"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/scheduler/run_queue.rs",
-          "crates/beamr/Cargo.toml"
-        ]
+        "modify": ["crates/beamr/src/scheduler/run_queue.rs", "crates/beamr/Cargo.toml"]
       },
-      "checklist": [
-        "C102"
-      ],
+      "checklist": ["C66"],
       "stories": []
     },
     {
       "id": "R3",
       "title": "Schedule-execute-yield loop",
-      "spec": "EACH scheduler thread SHALL run a loop: (1) pop a process from its run queue (or steal if empty), (2) set process status to Running, (3) call the interpreter execute function for one time slice, (4) handle the result \u2014 Yielded: reset reductions, push back to run queue; Waiting: move to the global wait set; Exited: run cleanup. WHEN no process is available (own queue empty, steal fails) THE THREAD SHALL park briefly then retry.",
+      "spec": "EACH scheduler thread SHALL run a loop: (1) pop a process from its run queue (or steal if empty), (2) set process status to Running, (3) call the interpreter execute function for one time slice, (4) handle the result — Yielded: reset reductions, push back to run queue; Waiting: move to the global wait set; Exited: run cleanup. WHEN no process is available (own queue empty, steal fails) THE THREAD SHALL park briefly then retry.",
       "acceptance": [
         "A spawned process runs to completion",
         "A process that exhausts its reduction budget yields and re-runs later",
@@ -82,25 +53,15 @@
         "An idle thread does not spin-loop at 100% CPU (it parks)"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/scheduler/mod.rs"
-        ]
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
       },
-      "checklist": [
-        "C103",
-        "C104",
-        "C105",
-        "C110",
-        "C111"
-      ],
-      "stories": [
-        "S13"
-      ]
+      "checklist": ["C67", "C68"],
+      "stories": ["S13"]
     },
     {
       "id": "R4",
       "title": "Work stealing",
-      "spec": "WHEN a scheduler thread's run queue is empty THE SYSTEM SHALL attempt to steal work from another thread's queue. The victim is selected by round-robin (not random \u2014 deterministic for testing). Stealing takes approximately half the victim's processes. IF all queues are empty THE SYSTEM SHALL park the thread for a short duration before retrying. Work stealing SHALL NOT starve any single queue \u2014 a queue with only one process SHALL NOT be stolen from.",
+      "spec": "WHEN a scheduler thread's run queue is empty THE SYSTEM SHALL attempt to steal work from another thread's queue. The victim is selected by round-robin (not random — deterministic for testing). Stealing takes approximately half the victim's processes. IF all queues are empty THE SYSTEM SHALL park the thread for a short duration before retrying. Work stealing SHALL NOT starve any single queue — a queue with only one process SHALL NOT be stolen from.",
       "acceptance": [
         "A thread with an empty queue steals from a thread with processes",
         "Stolen processes execute on the stealing thread",
@@ -108,40 +69,31 @@
         "Round-robin victim selection visits all threads before repeating"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/scheduler/steal.rs"
-        ]
+        "modify": ["crates/beamr/src/scheduler/steal.rs"]
       },
-      "checklist": [
-        "C107"
-      ],
-      "stories": [
-        "S12"
-      ]
+      "checklist": ["C69"],
+      "stories": ["S12"]
     },
     {
       "id": "R5",
-      "title": "Message arrival wakes waiting process",
-      "spec": "WHEN a message is delivered to a process in the Waiting state THE SYSTEM SHALL move it back to a run queue so the scheduler picks it up. The wake-up SHALL be triggered by the mailbox send path (B-011) notifying the scheduler. It SHALL NOT busy-poll \u2014 the transition is event-driven.",
+      "title": "Process spawn via scheduler",
+      "spec": "Scheduler::spawn(module: Atom, function: Atom, arity: u8, args: &[Term]) SHALL create a new Process, set its entry point to the module:function/arity code pointer, load args into X registers, assign a PID from the process table, and push it onto a run queue (round-robin across threads for initial placement). It SHALL return the PID.",
       "acceptance": [
-        "A Waiting process moves to a run queue when a message is delivered to its mailbox",
-        "The wake-up is event-driven, not polled",
-        "A Running or Yielded process receiving a message is not affected (already schedulable)"
+        "spawn returns a valid PID",
+        "The spawned process eventually executes (observable via side effects or BIF calls)",
+        "Args are loaded into X registers 0..N-1",
+        "Multiple spawns distribute across run queues"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/scheduler/mod.rs"
-        ]
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
       },
-      "checklist": [
-        "C106"
-      ],
+      "checklist": ["C70"],
       "stories": []
     },
     {
       "id": "R6",
       "title": "Clean shutdown",
-      "spec": "Scheduler::shutdown() SHALL signal all scheduler threads to stop, wait for in-progress processes to complete their current time slice, then join all threads. Processes still in run queues or wait sets at shutdown are abandoned (not executed). Shutdown SHALL complete in bounded time \u2014 it does not wait for blocked processes.",
+      "spec": "Scheduler::shutdown() SHALL signal all scheduler threads to stop, wait for in-progress processes to complete their current time slice, then join all threads. Processes still in run queues or wait sets at shutdown are abandoned (not executed). Shutdown SHALL complete in bounded time — it does not wait for blocked processes.",
       "acceptance": [
         "shutdown() returns after all threads have joined",
         "A process mid-execution finishes its current time slice before the thread exits",
@@ -149,16 +101,10 @@
         "Calling shutdown() twice does not panic"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/scheduler/mod.rs"
-        ]
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
       },
-      "checklist": [
-        "C114"
-      ],
-      "stories": [
-        "S15"
-      ]
+      "checklist": ["C71"],
+      "stories": ["S15"]
     },
     {
       "id": "R7",
@@ -175,27 +121,16 @@
           "crates/beamr/src/scheduler/steal.rs"
         ]
       },
-      "checklist": [
-        "C101",
-        "C102",
-        "C103",
-        "C104",
-        "C105",
-        "C106",
-        "C107",
-        "C110",
-        "C111",
-        "C114"
-      ],
+      "checklist": ["C65", "C66", "C67", "C68", "C69", "C70", "C71", "C72"],
       "stories": []
     }
   ],
   "boundaries": [
-    "SHALL NOT implement priority scheduling \u2014 all processes share the same priority (add later if needed)",
-    "SHALL NOT implement dirty schedulers \u2014 separate brief (B-013 scope)",
-    "SHALL NOT implement the interpreter execute function \u2014 the scheduler calls it, but the interpreter brief implements it",
-    "SHALL NOT implement timer-based wake-ups for Waiting processes \u2014 timer brief scope",
-    "SHALL NOT implement any async/Tokio in the scheduler hot path \u2014 plain OS threads only (D3)"
+    "SHALL NOT implement priority scheduling — all processes share the same priority (add later if needed)",
+    "SHALL NOT implement dirty schedulers — separate brief (B-013 scope)",
+    "SHALL NOT implement the interpreter execute function — the scheduler calls it, but the interpreter brief implements it",
+    "SHALL NOT implement timer-based wake-ups for Waiting processes — timer brief scope",
+    "SHALL NOT implement any async/Tokio in the scheduler hot path — plain OS threads only (D3)"
   ],
   "verification": [
     "cargo check --workspace passes",
