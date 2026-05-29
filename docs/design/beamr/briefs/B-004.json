@@ -3,8 +3,7 @@
   "cluster": "beamr",
   "title": "Implement import resolution, validation, and module registration",
   "depends_on": [
-    "B-003",
-    "B-008"
+    "B-003"
   ],
   "blocked_by": [],
   "checklist": [
@@ -27,21 +26,24 @@
     "S26"
   ],
   "purpose": "This brief closes the loader pipeline: take a ParsedModule from B-003, resolve its imports against loaded modules and the BIF registry, validate instruction operands, store the result in the module registry, and report any unresolved imports. The unresolved-import report is the mechanism that keeps the project scoped \u2014 it tells you exactly which BIFs a workflow needs, and no more. Without this brief, parsed modules are data with dangling references; with it, they are runnable.",
-  "task": "Implement import resolution in the loader: walk the ParsedModule's import entries and resolve each against (1) the module registry (for cross-module calls) and (2) the BIF/NIF registry (for native calls). Unresolved imports are collected into a report, not treated as fatal errors \u2014 a module can load with unresolved imports but will fail at runtime if they are called. Implement instruction validation in validate.rs: register indices in range, label targets exist, arities match. Define the Module struct (name, exports, code, literals, resolved imports) and store it in the module registry. Provide a top-level load_module() function that chains B-003's parser with resolution, validation, and registration.",
+  "task": "Implement import resolution in the loader: walk the ParsedModule's import entries and resolve each against (1) the module registry (for cross-module calls) and (2) any implementation of a BifRegistry trait (for native calls). B-004 defines the BifRegistry trait; B-008 provides the concrete implementation. Unresolved imports are collected into a report, not treated as fatal errors \u2014 a module can load with unresolved imports but will fail at runtime if they are called. Implement instruction validation in validate.rs: register indices in range, label targets exist, arities match. Define the Module struct (name, exports, code, literals, resolved imports) and store it in the module registry. Provide a top-level load_module() function that chains B-003's parser with resolution, validation, and registration.",
   "requirements": [
     {
       "id": "R1",
       "title": "Import resolution against module registry and BIF registry",
-      "spec": "WHEN a ParsedModule's imports are resolved THE SYSTEM SHALL check each ImportEntry against the module registry (for loaded modules' exports) and the BIF/NIF registry (for native functions). Resolved imports SHALL point to a callable target (code offset or native function pointer). Unresolved imports SHALL be collected but SHALL NOT prevent module loading \u2014 they become runtime undef errors only if called.",
+      "spec": "WHEN a ParsedModule's imports are resolved THE SYSTEM SHALL check each ImportEntry against the module registry (for loaded modules' exports) and a BifRegistry trait (for native functions). B-004 SHALL define a minimal BifRegistry trait with a lookup(module, function, arity) method. B-008 later provides the concrete implementation. This brief SHALL be testable with an empty BifRegistry implementation. Resolved imports SHALL point to a callable target (code offset or native function reference). Unresolved imports SHALL be collected but SHALL NOT prevent module loading \u2014 they become runtime undef errors only if called.",
       "acceptance": [
         "An import for a loaded module's exported function resolves to a code offset",
         "An import for a registered BIF resolves to a native function reference",
         "An import for a function that exists in neither registry appears in the unresolved list",
-        "A module with unresolved imports loads successfully (it is not rejected)"
+        "A module with unresolved imports loads successfully (it is not rejected)",
+        "A BifRegistry trait is defined with a lookup(module, function, arity) method",
+        "Tests pass with an empty (no-op) BifRegistry implementation"
       ],
       "files": {
         "modify": [
-          "crates/beamr/src/loader/mod.rs"
+          "crates/beamr/src/loader/mod.rs",
+          "crates/beamr/src/native/mod.rs"
         ]
       },
       "checklist": [
@@ -169,7 +171,7 @@
     {
       "id": "R7",
       "title": "Top-level load_module API",
-      "spec": "beamr::loader SHALL expose a public load_module(bytes: &[u8], atom_table: &AtomTable, module_registry: &ModuleRegistry, bif_registry: &BifRegistry) -> Result<(Arc<Module>, UnresolvedImportReport), LoadError> function. This SHALL chain: parse (B-003) \u2192 resolve imports \u2192 validate \u2192 register. WHEN loading a .beam file produced by gleam build + erlc with only standard erlang: BIFs THE SYSTEM SHALL succeed, returning the module and a report of unresolved erlang: imports.",
+      "spec": "beamr::loader SHALL expose a public load_module(bytes: &[u8], atom_table: &AtomTable, module_registry: &ModuleRegistry, bif_registry: &impl BifRegistry) -> Result<(Arc<Module>, UnresolvedImportReport), LoadError> function. This SHALL chain: parse (B-003) \u2192 resolve imports \u2192 validate \u2192 register. The bif_registry parameter SHALL accept any implementation of the BifRegistry trait. WHEN loading a .beam file produced by gleam build + erlc with only standard erlang: BIFs THE SYSTEM SHALL succeed, returning the module and a report of unresolved erlang: imports.",
       "acceptance": [
         "load_module is a public function in beamr::loader",
         "load_module(valid_beam_bytes, ..) returns Ok((Arc<Module>, report))",

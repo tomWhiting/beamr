@@ -134,17 +134,19 @@
     {
       "id": "R6",
       "title": "Instruction enum and compact term encoding decoder",
-      "spec": "THE SYSTEM SHALL define an Instruction enum covering the BEAM opcodes that Gleam emits (label, func_info, move, call, call_only, call_ext, call_ext_only, call_last, call_ext_last, return, allocate, allocate_zero, deallocate, test_heap, put_list, put_tuple2, get_tuple_element, get_hd, get_tl, type tests, comparisons, select_val, select_tuple_arity, jump, gc_bif, bif, send, loop_rec, wait, try/catch, binary ops, map ops, make_fun2, call_fun, apply, badmatch, case_end, if_end, raise). Each instruction's operands SHALL be decoded using the BEAM compact term encoding (tag byte, variable-length integers, extended tags for literals/atoms/labels/registers). Unknown opcodes SHALL produce LoadError::DecodeError rather than being silently skipped.",
+      "spec": "THE SYSTEM SHALL define an Instruction enum covering the BEAM opcodes that Gleam emits (label, func_info, move, call, call_only, call_ext, call_ext_only, call_last, call_ext_last, return, allocate, allocate_zero, deallocate, test_heap, put_list, put_tuple2, get_tuple_element, get_hd, get_tl, type tests, comparisons, select_val, select_tuple_arity, jump, gc_bif, bif, send, loop_rec, wait, try/catch, binary ops, map ops, make_fun2, call_fun, apply, badmatch, case_end, if_end, raise). Each instruction's operands SHALL be decoded using the BEAM compact term encoding (tag byte, variable-length integers, extended tags for literals/atoms/labels/registers). Unknown opcodes SHALL produce LoadError::DecodeError rather than being silently skipped. The Instruction enum SHALL be re-exported from beamr::loader so that downstream consumers (interpreter, validator, module struct) import it as beamr::loader::Instruction rather than coupling to beamr::loader::decode internals.",
       "acceptance": [
         "Instruction is a public enum in beamr::loader::decode",
         "decode_instructions(code_bytes, &atoms, &literals) returns Vec<Instruction>",
         "Compact term encoding correctly decodes: small integers (tag 0), atoms (tag 1), X registers (tag 2), Y registers (tag 3), labels (tag 4), extended literals (tag 7+0), extended list (tag 7+1)",
         "A known .beam file from gleam build decodes without errors",
-        "Unknown or unsupported opcodes produce LoadError::DecodeError with the opcode number"
+        "Unknown or unsupported opcodes produce LoadError::DecodeError with the opcode number",
+        "beamr::loader::Instruction is accessible without importing from beamr::loader::decode directly"
       ],
       "files": {
         "modify": [
-          "crates/beamr/src/loader/decode.rs"
+          "crates/beamr/src/loader/decode.rs",
+          "crates/beamr/src/loader/mod.rs"
         ]
       },
       "checklist": [
