@@ -4,9 +4,24 @@
   "title": "Establish workspace, crate structure, and error types",
   "depends_on": [],
   "blocked_by": [],
-  "checklist": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"],
-  "stories": ["S14", "S22"],
-  "purpose": "Set up the Cargo workspace and crate scaffolding so that every subsequent brief has a compilable foundation to build on. Establish the error type hierarchy so that all modules return values rather than panics from day one. This is the foundation everything else depends on — until it lands, no other brief can compile.",
+  "checklist": [
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C5",
+    "C6",
+    "C7",
+    "C8",
+    "C9",
+    "C10",
+    "C11"
+  ],
+  "stories": [
+    "S14",
+    "S22"
+  ],
+  "purpose": "Set up the Cargo workspace and crate scaffolding so that every subsequent brief has a compilable foundation to build on. Establish the error type hierarchy so that all modules return values rather than panics from day one. This is the foundation everything else depends on \u2014 until it lands, no other brief can compile.",
   "task": "The workspace Cargo.toml and both crate Cargo.tomls already exist in the scaffold. Verify and if needed adjust them to match the design: workspace declares beamr and beamr-cli as members, beamr crate uses edition 2024 with no Meridian/Yggdrasil/norn dependencies, beamr-cli depends on beamr only. Verify lib.rs declares all public modules. Define the crate-wide error types in error.rs: LoadError for loader failures, ExecError for interpreter/process failures, and a top-level BeamrError that unifies them. All errors implement std::fmt::Display and std::error::Error. Ensure cargo check and cargo clippy pass clean across the workspace.",
   "requirements": [
     {
@@ -18,9 +33,13 @@
         "resolver = \"2\" is set"
       ],
       "files": {
-        "modify": ["Cargo.toml"]
+        "modify": [
+          "Cargo.toml"
+        ]
       },
-      "checklist": ["C1"],
+      "checklist": [
+        "C1"
+      ],
       "stories": []
     },
     {
@@ -32,10 +51,17 @@
         "crates/beamr/Cargo.toml [dependencies] section contains no entries matching meridian*, yggdrasil*, norn*, or libyggd*"
       ],
       "files": {
-        "modify": ["crates/beamr/Cargo.toml"]
+        "modify": [
+          "crates/beamr/Cargo.toml"
+        ]
       },
-      "checklist": ["C2", "C5"],
-      "stories": ["S14"]
+      "checklist": [
+        "C2",
+        "C5"
+      ],
+      "stories": [
+        "S14"
+      ]
     },
     {
       "id": "R3",
@@ -47,24 +73,33 @@
         "[[bin]] section defines name = \"beamr\""
       ],
       "files": {
-        "modify": ["crates/beamr-cli/Cargo.toml"]
+        "modify": [
+          "crates/beamr-cli/Cargo.toml"
+        ]
       },
-      "checklist": ["C3", "C6"],
+      "checklist": [
+        "C3",
+        "C6"
+      ],
       "stories": []
     },
     {
       "id": "R4",
       "title": "Public module declarations in lib.rs",
-      "spec": "crates/beamr/src/lib.rs SHALL declare public modules: atom, loader, term, process, interpreter, scheduler, gc, mailbox, supervision, native, hook, timer, module, error. It SHALL NOT contain any function, trait, struct, or enum definitions — only pub mod and pub use declarations.",
+      "spec": "crates/beamr/src/lib.rs SHALL declare public modules: atom, loader, term, process, interpreter, scheduler, gc, mailbox, supervision, native, hook, timer, module, error. It SHALL NOT contain any function, trait, struct, or enum definitions \u2014 only pub mod and pub use declarations.",
       "acceptance": [
         "lib.rs contains exactly 14 pub mod declarations matching the list above",
         "lib.rs contains no fn, struct, enum, trait, or impl blocks",
         "Every declared module directory/file exists (even if scaffold-only)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/lib.rs"]
+        "modify": [
+          "crates/beamr/src/lib.rs"
+        ]
       },
-      "checklist": ["C4"],
+      "checklist": [
+        "C4"
+      ],
       "stories": []
     },
     {
@@ -78,26 +113,39 @@
         "format!(\"{}\", LoadError::MissingChunk(\"Atom\".into())) produces a non-empty human-readable string"
       ],
       "files": {
-        "modify": ["crates/beamr/src/error.rs"]
+        "modify": [
+          "crates/beamr/src/error.rs"
+        ]
       },
-      "checklist": ["C7"],
-      "stories": ["S22"]
+      "checklist": [
+        "C7"
+      ],
+      "stories": [
+        "S22"
+      ]
     },
     {
       "id": "R6",
       "title": "ExecError type",
-      "spec": "WHEN the interpreter or a process encounters a runtime failure (badmatch, function_clause, undef, badarith) THE SYSTEM SHALL return an ExecError variant from beamr::error. ExecError SHALL carry the exit reason as a descriptive enum and SHALL implement Display and std::error::Error. It SHALL NOT panic on runtime failures.",
+      "spec": "WHEN the interpreter or a process encounters a runtime failure (badmatch, function_clause, undef, badarith) THE SYSTEM SHALL return an ExecError variant from beamr::error. ExecError SHALL define the variant shape (enum variants with names) but SHALL use opaque placeholder fields \u2014 concrete payload types (e.g. Atom, Term) are defined by later briefs (B-005 terms). ExecError SHALL implement Display and std::error::Error. It SHALL NOT lock variant payloads to String types that would require breaking changes when terms land.",
       "acceptance": [
         "ExecError is a public enum in beamr::error",
-        "Variants include at minimum: Badmatch, FunctionClause, Undef { module: String, function: String, arity: u8 }, Badarith, UserExit(String)",
+        "Variants exist for at minimum: Badmatch, FunctionClause, Undef, Badarith, UserExit",
+        "Variant payloads use placeholder types (unit or a simple wrapper) \u2014 no String fields for module/function/reason that will later become Atom/Term",
         "ExecError implements Display and std::error::Error",
-        "format!(\"{}\", ExecError::Undef { module: \"foo\".into(), function: \"bar\".into(), arity: 2 }) produces a human-readable string containing \"foo\", \"bar\", and \"2\""
+        "format!(\"{}\", ExecError::Badarith) produces a non-empty human-readable string"
       ],
       "files": {
-        "modify": ["crates/beamr/src/error.rs"]
+        "modify": [
+          "crates/beamr/src/error.rs"
+        ]
       },
-      "checklist": ["C7"],
-      "stories": ["S22"]
+      "checklist": [
+        "C8"
+      ],
+      "stories": [
+        "S22"
+      ]
     },
     {
       "id": "R7",
@@ -110,10 +158,16 @@
         "BeamrError implements Display and std::error::Error"
       ],
       "files": {
-        "modify": ["crates/beamr/src/error.rs"]
+        "modify": [
+          "crates/beamr/src/error.rs"
+        ]
       },
-      "checklist": ["C7"],
-      "stories": ["S22"]
+      "checklist": [
+        "C9"
+      ],
+      "stories": [
+        "S22"
+      ]
     },
     {
       "id": "R8",
@@ -123,10 +177,11 @@
         "cargo check --workspace exits with code 0",
         "cargo clippy --workspace -- -D warnings exits with code 0"
       ],
-      "files": {
-        "modify": ["crates/beamr/src/error.rs"]
-      },
-      "checklist": ["C7", "C8"],
+      "files": {},
+      "checklist": [
+        "C10",
+        "C11"
+      ],
       "stories": []
     }
   ],
@@ -134,7 +189,7 @@
     "SHALL NOT add any third-party dependencies to beamr/Cargo.toml (dependencies like dashmap are added by the briefs that need them)",
     "SHALL NOT implement any logic in lib.rs beyond module declarations",
     "SHALL NOT add beamr-meridian to the workspace members (future brief scope)",
-    "SHALL NOT implement loader, interpreter, or process logic — only the error type definitions they will use"
+    "SHALL NOT implement loader, interpreter, or process logic \u2014 only the error type definitions they will use"
   ],
   "verification": [
     "cargo check --workspace passes with zero errors",

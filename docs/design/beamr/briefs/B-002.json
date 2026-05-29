@@ -2,28 +2,42 @@
   "id": "B-002",
   "cluster": "beamr",
   "title": "Implement the global atom table",
-  "depends_on": ["B-001"],
+  "depends_on": [
+    "B-001"
+  ],
   "blocked_by": [],
-  "checklist": ["C9", "C10", "C11", "C12", "C13", "C14"],
-  "stories": ["S16"],
-  "purpose": "The atom table is the most foundational data structure in beamr — nothing else works until it does. The loader cannot decode a .beam file without it (bytecode references atoms by index). The interpreter cannot dispatch on atom values. Term comparison for atoms is cheap only because atoms are interned. This brief delivers the complete, thread-safe atom table that all subsequent components depend on.",
+  "checklist": [
+    "C12",
+    "C13",
+    "C14",
+    "C15",
+    "C16",
+    "C17"
+  ],
+  "stories": [],
+  "purpose": "The atom table is the most foundational data structure in beamr \u2014 nothing else works until it does. The loader cannot decode a .beam file without it (bytecode references atoms by index). The interpreter cannot dispatch on atom values. Term comparison for atoms is cheap only because atoms are interned. This brief delivers the complete, thread-safe atom table that all subsequent components depend on.",
   "task": "Implement the global atom table in crates/beamr/src/atom/. The Atom type is a newtype over u32 (the index into the table). The AtomTable struct is a concurrent intern map: given a string, it returns the Atom index, inserting if new. Given an Atom index, it returns the string. It must be safe for concurrent reads from all scheduler threads and occasional writes during module loading. Pre-register a fixed set of common atoms at construction so they have stable, known indices. The mod.rs wires the module and re-exports the public API.",
   "requirements": [
     {
       "id": "R1",
       "title": "Atom newtype",
-      "spec": "beamr::atom SHALL define an Atom newtype wrapping a u32 index. Atom SHALL implement Copy, Clone, Eq, PartialEq, Hash, and Debug. Atom SHALL NOT expose its inner index via a public field — access is through methods only.",
+      "spec": "beamr::atom SHALL define an Atom newtype wrapping a u32 index. Atom SHALL implement Copy, Clone, Eq, PartialEq, Hash, and Debug. Atom SHALL NOT expose its inner index publicly \u2014 Atom::index() SHALL be pub(crate), not pub. External crates SHALL compare atoms by equality, not by index value.",
       "acceptance": [
         "Atom is a public struct in beamr::atom",
         "Atom implements Copy, Clone, Eq, PartialEq, Hash, Debug",
         "Atom has no public fields (inner index is private)",
-        "Atom::index() returns the u32 index",
-        "Two Atoms with the same index are equal; two with different indices are not"
+        "Atom::index() is pub(crate) \u2014 accessible within beamr but not from beamr-cli or other external crates",
+        "Two Atoms with the same index are equal; two with different indices are not",
+        "Attempting to call atom.index() from beamr-cli produces a compile error"
       ],
       "files": {
-        "modify": ["crates/beamr/src/atom/mod.rs"]
+        "modify": [
+          "crates/beamr/src/atom/mod.rs"
+        ]
       },
-      "checklist": ["C9"],
+      "checklist": [
+        "C12"
+      ],
       "stories": []
     },
     {
@@ -39,30 +53,42 @@
         "AtomTable::resolve(invalid_atom) returns None for an index that was never interned"
       ],
       "files": {
-        "modify": ["crates/beamr/src/atom/table.rs"]
+        "modify": [
+          "crates/beamr/src/atom/table.rs"
+        ]
       },
-      "checklist": ["C9", "C10", "C11", "C12"],
+      "checklist": [
+        "C12",
+        "C13",
+        "C14",
+        "C15"
+      ],
       "stories": []
     },
     {
       "id": "R3",
       "title": "Thread-safe concurrent access",
-      "spec": "WHILE multiple scheduler threads are running THE SYSTEM SHALL allow concurrent intern and resolve operations on the same AtomTable without data races. Concurrent inserts of the same string from different threads SHALL converge on a single index — no duplicates. The implementation SHALL use a lock-free or sharded concurrent map (e.g. dashmap). It SHALL NOT use a single Mutex<HashMap> for the hot read path.",
+      "spec": "WHILE multiple scheduler threads are running THE SYSTEM SHALL allow concurrent intern and resolve operations on the same AtomTable without data races. Concurrent inserts of the same string from different threads SHALL converge on a single index \u2014 no duplicates. The implementation SHALL use a lock-free or sharded concurrent map (e.g. dashmap). It SHALL NOT use a single Mutex<HashMap> for the hot read path.",
       "acceptance": [
         "Spawning 8 threads that each intern the same 100 strings results in exactly 100 unique atoms in the table",
         "Spawning 8 threads that each intern distinct strings results in all strings present with unique indices",
         "No Mutex<HashMap> wrapping the primary lookup or insert path (verified by code inspection)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/atom/table.rs", "crates/beamr/Cargo.toml"]
+        "modify": [
+          "crates/beamr/src/atom/table.rs",
+          "crates/beamr/Cargo.toml"
+        ]
       },
-      "checklist": ["C13"],
+      "checklist": [
+        "C16"
+      ],
       "stories": []
     },
     {
       "id": "R4",
       "title": "Pre-registered common atoms",
-      "spec": "AtomTable SHALL provide a with_common_atoms() constructor that pre-registers the following atoms at known, stable indices: ok, error, true, false, nil, undefined, normal, kill, EXIT, badarg, badarith, badmatch, function_clause, case_clause, if_clause, undef, badfun, badarity, noproc. The indices of these atoms SHALL be accessible as associated constants on the Atom type (e.g. Atom::OK, Atom::ERROR). Pre-registered atoms SHALL NOT be re-assignable — their indices are fixed for the lifetime of the table.",
+      "spec": "AtomTable SHALL provide a with_common_atoms() constructor that pre-registers the following atoms at known, stable indices: ok, error, true, false, nil, undefined, normal, kill, EXIT, badarg, badarith, badmatch, function_clause, case_clause, if_clause, undef, badfun, badarity, noproc. The indices of these atoms SHALL be accessible as associated constants on the Atom type (e.g. Atom::OK, Atom::ERROR). Pre-registered atoms SHALL NOT be re-assignable \u2014 their indices are fixed for the lifetime of the table.",
       "acceptance": [
         "AtomTable::with_common_atoms() returns a table with all 19 listed atoms pre-interned",
         "Atom::OK, Atom::ERROR, Atom::TRUE, Atom::FALSE, Atom::NIL are public associated constants",
@@ -71,25 +97,34 @@
         "table.intern(\"ok\") on a with_common_atoms() table returns Atom::OK (does not create a duplicate)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/atom/table.rs", "crates/beamr/src/atom/mod.rs"]
+        "modify": [
+          "crates/beamr/src/atom/table.rs",
+          "crates/beamr/src/atom/mod.rs"
+        ]
       },
-      "checklist": ["C14"],
+      "checklist": [
+        "C17"
+      ],
       "stories": []
     },
     {
       "id": "R5",
       "title": "Module wiring and public API re-exports",
-      "spec": "crates/beamr/src/atom/mod.rs SHALL re-export the public API: Atom and AtomTable. It SHALL contain only pub mod and pub use declarations — no logic. The atom module SHALL be usable as beamr::atom::Atom and beamr::atom::AtomTable from external crates.",
+      "spec": "crates/beamr/src/atom/mod.rs SHALL re-export the public API: Atom and AtomTable. It SHALL contain only pub mod and pub use declarations \u2014 no logic. The atom module SHALL be usable as beamr::atom::Atom and beamr::atom::AtomTable from external crates.",
       "acceptance": [
         "use beamr::atom::Atom compiles from beamr-cli",
         "use beamr::atom::AtomTable compiles from beamr-cli",
         "atom/mod.rs contains no fn, struct, enum, trait, or impl blocks"
       ],
       "files": {
-        "modify": ["crates/beamr/src/atom/mod.rs"]
+        "modify": [
+          "crates/beamr/src/atom/mod.rs"
+        ]
       },
-      "checklist": ["C9"],
-      "stories": ["S16"]
+      "checklist": [
+        "C12"
+      ],
+      "stories": []
     },
     {
       "id": "R6",
@@ -104,17 +139,24 @@
         "A test verifies resolve on an out-of-range index returns None"
       ],
       "files": {
-        "modify": ["crates/beamr/src/atom/table.rs"]
+        "modify": [
+          "crates/beamr/src/atom/table.rs"
+        ]
       },
-      "checklist": ["C10", "C11", "C12", "C13"],
+      "checklist": [
+        "C13",
+        "C14",
+        "C15",
+        "C16"
+      ],
       "stories": []
     }
   ],
   "boundaries": [
-    "SHALL NOT implement atom garbage collection or atom table compaction (atoms are never freed — acceptable for our scoped use)",
-    "SHALL NOT implement atom-to-term conversion (B-005 scope — term representation)",
+    "SHALL NOT implement atom garbage collection or atom table compaction (atoms are never freed \u2014 acceptable for our scoped use)",
+    "SHALL NOT implement atom-to-term conversion (B-005 scope \u2014 term representation)",
     "SHALL NOT add the AtomTable as a field on any process or VM struct (wiring is a later brief's responsibility)",
-    "SHALL NOT implement string-to-atom conversion from Gleam bytecode (B-003 scope — loader)"
+    "SHALL NOT implement string-to-atom conversion from Gleam bytecode (B-003 scope \u2014 loader)"
   ],
   "verification": [
     "cargo check --workspace passes",

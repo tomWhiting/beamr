@@ -1,0 +1,213 @@
+{
+  "id": "B-004",
+  "cluster": "beamr",
+  "title": "Implement import resolution, validation, and module registration",
+  "depends_on": [
+    "B-003",
+    "B-008"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C28",
+    "C29",
+    "C30",
+    "C31",
+    "C32",
+    "C145",
+    "C146",
+    "C147",
+    "C148",
+    "C149"
+  ],
+  "stories": [
+    "S8",
+    "S16",
+    "S17",
+    "S22",
+    "S26"
+  ],
+  "purpose": "This brief closes the loader pipeline: take a ParsedModule from B-003, resolve its imports against loaded modules and the BIF registry, validate instruction operands, store the result in the module registry, and report any unresolved imports. The unresolved-import report is the mechanism that keeps the project scoped \u2014 it tells you exactly which BIFs a workflow needs, and no more. Without this brief, parsed modules are data with dangling references; with it, they are runnable.",
+  "task": "Implement import resolution in the loader: walk the ParsedModule's import entries and resolve each against (1) the module registry (for cross-module calls) and (2) the BIF/NIF registry (for native calls). Unresolved imports are collected into a report, not treated as fatal errors \u2014 a module can load with unresolved imports but will fail at runtime if they are called. Implement instruction validation in validate.rs: register indices in range, label targets exist, arities match. Define the Module struct (name, exports, code, literals, resolved imports) and store it in the module registry. Provide a top-level load_module() function that chains B-003's parser with resolution, validation, and registration.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Import resolution against module registry and BIF registry",
+      "spec": "WHEN a ParsedModule's imports are resolved THE SYSTEM SHALL check each ImportEntry against the module registry (for loaded modules' exports) and the BIF/NIF registry (for native functions). Resolved imports SHALL point to a callable target (code offset or native function pointer). Unresolved imports SHALL be collected but SHALL NOT prevent module loading \u2014 they become runtime undef errors only if called.",
+      "acceptance": [
+        "An import for a loaded module's exported function resolves to a code offset",
+        "An import for a registered BIF resolves to a native function reference",
+        "An import for a function that exists in neither registry appears in the unresolved list",
+        "A module with unresolved imports loads successfully (it is not rejected)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/loader/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C28"
+      ],
+      "stories": [
+        "S16"
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Unresolved-import report",
+      "spec": "WHEN import resolution completes THE SYSTEM SHALL produce an UnresolvedImportReport listing every import that could not be resolved, grouped by module name. Each entry SHALL include the module, function, and arity. The report SHALL be returned alongside the loaded module so callers can inspect it. It SHALL NOT silently discard unresolved imports.",
+      "acceptance": [
+        "UnresolvedImportReport is a public struct with entries grouped by module atom",
+        "Each entry contains module: Atom, function: Atom, arity: u8",
+        "Loading a module that calls erlang:unknown/0 produces a report with one entry for erlang:unknown/0",
+        "Loading a module with all imports resolved produces an empty report",
+        "The report implements Display for human-readable output"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/loader/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C29"
+      ],
+      "stories": [
+        "S17"
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "Instruction operand validation",
+      "spec": "AFTER decoding and import resolution THE SYSTEM SHALL validate instruction operands: X register indices SHALL be < 256, Y register indices SHALL be < the allocate frame size, label targets SHALL refer to existing labels, and call arities SHALL match import/export arities. IF validation fails THEN THE SYSTEM SHALL return LoadError::ValidationError naming the instruction index and the specific operand that failed. It SHALL NOT silently accept out-of-range operands.",
+      "acceptance": [
+        "A module with valid operands passes validation without errors",
+        "An instruction referencing X register 999 produces LoadError::ValidationError mentioning the register index",
+        "An instruction jumping to a non-existent label produces LoadError::ValidationError mentioning the label",
+        "Validation errors include the instruction index for debuggability"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/loader/validate.rs"
+        ]
+      },
+      "checklist": [
+        "C30"
+      ],
+      "stories": [
+        "S22"
+      ]
+    },
+    {
+      "id": "R4",
+      "title": "Module struct definition",
+      "spec": "beamr::module SHALL define a Module struct containing: name (Atom), exports (map from (Atom, u8) to label), code (Vec<Instruction>), literals (Vec<Literal>), resolved imports (Vec<ResolvedImport>), lambdas (Vec<LambdaEntry>), string table (Vec<u8>), and line info (Vec<LineInfo>). Module SHALL be stored behind an Arc for shared ownership between the registry and running processes. It SHALL NOT contain mutable runtime state \u2014 Module is immutable after loading.",
+      "acceptance": [
+        "Module is a public struct in beamr::module",
+        "Module.exports maps (function_atom, arity) to a code label",
+        "Module.name is an Atom",
+        "Module is wrapped in Arc when stored in the registry",
+        "Module has no Cell, RefCell, Mutex, or other interior mutability"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/module.rs"
+        ]
+      },
+      "checklist": [
+        "C31",
+        "C145"
+      ],
+      "stories": [
+        "S8"
+      ]
+    },
+    {
+      "id": "R5",
+      "title": "Store loaded module in the module registry",
+      "spec": "WHEN a module passes validation THE SYSTEM SHALL store it in the module registry indexed by its atom name. WHEN a module with the same name is already loaded THE SYSTEM SHALL replace the existing entry with the new one. The registry SHALL use a concurrent map for thread-safe access. It SHALL NOT support storing more than one version simultaneously (hot code loading is out of scope per DESIGN.md non-goals).",
+      "acceptance": [
+        "After load_module succeeds, registry.lookup(module_name) returns Some(Arc<Module>)",
+        "Loading a second module with the same name replaces the first",
+        "registry.lookup(unloaded_name) returns None",
+        "Registry is safe to access from multiple threads"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/module.rs"
+        ]
+      },
+      "checklist": [
+        "C31",
+        "C145",
+        "C146",
+        "C147"
+      ],
+      "stories": [
+        "S8"
+      ]
+    },
+    {
+      "id": "R6",
+      "title": "Function lookup by MFA",
+      "spec": "WHEN the interpreter needs to call a function THE SYSTEM SHALL look it up by MFA (module atom, function atom, arity) in the module registry. The lookup SHALL first find the module by name, then find the export by (function, arity). IF the module is not loaded or the function is not exported THEN THE SYSTEM SHALL return an ExecError::Undef with the full MFA. It SHALL NOT return a generic 'not found' \u2014 the error must name the module, function, and arity.",
+      "acceptance": [
+        "registry.lookup_mfa(module, function, arity) returns a code pointer for a loaded, exported function",
+        "Calling lookup_mfa for an unloaded module returns Err(ExecError::Undef { .. })",
+        "Calling lookup_mfa for a loaded module with a non-exported function returns Err(ExecError::Undef { .. })",
+        "Calling lookup_mfa with wrong arity returns Err(ExecError::Undef { .. })"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/module.rs"
+        ]
+      },
+      "checklist": [
+        "C148",
+        "C149"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R7",
+      "title": "Top-level load_module API",
+      "spec": "beamr::loader SHALL expose a public load_module(bytes: &[u8], atom_table: &AtomTable, module_registry: &ModuleRegistry, bif_registry: &BifRegistry) -> Result<(Arc<Module>, UnresolvedImportReport), LoadError> function. This SHALL chain: parse (B-003) \u2192 resolve imports \u2192 validate \u2192 register. WHEN loading a .beam file produced by gleam build + erlc with only standard erlang: BIFs THE SYSTEM SHALL succeed, returning the module and a report of unresolved erlang: imports.",
+      "acceptance": [
+        "load_module is a public function in beamr::loader",
+        "load_module(valid_beam_bytes, ..) returns Ok((Arc<Module>, report))",
+        "The returned Module is also stored in the module_registry",
+        "load_module(garbage_bytes, ..) returns Err(LoadError::InvalidFormat)",
+        "Loading a Gleam module succeeds; unresolved erlang: BIFs appear in the report"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/loader/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C28",
+        "C31",
+        "C32"
+      ],
+      "stories": [
+        "S8",
+        "S16",
+        "S26"
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement hot code loading or two-version module storage (explicitly out of scope per DESIGN.md non-goals)",
+    "SHALL NOT implement any BIF function bodies (later briefs scope \u2014 this brief only resolves against the BIF registry)",
+    "SHALL NOT implement the BIF registry itself (B-008 scope \u2014 this brief receives it as a parameter)",
+    "SHALL NOT modify the parser or chunk decoders from B-003 (if changes are needed, coordinate with B-003)",
+    "SHALL NOT implement Term or heap types \u2014 Module stores Literal values from the loader, not runtime Terms"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr loader passes with all tests green",
+    "cargo test -p beamr module passes with all tests green",
+    "A .beam file from gleam build loads end-to-end via load_module, producing a Module in the registry and an unresolved-import report",
+    "Code inspection: module.rs has no Cell/RefCell/Mutex on the Module struct itself",
+    "Code inspection: no BIF function bodies exist in this brief's changes"
+  ]
+}
