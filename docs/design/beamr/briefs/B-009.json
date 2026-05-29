@@ -1,28 +1,13 @@
 {
   "id": "B-009",
   "cluster": "beamr",
-  "title": "Implement beamr-cli \u2014 thin runner for Gate 1",
-  "depends_on": [
-    "B-001",
-    "B-004",
-    "B-008"
-  ],
+  "title": "Implement beamr-cli — thin runner for Gate 1",
+  "depends_on": ["B-001", "B-004", "B-008"],
   "blocked_by": [],
-  "checklist": [
-    "C171",
-    "C172",
-    "C173",
-    "C174",
-    "C175",
-    "C176"
-  ],
-  "stories": [
-    "S8",
-    "S18",
-    "S28"
-  ],
-  "purpose": "The CLI is how we prove the VM works. Until Meridian embeds beamr in-process, the CLI is the only way to load a .beam file and run it. This brief delivers argument parsing, .beam file loading, the execution pipeline (load -> resolve -> execute -> report), and structured error output. It is the capstone of Gate 1 \u2014 if beamr-cli can load a Gleam .beam file, resolve its imports, execute a function, and print the result, Gate 1 passes.",
-  "task": "Implement the beamr-cli binary in crates/beamr-cli/src/main.rs. The CLI accepts a .beam file path and an optional entry point (module:function/arity). It creates an AtomTable, registers Gate 1 BIFs, loads the .beam file via the loader, resolves imports, and executes the entry function. If no entry point is specified, it defaults to <module>:main/0. An 'imports' subcommand prints the unresolved import report for a .beam file without executing. All errors produce human-readable messages on stderr with appropriate exit codes. NOTE: B-009 scopes the CLI to loading and import reporting. Full end-to-end execution (load \u2192 spawn \u2192 interpret \u2192 exit) requires interpreter briefs (B-013+) and is validated at Gate integration time, not by this brief.",
+  "checklist": ["C158", "C159", "C160", "C161", "C162"],
+  "stories": ["S8", "S18", "S28"],
+  "purpose": "The CLI is how we prove the VM works. Until Meridian embeds beamr in-process, the CLI is the only way to load a .beam file and run it. This brief delivers argument parsing, .beam file loading, the execution pipeline (load -> resolve -> execute -> report), and structured error output. It is the capstone of Gate 1 — if beamr-cli can load a Gleam .beam file, resolve its imports, execute a function, and print the result, Gate 1 passes.",
+  "task": "Implement the beamr-cli binary in crates/beamr-cli/src/main.rs. The CLI accepts a .beam file path and an optional entry point (module:function/arity). It creates an AtomTable, registers Gate 1 BIFs, loads the .beam file via the loader, resolves imports, and executes the entry function. If no entry point is specified, it defaults to <module>:main/0. An 'imports' subcommand prints the unresolved import report for a .beam file without executing. All errors produce human-readable messages on stderr with appropriate exit codes.",
   "requirements": [
     {
       "id": "R1",
@@ -39,19 +24,15 @@
         "beamr --unknown produces an error about unknown flag"
       ],
       "files": {
-        "modify": [
-          "crates/beamr-cli/src/main.rs"
-        ]
+        "modify": ["crates/beamr-cli/src/main.rs"]
       },
-      "checklist": [
-        "C171"
-      ],
+      "checklist": ["C158"],
       "stories": []
     },
     {
       "id": "R2",
       "title": "Execution pipeline",
-      "spec": "WHEN a .beam file is loaded for execution THE SYSTEM SHALL: (1) create an AtomTable with common atoms, (2) create a BifRegistryImpl and register Gate 1 BIFs, (3) load the .beam file via beamr::loader::load_module, (4) determine the entry point \u2014 if not specified, use <module_name>:main/0, (5) look up the entry function via the module registry, (6) create an initial process, (7) execute via the interpreter until the process terminates, (8) print the return value to stdout or the error to stderr. Exit code SHALL be 0 on success, 1 on runtime error, 2 on load error.",
+      "spec": "WHEN a .beam file is loaded for execution THE SYSTEM SHALL: (1) create an AtomTable with common atoms, (2) create a BifRegistryImpl and register Gate 1 BIFs, (3) load the .beam file via beamr::loader::load_module, (4) determine the entry point — if not specified, use <module_name>:main/0, (5) look up the entry function via the module registry, (6) create an initial process, (7) execute via the interpreter until the process terminates, (8) print the return value to stdout or the error to stderr. Exit code SHALL be 0 on success, 1 on runtime error, 2 on load error.",
       "acceptance": [
         "Loading a valid .beam file with a main/0 function executes and prints the result",
         "Loading a .beam file with unresolved non-BIF imports prints the unresolved report and exits 1",
@@ -60,22 +41,15 @@
         "Exit code 0 on successful execution"
       ],
       "files": {
-        "modify": [
-          "crates/beamr-cli/src/main.rs"
-        ]
+        "modify": ["crates/beamr-cli/src/main.rs"]
       },
-      "checklist": [
-        "C172",
-        "C173"
-      ],
-      "stories": [
-        "S8"
-      ]
+      "checklist": ["C159", "C160"],
+      "stories": ["S8"]
     },
     {
       "id": "R3",
       "title": "Import report command",
-      "spec": "WHEN beamr imports <file.beam> is invoked THE SYSTEM SHALL load the .beam file, run import resolution against the Gate 1 BIF registry (with no modules pre-loaded), and print the unresolved import report to stdout. Each unresolved import SHALL be printed as module:function/arity, one per line, grouped by module. The exit code SHALL be 0 regardless of whether imports are resolved \u2014 the report is informational.",
+      "spec": "WHEN beamr imports <file.beam> is invoked THE SYSTEM SHALL load the .beam file, run import resolution against the Gate 1 BIF registry (with no modules pre-loaded), and print the unresolved import report to stdout. Each unresolved import SHALL be printed as module:function/arity, one per line, grouped by module. The exit code SHALL be 0 regardless of whether imports are resolved — the report is informational.",
       "acceptance": [
         "beamr imports hello.beam prints unresolved imports grouped by module",
         "Each line shows module:function/arity format",
@@ -83,21 +57,15 @@
         "Exit code is 0 even if unresolved imports exist"
       ],
       "files": {
-        "modify": [
-          "crates/beamr-cli/src/main.rs"
-        ]
+        "modify": ["crates/beamr-cli/src/main.rs"]
       },
-      "checklist": [
-        "C176"
-      ],
-      "stories": [
-        "S18"
-      ]
+      "checklist": ["C161"],
+      "stories": ["S18"]
     },
     {
       "id": "R4",
       "title": "Error display and exit codes",
-      "spec": "ALL errors SHALL be printed to stderr with the prefix 'beamr: '. Load errors SHALL use the Display implementation from beamr::error::LoadError. Runtime errors SHALL use ExecError::Display. IO errors (file not found, permission denied) SHALL include the file path and OS error message. The CLI SHALL NOT panic on any input \u2014 all error paths return structured CliError values.",
+      "spec": "ALL errors SHALL be printed to stderr with the prefix 'beamr: '. Load errors SHALL use the Display implementation from beamr::error::LoadError. Runtime errors SHALL use ExecError::Display. IO errors (file not found, permission denied) SHALL include the file path and OS error message. The CLI SHALL NOT panic on any input — all error paths return structured CliError values.",
       "acceptance": [
         "File not found produces: beamr: cannot read 'missing.beam': No such file or directory",
         "Invalid .beam format produces: beamr: load: invalid .beam format",
@@ -105,17 +73,10 @@
         "No panic on any malformed input (fuzz-test with garbage .beam bytes)"
       ],
       "files": {
-        "modify": [
-          "crates/beamr-cli/src/main.rs"
-        ]
+        "modify": ["crates/beamr-cli/src/main.rs"]
       },
-      "checklist": [
-        "C174",
-        "C175"
-      ],
-      "stories": [
-        "S28"
-      ]
+      "checklist": ["C162"],
+      "stories": ["S28"]
     },
     {
       "id": "R5",
@@ -126,23 +87,18 @@
         "Tests cover: help flag, version flag, beam file only, beam file + entry, imports command, non-.beam rejection, invalid entry rejection, unknown flag rejection"
       ],
       "files": {
-        "modify": [
-          "crates/beamr-cli/src/main.rs"
-        ]
+        "modify": ["crates/beamr-cli/src/main.rs"]
       },
-      "checklist": [
-        "C171"
-      ],
+      "checklist": ["C158"],
       "stories": []
     }
   ],
   "boundaries": [
-    "SHALL NOT implement interactive REPL mode \u2014 batch execution only",
-    "SHALL NOT implement multi-file loading from command line \u2014 load one .beam file (multi-module loading is the loader's job via imports)",
-    "SHALL NOT implement NIF registration from CLI flags \u2014 NIFs come from the host (Meridian), not the CLI",
-    "SHALL NOT implement any core VM logic \u2014 the CLI is a thin wrapper calling beamr crate APIs",
-    "SHALL NOT add CLI argument parsing libraries (clap, structopt) \u2014 the argument grammar is simple enough for manual parsing",
-    "SHALL NOT claim end-to-end bytecode execution \u2014 interpreter briefs (B-013+) are prerequisites for that; this brief validates load + report + basic spawn/exit"
+    "SHALL NOT implement interactive REPL mode — batch execution only",
+    "SHALL NOT implement multi-file loading from command line — load one .beam file (multi-module loading is the loader's job via imports)",
+    "SHALL NOT implement NIF registration from CLI flags — NIFs come from the host (Meridian), not the CLI",
+    "SHALL NOT implement any core VM logic — the CLI is a thin wrapper calling beamr crate APIs",
+    "SHALL NOT add CLI argument parsing libraries (clap, structopt) — the argument grammar is simple enough for manual parsing"
   ],
   "verification": [
     "cargo check --workspace passes",
