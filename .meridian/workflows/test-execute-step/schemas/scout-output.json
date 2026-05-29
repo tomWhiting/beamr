@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string", "description": "Brief summary of findings."},
+    "enrichments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "files": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["id", "files"]
+      }
+    }
+  },
+  "required": ["summary", "enrichments"]
+}

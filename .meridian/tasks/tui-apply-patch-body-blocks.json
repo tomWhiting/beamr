@@ -1,0 +1,27 @@
+{
+  "title": "ApplyPatch — use body_blocks for syntect-highlighted diff (parity with edit)",
+  "task": "ApplyPatchRenderer today returns body() with colourise_unified_diff — a legacy line-by-line red/green colouring with NO syntect highlighting on the content. EditRenderer uses body_blocks → ContentBlock::Diff and gets per-side syntect highlighting on the changed code. Bring ApplyPatch up to parity. The patch arg is a unified-diff string — parse hunks, emit one Diff block per hunk with a Plain hunk-header preceding it.\n\nOUTCOME — applying a multi-hunk patch shows: header with file count + total hunks (existing) → for each hunk: a dim `@@ -10,5 +10,7 @@ {context line if present} @@` header → the hunk's `-`/`+` lines syntect-highlighted (matching edit's beautiful style). Mirror edit's symbol-anchor pattern.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Implement body_blocks for ApplyPatchRenderer (crates/norn-tui/src/tools/rich/patch.rs). Parse the unified-diff text from args.patch into hunks. For each hunk produce TWO blocks: ContentBlock::Plain with the hunk's `@@ ... @@` header line wrapped in dim SGR, then ContentBlock::Diff with removed/added text aggregated from the hunk's body (ignore context lines for now — they'd require a richer Diff variant; the edit tool doesn't emit context either). Use the existing diffy crate (already a workspace dep) to parse: `diffy::Patch::from_str(patch_text)` returns the hunks.",
+      "acceptance": "Unit test: a two-file patch with three hunks produces body_blocks output with three Plain hunk-header blocks + three Diff blocks, in source order. Rendered output contains every hunk's `@@` marker and the `+`/`-` content. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R2",
+      "description": "Per-hunk path tracking: when the patch spans multiple files, each hunk's ContentBlock::Diff needs the right path so syntect picks the right grammar. Parse the patch file headers (`--- a/path`, `+++ b/path`) for each file, then thread the path through to each hunk emitted from that file.",
+      "acceptance": "Unit test: a patch with one hunk in `a.rs` and another in `b.py` produces Diff blocks with paths `a.rs` and `b.py` respectively. Verified by inspecting the rendered output — rust keywords highlighted in one, python in the other."
+    },
+    {
+      "id": "R3",
+      "description": "Remove the now-redundant colourise_unified_diff call from body(). body_blocks takes precedence; the body() fallback is only used when body_blocks returns None (which happens for the AST-blocked branch). Keep body() for that branch.",
+      "acceptance": "body() returns None for the committed-patch case (body_blocks handles it). body() still returns the diagnostics + message for the AST-blocked case. Test that patch_blocked_by_ast still renders the rejection message and diagnostics — no regression on the existing patch_blocked_reuses_rollback_shape test."
+    },
+    {
+      "id": "R4",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/rich/patch.rs — ApplyPatchRenderer. body() at line 77. No body_blocks today.\n- crates/norn-tui/src/tools/rich/edit.rs — EditRenderer for reference. body_blocks at line 129 (after the recent polish — it returns Plain hunk header + Diff).\n- crates/norn-tui/src/render/content.rs — ContentBlock variants, render_diff.\n- crates/norn/src/tools/patch.rs — ApplyPatchTool. Result shape includes files_modified, hunks_applied. The patch text comes from args.patch.\n\nDIFFY:\n- diffy is already a workspace dep (used by EditRenderer via create_patch). Use diffy::Patch::from_str(text) to parse the unified-diff. Each hunk exposes lines() with Line::Insert / Line::Delete / Line::Context variants.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- The patch header (file count + hunks + AST override warning) — keep as-is.\n- The blocked / failed branches' rendering — preserve.\n- ContentBlock::Diff + render_diff with per-side syntect highlighting.\n- The newly-landed @@ symbol @@ hunk header pattern from edit.rs — mirror for consistency.\n\nDESIGN TASTE: hunks visually separated by their own `@@` lines. No background colour yet (separate task). Each hunk reads as a small standalone change with its location clearly marked.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

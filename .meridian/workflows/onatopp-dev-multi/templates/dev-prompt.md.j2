@@ -1,0 +1,64 @@
+{% extends "base-brief.md.j2" %}
+
+{% block requirements_heading %} (enriched with codebase context){% endblock %}
+
+{% block extra_documents %}
+{% if input.checklist_content %}
+<document index="3">
+  <source>checklist_reference</source>
+  <document_content>
+{% for s in input.checklist_content.sections %}
+**{{ s.name }}:**
+{% for item in s.items %}
+- {{ item.id }}: {{ item.text }}
+{% endfor %}
+{% endfor %}
+  </document_content>
+</document>
+{% endif %}
+{% if input.stories_content %}
+<document index="4">
+  <source>stories_reference</source>
+  <document_content>
+{% for p in input.stories_content.personas %}
+**{{ p.name }} — {{ p.role }}:**
+{% for story in p.stories %}
+- {{ story.id }}: {{ story.text }}
+{% endfor %}
+{% endfor %}
+  </document_content>
+</document>
+{% endif %}
+<document index="5">
+  <source>verification_items</source>
+  <document_content>
+{% if scout.verification_items %}{% for v in scout.verification_items %}
+- {{ v }}
+{% endfor %}{% endif %}
+  </document_content>
+</document>
+<document index="6">
+  <source>scout_summary</source>
+  <document_content>
+{% if scout.summary %}{{ scout.summary }}{% endif %}
+  </document_content>
+</document>
+{% endblock %}
+
+{% block task %}
+{% if checks_dev and not checks_dev.pass %}
+CHECKS FAILED — fix only the specific failures below. Do not extend scope.
+
+{{ checks_dev.failure_report }}
+{% endif %}
+
+{% if not is_resume %}
+Implement the brief. Your task list has been populated — use TaskList to see tasks.
+
+---
+
+For each R#, report: status, files changed (with notes), how satisfied, any deviation from plan. For each checklist item (C#) and user story (S#) assigned to the R#, report whether it was delivered.
+
+Before submitting, attest: no panics/unwraps in library code, no unsafe, boundaries respected, tests considered.
+{% endif %}
+{% endblock %}

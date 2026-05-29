@@ -1,0 +1,64 @@
+{
+  "type": "object",
+  "required": ["summary", "enrichments", "tasks", "verification_items"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "2-3 sentences orienting the implementer."
+    },
+    "enrichments": {
+      "type": "array",
+      "description": "One entry per R# — codebase context for the implementer.",
+      "items": {
+        "type": "object",
+        "required": ["id", "related_files", "context", "references"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "R# id from the brief"
+          },
+          "related_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Existing files relevant to this R# (path + brief note on why)"
+          },
+          "context": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Key findings: sibling conventions, type signatures, module layout"
+          },
+          "references": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Files to reference during implementation (path:line-range)"
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "description": "Ordered implementation tasks. Specific enough for another agent to execute without questions.",
+      "items": {
+        "type": "object",
+        "required": ["id", "subject", "description", "activeForm", "status", "blocks", "blockedBy"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "description": "Sequential: 1, 2, 3..."},
+          "subject": {"type": "string", "description": "Short task title (imperative, under 80 chars)."},
+          "description": {"type": "string", "description": "Specific enough to execute without questions."},
+          "activeForm": {"type": "string", "description": "Present continuous for spinner."},
+          "status": {"type": "string", "enum": ["pending"]},
+          "blocks": {"type": "array", "items": {"type": "string"}},
+          "blockedBy": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "verification_items": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Concrete checks the developer should run to verify their work."
+    }
+  }
+}

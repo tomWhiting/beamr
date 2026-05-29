@@ -1,0 +1,17 @@
+Review this implementation brief against the design document. For each requirement, assess whether it is implementable, well-specified, and consistent with the design.
+
+## Design Document
+
+{{ design }}
+
+## Brief: {{ brief.title }}
+
+Requirements:
+{% for r in brief.requirements %}
+### {{ r.id }}: {{ r.title }}
+{{ r.spec }}
+
+Acceptance: {{ r.acceptance | join("; ") }}
+{% endfor %}
+
+Produce a structured review with issues found per requirement.

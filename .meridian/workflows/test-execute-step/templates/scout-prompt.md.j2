@@ -1,0 +1,8 @@
+Look at the brief below and identify 1-2 relevant files per requirement. Be very brief — just file paths and a one-line note.
+
+Brief: {{ input.brief.title }}
+
+Requirements:
+{% for r in input.brief.requirements %}
+- {{ r.id }}: {{ r.title }}
+{% endfor %}

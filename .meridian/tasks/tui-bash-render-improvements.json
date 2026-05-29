@@ -1,0 +1,27 @@
+{
+  "title": "Bash renderer — stdout/stderr divider, fold long outputs, command preview truncation",
+  "task": "BashRenderer body currently dumps stdout, then a `── stderr ──` separator and stderr, then a `exit: N` footer on failure. Three improvements: (1) fold long stdout — bash output can be hundreds of lines (cargo test, grep -r, etc.); (2) prefix stderr lines with subtle visual distinction (today only the divider line marks the boundary); (3) the command preview in the header truncates at 120 bytes but doesn't show the truncation marker prominently.\n\nOUTCOME — bash output reads cleanly even when the command was verbose: long output gets first-20 + middle elision + last-5 treatment. stderr lines have a subtle yellow tint so the eye picks them out from stdout in a mixed stream. The header command preview clearly ends with `…` when truncated.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Fold long stdout in BashRenderer::body. When stdout exceeds BASH_BODY_MAX_LINES (= 40) lines, emit first 25 + a dim `… {N} lines elided …` marker + last 10. Keep stderr fully (errors are usually short and always relevant). The marker line counts as one displayed line.",
+      "acceptance": "Unit test: stdout with 100 lines renders 25 + marker + 10 = 36 lines total. Stdout with 30 lines renders fully (no marker). cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R2",
+      "description": "Tint stderr lines a subtle yellow/amber so they're visually distinguishable from stdout in a mixed stream. Use the existing AMBER constant from tools/helpers.rs. Each stderr line gets wrapped: `\\x1b[33m{line}\\x1b[39m` or via the colour_for() helper. The `── stderr ──` divider already exists (line 78 of bash.rs); keep it.",
+      "acceptance": "Unit test: a bash result with stderr='error here' produces body containing the AMBER SGR foreground around the stderr content. stdout content has no colour change. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R3",
+      "description": "Header truncation marker fix. truncate_preview already appends `…` when it truncates, so this is already correct — but verify by reading the helper and asserting in a test. If the marker is being lost somewhere (e.g. trimmed off when wrapped in SGR for the failure-red treatment), fix.",
+      "acceptance": "Unit test: a command of 200 bytes produces a header containing both `…` and the colour SGR sequences (when failed)."
+    },
+    {
+      "id": "R4",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/rich/bash.rs — BashRenderer. body() is around line 62; header_line around line 40.\n- crates/norn-tui/src/tools/helpers.rs — AMBER constant, fg/fg_reset helpers, truncate_preview.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- The `$ {command}` header format and exit-code colouring.\n- The `── stderr ──` divider line.\n- The `exit: N (SIGNAME)` failure footer (recently added in a previous session per memory).\n- The ANSI passthrough — subprocess colours preserved.\n\nDESIGN TASTE: long output is the norm for `cargo test` and friends; truncation should be UNAPOLOGETIC (clear elision marker) and reasonable (you can still see how the test started and ended). Stderr tinting must be subtle — the goal is 'I can pick out the error lines' not 'the screen is yellow.'\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

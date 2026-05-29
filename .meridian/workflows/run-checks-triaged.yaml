@@ -1,0 +1,308 @@
+name: run-checks-triaged
+description: |
+  Check cluster with clippy lint triage. Cargo check and test failures
+  always block. Clippy lints are split into BLOCKING (crash paths,
+  architectural) and DEFERRED (style, perf, pedantic). Only blocking
+  lints fail the verdict — deferred lints are captured in the report
+  and passed forward to the hardener step.
+
+input:
+  changed_files:
+    type: text
+    required: false
+    description: Space-joined list of files changed. Used to scope File Size Check.
+  crates_affected:
+    type: text
+    required: false
+    description: Space-joined list of crate names. Empty runs workspace-wide.
+  member_id:
+    type: text
+    required: false
+    description: Optional member to DM the report to.
+
+steps:
+  - name: Cargo Check
+    kind: execute
+    command: |
+      CRATES="{raw:input.crates_affected}"
+      if [ "${CRATES#\{}" != "$CRATES" ]; then
+        CRATES=""
+      fi
+      if [ -n "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+        cargo check --all-targets --message-format=json -q $(printf -- '-p %s ' $CRATES)
+      else
+        cargo check --all-targets --message-format=json -q
+      fi
+    parser: rust-diagnostics
+    routes:
+      success: Cargo Clippy
+      failure: TS Check
+
+  - name: Cargo Clippy
+    kind: execute
+    command: |
+      CRATES="{raw:input.crates_affected}"
+      if [ "${CRATES#\{}" != "$CRATES" ]; then
+        CRATES=""
+      fi
+      CLIPPY_EXIT=0
+      if [ -n "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+        CLIPPY_OUT=$(cargo clippy --all-targets --message-format=json -q $(printf -- '-p %s ' $CRATES) -- -D warnings 2>/dev/null) || CLIPPY_EXIT=$?
+      else
+        CLIPPY_OUT=$(cargo clippy --all-targets --message-format=json -q -- -D warnings 2>/dev/null) || CLIPPY_EXIT=$?
+      fi
+
+      BLOCKING_CODES='["clippy::unwrap_used","clippy::expect_used","clippy::get_unwrap","clippy::panic","clippy::todo","clippy::unimplemented","clippy::unreachable","clippy::future_not_send"]'
+
+      if [ -z "$CLIPPY_OUT" ] && [ "$CLIPPY_EXIT" -ne 0 ]; then
+        jq -nc --argjson exit_code "$CLIPPY_EXIT" \
+          '{blocking_count:1,deferred_count:0,blocking_report:("cargo clippy crashed (exit " + ($exit_code|tostring) + "). Toolchain issue, not a lint failure."),deferred_report:"",total_count:1}'
+        exit 1
+      fi
+
+      if [ -z "$CLIPPY_OUT" ]; then
+        jq -nc '{blocking_count:0,deferred_count:0,blocking_report:"",deferred_report:"",total_count:0}'
+        exit 0
+      fi
+
+      ALL_DIAGS=$(echo "$CLIPPY_OUT" | jq -c '
+        select(.reason == "compiler-message") |
+        select(.message.level == "error" or .message.level == "warning") |
+        select(.message.message | test("generated [0-9]+ warning") | not) |
+        {
+          lint: (.message.code.code // "compile-error"),
+          level: .message.level,
+          msg: .message.message,
+          file: (.message.spans[0].file_name // "unknown"),
+          line: (.message.spans[0].line_start // 0)
+        }' 2>/dev/null || true)
+
+      if [ -z "$ALL_DIAGS" ]; then
+        jq -nc '{blocking_count:0,deferred_count:0,blocking_report:"",deferred_report:"",total_count:0}'
+        exit 0
+      fi
+
+      BLOCKING=$(echo "$ALL_DIAGS" | jq -c --argjson codes "$BLOCKING_CODES" '
+        select(.level == "error" or (.lint as $l | $codes | index($l) != null))
+      ' 2>/dev/null || true)
+
+      DEFERRED=$(echo "$ALL_DIAGS" | jq -c --argjson codes "$BLOCKING_CODES" '
+        select(.level != "error") |
+        select(.lint as $l | $codes | index($l) == null)
+      ' 2>/dev/null || true)
+
+      if [ -n "$BLOCKING" ]; then
+        BLOCKING_COUNT=$(echo "$BLOCKING" | wc -l | tr -d ' ')
+        BLOCKING_REPORT=$(echo "$BLOCKING" | jq -r '"- \(.file):\(.line) [\(.lint)] \(.msg)"' 2>/dev/null)
+      else
+        BLOCKING_COUNT=0
+        BLOCKING_REPORT=""
+      fi
+
+      if [ -n "$DEFERRED" ]; then
+        DEFERRED_COUNT=$(echo "$DEFERRED" | wc -l | tr -d ' ')
+        DEFERRED_REPORT=$(echo "$DEFERRED" | jq -r '"- \(.file):\(.line) [\(.lint)] \(.msg)"' 2>/dev/null)
+      else
+        DEFERRED_COUNT=0
+        DEFERRED_REPORT=""
+      fi
+
+      jq -nc \
+        --argjson bc "$BLOCKING_COUNT" \
+        --argjson dc "$DEFERRED_COUNT" \
+        --arg br "$BLOCKING_REPORT" \
+        --arg dr "$DEFERRED_REPORT" \
+        '{blocking_count:$bc,deferred_count:$dc,blocking_report:$br,deferred_report:$dr,total_count:($bc+$dc)}'
+
+      if [ "$BLOCKING_COUNT" -gt 0 ]; then
+        exit 1
+      else
+        exit 0
+      fi
+    parser: json
+    routes:
+      success: Cargo Test
+      failure: Cargo Test
+
+  - name: Cargo Test
+    kind: execute
+    command: |
+      CRATES="{raw:input.crates_affected}"
+      if [ "${CRATES#\{}" != "$CRATES" ]; then
+        CRATES=""
+      fi
+      if [ -n "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+        NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --cargo-quiet --message-format libtest-json-plus --show-progress none --no-fail-fast $(printf -- '-p %s ' $CRATES)
+      else
+        NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --cargo-quiet --message-format libtest-json-plus --show-progress none --no-fail-fast
+      fi
+    parser: rust-test-results
+    routes:
+      success: TS Check
+      failure: TS Check
+
+  - name: TS Check
+    kind: execute
+    command: cd apps/web && npx tsc --noEmit --pretty false 2>&1; echo "exit:$?"
+    parser: exit-code
+    routes:
+      success: Biome Check
+      failure: Biome Check
+
+  - name: Biome Check
+    kind: execute
+    command: cd apps/web && npx biome check . 2>&1; echo "exit:$?"
+    parser: exit-code
+    routes:
+      success: File Size Check
+      failure: File Size Check
+
+  - name: File Size Check
+    kind: execute
+    command: |
+      CHANGED="{raw:input.changed_files}"
+      if [ "${CHANGED#\{}" != "$CHANGED" ]; then
+        CHANGED=""
+      fi
+      if [ -z "$(echo "$CHANGED" | tr -d '[:space:]')" ]; then
+        jq -nc --argjson limit 500 \
+          '{violations: [], oversized: 0, limit: $limit, report: ""}'
+        exit 0
+      fi
+      LANGS='["Rust","TypeScript","TSX","JavaScript","JSX","Python"]'
+      RAW=$(tokei --output json)
+      VIOLATIONS=$(echo "$RAW" | jq -c \
+        --argjson limit 500 \
+        --argjson langs "$LANGS" \
+        --arg changed "$CHANGED" '
+        ($changed | split(" ") | map(select(length > 0))) as $changed_list |
+        [ to_entries[]
+          | select(.key as $k | $langs | index($k))
+          | .value.reports[]?
+          | select(.stats.code > $limit)
+          | select(.name as $f | $changed_list | any(. as $c | $f | endswith($c)))
+          | {file: .name, loc: .stats.code}
+        ] | sort_by(-.loc)')
+      OVERSIZED=$(echo "$VIOLATIONS" | jq 'length' 2>/dev/null || echo 0)
+      OVERSIZED=${OVERSIZED:-0}
+      REPORT=$(echo "$VIOLATIONS" | jq -r 'map("- " + .file + " (" + (.loc | tostring) + " LoC)") | join("\n")' 2>/dev/null || echo '')
+      if [ "$OVERSIZED" = "0" ]; then
+        jq -nc --argjson limit 500 \
+          '{violations: [], oversized: 0, limit: $limit, report: ""}'
+        exit 0
+      else
+        jq -nc \
+          --argjson v "$VIOLATIONS" \
+          --argjson o "$OVERSIZED" \
+          --argjson limit 500 \
+          --arg r "$REPORT" \
+          '{violations: $v, oversized: $o, limit: $limit, report: $r}'
+        exit 1
+      fi
+    parser: json
+    routes:
+      success: Render Report
+      failure: Render Report
+
+  - name: Render Report
+    kind: execute
+    command: |
+      cat > /tmp/run-checks-report.md <<'__REPORT__'
+      {?Cargo Check.error_count > 0}### Cargo Check ({raw:Cargo Check.error_count} error(s), {raw:Cargo Check.warning_count} warning(s))
+
+      {raw:Cargo Check.report}
+
+      {/}{?Cargo Clippy.data.blocking_count > 0}### Cargo Clippy — BLOCKING ({raw:Cargo Clippy.data.blocking_count} issue(s))
+
+      These must be fixed before proceeding:
+
+      {raw:Cargo Clippy.data.blocking_report}
+
+      {/}{?Cargo Clippy.data.deferred_count > 0}### Cargo Clippy — DEFERRED ({raw:Cargo Clippy.data.deferred_count} issue(s))
+
+      Style/perf issues — passed to hardener:
+
+      {raw:Cargo Clippy.data.deferred_report}
+
+      {/}{?Cargo Test.failed > 0}### Failing tests ({raw:Cargo Test.failed})
+
+      {raw:Cargo Test.report}
+
+      {/}{?File Size Check.data.oversized > 0}### Files exceeding 500 LoC ({raw:File Size Check.data.oversized})
+
+      Split each into smaller modules.
+
+      {raw:File Size Check.data.report}
+
+      {/}__REPORT__
+
+      SUMMARY="{?Cargo Check.error_count == 0}{raw:Cargo Check.error_count} check error(s), {raw:Cargo Clippy.data.blocking_count} blocking clippy, {raw:Cargo Clippy.data.deferred_count} deferred clippy, {raw:Cargo Test.failed} failing test(s), {raw:File Size Check.data.oversized} oversized file(s){/}{?Cargo Check.error_count > 0}Compile failed — {raw:Cargo Check.error_count} cargo check error(s); clippy / test skipped. {raw:File Size Check.data.oversized} oversized file(s).{/}"
+
+      REPORT=$(cat /tmp/run-checks-report.md)
+      DEFERRED="{raw:Cargo Clippy.data.deferred_report}"
+      jq -nc \
+        --arg summary "$SUMMARY" \
+        --arg report "$REPORT" \
+        --arg deferred "$DEFERRED" \
+        '{summary: $summary, failure_report: $report, deferred_clippy_report: $deferred}'
+    parser: json
+    routes:
+      success: Notify Member
+      failure: Notify Member
+
+  - name: Notify Member
+    kind: execute
+    command: |
+      MEMBER="{raw:input.member_id}"
+      if [ "${MEMBER#\{}" != "$MEMBER" ] || [ -z "$(echo "$MEMBER" | tr -d '[:space:]')" ]; then
+        echo "no member_id; skipping notification"
+      else
+        BRANCH=$(git branch --show-current 2>/dev/null || echo "(detached)")
+        if [ -f /tmp/run-checks-report.md ]; then
+          BODY=$(cat /tmp/run-checks-report.md)
+        else
+          BODY="(no report file)"
+        fi
+        HEADER="[run-checks-triaged on \`$BRANCH\`]"
+        collective send --as "Meridian" --to "$MEMBER" --subject "check results: $BRANCH" --message "$HEADER
+
+      $BODY" || true
+      fi
+    parser: exit-code
+    routes:
+      success: Overall Verdict
+      failure: Overall Verdict
+
+  - name: Overall Verdict
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Cargo Check.success} == true
+      {Cargo Clippy.success} == true
+      {Cargo Test.success} == true
+      {TS Check.success} == true
+      {Biome Check.success} == true
+      {File Size Check.success} == true
+
+outputs:
+  pass:
+    type: boolean
+    from: "{Overall Verdict.passed}"
+  error_count:
+    type: integer
+    from: "{Cargo Check.error_count}"
+  warning_count:
+    type: integer
+    from: "{Cargo Check.warning_count}"
+  failing_tests:
+    type: array
+    from: "{Cargo Test.failure_names}"
+  summary:
+    type: string
+    from: "{Render Report.data.summary}"
+  failure_report:
+    type: string
+    from: "{Render Report.data.failure_report}"
+  deferred_clippy_report:
+    type: string
+    from: "{Render Report.data.deferred_clippy_report}"

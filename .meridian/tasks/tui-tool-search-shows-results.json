@@ -1,0 +1,22 @@
+{
+  "title": "tool_search — show matched tools in the body, not just the count",
+  "task": "ToolSearchRenderer (crates/norn-tui/src/tools/compact.rs around line 257) shows the match COUNT but not the matches themselves. `search tools: slack  3 matches` — the user knows three things matched but not what. The agent has called the tool to discover capabilities; the user should see what got found.\n\nOUTCOME — `tool_search` shows the header plus a short list of matched tools: `  {tool_name}  —  {description}` per match (description truncated to ~60 char width). Dim divider above the list if the list is non-empty.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Implement body_blocks for ToolSearchRenderer. result.results is an array of {name, description, score}. For each match, produce a Plain line: `  {name_bold}  —  {description}` with name bold and description plain. Cap at top 10 matches (already capped by the tool's max limit of 10 default per its schema), but if the model passed limit > 10 and got more, render the first 10 + an elision line.",
+      "acceptance": "Unit test: a result with 3 matches produces body containing all three names. A result with 0 matches returns None (no body, header alone suffices)."
+    },
+    {
+      "id": "R2",
+      "description": "Header tweak: keep the existing `search tools: {query}  {N} matches  ({duration})` format but add the duration suffix (currently absent — duration_ms is a parameter but ignored).",
+      "acceptance": "Unit test: a query producing N matches has the duration in the header. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R3",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/compact.rs — ToolSearchRenderer at line 257.\n- crates/norn/src/tools/tool_search.rs — ToolSearchTool. Result shape: {results: [{name, description, score}], ...}. The tool already sorts by score descending.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- The header glyph and query rendering.\n- The streaming header.\n\nDESIGN TASTE: small, two-column listing where the name has visual weight (bold) and the description is supporting text. No tables — comfy-table is heavy for a sub-10-row list. Plain lines with consistent indent read better at this scale.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

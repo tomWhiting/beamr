@@ -1,0 +1,32 @@
+{
+  "title": "OSC 8 hyperlinks — make file paths in tool headers clickable",
+  "task": "Modern terminals (Ghostty, iTerm2, Kitty, WezTerm, Alacritty) support OSC 8 hyperlinks: `\\x1b]8;;file:///abs/path\\x1b\\\\text\\x1b]8;;\\x1b\\\\` renders `text` as a clickable link to the file URL. Make every file path that appears in a tool header / body clickable when the terminal supports it.\n\nOUTCOME — clicking the path in `~ /Users/tom/foo.rs  +5 -3 lines  (0.42s)` opens the file in the configured editor. Fallback is unchanged (plain path text) on terminals without OSC 8 support.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Add `osc8_links: bool` capability detection to TerminalCaps (crates/norn-tui/src/terminal/caps.rs). The detection logic varies — most modern terms advertise via $TERM or $TERM_PROGRAM. Conservative approach: enable when TERM_PROGRAM is in {iTerm.app, WezTerm, ghostty, kitty} OR when $TERMINFO advertises specific entries. When unknown, default to off (safer — broken OSC 8 produces visible garbage on non-supporting terms).",
+      "acceptance": "Unit test: caps with TERM_PROGRAM='ghostty' has osc8_links=true. Unknown terminal has osc8_links=false."
+    },
+    {
+      "id": "R2",
+      "description": "Add a helper `wrap_osc8_link(text: &str, url: &str, caps: &TerminalCaps) -> String` in crates/norn-tui/src/render/style.rs. When caps.osc8_links is true, returns `\\x1b]8;;{url}\\x1b\\\\{text}\\x1b]8;;\\x1b\\\\`. When false, returns text.to_string(). The URL must be a file:// URL; the helper takes the text + URL and assembles correctly.",
+      "acceptance": "Unit test: with osc8_links=true and (text='foo.rs', url='file:///abs/foo.rs'), output contains both the OSC 8 open and close sequences. With osc8_links=false, output is just 'foo.rs'."
+    },
+    {
+      "id": "R3",
+      "description": "Apply to file paths in tool headers. The paths that should become clickable:\n- EditRenderer header (`~ {path}` → wrap path in OSC 8)\n- ApplyPatchRenderer header (`patch {first_path}` → wrap)\n- WriteRenderer header (`+ {path}` → wrap)\n- ReadRenderer header (`> {path}` → wrap)\n- SearchRenderer body (each `{path}` heading per group → wrap)\n- LspRenderer body locations (each `{path}:{line}:{col}` → wrap with file:///abs/path#L{line})\nKeep the rest of the header (stats, duration, etc.) unwrapped — they're not navigation targets.",
+      "acceptance": "Unit tests for each renderer verify that with osc8_links=true the header contains the OSC 8 sequences around the path, and with osc8_links=false the header is unchanged."
+    },
+    {
+      "id": "R4",
+      "description": "Handle path-to-URL conversion safely. Relative paths in the tool result must be resolved to absolute (otherwise file:// URL is meaningless). The TUI knows its working directory (via state.working_dir if present, or via env::current_dir() as a fallback). Add a helper `path_to_file_url(path: &str, base: &Path) -> String` that returns `file:///{absolute_path}` with proper URL encoding for special characters.",
+      "acceptance": "Unit test: a relative path 'src/foo.rs' with base='/Users/tom/project' produces 'file:///Users/tom/project/src/foo.rs'. An absolute path passes through unchanged."
+    },
+    {
+      "id": "R5",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/terminal/caps.rs — TerminalCaps. Add the osc8_links field.\n- crates/norn-tui/src/render/style.rs — add wrap_osc8_link helper.\n- All the tool renderers (rich/*.rs, compact.rs) — wrap path emissions.\n\nOSC 8 SPEC: https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda\nFormat: `\\x1b]8;{id};{url}\\x1b\\\\{text}\\x1b]8;;\\x1b\\\\`. The `id` field is for hover-effect grouping; omit (just `;;`). Terminator is ST (\\x1b\\\\), some terminals also accept BEL (\\x07).\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- The TerminalCaps detection machinery — add the new field alongside existing ones.\n- The path field extraction in each renderer (string_field helper).\n\nDESIGN TASTE: hyperlinks are invisible to the eye on terminals that support them (no visual underline by default unless the terminal chooses to), so the link is a CAPABILITY ENHANCEMENT — text reads the same; click works when it works. No visual change for users on non-supporting terminals.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

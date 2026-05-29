@@ -1,0 +1,45 @@
+name: cargo-build-info
+format: ndjson
+discriminator: reason
+schemas:
+  diagnostic:
+    condition: reason == "compiler-message"
+    schema: |
+      {
+        "type": "object",
+        "properties": {
+          "level": {"type": "string"},
+          "message": {"type": "string"},
+          "code": {"type": "string"},
+          "file": {"type": "string"},
+          "line": {"type": "integer"}
+        }
+      }
+    extract:
+      level: message.level
+      message: message.message
+      code: message.code.code
+      file: message.spans[0].file_name
+      line: message.spans[0].line_start
+  artifact:
+    condition: reason == "compiler-artifact"
+    extract:
+      crate_name: target.name
+      fresh: fresh
+      executable: executable
+  build_done:
+    condition: reason == "build-finished"
+    extract:
+      build_success: success
+filter:
+  exclude_where: level == "note"
+return:
+  errors: diagnostic where level == "error"
+  warnings: diagnostic where level == "warning"
+  error_count: count(diagnostic where level == "error")
+  warning_count: count(diagnostic where level == "warning")
+  diagnostics: diagnostic
+  artifacts: artifact
+  fresh_count: count(artifact where fresh == true)
+  built_count: count(artifact where fresh == false)
+  build_success: first(build_done.build_success)

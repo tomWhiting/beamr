@@ -1,0 +1,19 @@
+{
+  "design_system": "yggdrasil-briefs",
+  "version": "0.1.0",
+  "scope": "private",
+  "profiles": ["test-scout", "test-developer"],
+  "input": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "Brief JSON content (parsed at seed time)."
+      }
+    },
+    "required": ["brief"]
+  },
+  "trigger": {
+    "kind": "manual"
+  }
+}

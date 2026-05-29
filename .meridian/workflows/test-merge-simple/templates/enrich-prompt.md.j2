@@ -1,0 +1,8 @@
+Assign a color to each item below. Use real color names (red, blue, green, etc).
+
+Items:
+{% for item in input.items %}
+- {{ item.id }}: {{ item.name }}
+{% endfor %}
+
+Return an "enrichments" array where each element has the item's "id" and a "color" you chose.

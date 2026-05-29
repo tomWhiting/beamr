@@ -1,0 +1,37 @@
+{
+  "title": "Wire extraction agent into web_fetch tool with questions and detail parameters",
+  "task": "Add query-based extraction to the web_fetch tool. When the model provides an array of questions, web_fetch fetches the page, converts it to markdown (via html-to-markdown-rs from QT-1), then passes the content and questions to the extraction agent (from QT-2) which uses gpt-5.3-codex-spark to return focused answers as clean markdown. When no questions are provided, the tool behaves exactly as before.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Add two optional parameters to the web_fetch tool schema: questions (array of strings, description: 'Questions to answer from the page content. When provided, content is processed by an extraction agent that returns focused answers instead of the full page.') and detail (string enum: brief/normal/detailed, default normal, description: 'Level of detail for extraction answers. Only used when questions is provided.').",
+      "acceptance": "Tool schema has questions (array of strings, optional) and detail (string enum, optional). Both appear in input_schema(). additionalProperties remains false."
+    },
+    {
+      "id": "R2",
+      "description": "When questions is provided and non-empty: after fetching and converting the page content to markdown, retrieve the SharedProvider from ctx.get_extension::<SharedProvider>(). Call internal::extraction::extract() with the provider, the converted markdown content, the questions array, and the detail level. Return the extraction result as the content field in the tool output JSON.",
+      "acceptance": "Questions triggers extraction flow. SharedProvider retrieved from ToolContext. extract() called with correct arguments. Extraction result returned as content."
+    },
+    {
+      "id": "R3",
+      "description": "When questions is not provided or is empty, the tool behaves exactly as it does today — fetches the page, converts to the requested format, returns the full converted content. No extraction, no provider access needed.",
+      "acceptance": "Omitting questions produces identical behavior to the current tool. Existing tests pass without modification."
+    },
+    {
+      "id": "R4",
+      "description": "When extraction is used, the tool output JSON should include the same metadata fields (url, format, bytes, truncated, content_type) plus the extraction result as content, plus a new field extracted: true to distinguish extraction results from raw page content.",
+      "acceptance": "Extraction results have extracted: true in the output JSON. Non-extraction results have extracted: false or the field is absent."
+    },
+    {
+      "id": "R5",
+      "description": "If SharedProvider is not available in the ToolContext (extension not inserted), and questions were provided, return a ToolError::ExecutionFailed explaining that extraction is not available. Do not silently fall back to returning raw content when extraction was explicitly requested.",
+      "acceptance": "Missing SharedProvider with questions present produces ToolError::ExecutionFailed, not silent fallback."
+    },
+    {
+      "id": "R6",
+      "description": "Update the tool description (web_fetch.description.md) and usage guidance (web_fetch.usage.md) to document the new questions and detail parameters, explaining the extraction mode.",
+      "acceptance": "Description and usage guidance files updated. Both mention questions, detail, and extraction behavior."
+    }
+  ],
+  "context": "This task depends on QT-1 (html-to-markdown-rs swap) and QT-2 (internal agents module + provider injection). File: crates/norn/src/tools/web/fetch.rs. The execute() method is at line 125. It currently ignores _ctx (the ToolContext parameter). After QT-2, ctx will have a SharedProvider extension available. The extraction::extract() function from QT-2 takes (&dyn Provider, &str, &[String], DetailLevel) and returns Result<String, ToolError>. The Format enum and convert() function handle the HTML-to-markdown conversion (updated by QT-1 to use html-to-markdown-rs). Guidance files at crates/norn/src/tools/guidance/web_fetch.description.md and web_fetch.usage.md."
+}

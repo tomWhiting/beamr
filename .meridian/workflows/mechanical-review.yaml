@@ -1,0 +1,208 @@
+name: mechanical-review
+description: Runs three adversarial role-specialist AI reviewers (security, silent-failure, convention) in series over a branch's diff, then consolidates findings. Each sub-reviewer emits {findings, pass, summary}; Mechanical Verdict gates on all three passing; the Consolidate Findings step stamps `reviewer_role` on each finding and merges them for the single-reference workflow output.
+
+input:
+  branch:
+    type: text
+    required: true
+    description: Branch being reviewed.
+  brief:
+    type: text
+    required: true
+    description: The brief that motivated the changes.
+  diff:
+    type: text
+    required: false
+    description: The unified diff text for the branch. When omitted, reviewers fall back to `git diff` in the worktree.
+
+steps:
+  - name: Security Review
+    kind: action
+    target: function
+    profile: security-reviewer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {"type": "string"},
+                "line": {"type": "integer"},
+                "class": {"type": "string", "enum": ["auth", "input_validation", "dangerous_default", "secret_leakage"]},
+                "description": {"type": "string"},
+                "citation": {"type": "string"}
+              },
+              "required": ["file", "line", "class", "description", "citation"]
+            }
+          },
+          "pass": {"type": "boolean"},
+          "summary": {"type": "string"}
+        },
+        "required": ["findings", "pass", "summary"]
+      }
+    prompt: |
+      Review the diff for security issues in your four declared classes: auth, input_validation, dangerous_default, secret_leakage. Do NOT comment on silent failures, naming, or organisation — other reviewers own those.
+
+      Branch: {input.branch}
+      Brief: {input.brief}
+
+      Diff:
+      {input.diff}
+
+      For each finding, cite file, line, class, a concrete description, and a citation (the exact code snippet or grep pattern you based the finding on).
+
+      ## RESPONSE FORMAT
+
+      Your entire response MUST be a single JSON object matching the output_schema above, and nothing else — no prose commentary, no markdown code fences, no preamble. Start with `{` and end with `}`. `pass` is a boolean: true iff `findings` is empty.
+    routes:
+      success: Silent-Failure Review
+      failure: Silent-Failure Review
+
+  - name: Silent-Failure Review
+    kind: action
+    target: function
+    profile: silent-failure-hunter
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {"type": "string"},
+                "line": {"type": "integer"},
+                "class": {"type": "string", "enum": ["discarded_result", "substituted_fallback", "log_instead_of_surface", "invisible_partial_success"]},
+                "description": {"type": "string"},
+                "citation": {"type": "string"}
+              },
+              "required": ["file", "line", "class", "description", "citation"]
+            }
+          },
+          "pass": {"type": "boolean"},
+          "summary": {"type": "string"}
+        },
+        "required": ["findings", "pass", "summary"]
+      }
+    prompt: |
+      Review the diff for silent failures in your four declared classes: discarded_result, substituted_fallback, log_instead_of_surface, invisible_partial_success. Do NOT comment on security, naming, or organisation — other reviewers own those.
+
+      Branch: {input.branch}
+      Brief: {input.brief}
+
+      Diff:
+      {input.diff}
+
+      For each finding, cite file, line, class, a concrete description, and a citation (the exact code snippet or grep pattern you based the finding on).
+
+      ## RESPONSE FORMAT
+
+      Your entire response MUST be a single JSON object matching the output_schema above, and nothing else — no prose commentary, no markdown code fences, no preamble. Start with `{` and end with `}`. `pass` is a boolean: true iff `findings` is empty.
+    routes:
+      success: Convention Review
+      failure: Convention Review
+
+  - name: Convention Review
+    kind: action
+    target: function
+    profile: convention-reviewer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {"type": "string"},
+                "line": {"type": "integer"},
+                "class": {"type": "string", "enum": ["modrs_logic", "god_file", "naming_drift", "test_pattern"]},
+                "description": {"type": "string"},
+                "citation": {"type": "string"}
+              },
+              "required": ["file", "line", "class", "description", "citation"]
+            }
+          },
+          "pass": {"type": "boolean"},
+          "summary": {"type": "string"}
+        },
+        "required": ["findings", "pass", "summary"]
+      }
+    prompt: |
+      Review the diff for convention deviations in your four declared classes: modrs_logic, god_file, naming_drift, test_pattern. Do NOT comment on security or silent failures — other reviewers own those.
+
+      Branch: {input.branch}
+      Brief: {input.brief}
+
+      Diff:
+      {input.diff}
+
+      For each finding, cite file, line, class, a concrete description, and a citation (the exact code snippet or grep pattern you based the finding on).
+
+      ## RESPONSE FORMAT
+
+      Your entire response MUST be a single JSON object matching the output_schema above, and nothing else — no prose commentary, no markdown code fences, no preamble. Start with `{` and end with `}`. `pass` is a boolean: true iff `findings` is empty.
+    routes:
+      success: Consolidate Findings
+      failure: Consolidate Findings
+
+  # Consolidate Findings stamps a `reviewer_role` field on each
+  # finding from each sub-reviewer and concatenates the three lists
+  # into a single array. Also composes a one-line summary. Using
+  # `jq` here keeps the workflow-output `from:` reference single-
+  # shot ({Consolidate Findings.data.findings}) per brief 171.
+  - name: Consolidate Findings
+    kind: execute
+    command: >-
+      SEC='{raw:Security Review.findings}';
+      SIL='{raw:Silent-Failure Review.findings}';
+      CON='{raw:Convention Review.findings}';
+      if [ -z "$SEC" ] || [ "$SEC" = "null" ]; then SEC='[]'; fi;
+      if [ -z "$SIL" ] || [ "$SIL" = "null" ]; then SIL='[]'; fi;
+      if [ -z "$CON" ] || [ "$CON" = "null" ]; then CON='[]'; fi;
+      SEC_SUM='{raw:Security Review.summary}';
+      SIL_SUM='{raw:Silent-Failure Review.summary}';
+      CON_SUM='{raw:Convention Review.summary}';
+      jq -nc
+      --argjson sec "$SEC" --argjson sil "$SIL" --argjson con "$CON"
+      --arg sec_sum "$SEC_SUM" --arg sil_sum "$SIL_SUM" --arg con_sum "$CON_SUM"
+      '{
+        findings: (
+          ($sec | map(. + {reviewer_role: "security"}))
+          + ($sil | map(. + {reviewer_role: "silent_failure"}))
+          + ($con | map(. + {reviewer_role: "convention"}))
+        ),
+        summary: "security: \($sec_sum) | silent_failure: \($sil_sum) | convention: \($con_sum)"
+      }'
+    parser: json
+    routes:
+      success: Mechanical Verdict
+      failure: Mechanical Verdict
+
+  # Mechanical Verdict is the terminal step: the engine uses the
+  # last step's outcome to set OrchestrationStatus, which the parent
+  # DispatchExecutor maps to success/failure. All three sub-reviewers
+  # must report pass=true for the mechanical review to pass overall.
+  - name: Mechanical Verdict
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Security Review.pass} == true
+      {Silent-Failure Review.pass} == true
+      {Convention Review.pass} == true
+
+outputs:
+  pass:
+    type: boolean
+    from: "{Mechanical Verdict.passed}"
+  findings:
+    type: array
+    from: "{Consolidate Findings.data.findings}"
+  summary:
+    type: string
+    from: "{Consolidate Findings.data.summary}"

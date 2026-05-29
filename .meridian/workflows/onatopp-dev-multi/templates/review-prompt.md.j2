@@ -1,0 +1,65 @@
+{% extends "base-brief.md.j2" %}
+
+{% block requirements_heading %} (fully enriched — scout context + dev implementation + harden assessment){% endblock %}
+
+{% block extra_documents %}
+{% if input.checklist_content %}
+<document index="3">
+  <source>checklist_reference</source>
+  <document_content>
+{% for s in input.checklist_content.sections %}
+**{{ s.name }}:**
+{% for item in s.items %}
+- {{ item.id }}: {{ item.text }}
+{% endfor %}
+{% endfor %}
+  </document_content>
+</document>
+{% endif %}
+{% if input.stories_content %}
+<document index="4">
+  <source>stories_reference</source>
+  <document_content>
+{% for p in input.stories_content.personas %}
+**{{ p.name }} — {{ p.role }}:**
+{% for story in p.stories %}
+- {{ story.id }}: {{ story.text }}
+{% endfor %}
+{% endfor %}
+  </document_content>
+</document>
+{% endif %}
+<document index="5">
+  <source>dev_attestation</source>
+  <document_content>
+{% if dev.attestation %}panics={{ dev.attestation.no_panics }}, unsafe={{ dev.attestation.no_unsafe }}, boundaries={{ dev.attestation.boundaries_respected }}, tests={{ dev.attestation.tests_considered }}{% endif %}
+  </document_content>
+</document>
+<document index="6">
+  <source>verification_criteria</source>
+  <document_content>
+{% for v in input.brief.verification %}
+- {{ v }}
+{% endfor %}
+{% if scout.verification_items %}{% for v in scout.verification_items %}
+- {{ v }}
+{% endfor %}{% endif %}
+  </document_content>
+</document>
+{% endblock %}
+
+{% block task %}
+{% if checks_review and not checks_review.pass %}
+CHECKS FAILED — fix only the specific failures below.
+
+{{ checks_review.failure_report }}
+{% endif %}
+
+{% if not is_resume %}
+Review the implementation against the brief's criteria. Check for stupid design decisions, unnecessary complexity, boundary violations.
+
+For each R#: verify acceptance criteria are met, tick off checklist items, confirm user stories addressed. Run what you can, grep what you can, check what's checkable.
+
+Then verify every top-level verification criterion.
+{% endif %}
+{% endblock %}

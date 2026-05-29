@@ -1,0 +1,29 @@
+{
+  "cluster": "messaging",
+  "sections": [
+    {
+      "name": "Crate Setup",
+      "items": [
+        {"id": "C1", "text": "libmessage crate exists as a workspace member", "done": true},
+        {"id": "C2", "text": "Cargo.toml declares the crate as libmessage with edition 2021", "done": true},
+        {"id": "C3", "text": "src/lib.rs declares public modules: types, protocol, events, storage, ops, invariants, validation, mentions, threading", "done": true}
+      ]
+    },
+    {
+      "name": "Storage Extraction",
+      "items": [
+        {"id": "C4", "text": "StorageError defined in libmessage::storage::error"},
+        {"id": "C5", "text": "MessagingStorage trait defined in libmessage::storage::traits"},
+        {"id": "C6", "text": "All model types moved to libmessage::storage::models"},
+        {"id": "C7", "text": "Notification bug fix: read-status update clears notification entry"}
+      ]
+    },
+    {
+      "name": "Domain Operations",
+      "items": [
+        {"id": "C8", "text": "Domain operations moved to libmessage::ops"},
+        {"id": "C9", "text": "Thin service wrapper delegates to libmessage ops"}
+      ]
+    }
+  ]
+}

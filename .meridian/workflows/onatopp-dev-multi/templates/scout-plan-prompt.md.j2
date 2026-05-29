@@ -1,0 +1,20 @@
+{% extends "base-brief.md.j2" %}
+
+{% block requirements_heading %}{% endblock %}
+
+{% block extra_documents %}
+<document index="3">
+  <source>workflow_metadata</source>
+  <document_content>
+{{ load_file('.meridian/workflows/onatopp-dev-test/workflow.json') }}
+  </document_content>
+</document>
+{% endblock %}
+
+{% block task %}
+Explore the codebase and plan the implementation for this brief. You are read-only — do not modify files.
+
+PHASE 1 — SCOUT: For each R#, find related files, conventions, type signatures, and specific file:line-range references the implementer should look at.
+
+PHASE 2 — PLAN: Using the context you just gathered, produce ordered implementation tasks. Be specific — another agent executes these without asking questions. Also produce verification_items: concrete checks to run after implementation.
+{% endblock %}

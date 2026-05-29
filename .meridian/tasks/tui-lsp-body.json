@@ -1,0 +1,37 @@
+{
+  "title": "LSP renderer — surface locations / hover / symbol results in the body",
+  "task": "LspRenderer (crates/norn-tui/src/tools/compact.rs around line 146) has NO body. lsp action=definition / references / hover / document_symbol / workspace_symbol all return rich data — locations, hover text, symbol trees — that's invisible to the user. The header `lsp: definition  src/foo.rs` tells you a query happened; the answer is silently dropped.\n\nOUTCOME — each lsp action surfaces its primary result:\n- definition / references: locations listed as `{path}:{line}:{col}` lines, each with the surrounding line text from the result (if present)\n- hover: the typedoc / signature text rendered as markdown (lsp hover is markdown by convention)\n- document_symbol / workspace_symbol: symbols as a small tree with their kind glyph\n- prepareCallHierarchy / incoming / outgoing: each call site as a `→ {symbol} ({path}:{line})` line",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Implement body_blocks for LspRenderer dispatching on args.action. Read result.locations (array of {path, line, column, content?}) for definition/references/implementation. Render each location as a Plain line: `  {dim}{path}:{line}:{col}{reset}  {content if present}`. Use OSC 8 hyperlinks when caps.osc8 is true so the path is clickable in supporting terminals — fallback to plain text otherwise.",
+      "acceptance": "Unit test: a definition action with one location {path: 'a.rs', line: 12, column: 4, content: 'fn target() {}'} produces a body containing `a.rs:12:4` and the content. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R2",
+      "description": "Implement body_blocks for action=hover. result.hover is a markdown-formatted string (per LSP spec). Pipe it through the existing MarkdownRenderer (crates/norn-tui/src/render/markdown/mod.rs) so headings / code spans / links render the same way as agent prose does. Wrap in a Plain block.",
+      "acceptance": "Unit test: a hover result with `\\n```rust\\nfn target() -> i32 {}\\n```\\nThe target function.` renders with the rust code block syntax-highlighted and the trailing description as plain text. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R3",
+      "description": "Implement body_blocks for action=document_symbol and action=workspace_symbol. result.symbols is an array of {name, kind, location}. Render as a small list with a kind glyph (fn/struct/enum/const/let — use simple ASCII or short word like `fn`/`struct` rather than ambiguous unicode). Indent by depth if symbols have a children field.",
+      "acceptance": "Unit test: a document_symbol query with two top-level functions produces a body containing both function names with `fn` prefixes. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R4",
+      "description": "Implement body_blocks for the call-hierarchy actions (incoming_calls, outgoing_calls). Each result entry is a {symbol, locations} pair. Render as `→ {symbol_name}  ({path}:{line})` per location.",
+      "acceptance": "Unit test for incoming_calls: a result with two callers produces a body containing both caller symbol names. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R5",
+      "description": "Header tweak: show the action AND a count of returned results. `lsp: references  src/foo.rs:10:5  4 results  (0.42s)` reads better than `lsp: references  src/foo.rs`. For hover, the header stays as today (no count meaningful). For symbol queries, count is symbols.len().",
+      "acceptance": "Unit tests for each action verify the result count appears in the header where applicable."
+    },
+    {
+      "id": "R6",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/compact.rs — LspRenderer at line 146.\n- crates/norn-tui/src/render/markdown/mod.rs — MarkdownRenderer for the hover case.\n- crates/norn/src/tools/lsp/tool.rs — LspTool. Action enum + result shapes.\n- crates/norn-tui/src/terminal/caps.rs — TerminalCaps. Check whether osc8 capability is detected; if not, the OSC-8 hyperlink wrapper falls back to plain text.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- The LspTool's result JSON — fields are well-named and stable.\n- MarkdownRenderer for hover content.\n- The `lsp: {action} {path}` header — extend it, don't rewrite.\n\nDESIGN TASTE: locations as plain dim path:line:col reads cleanly; clickable when the terminal supports it; otherwise still legible. Symbol kind prefixes are short ASCII so they read in any terminal. Hover uses the same markdown pipeline as agent prose for consistency.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

@@ -1,0 +1,107 @@
+name: code-review
+description: Run a code review — AI analyses scope, reviews code quality, then produces a structured summary report
+
+input:
+  brief:
+    type: text
+    required: true
+    description: What to review and any specific concerns to focus on
+  scope:
+    type: select
+    options:
+      - full
+      - changed-only
+      - security
+    description: Review scope — full codebase, changed files only, or security-focused
+
+steps:
+  - name: Analyse Scope
+    kind: action
+    target: function
+    profile: code-reviewer
+    prompt: |
+      You are performing a code review. Analyse the scope and produce a review plan.
+
+      Brief: {input.brief}
+      Scope: {input.scope}
+
+      Based on the scope:
+      - "full": Review the entire codebase structure and key files
+      - "changed-only": Focus on recently changed files (use git diff)
+      - "security": Focus on security concerns — input validation, auth, injection risks
+
+      Produce a short plan (3-5 bullet points) listing what you will review.
+      Do NOT make any code changes.
+    routes:
+      success: Review Code
+      failure: Done
+
+  - name: Review Code
+    kind: action
+    target: function
+    profile: code-reviewer
+    prompt: |
+      Execute the code review based on the plan from the previous step.
+
+      Brief: {input.brief}
+      Scope: {input.scope}
+
+      Review the code thoroughly. For each issue found, note:
+      - File and location
+      - Severity (critical, warning, info)
+      - Description and suggested fix
+
+      Do NOT make any code changes. Only output the review findings.
+    routes:
+      success: Summarise
+      failure: Summarise
+
+  - name: Summarise
+    kind: action
+    target: function
+    profile: code-reviewer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "verdict": {"type": "string", "enum": ["pass", "fail", "warn"]},
+          "critical_issues": {"type": "integer"},
+          "warnings": {"type": "integer"},
+          "summary": {"type": "string"},
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {"type": "string"},
+                "severity": {"type": "string", "enum": ["critical", "warning", "info"]},
+                "description": {"type": "string"},
+                "suggestion": {"type": "string"}
+              },
+              "required": ["file", "severity", "description"]
+            }
+          }
+        },
+        "required": ["verdict", "critical_issues", "warnings", "summary", "issues"]
+      }
+    prompt: |
+      Produce a final code review summary report as structured JSON output.
+
+      Original brief: {input.brief}
+      Scope: {input.scope}
+
+      Review findings from previous step are available in context.
+
+      Assess:
+      - "pass" if no critical issues and the code is production-ready
+      - "warn" if there are only warnings/suggestions but nothing blocking
+      - "fail" if there are critical issues that must be fixed
+
+      List every issue found with file, severity, description, and suggestion.
+      Be concise but thorough. This report should be actionable.
+    routes:
+      success: Done
+      failure: Done
+
+  - name: Done
+    kind: end

@@ -1,0 +1,6 @@
+CRATES="{{ input.crates_affected | shell_escape }}"
+if [ -z "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+  cargo check --all-targets --message-format=json -q
+else
+  cargo check --all-targets --message-format=json -q $(printf -- '-p %s ' $CRATES)
+fi

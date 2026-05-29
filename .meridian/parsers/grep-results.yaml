@@ -1,0 +1,10 @@
+name: grep-results
+format: text
+patterns:
+  match: '^(?P<file>[^:]+):(?P<line>\d+):(?P<text>.+)$'
+  count: '^(?P<total>\d+)$'
+return:
+  matches: match
+  files: match.file
+  match_count: count(match)
+  total: first(count.total)

@@ -1,0 +1,28 @@
+{% extends "base-brief.md.j2" %}
+
+{% block requirements_heading %} (with dev implementation notes){% endblock %}
+
+{% block extra_documents %}
+<document index="3">
+  <source>dev_attestation</source>
+  <document_content>
+{% if dev.attestation %}panics={{ dev.attestation.no_panics }}, unsafe={{ dev.attestation.no_unsafe }}, boundaries={{ dev.attestation.boundaries_respected }}, tests={{ dev.attestation.tests_considered }}{% endif %}
+  </document_content>
+</document>
+{% endblock %}
+
+{% block task %}
+{% if checks_harden is defined and not checks_harden.pass %}
+CHECKS FAILED — fix only the specific failures below.
+
+{{ checks_harden.failure_report }}
+{% elif not is_resume | default(false) %}
+Review and harden the implementation against the design intent.
+
+You are NOT re-implementing. Verify that what was built matches the philosophy, naming conventions, error handling patterns, and outcomes the design demands. Fix anything that drifts.
+
+---
+
+For each R#, assess: aligned/drifted/fixed. List issues found and fixes applied.
+{% endif %}
+{% endblock %}

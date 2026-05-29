@@ -1,0 +1,304 @@
+name: run-checks-and-tests
+description: Deterministic check cluster — cargo check, cargo clippy, cargo nextest, tsc, biome, file-size. Pure check runner with no auto-fix side effects. Intended to be dispatched as a sub-workflow.
+
+# `changed_files` and `crates_affected` arrive as scalar strings
+# (space-joined). They originate from the parent's `lines`-parsed
+# execute steps whose array output is flattened to a single space-
+# separated string during template expansion before being passed to
+# this sub-workflow. Shell word-splitting on `$CRATES` below turns
+# that scalar back into discrete `-p <crate>` flags — so the input
+# contract here is "one text blob, spaces are delimiters".
+input:
+  changed_files:
+    type: text
+    required: false
+    description: Space-joined list of files changed (from the parent's Detect Changes step). Used to scope File Size Check; cargo checks scope by crate.
+  crates_affected:
+    type: text
+    required: false
+    description: Space-joined list of crate names to scope cargo check/test to. Empty string runs workspace-wide.
+  member_id:
+    type: text
+    required: false
+    description: |
+      Optional Meridian member identifier. When set, the workflow DMs the
+      diagnostic report (summary + failure_report) to this member after
+      checks finish. Accepts a UUID or a member designation (the v1
+      `collective send --to` resolver handles both). Empty when run as a
+      sub-workflow from orchestrated-dev — only set this for stand-alone
+      self-service runs (`meridian workflow run --input member_id=<you>
+      run-checks-and-tests`).
+
+steps:
+  # When the caller doesn't pass `crates_affected` (or `changed_files`),
+  # the template engine leaves the literal `{raw:input.X}` reference in
+  # the script. The POSIX `${VAR#\{}` prefix-strip below detects that
+  # case (the value started with `{`) and falls back to workspace-wide
+  # scanning. Without this guard, cargo would receive a bogus
+  # `-p '{raw:input.crates_affected}'` and exit non-zero in ~100ms.
+  - name: Cargo Check
+    kind: execute
+    command: |
+      CRATES="{raw:input.crates_affected}"
+      if [ "${CRATES#\{}" != "$CRATES" ]; then
+        CRATES=""
+      fi
+      if [ -n "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+        cargo check --all-targets --message-format=json -q $(printf -- '-p %s ' $CRATES)
+      else
+        cargo check --all-targets --message-format=json -q
+      fi
+    parser: rust-diagnostics
+    routes:
+      success: Cargo Clippy
+      # On compile failure, clippy and cargo nextest both run their own
+      # check pass and would only repeat the same diagnostics. Skip
+      # them and jump to the JS-side checks (TS / Biome) and File Size
+      # Check, which don't depend on rustc.
+      failure: TS Check
+
+  - name: Cargo Clippy
+    kind: execute
+    command: |
+      CRATES="{raw:input.crates_affected}"
+      if [ "${CRATES#\{}" != "$CRATES" ]; then
+        CRATES=""
+      fi
+      if [ -n "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+        cargo clippy --all-targets --message-format=json -q $(printf -- '-p %s ' $CRATES) -- -D warnings
+      else
+        cargo clippy --all-targets --message-format=json -q -- -D warnings
+      fi
+    parser: rust-diagnostics
+    routes:
+      success: Cargo Test
+      failure: Cargo Test
+
+  # nextest's libtest-json-plus emits the same per-test event shape that
+  # the rust-test-results parser already understands (one JSON object
+  # per line on stdout; `event:"failed"` carries the panic body in
+  # `stdout`). `--no-fail-fast` so all failures land in the report
+  # rather than just whatever was running when the first one fired.
+  # Stderr is left on stderr so cargo build errors aren't mixed into
+  # the JSON stream — the runner captures both and the parser falls
+  # back to text-format on combined output if no JSON events were seen.
+  - name: Cargo Test
+    kind: execute
+    command: |
+      CRATES="{raw:input.crates_affected}"
+      if [ "${CRATES#\{}" != "$CRATES" ]; then
+        CRATES=""
+      fi
+      if [ -n "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+        NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --cargo-quiet --message-format libtest-json-plus --show-progress none --no-fail-fast $(printf -- '-p %s ' $CRATES)
+      else
+        NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --cargo-quiet --message-format libtest-json-plus --show-progress none --no-fail-fast
+      fi
+    parser: rust-test-results
+    routes:
+      success: TS Check
+      failure: TS Check
+
+  - name: TS Check
+    kind: execute
+    command: cd apps/web && npx tsc --noEmit --pretty false 2>&1; echo "exit:$?"
+    parser: exit-code
+    routes:
+      success: Biome Check
+      failure: Biome Check
+
+  - name: Biome Check
+    kind: execute
+    command: cd apps/web && npx biome check . 2>&1; echo "exit:$?"
+    parser: exit-code
+    routes:
+      success: File Size Check
+      failure: File Size Check
+
+  # Source-language allow-list filters tokei output to languages we
+  # actually author. Excludes vendored tree-sitter grammars (categorised
+  # as "C") and generated asset JSON. Honours `input.changed_files`
+  # when set (suffix-match scope), workspace-wide fallback when empty.
+  - name: File Size Check
+    kind: execute
+    command: |
+      CHANGED="{raw:input.changed_files}"
+      if [ "${CHANGED#\{}" != "$CHANGED" ]; then
+        CHANGED=""
+      fi
+      if [ -z "$(echo "$CHANGED" | tr -d '[:space:]')" ]; then
+        jq -nc --argjson limit 500 \
+          '{violations: [], oversized: 0, limit: $limit, report: ""}'
+        exit 0
+      fi
+      LANGS='["Rust","TypeScript","TSX","JavaScript","JSX","Python"]'
+      RAW=$(tokei --output json)
+      VIOLATIONS=$(echo "$RAW" | jq -c \
+        --argjson limit 500 \
+        --argjson langs "$LANGS" \
+        --arg changed "$CHANGED" '
+        ($changed | split(" ") | map(select(length > 0))) as $changed_list |
+        [ to_entries[]
+          | select(.key as $k | $langs | index($k))
+          | .value.reports[]?
+          | select(.stats.code > $limit)
+          | select(.name as $f | $changed_list | any(. as $c | $f | endswith($c)))
+          | {file: .name, loc: .stats.code}
+        ] | sort_by(-.loc)')
+      OVERSIZED=$(echo "$VIOLATIONS" | jq 'length' 2>/dev/null || echo 0)
+      OVERSIZED=${OVERSIZED:-0}
+      REPORT=$(echo "$VIOLATIONS" | jq -r 'map("- " + .file + " (" + (.loc | tostring) + " LoC)") | join("\n")' 2>/dev/null || echo '')
+      if [ "$OVERSIZED" = "0" ]; then
+        jq -nc --argjson limit 500 \
+          '{violations: [], oversized: 0, limit: $limit, report: ""}'
+        exit 0
+      else
+        jq -nc \
+          --argjson v "$VIOLATIONS" \
+          --argjson o "$OVERSIZED" \
+          --argjson limit 500 \
+          --arg r "$REPORT" \
+          '{violations: $v, oversized: $o, limit: $limit, report: $r}'
+        exit 1
+      fi
+    parser: json
+    routes:
+      success: Render Report
+      failure: Render Report
+
+  # The whole point of structured parsers is that workflow authors
+  # don't need bash + jq to assemble a report. The template engine
+  # provides `{?Step.field > 0}…{/}` conditionals and `{raw:Step.field}`
+  # substitution; each parser already emits a `report` string built
+  # from its own rendered diagnostic data. Render Report uses those
+  # primitives directly to compose the summary line and the failure
+  # report markdown — the only jq is the final two-key envelope so
+  # the strings can be exposed as workflow outputs via `parser: json`.
+  #
+  # Two summary forms (mutually exclusive):
+  #   - Cargo Check passed → full counts across all categories
+  #   - Cargo Check failed → abbreviated form ("clippy / test skipped")
+  #     because clippy / test were routed past on compile failure
+  # Render Report builds two outputs:
+  #   1. /tmp/run-checks-report.md — a plain-text report file, written via
+  #      a quoted heredoc so cargo / clippy / nextest content (which can
+  #      contain backticks, `$(`, and unbalanced parens) isn't shell-
+  #      interpreted. This file is what the Notify Member step DMs.
+  #   2. The JSON envelope on stdout — Overall Verdict and the workflow's
+  #      `summary` / `failure_report` outputs read from it.
+  #
+  # The heredoc-to-file pattern is lifted directly from
+  # `test-run-checks-and-tests.yaml`'s Render Report (which has been
+  # exercised end-to-end). Keeping a single source of truth for the
+  # report content prevents the body and the DM drifting.
+  - name: Render Report
+    kind: execute
+    command: |
+      cat > /tmp/run-checks-report.md <<'__REPORT__'
+      {?Cargo Check.error_count > 0}### Cargo Check ({raw:Cargo Check.error_count} error(s), {raw:Cargo Check.warning_count} warning(s))
+
+      {raw:Cargo Check.report}
+
+      {/}{?Cargo Clippy.error_count > 0}### Cargo Clippy --all-targets ({raw:Cargo Clippy.error_count} error(s), {raw:Cargo Clippy.warning_count} warning(s))
+
+      {raw:Cargo Clippy.report}
+
+      {/}{?Cargo Test.failed > 0}### Failing tests ({raw:Cargo Test.failed})
+
+      {raw:Cargo Test.report}
+
+      {/}{?File Size Check.data.oversized > 0}### Files exceeding 500 LoC ({raw:File Size Check.data.oversized})
+
+      Split each into smaller modules.
+
+      {raw:File Size Check.data.report}
+
+      {/}__REPORT__
+
+      SUMMARY="{?Cargo Check.error_count == 0}{raw:Cargo Check.error_count} check error(s), {raw:Cargo Check.warning_count} check warning(s), {raw:Cargo Clippy.error_count} clippy error(s), {raw:Cargo Clippy.warning_count} clippy warning(s), {raw:Cargo Test.failed} failing test(s), {raw:File Size Check.data.oversized} oversized file(s){/}{?Cargo Check.error_count > 0}Compile failed — {raw:Cargo Check.error_count} cargo check error(s), {raw:Cargo Check.warning_count} cargo check warning(s); clippy / test skipped (would only repeat the same compile errors). {raw:File Size Check.data.oversized} oversized file(s).{/}"
+
+      REPORT=$(cat /tmp/run-checks-report.md)
+      jq -nc \
+        --arg summary "$SUMMARY" \
+        --arg report "$REPORT" \
+        '{summary: $summary, failure_report: $report}'
+    parser: json
+    routes:
+      success: Notify Member
+      failure: Notify Member
+
+  # Self-service notification. When `input.member_id` is set, DM the
+  # report file (`/tmp/run-checks-report.md`) to that member. Skipped
+  # when the input is absent — the same POSIX `${VAR#\{}` guard the
+  # cargo steps use for unresolved templates. Designed for:
+  #     `meridian workflow run --input member_id=<id-or-name>
+  #      run-checks-and-tests`
+  # so agents (Waffles, Trevor, Marge, etc.) can run the check cluster
+  # ad-hoc and have the report dropped in their inbox. Reads the file
+  # via `$(cat ...)` so its content is treated as a literal string by
+  # bash — no shell-meta interpretation of cargo error messages.
+  # Notification failures are non-blocking: routes both success and
+  # failure to Overall Verdict so a missed DM never gates the verdict.
+  - name: Notify Member
+    kind: execute
+    command: |
+      MEMBER="{raw:input.member_id}"
+      if [ "${MEMBER#\{}" != "$MEMBER" ] || [ -z "$(echo "$MEMBER" | tr -d '[:space:]')" ]; then
+        echo "no member_id; skipping notification"
+      else
+        BRANCH=$(git branch --show-current 2>/dev/null || echo "(detached)")
+        if [ -f /tmp/run-checks-report.md ]; then
+          BODY=$(cat /tmp/run-checks-report.md)
+        else
+          BODY="(no report file at /tmp/run-checks-report.md)"
+        fi
+        HEADER="[run-checks-and-tests on \`$BRANCH\`]"
+        collective send --as "Meridian" --to "$MEMBER" --message "$HEADER
+
+      $BODY" || true
+      fi
+    parser: exit-code
+    routes:
+      success: Overall Verdict
+      failure: Overall Verdict
+
+  # Overall Verdict is the terminal step intentionally: the engine uses
+  # the last step's outcome to set OrchestrationStatus (engine.rs:
+  # 286-316), which the parent DispatchExecutor maps to success/failure
+  # on the dispatch step. A trailing `end` step would force-pass the
+  # child even when a check failed, so Overall Verdict sits in the
+  # terminal slot to propagate the real verdict upward.
+  #
+  # Execute-step parsers emit `success: bool` (not `pass`), so the
+  # criteria read `.success`. The workflow-level output below surfaces
+  # this as `pass` to keep the caller-facing name stable per brief 176.
+  - name: Overall Verdict
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Cargo Check.success} == true
+      {Cargo Clippy.success} == true
+      {Cargo Test.success} == true
+      {TS Check.success} == true
+      {Biome Check.success} == true
+      {File Size Check.success} == true
+
+outputs:
+  pass:
+    type: boolean
+    from: "{Overall Verdict.passed}"
+  error_count:
+    type: integer
+    from: "{Cargo Check.error_count}"
+  warning_count:
+    type: integer
+    from: "{Cargo Check.warning_count}"
+  failing_tests:
+    type: array
+    from: "{Cargo Test.failure_names}"
+  summary:
+    type: string
+    from: "{Render Report.data.summary}"
+  failure_report:
+    type: string
+    from: "{Render Report.data.failure_report}"

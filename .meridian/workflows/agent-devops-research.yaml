@@ -1,0 +1,291 @@
+name: agent-devops-research
+description: |
+  Iterative agent-DevOps research workflow. A single Opus overseer runs as
+  a long-lived Claude session that the workflow resumes across many visits.
+  On each visit the overseer emits a structured JSON response naming the
+  current phase (scouting / writing / finalizing / done) and the next
+  sub-agent + assignment. The workflow dispatches one fresh sub-agent per
+  visit (Haiku scout or Opus writer) and routes the result back to the
+  overseer. No parallel fan-out — this is the sequential phase-machine
+  pattern v2 supports today.
+
+  Sub-agents live as Claude Code agent files (`.claude/agents/agent-devops-*`)
+  and are invoked via the `--agent` flag. The overseer's system prompt
+  comes from `.claude/agents/agent-devops-overseer.md` (loaded once on the
+  first visit via `--append-system-prompt`).
+
+input:
+  problem:
+    type: text
+    required: true
+    description: |
+      Research problem statement. Goes into the overseer's first-turn
+      kickoff prompt.
+
+  source_paths:
+    type: text
+    required: true
+    description: |
+      Newline- or space-joined absolute paths to the source repos / dirs
+      the scouts should investigate.
+
+  output_dir:
+    type: text
+    required: true
+    description: |
+      Absolute path where writers and the finalizing overseer drop their
+      artefacts. Must exist before the workflow runs.
+
+  current_profiles_dir:
+    type: text
+    required: false
+    description: |
+      Absolute path to the current `.meridian/profiles/` directory.
+      Read-only context for the overseer and sub-agents so they understand
+      the house style.
+
+  current_workflows_dir:
+    type: text
+    required: false
+    description: |
+      Absolute path to the current `.meridian/workflows/` directory.
+      Read-only context.
+
+  sample_brief_dir:
+    type: text
+    required: false
+    description: |
+      Absolute path to one sample yggdrasil cluster's design folder
+      (DESIGN.md + CHECKLIST.md + USER-STORIES.md plus a sample brief).
+      Helps sub-agents understand the brief / checklist / user-story
+      discipline. One canonical example, not a whole corpus.
+
+  overseer_session_id:
+    type: text
+    required: false
+    description: |
+      Resume an in-flight overseer session. When supplied, Mint Session
+      passes through the existing UUID and the first Overseer visit
+      uses `--resume` instead of `--session-id`. Empty mints a fresh
+      UUID.
+
+steps:
+  # ─── Mint the overseer session UUID ─────────────────────────────────────
+  # The same UUID threads through every Overseer visit so the long-running
+  # session remains addressable via `--resume`. When the operator supplies
+  # `overseer_session_id`, pass it through; otherwise mint a v4 UUID and
+  # surface it on the workflow's outputs so they can resume later.
+  - name: Mint Session
+    kind: execute
+    command: |
+      SID="{raw:input.overseer_session_id}"
+      # POSIX unresolved-template guard: when the operator doesn't supply
+      # the input, the engine leaves `{raw:input.overseer_session_id}` as
+      # a literal in the script. Detect via the leading `{` and treat as
+      # empty.
+      if [ "${SID#\{}" != "$SID" ] || [ -z "$(echo "$SID" | tr -d '[:space:]')" ]; then
+        SID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+        FIRST_VISIT=true
+      else
+        FIRST_VISIT=false
+      fi
+      jq -nc --arg sid "$SID" --argjson first "$FIRST_VISIT" \
+        '{session_id: $sid, first_visit: $first}'
+    parser: json
+    routes:
+      success: Overseer
+      failure: End
+
+  # ─── Overseer (loop entry) ──────────────────────────────────────────────
+  # First visit: `claude --agent agent-devops-overseer --session-id <SID>
+  # --dangerously-skip-permissions -p <prompt>`. The agent file's
+  # frontmatter and body act as the system prompt; --session-id mints
+  # the session at our chosen UUID so we can resume by it later.
+  # Subsequent visits: `claude --resume <SID> --dangerously-skip-permissions
+  # -p <prompt>`. The system prompt is baked into the session from the
+  # first call, so no --agent flag and no --append-system-prompt.
+  #
+  # Marker file at /tmp/agent-devops-<SID>.started distinguishes first
+  # visit from subsequent. Per-session UUID scoping avoids collisions
+  # between concurrent workflow runs.
+  #
+  # The overseer's output is parsed as JSON; downstream evaluate steps
+  # branch off `{Overseer.phase}`. The overseer's agent file instructs
+  # it to emit only JSON matching the response schema.
+  - name: Overseer
+    kind: execute
+    command: |
+      SID="{raw:Mint Session.data.session_id}"
+      MARKER="/tmp/agent-devops-${SID}.started"
+
+      if [ -f "$MARKER" ]; then
+        # Subsequent visit — feed the latest sub-agent report and ask for
+        # the next decision. The overseer's session memory carries the
+        # plan + all prior sub-agent reports forward.
+        cat > "/tmp/overseer-prompt-${SID}.txt" <<__PROMPT__
+      Latest sub-agent report:
+
+      {raw:Deploy Subagent.data.report}
+
+      Decide the next action and emit your structured JSON response.
+      __PROMPT__
+        claude --resume "$SID" --dangerously-skip-permissions --print \
+          < "/tmp/overseer-prompt-${SID}.txt"
+        rm -f "/tmp/overseer-prompt-${SID}.txt"
+      else
+        # First visit — mint marker, kick off the session via the agent
+        # file. The agent's frontmatter + body establish the phase
+        # machine, the JSON response schema, and the focus areas.
+        touch "$MARKER"
+
+        cat > "/tmp/overseer-prompt-${SID}.txt" <<__PROMPT__
+      Problem:
+
+      {raw:input.problem}
+
+      Source paths to investigate (one per line):
+
+      {raw:input.source_paths}
+
+      Current profiles dir (read-only context): {raw:input.current_profiles_dir}
+      Current workflows dir (read-only context): {raw:input.current_workflows_dir}
+      Sample brief dir (read-only context): {raw:input.sample_brief_dir}
+
+      Output dir for produced artefacts: {raw:input.output_dir}
+
+      Make the overall research plan and emit your structured JSON
+      response. Set phase to "scouting" and name the first scout's
+      assignment. Mention the rest of your scout deployment plan in
+      progress_notes.
+      __PROMPT__
+        claude --agent agent-devops-overseer \
+          --session-id "$SID" \
+          --dangerously-skip-permissions \
+          --print \
+          < "/tmp/overseer-prompt-${SID}.txt"
+        rm -f "/tmp/overseer-prompt-${SID}.txt"
+      fi
+    parser: json
+    routes:
+      success: Phase Done?
+      failure: End
+
+  # ─── Phase router (chained binary checks) ───────────────────────────────
+  # v2 evaluate steps are binary (success / failure routes), so we cascade
+  # one check per phase value in priority order: done → finalizing →
+  # scouting → writing. An overseer response with an unrecognised phase
+  # value falls through to End.
+  - name: Phase Done?
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Overseer.phase} == "done"
+    routes:
+      success: End
+      failure: Phase Finalizing?
+
+  - name: Phase Finalizing?
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Overseer.phase} == "finalizing"
+    routes:
+      success: Final Polish
+      failure: Phase Scouting?
+
+  - name: Phase Scouting?
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Overseer.phase} == "scouting"
+    routes:
+      success: Deploy Subagent
+      failure: Phase Writing?
+
+  - name: Phase Writing?
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Overseer.phase} == "writing"
+    routes:
+      success: Deploy Subagent
+      failure: End
+
+  # ─── Deploy a fresh sub-agent ───────────────────────────────────────────
+  # Fresh Claude session — no `--resume`, no shared session id with the
+  # overseer. The overseer's `next_agent` names the .claude/agents/ file;
+  # `next_assignment` becomes the prompt. The captured stdout is wrapped
+  # in a JSON envelope so the next Overseer visit can template-substitute
+  # `{raw:Deploy Subagent.data.report}`.
+  - name: Deploy Subagent
+    kind: execute
+    command: |
+      AGENT="{raw:Overseer.next_agent}"
+      cat > "/tmp/subagent-prompt-$$.txt" <<'__ASSIGN__'
+      {raw:Overseer.next_assignment}
+      __ASSIGN__
+      REPORT=$(claude --agent "$AGENT" \
+        --dangerously-skip-permissions \
+        --print \
+        < "/tmp/subagent-prompt-$$.txt" 2>&1)
+      EXIT=$?
+      rm -f "/tmp/subagent-prompt-$$.txt"
+      jq -nc --arg report "$REPORT" --argjson exit "$EXIT" \
+        '{report: $report, exit_code: $exit}'
+    parser: json
+    routes:
+      success: Overseer
+      failure: End
+
+  # ─── Final polish ───────────────────────────────────────────────────────
+  # Last visit to the overseer session. The overseer was already told
+  # by its system prompt that on `finalizing` it produces the final
+  # artefacts via Write tool calls in the output dir, then on its next
+  # turn flips phase to `done`. Final Polish gives it that next turn —
+  # we route back to the Overseer step so the same loop machinery
+  # handles it.
+  #
+  # `parser: exit-code` here because we don't read structured output
+  # from this step — the overseer's final report goes to disk in
+  # output_dir, not into a workflow output.
+  - name: Final Polish
+    kind: execute
+    command: |
+      SID="{raw:Mint Session.data.session_id}"
+      OUTPUT_DIR="{raw:input.output_dir}"
+      cat > "/tmp/finalize-prompt-${SID}.txt" <<__PROMPT__
+      Finalizing phase. Write the polished artefacts (skills, sub-agent
+      files, design notes, full composite report) into the output dir at
+      $OUTPUT_DIR. Use Write tool calls. When you're done, emit your
+      structured JSON response with phase="done" and final_report_path
+      pointing at the composite report.
+      __PROMPT__
+      claude --resume "$SID" --dangerously-skip-permissions --print \
+        < "/tmp/finalize-prompt-${SID}.txt"
+      rm -f "/tmp/finalize-prompt-${SID}.txt"
+    parser: json
+    routes:
+      success: Phase Done?
+      failure: End
+
+  - name: End
+    kind: end
+
+# `overseer_session_id` is the long-lived overseer's session UUID — pass
+# it back via the `overseer_session_id` input to resume an interrupted run.
+outputs:
+  overseer_session_id:
+    type: string
+    from: "{Mint Session.data.session_id}"
+
+  final_phase:
+    type: string
+    from: "{Overseer.phase}"
+
+  final_progress_notes:
+    type: string
+    from: "{Overseer.progress_notes}"
+
+  final_report_path:
+    type: string
+    from: "{Overseer.final_report_path}"

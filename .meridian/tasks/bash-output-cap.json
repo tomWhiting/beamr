@@ -1,0 +1,25 @@
+{
+  "title": "Cap bash tool output to prevent context overflow",
+  "task": "The bash tool in crates/norn/src/tools/bash.rs returns stdout and stderr directly in the JSON tool output with no size limit. When a command produces large output, this overwhelms the model's context window. Add a cap: if stdout or stderr exceeds 10,000 characters, write the full output to a temp file and return the file path instead of the content.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Cap stdout at 10,000 characters",
+      "description": "After collecting stdout from the child process (line 180-187), check if the string length exceeds 10,000 characters. If it does: write the full stdout to a temp file at .norn/bash-output/<tool_call_id>-stdout.txt (create the directory if needed), and replace the stdout value in the JSON output with an object: {\"truncated\": true, \"length\": <original length>, \"saved_to\": \"<path>\", \"head\": \"<first 200 chars>\", \"tail\": \"<last 200 chars>\"}. If it doesn't exceed the cap, return stdout as-is (existing behavior unchanged).",
+      "acceptance": "A bash command producing >10,000 chars of stdout results in a saved file + truncated object. A bash command producing <=10,000 chars returns stdout as a plain string."
+    },
+    {
+      "id": "R2",
+      "title": "Cap stderr at 10,000 characters with the same pattern",
+      "description": "Apply the same cap to stderr. If stderr exceeds 10,000 characters, save to .norn/bash-output/<tool_call_id>-stderr.txt and return the truncated object. Use the same format as R1.",
+      "acceptance": "Large stderr is saved to file with truncated object. Small stderr returned as-is."
+    },
+    {
+      "id": "R3",
+      "title": "Extract the cap logic into a helper function",
+      "description": "Create a helper function that both R1 and R2 use: fn cap_output(content: &str, tool_call_id: &str, stream_name: &str) -> serde_json::Value. This function checks the length, writes to file if needed, and returns either the raw string as a Value or the truncated object. The tool_call_id comes from envelope.tool_call_id. The stream_name is 'stdout' or 'stderr'.",
+      "acceptance": "Single helper function used by both stdout and stderr capping. No duplicated logic."
+    }
+  ],
+  "context": "The bash tool is at crates/norn/src/tools/bash.rs. The execute method collects stdout (line 180-187) and stderr (line 188-195) then returns them directly in the JSON at lines 209-222. The tool_call_id is available from envelope.tool_call_id (the envelope parameter at line 110). The .norn/ directory is already gitignored. This is critical for the quick-scout workflow where codex-spark (128K context) ran a bash command that overwhelmed its context window immediately."
+}

@@ -1,0 +1,52 @@
+REPORT=""
+{% if cargo_check is defined and cargo_check.error_count is defined and cargo_check.error_count > 0 %}
+REPORT="${REPORT}### Cargo Check ({{ cargo_check.error_count | shell_escape }} error(s), {{ cargo_check.warning_count | shell_escape }} warning(s))
+
+{{ cargo_check.report | shell_escape }}
+
+"
+{% endif %}
+{% if cargo_clippy is defined and cargo_clippy.data is defined and cargo_clippy.data.blocking_count > 0 %}
+REPORT="${REPORT}### Cargo Clippy — BLOCKING ({{ cargo_clippy.data.blocking_count | shell_escape }} issue(s))
+
+These must be fixed before proceeding:
+
+{{ cargo_clippy.data.blocking_report | shell_escape }}
+
+"
+{% endif %}
+{% if cargo_clippy is defined and cargo_clippy.data is defined and cargo_clippy.data.deferred_count > 0 %}
+REPORT="${REPORT}### Cargo Clippy — DEFERRED ({{ cargo_clippy.data.deferred_count | shell_escape }} issue(s))
+
+Style/perf issues — passed to hardener:
+
+{{ cargo_clippy.data.deferred_report | shell_escape }}
+
+"
+{% endif %}
+{% if cargo_test is defined and cargo_test.failed is defined and cargo_test.failed > 0 %}
+REPORT="${REPORT}### Failing tests ({{ cargo_test.failed | shell_escape }})
+
+{{ cargo_test.report | shell_escape }}
+
+"
+{% endif %}
+{% if file_size_check is defined and file_size_check.data is defined and file_size_check.data.oversized > 0 %}
+REPORT="${REPORT}### Files exceeding 500 LoC ({{ file_size_check.data.oversized | shell_escape }})
+
+Split each into smaller modules.
+
+{{ file_size_check.data.report | shell_escape }}
+
+"
+{% endif %}
+
+{% if cargo_check is defined and cargo_check.error_count is defined and cargo_check.error_count > 0 %}
+SUMMARY="Compile failed — {{ cargo_check.error_count | shell_escape }} cargo check error(s); clippy / test skipped. {% if file_size_check is defined and file_size_check.data is defined %}{{ file_size_check.data.oversized | shell_escape }}{% else %}0{% endif %} oversized file(s)."
+{% else %}
+SUMMARY="{% if cargo_check is defined and cargo_check.error_count is defined %}{{ cargo_check.error_count | shell_escape }}{% else %}0{% endif %} check error(s), {% if cargo_clippy is defined and cargo_clippy.data is defined %}{{ cargo_clippy.data.blocking_count | shell_escape }}{% else %}0{% endif %} blocking clippy, {% if cargo_clippy is defined and cargo_clippy.data is defined %}{{ cargo_clippy.data.deferred_count | shell_escape }}{% else %}0{% endif %} deferred clippy, {% if cargo_test is defined and cargo_test.failed is defined %}{{ cargo_test.failed | shell_escape }}{% else %}0{% endif %} failing test(s), {% if file_size_check is defined and file_size_check.data is defined %}{{ file_size_check.data.oversized | shell_escape }}{% else %}0{% endif %} oversized file(s)"
+{% endif %}
+
+DEFERRED="{% if cargo_clippy is defined and cargo_clippy.data is defined %}{{ cargo_clippy.data.deferred_report | shell_escape }}{% endif %}"
+jq -nc --arg summary "$SUMMARY" --arg report "$REPORT" --arg deferred "$DEFERRED" \
+  '{summary: $summary, failure_report: $report, deferred_clippy_report: $deferred}'

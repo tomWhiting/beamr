@@ -1,0 +1,92 @@
+name: stack-land
+description: |
+  Push + GitHub-merge + local-reconcile one branch. Dispatched by
+  the pipeline coordinator at the Reviewed stage so a clean branch
+  advances to Merged without operator intervention. One-shot — no
+  polling, no retry. On failure the workflow fails and the
+  coordinator leaves the branch at Reviewed for operator hands.
+
+input:
+  branch_name:
+    type: text
+    required: true
+    description: Branch to land.
+  workspace_id:
+    type: text
+    required: true
+    description: Workspace UUID (workspace-scoped CLI calls).
+  strategy:
+    type: text
+    required: false
+    description: "Merge strategy: merge | squash | rebase. Default squash."
+
+steps:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SUBMIT — push branch + ensure PR exists. Idempotent on re-run.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Submit Stack
+    kind: execute
+    command: >-
+      meridian stack submit
+      --top {input.branch_name}
+      --workspace {input.workspace_id}
+      2>&1
+    parser: exit-code
+    routes:
+      success: Land
+      failure: Submit Verdict
+
+  # Some re-dispatches hit an already-submitted stack — stack submit
+  # is meant to be idempotent, but if it isn't we still want to try
+  # the land. The Submit Verdict step below decides whether the
+  # submit failure was fatal.
+  - name: Submit Verdict
+    kind: evaluate
+    criteria: |
+      "{Submit Stack.exit_code}" == "0"
+    routes:
+      success: Land
+      failure: Done
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LAND — GitHub-merge PR + local reconcile. Holds the workspace
+  # mutation lock server-side.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Land
+    kind: execute
+    command: >-
+      STRATEGY="{?input.strategy}{input.strategy}{/}";
+      STRATEGY="${STRATEGY:-squash}";
+      meridian stack land
+      --branch {input.branch_name}
+      --workspace {input.workspace_id}
+      --strategy "$STRATEGY"
+      2>&1
+    parser: exit-code
+    routes:
+      success: Land Verdict
+      failure: Land Verdict
+
+  - name: Land Verdict
+    kind: evaluate
+    criteria: |
+      "{Land.exit_code}" == "0"
+    routes:
+      success: Done
+      failure: Done
+
+  - name: Done
+    kind: end
+
+outputs:
+  landed:
+    type: boolean
+    from: "{Land Verdict.success}"
+  submit_exit_code:
+    type: integer
+    from: "{Submit Stack.exit_code}"
+  land_exit_code:
+    type: integer
+    from: "{Land.exit_code}"

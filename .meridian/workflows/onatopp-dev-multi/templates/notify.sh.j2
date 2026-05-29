@@ -1,0 +1,15 @@
+MEMBER="{{ input.notify | shell_escape }}"
+if [ -n "$MEMBER" ]; then
+  BRIEF_ID="{{ input.brief.id | shell_escape }}"
+  MSG_FILE=$(mktemp)
+  cat > "$MSG_FILE" <<'__YGG_NOTIFY_MSG__'
+onatopp-dev-test complete: {{ input.brief.id }} — {{ input.brief.title }}
+{% if dev.summary %}Dev: {{ dev.summary }}{% endif %}
+{% if harden.summary %}Harden: {{ harden.summary }}{% endif %}
+{% if review.summary %}Review: {{ review.summary }}{% endif %}
+__YGG_NOTIFY_MSG__
+  MSG=$(cat "$MSG_FILE")
+  rm -f "$MSG_FILE"
+  collective send --as "Meridian" --to "$MEMBER" --subject "workflow complete: $BRIEF_ID" --message "$MSG" || true
+fi
+echo "Done"

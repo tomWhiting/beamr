@@ -1,0 +1,11 @@
+name: tsc
+format: text
+patterns:
+  diagnostic: '^(?P<file>.+)\((?P<line>\d+),(?P<column>\d+)\): (?P<severity>error|warning) (?P<code>TS\d+): (?P<message>.+)$'
+  summary: '^Found (?P<count>\d+) error'
+return:
+  diagnostics: diagnostic
+  errors: diagnostic where severity == "error"
+  warnings: diagnostic where severity == "warning"
+  error_count: count(diagnostic where severity == "error")
+  warning_count: count(diagnostic where severity == "warning")

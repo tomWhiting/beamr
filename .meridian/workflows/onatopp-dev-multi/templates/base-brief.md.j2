@@ -1,0 +1,74 @@
+<documents>
+{% if input.design_content %}
+<document index="1">
+  <source>design_document</source>
+  <document_content>
+{{ input.design_content }}
+  </document_content>
+</document>
+{% endif %}
+<document index="2">
+  <source>brief</source>
+  <document_content>
+# {{ input.brief.id }}: {{ input.brief.title }}
+
+## Purpose
+
+{{ input.brief.purpose }}
+
+## Task
+
+{{ input.brief.task }}
+
+## Requirements{% block requirements_heading %}{% endblock %}
+
+{% for r in input.brief.requirements %}
+<requirement id="{{ r.id }}">
+### {{ r.id }}: {{ r.title }}
+
+{{ r.spec }}
+
+{% if r.related_files %}**Related files:** {{ r.related_files | join(", ") }}{% endif %}
+{% if r.context %}**Context:** {{ r.context | join(", ") }}{% endif %}
+{% if r.references %}**References:** {{ r.references | join(", ") }}{% endif %}
+{% if r.how_satisfied %}**Dev implementation:** {{ r.how_satisfied }}{% endif %}
+{% if r.files_changed %}**Files changed:**
+{% for f in r.files_changed %}
+- {{ f.path }} ({{ f.change }}): {{ f.note }}
+{% endfor %}{% endif %}
+{% if r.alignment %}**Harden verdict:** {{ r.alignment }}{% endif %}
+{% if r.issues_found %}**Harden issues:** {{ r.issues_found | join(", ") }}{% endif %}
+{% if r.fixes_applied %}**Harden fixes:** {{ r.fixes_applied | join(", ") }}{% endif %}
+{% if r.deviation %}**Deviation:** {{ r.deviation }}{% endif %}
+
+{% block requirement_extras %}{% endblock %}
+
+Acceptance:
+{% for a in r.acceptance %}
+- {{ a }}
+{% endfor %}
+
+{% if r.checklist %}Checklist items: {{ r.checklist | join(", ") }}{% endif %}
+{% if r.stories %}User stories: {{ r.stories | join(", ") }}{% endif %}
+{% if r.checklist_status %}**Dev checklist status:**
+{% for c in r.checklist_status %}
+- {{ c.id }}: {{ c.note }} (done: {{ c.done }})
+{% endfor %}{% endif %}
+{% if r.stories_status %}**Dev stories status:**
+{% for s in r.stories_status %}
+- {{ s.id }}: {{ s.note }} (satisfied: {{ s.satisfied }})
+{% endfor %}{% endif %}
+</requirement>
+{% endfor %}
+
+## Boundaries
+
+{% for b in input.brief.boundaries %}
+- {{ b }}
+{% endfor %}
+  </document_content>
+</document>
+{% block extra_documents %}{% endblock %}
+</documents>
+
+{% block task %}{% endblock %}

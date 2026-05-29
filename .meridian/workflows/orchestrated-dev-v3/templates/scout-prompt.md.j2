@@ -1,0 +1,10 @@
+{% extends "base-brief.md.j2" %}
+
+{% block task %}
+Gather codebase context for each requirement in the brief. You are read-only.
+
+For each R#, find:
+- **Related files**: existing files relevant to this requirement
+- **Context**: conventions, type signatures, module patterns the implementer should follow
+- **References**: specific file:line-range to look at during implementation
+{% endblock %}

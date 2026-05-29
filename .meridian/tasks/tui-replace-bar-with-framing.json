@@ -1,0 +1,27 @@
+{
+  "title": "Replace per-line │ bar with two-space indent + framing (copy-paste friendly)",
+  "task": "Every tool body line today is prefixed with a dim `│ ` bar so it visually separates from agent prose. The bar reads well in the terminal but is HOSTILE to copy-paste: select a diff and paste it, you get `│ - removed line` instead of `- removed line`. Codex avoids this by indenting body content 2 spaces with no per-line decoration, framing the whole block with a single opening glyph next to the tool header and an optional trailing soft rule.\n\nOUTCOME — body lines have NO per-line bar. They're indented 2 spaces. The block-opening signal is the tool header itself (`│ {tool_name}  ...` on its own line — that ONE bar is the marker). Copying body lines gives you the clean source content with just leading spaces, ready to paste into a file / message / docs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Modify write_tool_result in crates/norn-tui/src/app/dispatch.rs (around line 587) to indent body lines with two spaces instead of prefixing with `\\x1b[2m│\\x1b[22m `. The HEADER line keeps its existing `\\x1b[2m│ {tool_name}\\x1b[22m  {header}` format — that's the single visual marker of 'this is a tool call.' Body lines: `  {line}\\n` (just two spaces, no SGR).",
+      "acceptance": "Unit test: a synthesised tool result with body=`line1\\nline2` produces an output where each body line begins with exactly two spaces and contains no `│` character. The header line still begins with `│ `."
+    },
+    {
+      "id": "R2",
+      "description": "Update the fallback path for unknown tools (around line 547 in dispatch.rs) to match. Currently: `\\x1b[2m│\\x1b[22m {tool_name}: {json}`. Change to: `\\x1b[2m│\\x1b[22m {tool_name}\\x1b[22m  {description-or-fallback}\\n  {json_pretty_printed}\\n` — header line, then indented JSON pretty-printed (since we don't have a renderer to format it nicely).",
+      "acceptance": "Unit test: a tool result for an unknown tool produces a header line with `│ ` and a body line beginning with two spaces."
+    },
+    {
+      "id": "R3",
+      "description": "All existing tests that asserted on body line prefixes need updating. Grep for `\\x1b[2m│\\x1b[22m ` and `│ ` in test files under crates/norn-tui/src/app/. Update any assertions that expected the bar on body lines. The header still has the bar — keep those assertions.",
+      "acceptance": "All updated tests pass. cargo test -p norn-tui green."
+    },
+    {
+      "id": "R4",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/app/dispatch.rs — write_tool_result (the per-line `│ ` loop at line 587). The unknown-tool fallback at line 547.\n- Test sites: app/dispatch.rs has many tests under #[cfg(test)] mod tests around line 650+. Check schema_render.rs too — though it's a different render path used for replay.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- The tool header line — keep the `│ ` prefix on the header only (it remains the single visual marker that 'this is a tool call').\n- The sync_with_guard wrapping for atomic paints.\n- The newline / scroll-region handling.\n\nDESIGN TASTE: the bar on the header tells you 'tool call starts here'; the indent on body lines tells you 'this is the tool's output' without intruding into the content. Copy-pasting the body now produces clean text. The header carries the framing semantics; the body carries the content.\n\nNOTE: this is a visual change that affects EVERY tool body. Cross-check the schema_render.rs (the replay path) to confirm it doesn't need a matching change for consistency between live and replayed sessions.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

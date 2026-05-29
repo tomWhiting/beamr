@@ -1,0 +1,27 @@
+{
+  "title": "Write tool body — show written file content as syntax-highlighted code block",
+  "task": "WriteRenderer today has NO body — even with verbosity Expanded, a `+ src/foo.rs  42 lines  ast: ok` header is the entire output. Tom wants to see what was actually written. Wire body_blocks to return ContentBlock::Code with the written content and the file path for syntect highlighting.\n\nOUTCOME — after a successful write, the user sees the header and, when verbosity is Expanded, the full written content syntax-highlighted in the scroll region (no line numbers — line numbers add visual noise for new files; reading writes is rare anyway). For overwrites where the result includes both bytes_written and previous content, a future task can swap this to a diff; for now, show the content.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Implement body_blocks for WriteRenderer (crates/norn-tui/src/tools/compact.rs around line 50). Return Some(vec![ContentBlock::Code { path, content, line_numbered: false }]) when the result has both a path and content. When either is missing or content is empty, return None. The content comes from args (the model's `content` field is the original write input — the tool result echoes path + bytes_written + line_count but not the content itself, so args.content is the source).",
+      "acceptance": "Unit test: a write call with args={path: 'src/a.rs', content: 'fn main() {}\\n'} produces body_blocks with a Code block carrying the content. Content rendered via render_blocks contains a `fn` token and an SGR escape (syntect output). Empty content returns None."
+    },
+    {
+      "id": "R2",
+      "description": "Keep body() returning None — body_blocks takes precedence in write_tool_result (it checks body_blocks first and only falls back to body when None). No reason to maintain two parallel implementations.",
+      "acceptance": "WriteRenderer::body still returns None. The Plain-fallback in write_tool_result is never reached for writes when body_blocks returns Some."
+    },
+    {
+      "id": "R3",
+      "description": "Cap rendered content. A large write (e.g. 500-line generated file) flooding the scroll region is exactly what we don't want. If args.content has more than WRITE_BODY_MAX_LINES = 40 lines, render the first 30 + a dim `… {N} more lines elided …` marker + the last 5. Pure renderer-side; new constant lives in compact.rs. (40 is a starting value — single named const for easy retuning.)",
+      "acceptance": "Unit test: a 100-line content renders only first 30 + elision marker + last 5 lines = 36 lines + 1 elision marker line. A 20-line content renders all 20 lines with no elision marker."
+    },
+    {
+      "id": "R4",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/compact.rs — WriteRenderer at line 48. Currently no body, no body_blocks. The body_blocks default in the trait returns None.\n- crates/norn-tui/src/render/content.rs — ContentBlock::Code, render_blocks, render_code.\n- crates/norn/src/tools/write.rs — the WriteTool. Result JSON has: path, bytes_written, line_count, length_limit, diagnostics, check_overrides. Does NOT include the content (content is in args).\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- ContentBlock::Code pipeline with syntect highlighting.\n- The `+ {path}` header + line_count + ast status — keep as-is.\n- The streaming header. Untouched.\n\nDESIGN TASTE: no line numbers (different from read — reads are about locating, writes are about reviewing). Match the per-block code style the markdown renderer uses for fenced blocks so the visual language is consistent across the TUI.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

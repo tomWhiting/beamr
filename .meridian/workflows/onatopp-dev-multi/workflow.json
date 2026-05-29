@@ -1,0 +1,28 @@
+{
+  "design_system": "yggdrasil-briefs",
+  "version": "0.1.0",
+  "scope": "private",
+  "profiles": ["codebase-explorer", "workflow-developer", "reviewer"],
+  "input": {
+    "type": "object",
+    "properties": {
+      "brief": {
+        "type": "string",
+        "description": "Brief JSON content"
+      },
+      "design_content": {
+        "type": "string",
+        "description": "Design document text"
+      },
+      "provider": {
+        "type": "string",
+        "enum": ["claude", "codex"],
+        "description": "Which provider to use for scout/dev/review steps"
+      }
+    },
+    "required": ["brief", "design_content", "provider"]
+  },
+  "trigger": {
+    "kind": "manual"
+  }
+}

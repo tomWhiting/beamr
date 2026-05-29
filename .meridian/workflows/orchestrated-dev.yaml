@@ -1,0 +1,789 @@
+name: orchestrated-dev
+description: |
+  Orchestrated development cycle — tuned for design-doc-driven clusters
+  with strict checklist + user-story attestation. Implement reads DESIGN.md +
+  CHECKLIST.md + USER-STORIES.md for the brief's cluster, ticks checklist
+  items with file:line evidence, and writes a persisted stage report.
+  Harden re-verifies against the design intent. Smell Test checks
+  consistency with broader repo patterns. Criterion Review audits against
+  brief + design + checklist + user stories.
+
+input:
+  brief:
+    type: text
+    required: true
+    description: |
+      A brief with numbered requirements (R1, R2, etc.) defining what must
+      be built. The brief contains or references the path to its cluster's
+      DESIGN.md + CHECKLIST.md + USER-STORIES.md plus the per-brief research
+      artefact. Every R# cites specific CHECKLIST ids and USER-STORY ids.
+  run-name:
+    type: text
+    required: false
+    description: |
+      Operator-supplied run label, surfaced in the end-of-workflow
+      notification DM. Pass via the dispatch's `-n / --name` flag, or
+      explicitly via `--input run-name="..."`. Empty when not supplied.
+
+steps:
+  # TODO(workflow-preflight): require implementer profiles to ship with
+  # messaging/inbox capability — brief 194 dispatch had to be killed
+  # because the implementer (profile: workflow-developer) could not
+  # receive DMs mid-flight. Tom needed a sync channel to redirect the
+  # in-progress visit; with no inbox tool available the only option was
+  # to terminate the workflow and re-dispatch. Until the runtime can
+  # introspect a profile's tool list at dispatch time and fail fast when
+  # required capabilities are missing, every profile referenced as an
+  # `action` step below MUST be hand-checked to include the `messaging`
+  # skill (or equivalent inbox/DM tool). Profiles touched here:
+  # codebase-explorer, planner, workflow-developer, hardener.
+  # See docs/briefs/findings/194-review-findings.md for full context.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CONTEXT GATHERING — read-only codebase + design-doc exploration
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Scout
+    kind: action
+    target: function
+    profile: codebase-explorer
+    prompt: |
+      Gather context for the brief, organised per-R# so the planner and implementer can use it without re-deriving anything.
+
+      You are read-only. Your deliverable is the assistant response text — the next step (Plan) reads it via `Scout.response`. Do not write files. Do not create research artefacts on disk. Everything you find goes into your response.
+
+      Read these sources in full:
+
+      1. The brief itself.
+      2. The DESIGN.md section the brief's `Context:` block names.
+      3. Every CHECKLIST item the brief cites on its R# `Realises:` lines (cluster CHECKLIST.md).
+      4. Every USER-STORY the brief cites on its R# `Satisfies:` lines (cluster USER-STORIES.md).
+      5. The cluster INDEX.md — especially `Decisions landed` (supersedes brief language when they conflict) and `Cluster Discipline`.
+      6. The per-brief research artefact at `docs/design/<cluster>/briefs/.research/<NN>-*.md` if it already exists. You only read it; you never produce one.
+      7. Every v1 source file the brief references — absolute paths under `/Users/tom/Developer/projects/deno_rust/meridian/`.
+      8. Every sibling crate the brief cites — Cargo.toml shape, lib.rs / error.rs / module layout.
+
+      Then organise your response by R#. For each R# include:
+
+      - **CHECKLIST ids and USER-STORY ids** that R# realises/satisfies, lifted verbatim from the brief's `Realises:` and `Satisfies:` lines.
+      - **Files to create or modify** — exact paths (as text in your response — you are not creating them).
+      - **Patterns to match** — sibling file + line range demonstrating the convention (e.g. "error.rs shape: `meridian-storage-redis/src/error.rs:1-80`").
+      - **Type signatures** — quote verbatim from DESIGN.md or v1 source where they're load-bearing.
+      - **Gotchas** — anything non-obvious discovered while reading (version drift, API gaps, naming inconsistencies between design doc and v1 code).
+      - **Cross-R# dependencies** — which R#s must land before others.
+
+      Verify the current stable version of any external crate the brief references via WebSearch; note any drift between brief-specified versions and what's actually current.
+
+      If a trace dead-ends (function not found, trait not implemented, crate not published), flag it explicitly in your response — those are critical implementation-time findings.
+
+      Brief: {input.brief}
+    routes:
+      success: Plan
+      failure: Done
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PLANNING — structured plan with per-R# + per-CHECKLIST-id + per-STORY-id
+  # breakdown
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Plan
+    kind: action
+    target: function
+    profile: planner
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "plan_text": {"type": "string"},
+          "requirements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "plan_steps": {"type": "array", "items": {"type": "string"}},
+                "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                "checklist_ids": {"type": "array", "items": {"type": "string"}, "description": "CHECKLIST ids this requirement realises"},
+                "story_ids": {"type": "array", "items": {"type": "string"}, "description": "USER-STORY ids this requirement satisfies"},
+                "files": {"type": "array", "items": {"type": "string"}, "description": "Files to create or modify"}
+              },
+              "required": ["id", "name", "description", "plan_steps", "acceptance_criteria", "checklist_ids", "story_ids", "files"]
+            }
+          }
+        },
+        "required": ["plan_text", "requirements"]
+      }
+    prompt: |
+      Translate the brief into a structured implementation plan, drawing on the scout's per-R# evidence.
+
+      For each R# in the brief, populate a requirement entry. `id`, `name`, and `description` lift the brief's R# heading and narrative. `checklist_ids` and `story_ids` come verbatim from the brief's R# `Realises:` and `Satisfies:` lines. `acceptance_criteria` are testable statements — what must be observable when the R# is done.
+
+      `plan_steps` and `files` come from the scout's per-R# evidence: specific file paths, sibling file:line ranges, and verbatim type signatures so the implementer doesn't have to re-derive anything.
+
+      Coverage invariant: the union of `checklist_ids` across all R# entries must equal the set of CHECKLIST ids the brief declares; same for `story_ids` against USER-STORIES. If you find a gap, reconcile before returning — don't ship an incomplete plan.
+
+      Specificity: a different agent should be able to execute each `plan_steps` step without asking a clarifying question. "Add the error type" is too vague; "Create `src/error.rs` with a `#[derive(Debug, thiserror::Error)]` enum matching DESIGN.md lines 194-206; mirror `meridian-storage-redis/src/error.rs:1-80`" is specific enough.
+
+      Brief: {input.brief}
+      Scout context: {Scout.response}
+    routes:
+      success: Implement
+      failure: Done
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PASS 1: IMPLEMENTATION — writes code, cannot run builds/tests/git. Ticks
+  # every checklist item and every user story with file:line evidence, and
+  # persists a stage report to disk.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Implement
+    kind: action
+    target: function
+    profile: workflow-developer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "1-2 sentences. Goes verbatim into the next stage's prompt as orienting context."
+          },
+          "commit_message": {
+            "type": "string",
+            "description": "Conventional-commits-style title (and optional body, separated by a blank line). Used by Commit Auto-Fix (Implement) when the workflow commits your changes."
+          },
+          "requirements": {
+            "type": "array",
+            "description": "One entry per R# from the plan. Every R# must appear.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {"type": "string", "description": "R# identifier, e.g. R1."},
+                "status": {"type": "string", "enum": ["implemented", "deferred", "blocked"]},
+                "files": {
+                  "type": "array",
+                  "description": "Files created, modified, or deleted to deliver this R#.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {"type": "string"},
+                      "change": {"type": "string", "enum": ["created", "modified", "deleted"]},
+                      "note": {"type": "string", "description": "One-line dev note: what was done in this file for this R#."}
+                    },
+                    "required": ["path", "change", "note"]
+                  }
+                },
+                "checklist": {
+                  "type": "array",
+                  "description": "Every CHECKLIST id the plan declares this R# realises must appear.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {"type": "string"},
+                      "status": {"type": "string", "enum": ["ticked", "not_ticked"]},
+                      "note": {"type": "string", "description": "One-line dev note tying the checklist item to specific code in this R#'s files."}
+                    },
+                    "required": ["id", "status", "note"]
+                  }
+                },
+                "stories": {
+                  "type": "array",
+                  "description": "Every USER-STORY id the plan declares this R# satisfies must appear.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {"type": "string"},
+                      "status": {"type": "string", "enum": ["satisfied", "not_satisfied"]},
+                      "note": {"type": "string"}
+                    },
+                    "required": ["id", "status", "note"]
+                  }
+                },
+                "deviation": {
+                  "type": "string",
+                  "description": "Empty string if the implementation followed the plan. Otherwise: what the plan said, what was done instead, and why."
+                }
+              },
+              "required": ["id", "status", "files", "checklist", "stories", "deviation"]
+            }
+          },
+          "concerns": {
+            "type": "array",
+            "description": "Cross-cutting or blocking concerns that don't belong to a single R#. Empty array when none.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {"type": "string", "enum": ["blocking", "important", "minor"]},
+                "topic": {"type": "string"},
+                "detail": {"type": "string"}
+              },
+              "required": ["severity", "topic", "detail"]
+            }
+          },
+          "new_dependencies": {
+            "type": "array",
+            "description": "Dependencies added via `cargo add`. Empty array when none.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "crate": {"type": "string"},
+                "version": {"type": "string"},
+                "for_requirement_ids": {"type": "array", "items": {"type": "string"}},
+                "reason": {"type": "string"}
+              },
+              "required": ["crate", "version", "for_requirement_ids", "reason"]
+            }
+          }
+        },
+        "required": ["summary", "commit_message", "requirements", "concerns", "new_dependencies"]
+      }
+    prompt: |
+      {?Run Checks (Implement).pass == false}
+      CHECKS FAILED (visit {?@visit > 1}RETRY {/}) — {Run Checks (Implement).summary}
+
+      {Run Checks (Implement).failure_report}
+
+      {?@visit > 1}
+      You have seen these checks before. Focus EXCLUSIVELY on the failures above.
+      Do not re-read the brief. Do not extend scope. Do not write new tests.
+      Fix only the specific lint or failure at the specific file:line reported above.
+      {/}
+      {?@visit == 1}
+      Fix every failing check. Fix the root cause; don't bypass.
+      {/}
+      {/}
+
+      {?@resume == false}
+      Implement the brief. Follow the plan. Match the sibling patterns the scout cited.
+
+      Brief: {input.brief}
+      Plan: {Plan.plan_text}
+      Requirements: {Plan.requirements}
+      Scout context: {Scout.response}
+
+      For each R#, populate the structured output: the files you touched (with a one-line dev note per file), the CHECKLIST ids you realised (with one-line notes tying each to specific code), the USER-STORIES you addressed (with notes). Use the per-R# `deviation` field when you depart from the plan; top-level `concerns` for blocking or cross-cutting issues. Draft the commit message — the workflow uses it when committing your changes.
+      {/}
+    routes:
+      success: Detect Changes
+      failure: Done
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PASS 1: DETECT + DISPATCH CHECK CLUSTER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Detect Changes
+    kind: execute
+    # Use merge-base three-dot diff so Implement-committed changes remain
+    # visible to downstream Resolve Crates / Auto-Fix / Run Checks across
+    # successive orchestrator visits. `git diff --name-only` (working tree
+    # vs HEAD) goes empty immediately after Implement commits, silently
+    # collapsing crate scoping to workspace-wide.
+    command: git diff --name-only $(git merge-base HEAD main)...HEAD
+    parser: lines
+    routes:
+      success: Resolve Crates
+      failure: Resolve Crates
+
+  - name: Resolve Crates
+    kind: execute
+    command: >-
+      echo '{raw:Detect Changes.lines}'
+      | tr ' ' '\n'
+      | grep '^crates/'
+      | cut -d/ -f1-2
+      | sort -u
+      | while read dir; do
+      if [ -f "$dir/Cargo.toml" ]; then
+      grep '^name' "$dir/Cargo.toml" | head -1 | sed 's/name *= *"//;s/"//';
+      fi;
+      done
+      | sort -u
+    parser: lines
+    routes:
+      success: Rust Auto-Fix (Implement)
+      failure: Rust Auto-Fix (Implement)
+
+  # Deterministic auto-fix BEFORE Run Checks (Implement). This clears
+  # only the mechanical clippy lints. It does NOT silence legitimate
+  # issues — `cargo fix` + `clippy --fix` only apply safe transforms
+  # (trivially_copy_pass_by_ref, manual_let_else, unused_async,
+  # needless_pass_by_value, uninlined_format_args, redundant_clone).
+  - name: Rust Auto-Fix (Implement)
+    kind: execute
+    command: >-
+      CRATES="{raw:Resolve Crates.lines}";
+      if [ -n "$(echo $CRATES | tr -d '[:space:]')" ]; then
+      cargo fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) -- -D warnings 2>&1;
+      else
+      cargo fix --allow-dirty --allow-staged 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged -- -D warnings 2>&1;
+      fi;
+      cargo fmt --workspace 2>&1;
+      echo "Rust auto-fix complete"
+    parser: exit-code
+    routes:
+      success: Commit Auto-Fix (Implement)
+      failure: Commit Auto-Fix (Implement)
+
+  # Capture Auto-Fix's mechanical fixes (cargo fmt + clippy --fix) into a
+  # branch commit, scoped to files the implementer has touched since
+  # merge-base. Files Auto-Fix modified outside `Detect Changes.lines`
+  # stay unstaged — those belong to Brief D (workspace-wide hygiene as
+  # stack-land submit hook), not this brief's scope.
+  #
+  # Sub-mode 1b of the fmt-drift failure pattern (Brief A+ in the
+  # workflow-feedback audit). Without this step, Run Checks reads the
+  # post-Auto-Fix worktree (green) but the branch commits retain the
+  # pre-Auto-Fix drift; stack-land squashes un-fmt'd code into main.
+  # Commit message comes from Implement.commit_message (the implementer
+  # drafts it in their structured output). Written via heredoc-to-file
+  # so embedded quotes / special chars can't break shell escaping. The
+  # quoted heredoc terminator (`<<'__YGG_COMMIT_MSG_END__'`) prevents
+  # bash variable expansion inside the message body — template engine
+  # has already substituted `{raw:Implement.commit_message}` before
+  # bash sees the script.
+  - name: Commit Auto-Fix (Implement)
+    kind: execute
+    command: |
+      CHANGED="{raw:Detect Changes.lines}"
+      if [ -z "$(echo $CHANGED | tr -d '[:space:]')" ]; then
+        echo "No files in Detect Changes — skipping auto-fix commit"
+      else
+        git add -- $CHANGED 2>&1
+        if git diff --cached --quiet; then
+          echo "Auto-Fix produced no changes in implementer-touched files"
+        else
+          cat > /tmp/commit-msg-$$.txt <<'__YGG_COMMIT_MSG_END__'
+      {raw:Implement.commit_message}
+      __YGG_COMMIT_MSG_END__
+          git commit -F /tmp/commit-msg-$$.txt 2>&1
+          rm -f /tmp/commit-msg-$$.txt
+        fi
+      fi
+    parser: exit-code
+    routes:
+      success: Frontend Auto-Fix (Implement)
+      failure: Frontend Auto-Fix (Implement)
+
+  - name: Frontend Auto-Fix (Implement)
+    kind: execute
+    command: >-
+      cd apps/web &&
+      npx biome check --write . 2>&1;
+      npx biome format --write . 2>&1;
+      echo "Frontend auto-fix complete"
+    parser: exit-code
+    routes:
+      success: Run Checks (Implement)
+      failure: Run Checks (Implement)
+
+  - name: Run Checks (Implement)
+    kind: dispatch
+    workflow: run-checks-and-tests
+    inputs:
+      changed_files: "{Detect Changes.lines}"
+      crates_affected: "{Resolve Crates.lines}"
+    routes:
+      success: Harden
+      failure: Implement
+    escalation:
+      failure[5]: Done
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PASS 2: HARDEN — adversarial review + fix + design-intent alignment audit.
+  # Different AI session; reviews Implement's output against every CHECKLIST
+  # id, every USER-STORY id, and every DESIGN.md section the brief touched.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Harden
+    kind: action
+    target: function
+    profile: hardener
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "1-2 sentences. Goes verbatim into Run Review's prompt as orienting context."
+          },
+          "commit_message": {
+            "type": "string",
+            "description": "Conventional-commits-style title (and optional body, separated by a blank line). Used by Commit Auto-Fix (Harden) when the workflow commits your changes."
+          },
+          "requirements": {
+            "type": "array",
+            "description": "One entry per R# from the plan. Every R# must appear.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {"type": "string"},
+                "verdict": {"type": "string", "enum": ["confirmed", "fixed", "flagged"]},
+                "files": {
+                  "type": "array",
+                  "description": "Files you touched while fixing. Empty array if verdict is confirmed.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {"type": "string"},
+                      "change": {"type": "string", "enum": ["created", "modified", "deleted"]},
+                      "note": {"type": "string", "description": "One-line dev note: what you changed in this file for this R#."}
+                    },
+                    "required": ["path", "change", "note"]
+                  }
+                },
+                "checklist": {
+                  "type": "array",
+                  "description": "Re-verify every CHECKLIST id the brief declares this R# realises.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {"type": "string"},
+                      "verdict": {"type": "string", "enum": ["confirmed", "fixed", "disputed"]},
+                      "note": {"type": "string", "description": "One-line: file:line evidence, or what you fixed, or why it's disputed."}
+                    },
+                    "required": ["id", "verdict", "note"]
+                  }
+                },
+                "stories": {
+                  "type": "array",
+                  "description": "Re-verify every USER-STORY id the brief declares this R# satisfies.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {"type": "string"},
+                      "verdict": {"type": "string", "enum": ["confirmed", "fixed", "disputed"]},
+                      "note": {"type": "string"}
+                    },
+                    "required": ["id", "verdict", "note"]
+                  }
+                },
+                "fix_applied": {
+                  "type": "string",
+                  "description": "Empty string if verdict is confirmed. Otherwise: what was wrong + what you changed."
+                }
+              },
+              "required": ["id", "verdict", "files", "checklist", "stories", "fix_applied"]
+            }
+          },
+          "design_divergences": {
+            "type": "array",
+            "description": "Places the implementation diverges from DESIGN.md's stated shape (module layout, API signature, invariant). Cross-cutting; doesn't belong to a single R#. Empty array when none.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "section": {"type": "string", "description": "DESIGN.md section the divergence is from, e.g. \"DESIGN.md §3.2\"."},
+                "divergence": {"type": "string"},
+                "fix_applied": {"type": "string", "description": "Empty if intentional with rationale; else what was changed to bring code into alignment."}
+              },
+              "required": ["section", "divergence", "fix_applied"]
+            }
+          },
+          "concerns": {
+            "type": "array",
+            "description": "Cross-cutting or blocking concerns that don't belong to a single R# and aren't design divergences. Empty array when none.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {"type": "string", "enum": ["blocking", "important", "minor"]},
+                "topic": {"type": "string"},
+                "detail": {"type": "string"}
+              },
+              "required": ["severity", "topic", "detail"]
+            }
+          }
+        },
+        "required": ["summary", "commit_message", "requirements", "design_divergences", "concerns"]
+      }
+    prompt: |
+      {?Run Checks (Harden).pass == false}
+      CHECKS FAILED — {Run Checks (Harden).summary}
+
+      {Run Checks (Harden).failure_report}
+
+      Fix every failing check. Fix the root cause; don't bypass.
+      {/}
+
+      {?Run Checks (Review).pass == false}
+      POST-REVIEW CHECKS FAILED — {Run Checks (Review).summary}
+
+      {Run Checks (Review).failure_report}
+
+      The check cluster ran after the reviewer's changes and surfaced failures (commonly: reviewer edits introduced new errors, or surfaced ones earlier auto-fix passes had masked). Fix the root cause; don't bypass.
+      {/}
+
+      {?Run Review.pass == false}
+      REVIEW FAILED — {Run Review.summary}
+
+      Findings (per-requirement verdicts):
+      {Run Review.findings}
+
+      Design alignment: {Run Review.design_alignment_verdict}
+      Blockers: {Run Review.blockers}
+
+      Fix every finding. The workflow will re-run the review.
+      {/}
+
+      {?@resume == false}
+      A previous agent implemented the brief below. Verify their work against the brief's intent, the DESIGN.md shape, the CHECKLIST, and the USER-STORIES, and fix what doesn't align.
+
+      Brief: {input.brief}
+      Plan: {Plan.plan_text}
+      Requirements: {Plan.requirements}
+      Files changed: {Detect Changes.lines}
+
+      Implementer's summary: {Implement.summary}
+      Implementer's per-R# work: {Implement.requirements}
+      Implementer's concerns: {Implement.concerns}
+      Implementer's new dependencies: {Implement.new_dependencies}
+
+      Don't trust the implementer's claims — open the files and verify each R#, each CHECKLIST item, and each USER-STORY against the actual code. Fix what's wrong; mark verdict `fixed` and note what you changed. Top-level `design_divergences` for cross-cutting design audits, `concerns` for things that span requirements or that you couldn't fix. Draft the commit message.
+      {/}
+    routes:
+      success: Harden Detect
+      failure: Done
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PASS 2: DETECT + DISPATCH CHECK CLUSTER + DISPATCH REVIEW CLUSTER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Harden Detect
+    kind: execute
+    # Same merge-base three-dot diff as the Pass 1 Detect Changes step:
+    # working-tree-vs-HEAD goes empty after Harden commits its fixes, so
+    # rely on the merge base to keep the full set of cluster-affected
+    # files visible across successive visits.
+    command: git diff --name-only $(git merge-base HEAD main)...HEAD
+    parser: lines
+    routes:
+      success: Harden Resolve
+      failure: Harden Resolve
+
+  - name: Harden Resolve
+    kind: execute
+    command: >-
+      echo '{raw:Harden Detect.lines}'
+      | tr ' ' '\n'
+      | grep '^crates/'
+      | cut -d/ -f1-2
+      | sort -u
+      | while read dir; do
+      if [ -f "$dir/Cargo.toml" ]; then
+      grep '^name' "$dir/Cargo.toml" | head -1 | sed 's/name *= *"//;s/"//';
+      fi;
+      done
+      | sort -u
+    parser: lines
+    routes:
+      success: Rust Auto-Fix (Harden)
+      failure: Rust Auto-Fix (Harden)
+
+  - name: Rust Auto-Fix (Harden)
+    kind: execute
+    command: >-
+      CRATES="{raw:Harden Resolve.lines}";
+      if [ -n "$(echo $CRATES | tr -d '[:space:]')" ]; then
+      cargo fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) -- -D warnings 2>&1;
+      else
+      cargo fix --allow-dirty --allow-staged 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged -- -D warnings 2>&1;
+      fi;
+      cargo fmt --workspace 2>&1;
+      echo "Rust auto-fix complete"
+    parser: exit-code
+    routes:
+      success: Commit Auto-Fix (Harden)
+      failure: Commit Auto-Fix (Harden)
+
+  # See Commit Auto-Fix (Implement) above for design notes.
+  # Harden-pass variant: scopes commits to {raw:Harden Detect.lines};
+  # commit message from Harden.commit_message.
+  - name: Commit Auto-Fix (Harden)
+    kind: execute
+    command: |
+      CHANGED="{raw:Harden Detect.lines}"
+      if [ -z "$(echo $CHANGED | tr -d '[:space:]')" ]; then
+        echo "No files in Harden Detect — skipping auto-fix commit"
+      else
+        git add -- $CHANGED 2>&1
+        if git diff --cached --quiet; then
+          echo "Auto-Fix produced no changes in hardener-touched files"
+        else
+          cat > /tmp/commit-msg-$$.txt <<'__YGG_COMMIT_MSG_END__'
+      {raw:Harden.commit_message}
+      __YGG_COMMIT_MSG_END__
+          git commit -F /tmp/commit-msg-$$.txt 2>&1
+          rm -f /tmp/commit-msg-$$.txt
+        fi
+      fi
+    parser: exit-code
+    routes:
+      success: Frontend Auto-Fix (Harden)
+      failure: Frontend Auto-Fix (Harden)
+
+  - name: Frontend Auto-Fix (Harden)
+    kind: execute
+    command: >-
+      cd apps/web &&
+      npx biome check --write . 2>&1;
+      npx biome format --write . 2>&1;
+      echo "Frontend auto-fix complete"
+    parser: exit-code
+    routes:
+      success: Run Checks (Harden)
+      failure: Run Checks (Harden)
+
+  - name: Run Checks (Harden)
+    kind: dispatch
+    workflow: run-checks-and-tests
+    inputs:
+      changed_files: "{Harden Detect.lines}"
+      crates_affected: "{Harden Resolve.lines}"
+    routes:
+      success: Run Review
+      failure: Harden
+    escalation:
+      failure[4]: Done
+
+  - name: Run Review
+    kind: dispatch
+    workflow: smell-and-criterion-review
+    inputs:
+      changed_files: "{Harden Detect.lines}"
+      crates_affected: "{Harden Resolve.lines}"
+      brief: "{input.brief}"
+      requirements: "{Plan.requirements}"
+      implement_summary: "{Implement.summary}"
+      harden_summary: "{Harden.summary}"
+      harden_requirements: "{Harden.requirements}"
+      harden_design_divergences: "{Harden.design_divergences}"
+      harden_concerns: "{Harden.concerns}"
+    routes:
+      success: Review Detect
+      failure: Harden
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # POST-REVIEW CHECK — reviewers may have made fixes. Re-run checks before
+  # declaring done to ensure reviewer changes compile and pass tests.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: Review Detect
+    kind: execute
+    # Same merge-base three-dot diff as the Pass 1 / Pass 2 detect steps:
+    # post-review fixes get committed, so working-tree-vs-HEAD would go
+    # empty and collapse crate scoping to workspace-wide.
+    command: git diff --name-only $(git merge-base HEAD main)...HEAD
+    parser: lines
+    routes:
+      success: Review Resolve
+      failure: Done
+
+  - name: Review Resolve
+    kind: execute
+    command: >-
+      echo '{raw:Review Detect.lines}'
+      | tr ' ' '\n'
+      | grep '^crates/'
+      | cut -d/ -f1-2
+      | sort -u
+      | while read dir; do
+      if [ -f "$dir/Cargo.toml" ]; then
+      grep '^name' "$dir/Cargo.toml" | head -1 | sed 's/name *= *"//;s/"//';
+      fi;
+      done
+      | sort -u
+    parser: lines
+    routes:
+      success: Rust Auto-Fix (Review)
+      failure: Done
+
+  - name: Rust Auto-Fix (Review)
+    kind: execute
+    command: >-
+      CRATES="{raw:Review Resolve.lines}";
+      if [ -n "$(echo $CRATES | tr -d '[:space:]')" ]; then
+      cargo fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) -- -D warnings 2>&1;
+      else
+      cargo fix --allow-dirty --allow-staged 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged -- -D warnings 2>&1;
+      fi;
+      cargo fmt --workspace 2>&1;
+      echo "Rust auto-fix complete"
+    parser: exit-code
+    routes:
+      success: Commit Auto-Fix (Review)
+      failure: Commit Auto-Fix (Review)
+
+  # See Commit Auto-Fix (Implement) above for design notes.
+  # Review-pass variant: scopes commits to {raw:Review Detect.lines};
+  # commit message from Run Review.commit_message (drafted by the
+  # criterion reviewer inside the smell-and-criterion-review workflow
+  # and surfaced as a workflow output).
+  # Note: routes to Run Checks (Review), not Frontend Auto-Fix —
+  # Review pass skips frontend auto-fix per the existing design.
+  - name: Commit Auto-Fix (Review)
+    kind: execute
+    command: |
+      CHANGED="{raw:Review Detect.lines}"
+      if [ -z "$(echo $CHANGED | tr -d '[:space:]')" ]; then
+        echo "No files in Review Detect — skipping auto-fix commit"
+      else
+        git add -- $CHANGED 2>&1
+        if git diff --cached --quiet; then
+          echo "Auto-Fix produced no changes in reviewer-touched files"
+        else
+          cat > /tmp/commit-msg-$$.txt <<'__YGG_COMMIT_MSG_END__'
+      {raw:Run Review.commit_message}
+      __YGG_COMMIT_MSG_END__
+          git commit -F /tmp/commit-msg-$$.txt 2>&1
+          rm -f /tmp/commit-msg-$$.txt
+        fi
+      fi
+    parser: exit-code
+    routes:
+      success: Run Checks (Review)
+      failure: Run Checks (Review)
+
+  - name: Run Checks (Review)
+    kind: dispatch
+    workflow: run-checks-and-tests
+    inputs:
+      changed_files: "{Review Detect.lines}"
+      crates_affected: "{Review Resolve.lines}"
+    routes:
+      success: Done
+      failure: Harden
+
+  - name: Done
+    kind: execute
+    command: >-
+      cargo clean 2>&1 || true;
+      find . -type d -name node_modules -prune -exec rm -rf {} + 2>&1 || true;
+      echo "Worktree cleanup complete: cargo clean + node_modules removed"
+    parser: exit-code
+    routes:
+      success: Notify
+      failure: Notify
+
+  # ─── Notification — DM team-lead + human-lead with branch + counts ──────
+  # Dispatches `notify` (separate workflow) with the workflow name and the
+  # operator-supplied run-name as inputs. Notify computes its own diagnostic
+  # snapshot from inside the worktree at notification time. Failure of
+  # notify does not fail orchestrated-dev — the work has already happened.
+  - name: Notify
+    kind: dispatch
+    workflow: notify
+    inputs:
+      workflow: orchestrated-dev
+      run-name: "{input.run-name}"
+    routes:
+      success: End
+      failure: End
+
+  - name: End
+    kind: end

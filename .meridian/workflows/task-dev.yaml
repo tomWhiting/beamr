@@ -1,0 +1,178 @@
+name: task-dev
+description: |
+  Single-step task dispatch. Sends a plain-language task to a developer agent
+  with diagnostic hooks on every edit, then runs the full check cluster
+  (cargo check, clippy, nextest, fmt, file-size). For dispatching focused
+  implementation work without the full brief/scout/plan/harden pipeline.
+
+input:
+  task:
+    type: text
+    required: true
+    description: Plain-language description of the work to be done.
+
+steps:
+  - name: Develop
+    kind: action
+    target: function
+    profile: task-developer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "1-2 sentences describing what was done."
+          },
+          "commit_message": {
+            "type": "string",
+            "description": "Conventional-commits-style commit message."
+          },
+          "files_changed": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "File paths created or modified."
+          },
+          "dev_notes": {
+            "type": "string",
+            "description": "Important notes about decisions, edge cases, or concerns."
+          }
+        },
+        "required": ["summary", "commit_message", "files_changed", "dev_notes"]
+      }
+    prompt: |
+      {?Run Checks.pass == false}
+      CHECKS FAILED — {Run Checks.summary}
+
+      {Run Checks.failure_report}
+
+      {?@visit > 1}
+      You have seen these checks before. Focus EXCLUSIVELY on the failures above.
+      Do not re-read the task. Do not extend scope.
+      Fix only the specific lint or failure at the specific file:line reported above.
+      {/}
+      {?@visit == 1}
+      Fix every failing check. Fix the root cause; don't bypass.
+      {/}
+      {/}
+
+      {?@resume == false}
+      ## Task
+
+      {input.task}
+
+      ## Instructions
+
+      Implement the task above. Read the relevant code first to understand existing patterns.
+      Your diagnostic hooks will run clippy and other checks after every file edit — fix any
+      issues they report before moving on.
+
+      When done, report what you did via structured output. Draft a conventional-commits
+      commit message — the workflow uses it when committing your changes.
+      {/}
+    routes:
+      success: Detect Changes
+      failure: Done
+
+  - name: Detect Changes
+    kind: execute
+    # merge-base approach fails on main (merge-base == HEAD → empty diff).
+    # Detect: if merge-base equals HEAD, diff against parent (checkpoint).
+    command: |
+      MERGE_BASE=$(git merge-base HEAD main 2>/dev/null || echo "")
+      HEAD_SHA=$(git rev-parse HEAD)
+      if [ "$MERGE_BASE" = "$HEAD_SHA" ] || [ -z "$MERGE_BASE" ]; then
+        git show --name-only --format="" HEAD
+      else
+        git diff --name-only "$MERGE_BASE"...HEAD
+      fi
+    parser: lines
+    routes:
+      success: Resolve Crates
+      failure: Resolve Crates
+
+  - name: Resolve Crates
+    kind: execute
+    command: >-
+      echo '{raw:Detect Changes.lines}'
+      | tr ' ' '\n'
+      | grep '^crates/'
+      | cut -d/ -f1-2
+      | sort -u
+      | while read dir; do
+      if [ -f "$dir/Cargo.toml" ]; then
+      grep '^name' "$dir/Cargo.toml" | head -1 | sed 's/name *= *"//;s/"//';
+      fi;
+      done
+      | sort -u
+    parser: lines
+    routes:
+      success: Rust Auto-Fix
+      failure: Rust Auto-Fix
+
+  - name: Rust Auto-Fix
+    kind: execute
+    command: >-
+      CRATES="{raw:Resolve Crates.lines}";
+      if [ -n "$(echo $CRATES | tr -d '[:space:]')" ]; then
+      cargo fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) -- -D warnings 2>&1;
+      else
+      cargo fix --allow-dirty --allow-staged 2>&1;
+      cargo clippy --all-targets --fix --allow-dirty --allow-staged -- -D warnings 2>&1;
+      fi;
+      cargo fmt --workspace 2>&1;
+      echo "Rust auto-fix complete"
+    parser: exit-code
+    routes:
+      success: Commit
+      failure: Commit
+
+  - name: Commit
+    kind: execute
+    command: |
+      CHANGED="{raw:Detect Changes.lines}"
+      if [ -z "$(echo $CHANGED | tr -d '[:space:]')" ]; then
+        echo "No files in Detect Changes — skipping commit"
+      else
+        git add -- $CHANGED 2>&1
+        if git diff --cached --quiet; then
+          echo "No staged changes after auto-fix"
+        else
+          cat > /tmp/commit-msg-$$.txt <<'__YGG_COMMIT_MSG_END__'
+      {raw:Develop.commit_message}
+      __YGG_COMMIT_MSG_END__
+          git commit -F /tmp/commit-msg-$$.txt 2>&1
+          rm -f /tmp/commit-msg-$$.txt
+        fi
+      fi
+    parser: exit-code
+    routes:
+      success: Run Checks
+      failure: Run Checks
+
+  - name: Run Checks
+    kind: dispatch
+    workflow: run-checks-and-tests
+    inputs:
+      changed_files: "{Detect Changes.lines}"
+      crates_affected: "{Resolve Crates.lines}"
+    routes:
+      success: Done
+      failure: Develop
+    escalation:
+      failure[5]: Done
+
+  - name: Done
+    kind: execute
+    command: >-
+      cargo clean 2>&1 || true;
+      find . -type d -name node_modules -prune -exec rm -rf {} + 2>&1 || true;
+      echo "Worktree cleanup complete"
+    parser: exit-code
+    routes:
+      success: End
+      failure: End
+
+  - name: End
+    kind: end

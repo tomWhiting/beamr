@@ -1,0 +1,23 @@
+{
+  "design_system": "yggdrasil-briefs",
+  "version": "0.1.0",
+  "scope": "private",
+  "profiles": [],
+  "input": {
+    "type": "object",
+    "properties": {
+      "cluster_path": {
+        "type": "string",
+        "description": "Path to the cluster directory containing briefs/ and DESIGN.md"
+      },
+      "brief_name": {
+        "type": "string",
+        "description": "Brief filename without extension (e.g. WS-019)"
+      }
+    },
+    "required": ["cluster_path", "brief_name"]
+  },
+  "trigger": {
+    "kind": "manual"
+  }
+}

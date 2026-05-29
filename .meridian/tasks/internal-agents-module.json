@@ -1,0 +1,37 @@
+{
+  "title": "Create internal agents module with extraction agent and provider injection",
+  "task": "Create an internal agents module in the norn crate for lightweight internal AI agents that tools can invoke. The first internal agent is the extraction agent used by web_fetch to extract focused answers from web page content. Internal agents use the exact same Provider (same OpenAiProvider, same auth, same rate limiter, same everything) as the main agent — they just call provider.stream() with a different model and different messages. The provider is injected into the ToolContext extension map so tools can access it.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Create a new module at crates/norn/src/internal/ with mod.rs containing pub mod extraction;. Add pub mod internal; to lib.rs.",
+      "acceptance": "crates/norn/src/internal/mod.rs exists with pub mod extraction. lib.rs has pub mod internal."
+    },
+    {
+      "id": "R2",
+      "description": "Create crates/norn/src/internal/extraction.rs with an async function: pub async fn extract(provider: &dyn Provider, content: &str, questions: &[String], detail: DetailLevel) -> Result<String, ToolError>. DetailLevel is a pub enum with Brief, Normal, Detailed variants. The function builds a ProviderRequest with model set to \"gpt-5.3-codex-spark\", a system message based on the detail level, and a user message containing the content and the questions. It calls provider.stream(request), collects all TextDelta and TextComplete events from the returned ProviderStream, and returns the accumulated text as a String.",
+      "acceptance": "extract() function exists, builds a ProviderRequest, calls provider.stream(), collects text from the stream. Uses model string \"gpt-5.3-codex-spark\". Returns Result<String, ToolError>."
+    },
+    {
+      "id": "R3",
+      "description": "The system prompt for each detail level: Brief produces a terse system prompt asking for short direct answers. Normal produces a standard system prompt asking for clear answers with relevant detail. Detailed produces a thorough system prompt asking for comprehensive answers with context and explanation. All three instruct the model to answer each question using only the provided content, return clean markdown, and not fabricate information not present in the content.",
+      "acceptance": "Three distinct system prompts exist for Brief/Normal/Detailed. All instruct: answer from provided content only, clean markdown output, no fabrication."
+    },
+    {
+      "id": "R4",
+      "description": "The user message sent to the extraction model contains the web page content under a clear delimiter, followed by the array of questions as a numbered list. The content is capped at 400,000 characters (approximately 100K tokens) — if it exceeds this, truncate with a note that the content was truncated.",
+      "acceptance": "User message has clear content/questions sections. Content capped at 400,000 chars with truncation indicator when exceeded."
+    },
+    {
+      "id": "R5",
+      "description": "Create a newtype wrapper pub struct SharedProvider(pub Arc<dyn Provider>) that implements Send + Sync + Any so it can be stored in ToolContext's extension map. The orchestrator (agent builder or loop setup) must insert this extension when building the ToolContext. Find where the ToolContext is constructed for tool execution and inject the provider there.",
+      "acceptance": "SharedProvider newtype exists. ToolContext has the provider inserted as an extension. WebFetchTool (or any tool) can retrieve it via ctx.get_extension::<SharedProvider>()."
+    },
+    {
+      "id": "R6",
+      "description": "Handle errors from the extraction call gracefully. If provider.stream() returns a ProviderError, convert it to ToolError::ExecutionFailed with a clear reason. If the stream ends without producing text (no TextDelta/TextComplete events), return a ToolError::ExecutionFailed indicating the extraction model returned no content.",
+      "acceptance": "ProviderError mapped to ToolError::ExecutionFailed. Empty response produces an error, not an empty string."
+    }
+  ],
+  "context": "Provider trait at crates/norn/src/provider/traits.rs:22 — single method stream(ProviderRequest) -> Result<ProviderStream, ProviderError>. ProviderRequest at crates/norn/src/provider/request.rs:154 — fields: messages (Vec<Message>), tools (Vec<ToolDefinition>), model (String), plus optional reasoning/cache/store fields. Message at request.rs has role (MessageRole enum: System, User, Assistant, ToolResult, ToolCall), content (Option<String>), and other fields. ProviderEvent at events.rs — TextDelta { text }, TextComplete { text }, Done { stop_reason, usage, response_id }. ToolContext extension map at tool/context.rs:285-303 — insert_extension<T>(Arc<T>) and get_extension<T>() -> Option<Arc<T>>. The ToolContext is built during tool dispatch — check crates/norn/src/loop/tool_dispatch.rs for where ToolContext is constructed and passed to tool.execute(). The provider is available on the agent loop as Arc<dyn Provider> — it needs to be threaded through to the ToolContext construction site."
+}

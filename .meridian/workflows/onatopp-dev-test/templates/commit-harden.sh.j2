@@ -1,0 +1,25 @@
+UNSTAGED=$(git diff --name-only)
+UNTRACKED=$(git ls-files --others --exclude-standard)
+ALL_CHANGED="$UNSTAGED $UNTRACKED"
+CRATES=$(echo "$ALL_CHANGED" | tr ' ' '\n' | grep '^crates/.*\.rs$' | cut -d/ -f1-2 | sort -u | while read dir; do
+  if [ -f "$dir/Cargo.toml" ]; then
+    grep '^name' "$dir/Cargo.toml" | head -1 | sed 's/name *= *"//;s/"//g'
+  fi
+done | sort -u | tr '\n' ' ')
+if [ -z "$(echo "$ALL_CHANGED" | tr -d '[:space:]')" ]; then
+  printf '{"committed":false,"crates_affected":"","changed_files":""}\n'
+else
+  if [ -n "$CRATES" ]; then
+    cargo clippy --all-targets --fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) -- -D warnings 2>&1 || true
+    cargo fmt --workspace 2>&1
+  fi
+  echo "$ALL_CHANGED" | tr ' ' '\n' | grep -v '^$' | xargs -r git add --
+  COMMIT_MSG_FILE=$(mktemp)
+  cat > "$COMMIT_MSG_FILE" <<'__YGG_COMMIT_MSG__'
+{{ harden.commit_message }}
+__YGG_COMMIT_MSG__
+  git commit -F "$COMMIT_MSG_FILE" --no-verify 2>&1 || true
+  rm -f "$COMMIT_MSG_FILE"
+  CHANGED_FILES=$(git diff --name-only HEAD~1 2>/dev/null | tr '\n' ' ')
+  printf '{"committed":true,"crates_affected":"%s","changed_files":"%s"}\n' "$CRATES" "$CHANGED_FILES"
+fi

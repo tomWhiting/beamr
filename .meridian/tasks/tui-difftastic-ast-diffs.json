@@ -1,0 +1,27 @@
+{
+  "title": "AST-aware diffs — research + spike difftastic integration",
+  "task": "EditRenderer / ApplyPatchRenderer today render line-level diffs. AST-aware diffs (difftastic, diffsitter) use tree-sitter to identify which AST nodes actually changed and highlight only those — so renaming a variable shows the variable token coloured, not the entire line. This is qualitatively better for refactors and reviews.\n\nThis is a RESEARCH + SPIKE task, not a full implementation. Goal: determine feasibility, identify integration points, prototype the simplest path that produces a visible AST-aware diff for a single edit case. Real wiring is a follow-up task.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Survey: is difftastic available as a Rust crate? Try `cargo search difftastic` and check crates.io. If yes, note the crate name + version + API surface (does it expose a programmatic diff function, or only the CLI?). If no library API, document the alternative: shell out to the difftastic binary, or use tree-sitter directly. Also check diffsitter (sister project). Write findings to docs/reports/ast-aware-diff-feasibility.md.",
+      "acceptance": "A research doc at docs/reports/ast-aware-diff-feasibility.md naming the available crates, their APIs, the languages they support, and the integration cost."
+    },
+    {
+      "id": "R2",
+      "description": "If a usable library is found: prototype a single EditRenderer test path that takes old_string + new_string for a Rust snippet, runs the AST diff, and produces output where only the changed tokens are highlighted (rest of the line is dim or plain). Output goes through ContentBlock::Diff (or a new ContentBlock::AstDiff variant). The prototype is a `#[cfg(test)]` test or a small example binary — NOT wired into the main render path yet.",
+      "acceptance": "A working test or example demonstrating an AST-aware diff for a one-line Rust change (e.g. rename a variable). The diff visibly highlights only the changed identifier, not the surrounding context."
+    },
+    {
+      "id": "R3",
+      "description": "Data flow analysis. The edit tool currently passes old_string + new_string as the diff source. For AST diffing we need surrounding context (at least the containing function or block) to give tree-sitter enough to parse meaningfully. Document the options:\n(a) The renderer reads the file from disk before/after the edit. Architecturally dubious (renderers are pure) but works without changing the tool.\n(b) The edit tool emits more context in its result (old_block + new_block, snapshotted by the tool itself). Cleaner but requires tool-side changes.\n(c) A new intermediate layer caches file content per edit and feeds the renderer.\nRecommendation: short-term (b) by adding `result.ast_diff = {old_block, new_block, language}` to the edit tool's blast_radius output. Long-term separation of concerns leaves the renderer pure and the tool authoritative.",
+      "acceptance": "Recommendation captured in the docs/reports doc with rationale + estimated effort for each option."
+    },
+    {
+      "id": "R4",
+      "description": "Gates pass: cargo check; cargo clippy --workspace -- -D warnings; cargo test (full workspace if a new dep was added); grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/rich/edit.rs — EditRenderer.\n- crates/norn-tui/src/render/content.rs — ContentBlock + render_diff pipeline.\n- crates/norn/src/tools/edit.rs — EditTool emitting result.blast_radius.\n\nWORKSPACE DEPS:\n- tree-sitter is already used in libyggd (workspace dep — check Cargo.toml). Reusing it would be ideal.\n- libyggd has AST plumbing already (see crates/libyggd/) — there might be diff infrastructure we can lean on instead of pulling in difftastic.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- ContentBlock pipeline.\n- syntect highlighting (we'd still use this for the unchanged tokens).\n- The edit tool's result shape — extend rather than rewrite.\n\nSTANDARDS: this is research + a spike, NOT a full feature. The deliverable is a feasibility doc + a prototype, not a production-ready renderer. Don't add a heavy dep to the production workspace without a clear plan."
+}

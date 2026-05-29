@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "description": "Sequential: 1, 2, 3..."},
+          "subject": {"type": "string", "description": "Short task title (imperative, under 80 chars)."},
+          "description": {"type": "string", "description": "Specific enough to execute without questions."},
+          "activeForm": {"type": "string", "description": "Present continuous for spinner."},
+          "status": {"type": "string", "enum": ["pending"]},
+          "blocks": {"type": "array", "items": {"type": "string"}},
+          "blockedBy": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["id", "subject", "description", "activeForm", "status", "blocks", "blockedBy"]
+      }
+    },
+    "verification_items": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Concrete checks the developer should run to verify their work."
+    }
+  },
+  "required": ["tasks", "verification_items"]
+}

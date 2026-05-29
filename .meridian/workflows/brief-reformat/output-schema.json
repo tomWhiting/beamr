@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "cluster": { "type": "string" },
+    "title": { "type": "string" },
+    "depends_on": { "type": "array", "items": { "type": "string" } },
+    "checklist": { "type": "array", "items": { "type": "string" } },
+    "stories": { "type": "array", "items": { "type": "string" } },
+    "purpose": { "type": "string" },
+    "task": { "type": "string" },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "spec": { "type": "string" },
+          "acceptance": { "type": "array", "items": { "type": "string" } },
+          "files": {
+            "type": "object",
+            "properties": {
+              "create": { "type": "array", "items": { "type": "string" } },
+              "modify": { "type": "array", "items": { "type": "string" } },
+              "delete": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["create", "modify"]
+          },
+          "checklist": { "type": "array", "items": { "type": "string" } },
+          "stories": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["id", "title", "spec", "acceptance", "files", "checklist", "stories"]
+      }
+    },
+    "boundaries": { "type": "array", "items": { "type": "string" } },
+    "verification": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["id", "cluster", "title", "depends_on", "checklist", "stories", "purpose", "task", "requirements", "boundaries", "verification"]
+}

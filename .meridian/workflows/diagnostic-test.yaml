@@ -1,0 +1,55 @@
+name: diagnostic-test
+description: |
+  Single-step test of the diagnostic crush hook. Dispatches one developer
+  agent with PostToolUse hooks that run clippy, nextest, tokei, and bypass
+  detection on every .rs file edit. Non-blocking — feedback only.
+
+input:
+  task:
+    type: text
+    required: true
+    description: The coding task for the developer agent.
+
+steps:
+  - name: Develop
+    kind: execute
+    command: |
+      HOOK_PATH="/Users/tom/Developer/ablative/yggdrasil/.meridian/hooks/diagnostic-crush.sh"
+
+      cat > /tmp/diagnostic-test-settings.json <<'__SETTINGS__'
+      {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Edit|Write",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "/Users/tom/Developer/ablative/yggdrasil/.meridian/hooks/diagnostic-crush.sh",
+                  "timeout": 120000
+                }
+              ]
+            }
+          ]
+        }
+      }
+      __SETTINGS__
+
+      TASK="{raw:input.task}"
+
+      claude --agent crushed-test \
+        --dangerously-skip-permissions \
+        --print \
+        --settings /tmp/diagnostic-test-settings.json \
+        -p "$TASK"
+
+      EXIT=$?
+      rm -f /tmp/diagnostic-test-settings.json
+      exit $EXIT
+    parser: exit-code
+    routes:
+      success: End
+      failure: End
+
+  - name: End
+    kind: end

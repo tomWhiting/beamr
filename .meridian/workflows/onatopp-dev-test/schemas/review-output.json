@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "required": ["summary", "commit_message", "pass", "enrichments", "verification_results"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {"type": "string"},
+    "commit_message": {"type": "string"},
+    "pass": {"type": "boolean", "description": "True if all criteria met."},
+    "enrichments": {
+      "type": "array",
+      "description": "One entry per R# — review verdict.",
+      "items": {
+        "type": "object",
+        "required": ["id", "acceptance_met", "checklist_ticked", "stories_satisfied", "issues", "fixes_applied"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "acceptance_met": {"type": "boolean"},
+          "checklist_ticked": {"type": "array", "items": {"type": "string"}},
+          "stories_satisfied": {"type": "array", "items": {"type": "string"}},
+          "issues": {"type": "array", "items": {"type": "string"}},
+          "fixes_applied": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "verification_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "passed", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "criterion": {"type": "string"},
+          "passed": {"type": "boolean"},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}

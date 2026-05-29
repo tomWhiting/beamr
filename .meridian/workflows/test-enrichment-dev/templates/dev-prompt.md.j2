@@ -1,0 +1,29 @@
+{% extends "base-prompt.md.j2" %}
+
+{% block task %}
+## Developer Task
+
+Implement every requirement above in full. Match the related-file patterns the Scout cited and respect the context notes.
+
+{% if visit_number > 1 %}
+## Resume / Retry Notice
+
+This is visit number {{ visit_number }} for the Dev step. The previous attempt did not pass checks. Re-read the diagnostics that triggered the retry, fix the root cause, and avoid repeating earlier missteps.
+
+{% if is_resume %}
+Your session was resumed — your prior context is intact.
+{% endif %}
+{% endif %}
+
+## Scout Summary
+
+{{ Scout.summary }}
+
+## Output Shape
+
+Return a JSON object matching the Dev output schema:
+
+- `summary` — 1-2 sentences on what was done.
+- `commit_message` — conventional-commits style.
+- `requirements` — one entry per R# with `id`, `status` (`implemented` or `blocked`), `files_changed`, and optional `dev_notes`.
+{% endblock %}

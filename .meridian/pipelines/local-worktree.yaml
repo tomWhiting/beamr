@@ -1,0 +1,57 @@
+name: local-worktree
+description: |
+  Worktree-on-local-disk lifecycle. Provisions a git worktree under the
+  configured `worktree_dir` when a branch enters Initializing, marks the
+  branch Ready when the worktree exists, dispatches the caller-supplied
+  workflow when the branch advances to UnderDevelopment, and tears the
+  worktree down on Merged.
+
+stages:
+  - name: initializing
+    lifecycle: Initializing
+    entry:
+      - kind: provision-worktree
+        base: "{input.base_branch}"
+        branch: "{input.branch_name}"
+    advance:
+      kind: when-entry-completes
+      to: ready
+
+  - name: ready
+    lifecycle: Ready
+    entry: []
+    advance:
+      kind: dispatch-workflow
+      workflow: "{input.workflow_name}"
+      inputs: "{input.workflow_inputs}"
+      on_dispatched:
+        lifecycle_transition: UnderDevelopment
+      on_completed:
+        lifecycle_transition: Submitted
+
+  - name: submitted
+    lifecycle: Submitted
+    entry: []
+    advance:
+      kind: await-review-complete
+      lifecycle_transition: Reviewed
+
+  - name: reviewed
+    lifecycle: Reviewed
+    entry: []
+    advance:
+      kind: dispatch-workflow
+      workflow: stack-land
+      inputs: |
+        {
+          "branch_name": "{input.branch_name}",
+          "workspace_id": "{input.workspace_id}"
+        }
+      on_completed:
+        lifecycle_transition: Merged
+
+  - name: merged
+    lifecycle: Merged
+    entry:
+      - kind: teardown-worktree
+    advance: none

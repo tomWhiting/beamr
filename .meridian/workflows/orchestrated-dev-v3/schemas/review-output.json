@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string"},
+    "commit_message": {"type": "string"},
+    "pass": {"type": "boolean", "description": "True if all criteria met."},
+    "enrichments": {
+      "type": "array",
+      "description": "One entry per R# — review verdict.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "acceptance_met": {"type": "boolean"},
+          "checklist_ticked": {"type": "array", "items": {"type": "string"}, "description": "Checklist IDs verified as done."},
+          "stories_satisfied": {"type": "array", "items": {"type": "string"}, "description": "Story IDs verified as addressed."},
+          "issues": {"type": "array", "items": {"type": "string"}, "description": "Problems found (empty if clean)."},
+          "fixes_applied": {"type": "array", "items": {"type": "string"}, "description": "Fixes made during review."}
+        },
+        "required": ["id", "acceptance_met", "checklist_ticked", "stories_satisfied", "issues", "fixes_applied"]
+      }
+    },
+    "verification_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterion": {"type": "string"},
+          "passed": {"type": "boolean"},
+          "note": {"type": "string"}
+        },
+        "required": ["criterion", "passed", "note"]
+      }
+    }
+  },
+  "required": ["summary", "commit_message", "pass", "enrichments", "verification_results"]
+}

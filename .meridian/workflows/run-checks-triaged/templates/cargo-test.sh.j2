@@ -1,0 +1,6 @@
+CRATES="{{ input.crates_affected | shell_escape }}"
+if [ -z "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+  NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --cargo-quiet --message-format libtest-json-plus --show-progress none --no-fail-fast
+else
+  NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --cargo-quiet --message-format libtest-json-plus --show-progress none --no-fail-fast $(printf -- '-p %s ' $CRATES)
+fi

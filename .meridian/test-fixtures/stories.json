@@ -1,0 +1,13 @@
+{
+  "cluster": "test-workflow",
+  "personas": [
+    {
+      "name": "Developer",
+      "role": "Debugging Diagnostics Output",
+      "stories": [
+        {"id": "S1", "text": "As a developer debugging diagnostics output, I want to see the crate version in error messages so that I can confirm which build produced the output."},
+        {"id": "S2", "text": "As a developer, I want the version to be derived from Cargo.toml so that it stays in sync without manual updates."}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cluster Checklist",
+  "description": "Verifiable requirements for a cluster, grouped by section. Each item is a concrete, testable condition.",
+  "type": "object",
+  "required": ["cluster", "sections"],
+  "properties": {
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name (e.g. messaging, diagnostics, exchange)"
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "items"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Section name grouping related items"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "text"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^C\\d+$",
+                  "description": "Item ID in format C{number}, sequential across the cluster"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Verifiable requirement text"
+                },
+                "done": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Whether this item has been delivered and landed"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

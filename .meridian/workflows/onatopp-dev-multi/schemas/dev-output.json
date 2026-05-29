@@ -1,0 +1,66 @@
+{
+  "type": "object",
+  "required": ["summary", "commit_message", "enrichments", "attestation"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {"type": "string", "description": "1-2 sentences on what was done."},
+    "commit_message": {"type": "string", "description": "Conventional-commits style."},
+    "enrichments": {
+      "type": "array",
+      "description": "One entry per R# — how it was implemented.",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "files_changed", "how_satisfied", "deviation", "checklist_status", "stories_status"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "description": "R# id"},
+          "status": {"type": "string", "enum": ["implemented", "blocked"]},
+          "files_changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "change", "note"],
+              "additionalProperties": false,
+              "properties": {
+                "path": {"type": "string"},
+                "change": {"type": "string", "enum": ["created", "modified", "deleted"]},
+                "note": {"type": "string"}
+              }
+            }
+          },
+          "how_satisfied": {"type": "string", "description": "How this requirement was met."},
+          "deviation": {"type": "string", "description": "Empty if followed plan. Otherwise: what changed and why."},
+          "checklist_status": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "done", "note"],
+              "additionalProperties": false,
+              "properties": {"id": {"type": "string"}, "done": {"type": "boolean"}, "note": {"type": "string"}}
+            }
+          },
+          "stories_status": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "satisfied", "note"],
+              "additionalProperties": false,
+              "properties": {"id": {"type": "string"}, "satisfied": {"type": "boolean"}, "note": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "required": ["no_panics", "no_unsafe", "boundaries_respected", "tests_considered"],
+      "additionalProperties": false,
+      "properties": {
+        "no_panics": {"type": "boolean"},
+        "no_unsafe": {"type": "boolean"},
+        "boundaries_respected": {"type": "boolean"},
+        "tests_considered": {"type": "boolean"}
+      }
+    }
+  }
+}

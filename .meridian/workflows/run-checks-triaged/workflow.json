@@ -1,0 +1,22 @@
+{
+  "design_system": "yggdrasil-checks",
+  "version": "0.1.0",
+  "scope": "internal",
+  "profiles": [],
+  "input": {
+    "type": "object",
+    "properties": {
+      "changed_files": {
+        "type": "string",
+        "description": "Space-joined list of files changed."
+      },
+      "crates_affected": {
+        "type": "string",
+        "description": "Space-joined list of crate names. Empty runs workspace-wide."
+      }
+    }
+  },
+  "trigger": {
+    "kind": "dispatch"
+  }
+}

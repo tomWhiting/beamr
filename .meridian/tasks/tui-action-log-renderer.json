@@ -1,0 +1,32 @@
+{
+  "title": "Action_log — add a first-class renderer (currently falls through to JSON dump)",
+  "task": "action_log is a standard registered tool but has NO entry in renderer_for, so its calls render through the unknown-tool fallback as `action_log: {raw JSON blob}`. The tool is used commonly to query level 1/2/3 audit data. Add a proper renderer with body_blocks producing readable output for each query kind: list (entries summary table), detail (one entry's args+output), context (multi-entry conversation slice), mutations (file-change ledger), follow_ups (registered actions).\n\nOUTCOME — calling action_log shows a clean per-query render: action=list as a comfy-table of recent calls (tool name + outcome glyph + description); detail/context/mutations/follow_ups each get their own minimal layout. No more JSON-dump shame.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Create crates/norn-tui/src/tools/compact.rs::ActionLogRenderer (or split into its own module if it gets large). Register it in renderer_for (crates/norn-tui/src/tools/renderer.rs at the compact tier, around line 92). Header: `action_log: {action}  ({N} entries)` where N comes from the result's entries.len() (for queries returning arrays) or omits the count for single-entry queries.",
+      "acceptance": "Unit test: renderer_for('action_log') returns Some. A query with action=list produces a header containing `action_log: list` and an entry count. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R2",
+      "description": "Implement body_blocks for action=list. Each entry has tool name, outcome, description. Render as comfy-table with columns: outcome glyph (✓ green / ✗ red / ~ dim) + tool name + truncated description. Reuse the same comfy-table style chosen for the task renderer (see tui-task-renderer-comfy-table task) — visual consistency across the TUI.",
+      "acceptance": "Unit test: a list result with 3 entries (mixed outcomes) renders a table with all three tool names and the right outcome glyphs."
+    },
+    {
+      "id": "R3",
+      "description": "Implement body_blocks for action=detail and action=context. detail returns one entry's full data (args + output JSON); render args as a Plain block with field/value pairs, output as a Plain block with the JSON pretty-printed (use serde_json::to_string_pretty). context returns multiple entries; render each entry as a small block separated by dim divider lines.",
+      "acceptance": "Unit test for detail: a query with action=detail tool_call_id=tc-1 produces a body containing the args fields and the output JSON. For context: a multi-entry result produces output with all entries' descriptions visible."
+    },
+    {
+      "id": "R4",
+      "description": "Implement body_blocks for action=mutations and action=follow_ups. mutations returns a file-change ledger — render as comfy-table with columns: file_path, tool, status (live/reverted), timestamp. follow_ups returns registered follow-up actions — render as a list with tool name + action name + tool_call_id (short).",
+      "acceptance": "Unit tests for each. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R5",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/renderer.rs — renderer_for factory (line 84). Add `\"action_log\" => Some(Box::new(ActionLogRenderer)),` in the compact tier section.\n- crates/norn-tui/src/tools/compact.rs — home for the new renderer struct. If compact.rs grows past 500 LOC, split into compact/ directory with one module per renderer (mirroring rich/).\n- crates/norn/src/tools/action_log.rs — ActionLogTool. The schema's `action` field can be: list, detail, context, mutations, follow_ups. Result shape varies per action.\n- crates/norn/src/session/action_log.rs — CompletionRecord struct (line 207ish) shows the fields each entry has: tool_name, tool_call_id, tool_use_description, outcome, output, args, duration_ms, follow_ups, post_validate_outcome.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- The action_log tool itself — its result is well-structured; just render it.\n- comfy-table from the markdown emitter — same preset for consistency.\n- The outcome glyph idea from the task-renderer brief — same five-status glyph palette where applicable (action_log uses different outcome enum but same idea).\n\nDESIGN TASTE: action_log is an audit surface — readable at a glance, no surprises, the timestamps and ids dim, the tool names and descriptions full intensity. JSON content for detail uses syntect's json grammar for tasteful colouring.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC (split if needed)."
+}

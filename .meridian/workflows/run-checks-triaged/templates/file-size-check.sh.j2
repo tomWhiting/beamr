@@ -1,0 +1,30 @@
+CHANGED="{{ input.changed_files | shell_escape }}"
+if [ -z "$(echo "$CHANGED" | tr -d '[:space:]')" ]; then
+  jq -nc --argjson limit 500 '{violations: [], oversized: 0, limit: $limit, report: ""}'
+  exit 0
+fi
+LANGS='["Rust","TypeScript","TSX","JavaScript","JSX","Python"]'
+RAW=$(tokei --output json)
+VIOLATIONS=$(echo "$RAW" | jq -c \
+  --argjson limit 500 \
+  --argjson langs "$LANGS" \
+  --arg changed "$CHANGED" '
+  ($changed | split(" ") | map(select(length > 0))) as $changed_list |
+  [ to_entries[]
+    | select(.key as $k | $langs | index($k))
+    | .value.reports[]?
+    | select(.stats.code > $limit)
+    | select(.name as $f | $changed_list | any(. as $c | $f | endswith($c)))
+    | {file: .name, loc: .stats.code}
+  ] | sort_by(-.loc)')
+OVERSIZED=$(echo "$VIOLATIONS" | jq 'length' 2>/dev/null || echo 0)
+OVERSIZED=${OVERSIZED:-0}
+REPORT=$(echo "$VIOLATIONS" | jq -r 'map("- " + .file + " (" + (.loc | tostring) + " LoC)") | join("\n")' 2>/dev/null || echo '')
+if [ "$OVERSIZED" = "0" ]; then
+  jq -nc --argjson limit 500 '{violations: [], oversized: 0, limit: $limit, report: ""}'
+  exit 0
+else
+  jq -nc --argjson v "$VIOLATIONS" --argjson o "$OVERSIZED" --argjson limit 500 --arg r "$REPORT" \
+    '{violations: $v, oversized: $o, limit: $limit, report: $r}'
+  exit 1
+fi

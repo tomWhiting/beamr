@@ -1,0 +1,170 @@
+name: dev-only-test
+description: |
+  Dev-only test — skips Scout, Plan, Create Tasks. Goes straight to Dev
+  with the brief, then Commit+Fix and Run Checks. For validating the
+  Dev → checks → harden → review pipeline without the front stages.
+
+input:
+  brief:
+    type: text
+    required: true
+    description: "Brief JSON."
+  design_content:
+    type: text
+    required: false
+    description: Design document content.
+  notify:
+    type: text
+    required: false
+    description: Member name to notify on completion.
+  run-name:
+    type: text
+    required: false
+    description: Label for the notification DM.
+
+steps:
+  - name: Dev
+    kind: action
+    target: function
+    profile: workflow-developer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "summary": {"type": "string"},
+          "commit_message": {"type": "string"},
+          "enrichments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {"type": "string"},
+                "status": {"type": "string", "enum": ["implemented", "blocked"]},
+                "files_changed": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {"type": "string"},
+                      "change": {"type": "string", "enum": ["created", "modified", "deleted"]},
+                      "note": {"type": "string"}
+                    },
+                    "required": ["path", "change", "note"]
+                  }
+                },
+                "how_satisfied": {"type": "string"},
+                "deviation": {"type": "string"}
+              },
+              "required": ["id", "status", "files_changed", "how_satisfied", "deviation"]
+            }
+          }
+        },
+        "required": ["summary", "commit_message", "enrichments"]
+      }
+    prompt: |
+      Implement the brief below.
+
+      {?input.design_content}
+      ## Design Document
+
+      {input.design_content}
+      {/}
+
+      # {input.brief.id}: {input.brief.title}
+
+      ## Purpose
+
+      {input.brief.purpose}
+
+      ## Task
+
+      {input.brief.task}
+
+      ## Requirements
+
+      {#each input.brief.requirements as r}
+      ### {r.id}: {r.title}
+
+      {r.spec}
+
+      Acceptance:
+      {#each r.acceptance as a}
+      - {a}
+      {/each}
+
+      Files to create: {r.files.create[*]}
+      Files to modify: {r.files.modify[*]}
+      {/each}
+
+      ## Boundaries
+
+      {#each input.brief.boundaries as b}
+      - {b}
+      {/each}
+    merge:
+      from: enrichments
+      into: input.brief.requirements
+      key: id
+    routes:
+      success: Commit and Fix
+      failure: Done
+
+  - name: Commit and Fix
+    kind: execute
+    command: |
+      UNSTAGED=$(git diff --name-only)
+      UNTRACKED=$(git ls-files --others --exclude-standard)
+      ALL_CHANGED="$UNSTAGED $UNTRACKED"
+      CRATES=$(echo "$ALL_CHANGED" | tr ' ' '\n' | grep '^crates/.*\.rs$' | cut -d/ -f1-2 | sort -u | while read dir; do
+        if [ -f "$dir/Cargo.toml" ]; then
+          grep '^name' "$dir/Cargo.toml" | head -1 | sed 's/name *= *"//;s/"//g'
+        fi
+      done | sort -u | tr '\n' ' ')
+      if [ -z "$(echo "$ALL_CHANGED" | tr -d '[:space:]')" ]; then
+        printf '{"committed":false,"crates_affected":"","changed_files":""}\n'
+      else
+        if [ -n "$CRATES" ]; then
+          cargo clippy --all-targets --fix --allow-dirty --allow-staged $(printf -- '-p %s ' $CRATES) -- -D warnings 2>&1 || true
+          cargo fmt --workspace 2>&1
+        fi
+        git add -A
+        COMMIT_MSG_FILE=$(mktemp)
+        cat > "$COMMIT_MSG_FILE" <<'__YGG_COMMIT_MSG__'
+      {raw:Dev.commit_message}
+      __YGG_COMMIT_MSG__
+        git commit -F "$COMMIT_MSG_FILE" --no-verify 2>&1 || true
+        rm -f "$COMMIT_MSG_FILE"
+        CHANGED_FILES=$(git diff --name-only HEAD~1 2>/dev/null | tr '\n' ' ')
+        printf '{"committed":true,"crates_affected":"%s","changed_files":"%s"}\n' "$CRATES" "$CHANGED_FILES"
+      fi
+    parser: json
+    routes:
+      success: Run Checks
+      failure: Run Checks
+
+  - name: Run Checks
+    kind: dispatch
+    workflow: run-checks-and-tests
+    inputs:
+      scope: dev
+      crates_affected: "{Commit and Fix.data.crates_affected}"
+      changed_files: "{Commit and Fix.data.changed_files}"
+    routes:
+      success: Done
+      failure: Done
+
+  - name: Done
+    kind: execute
+    command: |
+      echo "Dev-only test complete: {input.brief.id}"
+      MEMBER="{input.notify}"
+      if [ -n "$MEMBER" ] && [ "${MEMBER#\{}" = "$MEMBER" ]; then
+        collective send --as "Meridian" --to "$MEMBER" --subject "dev-only-test complete: {input.brief.id}" --message "Dev: {Dev.summary}" || true
+      fi
+    parser: exit-code
+    routes:
+      success: End
+      failure: End
+
+  - name: End
+    kind: end

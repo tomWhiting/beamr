@@ -1,0 +1,157 @@
+name: merge-challenge
+description: >-
+  Adversarial challenge loop for the structural merge engine. A tester agent
+  generates increasingly nasty merge scenarios, runs them through the engine,
+  and checks correctness. Failures are fed to a developer agent who fixes the
+  engine. Loops until the tester can't break it.
+
+input:
+  brief:
+    type: text
+    required: true
+    description: Focus area or specific merge scenarios to test
+
+steps:
+  - name: Generate Challenges
+    kind: action
+    target: function
+    model: opus
+    profile: workflow-developer
+    prompt: |
+      You are an adversarial tester for a structural merge engine in the Yggdrasil project
+      at the current working directory.
+
+      The merge engine is in crates/libyggd/src/merge/. It does AST-aware three-way merge
+      for Rust, TypeScript, Python, Go, and other languages.
+
+      Your job: generate 5-10 challenging merge test cases that try to BREAK the engine.
+      Write them as Rust integration tests in a new file: crates/libyggd/tests/merge_challenge.rs
+
+      Each test should:
+      1. Define base, ours, theirs content for a specific language
+      2. Call structural_merge(base, ours, theirs, language)
+      3. Assert correctness: no data loss, correct conflict markers, proper entity handling
+
+      Focus on: {input.brief}
+
+      Think about edge cases that might break:
+      - Doc comments and their association with entities
+      - Interstitial content (blank lines, standalone comments between functions)
+      - Nested containers (impl blocks with methods, classes with methods)
+      - Rename detection with body changes
+      - Decorator/annotation merge across languages
+      - Import commutativity with multi-line imports
+      - Mixed scenarios (some entities conflict, some don't, some are renamed)
+      - Pathological inputs (very long entities, deeply nested, many same-named entities)
+      - Unicode in entity names and content
+      - Files that start or end with comments
+      - Entities with no body (forward declarations, type aliases)
+
+      Write the actual test file. Make sure tests compile and are correct.
+      Use #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] at the top.
+    routes:
+      success: Build Challenges
+
+  - name: Build Challenges
+    use: cargo-check
+    routes:
+      success: Run Challenges
+      failure: Fix Challenge Code
+
+  - name: Fix Challenge Code
+    kind: action
+    target: function
+    profile: workflow-developer
+    prompt: |
+      The challenge test file failed to compile. Fix the compilation errors.
+      Do NOT weaken the tests — fix the test code so it compiles correctly while
+      still testing the same scenarios.
+
+      Errors:
+      {Build Challenges.raw}
+    routes:
+      success: Build Challenges
+    escalation:
+      success[3]: Run Challenges
+
+  - name: Run Challenges
+    kind: execute
+    command: >-
+      cargo test -p libyggd --test merge_challenge -- --format=json -Z unstable-options 2>&1
+    parser: rust-test-results
+    routes:
+      success: Analyse Results
+      failure: Analyse Results
+
+  - name: Analyse Results
+    kind: action
+    target: function
+    model: opus
+    profile: workflow-developer
+    prompt: |
+      Review the challenge test results. Some tests may have PASSED (the engine handled
+      the scenario correctly) and some may have FAILED (the engine has a bug).
+
+      Test results:
+      {Run Challenges.raw}
+
+      For each FAILING test:
+      1. Explain what the test was checking
+      2. Explain what went wrong (what the engine produced vs what was expected)
+      3. Classify the severity: data loss, incorrect conflict markers, silent failure, or cosmetic
+
+      For each PASSING test:
+      1. Briefly note what was tested
+
+      At the end, provide a summary: how many passed, how many failed, and what the
+      most serious issues are.
+
+      If ALL tests passed: say "ALL CHALLENGES PASSED" and suggest even harder scenarios.
+      If tests failed: describe the fixes needed.
+    routes:
+      success: Fix Engine
+      failure: Done
+
+  - name: Fix Engine
+    kind: action
+    target: function
+    model: opus
+    profile: workflow-developer
+    prompt: |
+      The challenge tests revealed bugs in the structural merge engine. Fix them.
+
+      Analysis:
+      {Analyse Results.response}
+
+      Test failures:
+      {Run Challenges.raw}
+
+      Fix the engine code in crates/libyggd/src/merge/ to make the failing tests pass.
+      Do NOT modify the test expectations — fix the engine, not the tests.
+      Make sure all existing tests still pass too (cargo test --workspace).
+
+      If the analysis says "ALL CHALLENGES PASSED", instead of fixing anything,
+      generate 5 MORE even harder test cases and add them to merge_challenge.rs.
+    routes:
+      success: Verify Fix
+
+  - name: Verify Fix
+    kind: execute
+    command: cargo test --workspace -- --format=json -Z unstable-options 2>&1
+    parser: rust-test-results
+    routes:
+      success: Verify Clippy
+      failure: Fix Engine
+    escalation:
+      success[5]: Done
+
+  - name: Verify Clippy
+    kind: execute
+    command: cargo clippy --workspace --all-targets --message-format=json -q -- -D warnings 2>&1
+    parser: rust-diagnostics
+    routes:
+      success: Run Challenges
+      failure: Fix Engine
+
+  - name: Done
+    kind: end

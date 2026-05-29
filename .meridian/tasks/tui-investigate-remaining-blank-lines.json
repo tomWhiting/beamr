@@ -1,0 +1,27 @@
+{
+  "title": "Investigate remaining blank-line artifacts in tool output",
+  "task": "After the c3ca688f fix (hide read body, strip trailing newline from highlighter input), Tom is STILL seeing spaces between lines in some tool output. Investigate the remaining sources of blank-line artifacts and fix them.\n\nOUTCOME — no `│` lines with no content after, no blank rows between content lines, anywhere in the tool-call render. The text renders cleanly with one terminal row per logical content line.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Reproduce. Run norn-tui interactively (or via the integration test harness) with a few tool calls — edit, bash, search, write — and capture the byte stream emitted to the scroll region. Look for `\\n\\n` patterns and identify which renderer / which code path produced each occurrence. Capture the full output to a temp file for diff inspection.",
+      "acceptance": "A list (in the structured-output concerns array, or in a docs/reports/ note) of every observed blank-line pattern with: tool name, code path that produced it, byte-offset evidence."
+    },
+    {
+      "id": "R2",
+      "description": "Likely suspects to audit:\n(a) BashRenderer::body — when stdout ends with newline AND we render with body.lines() in write_tool_result. The bash body itself may have trailing \\n that yields an empty last entry from lines() (which would then prefix-and-output a `\\n`).\n(b) The Plain hunk-header in EditRenderer that I added (`\\x1b[2m@@ {sym} @@\\x1b[22m\\n`) — when followed by the Diff block's per-line output, the writer might be writing the hunk header's trailing \\n AS a line, then the first diff line — but if the hunk header text is single-line, body.lines() splits cleanly, so this shouldn't blank-line.\n(c) Tool result Plain fallback — `let json = serde_json::to_string(output)...` may have embedded \\n if the JSON contains them (it doesn't normally, but verify).\n(d) The synthesised newline between successive tool results in the dispatch path (around line 542 — `write_to_scroll(\"\\n\", ...)` if text_streamed_this_turn or last_was_tool_result).\nMost likely is (a) — bash stdout that ends with \\n produces a trailing empty line.",
+      "acceptance": "Each suspect verified or eliminated with a unit test or a code-trace note."
+    },
+    {
+      "id": "R3",
+      "description": "Fix every confirmed source. The general principle: a renderer's body MUST not have trailing whitespace lines. Strip body.trim_end_matches('\\n') before the write_tool_result loop iterates body.lines(). Add this in dispatch.rs immediately after the body is computed but before the for-loop.",
+      "acceptance": "Unit test: a renderer body=\"line1\\nline2\\n\\n\" iterated through write_tool_result produces exactly two output lines, no trailing blank `│` or indent-only rows."
+    },
+    {
+      "id": "R4",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/app/dispatch.rs — write_tool_result (line 530+). The body.lines() loop is at line 587.\n- crates/norn-tui/src/tools/rich/*.rs — all the body() / body_blocks() implementations. Each could be a source.\n- crates/norn-tui/src/render/content.rs — render_blocks pipeline. After the recent fix it should not emit `\\n\\n`. Verify.\n\nRECENT FIX CONTEXT:\n- c3ca688f stripped the trailing newline from highlighter input in render_diff and render_code's line-numbered path. Read body was hidden. The blank lines from THOSE specific paths are gone.\n- 7aa4f76c added the @@ hunk header Plain block above edit's Diff block.\n- a4bd4b59 flipped the verbosity default to Expanded.\n\nWHAT'S ALREADY CORRECT:\n- The render_diff fix (lines 137-158 in render/content.rs after the fix).\n- The render_code fix.\n- The read body hiding.\n\nNOTE: Tom may be looking at output from a PARTIALLY OLD session captured before the c3ca688f restart. If the bash body has its own trailing-newline issue, that's a new fix to land. Otherwise R3's blanket trim_end_matches in dispatch.rs is the surest guard against the whole class of bugs.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

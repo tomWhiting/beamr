@@ -1,0 +1,14 @@
+name: code-stats
+format: json
+schema: |
+  {
+    "type": "object",
+    "properties": {
+      "count": {"type": "integer"},
+      "files": {"type": "integer"}
+    },
+    "required": ["count"]
+  }
+return:
+  count: count
+  files: files

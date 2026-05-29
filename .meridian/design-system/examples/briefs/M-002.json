@@ -1,0 +1,83 @@
+{
+  "id": "M-002",
+  "cluster": "messaging",
+  "title": "Move storage traits and models",
+  "depends_on": ["M-001"],
+  "blocked_by": [],
+  "checklist": ["C4", "C5", "C6", "C7"],
+  "stories": ["S7"],
+  "purpose": "Establish the storage contract in libmessage so that PG and Redis implementations can target a stable trait surface owned by the messaging domain, not the storage crate.",
+  "task": "Move the StorageError enum, the MessagingStorage trait, and all model types (inbox items, notification records, read status) from meridian-services into libmessage/src/storage/. Update all downstream crates to import from the new location. Fix the notification bug where read-status updates don't clear the notification entry (C7 — one-line fix in the file being moved).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Move StorageError to libmessage",
+      "spec": "WHEN any libmessage operation encounters a storage failure THE SYSTEM SHALL return a StorageError from libmessage::storage::error AND it SHALL NOT reference meridian_storage error types directly.",
+      "acceptance": [
+        "StorageError defined in libmessage::storage::error",
+        "All downstream crates compile against the new path"
+      ],
+      "files": {
+        "create": ["crates/libmessage/src/storage/error.rs"],
+        "modify": ["crates/meridian-storage-pg/src/messaging.rs"]
+      },
+      "checklist": ["C4"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R2",
+      "title": "Move MessagingStorage trait",
+      "spec": "WHEN a service needs to persist or retrieve messaging data THE SYSTEM SHALL use the MessagingStorage trait from libmessage::storage::traits AND it SHALL NOT import storage traits from meridian-services.",
+      "acceptance": [
+        "MessagingStorage trait defined in libmessage::storage::traits",
+        "PG implementation compiles against the new trait location"
+      ],
+      "files": {
+        "create": ["crates/libmessage/src/storage/traits.rs"],
+        "modify": ["crates/meridian-storage-pg/src/messaging.rs", "crates/meridian-services/src/messaging/mod.rs"]
+      },
+      "checklist": ["C5"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Move model types",
+      "spec": "WHEN any crate needs messaging model types (inbox items, notification records, read status) THE SYSTEM SHALL import them from libmessage::storage::models AND it SHALL NOT import them from meridian-services::messaging.",
+      "acceptance": [
+        "All model types defined in libmessage::storage::models",
+        "No downstream crate imports model types from the old location"
+      ],
+      "files": {
+        "create": ["crates/libmessage/src/storage/models.rs"],
+        "modify": ["crates/meridian-services/src/messaging/mod.rs", "crates/meridian-storage-pg/src/messaging.rs", "crates/meridian-storage-redis/src/messaging.rs"]
+      },
+      "checklist": ["C6"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Fix notification read-status bug",
+      "spec": "WHEN a message's read status is updated THE SYSTEM SHALL also delete the corresponding notification entry AND it SHALL NOT leave stale notifications after read-status changes.",
+      "acceptance": [
+        "read_status update clears the matching notification row",
+        "No stale notifications remain after marking a message as read"
+      ],
+      "files": {
+        "modify": ["crates/libmessage/src/storage/traits.rs"]
+      },
+      "checklist": ["C7"],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add new storage operations (M-003 scope)",
+    "SHALL NOT change the StorageError variant set",
+    "SHALL NOT modify the PG migration files"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "no imports of meridian_services::messaging::StorageError remain (grep confirms)",
+    "all downstream crates compile against the new paths",
+    "notification bug fix verified: read-status update clears notification entry"
+  ]
+}

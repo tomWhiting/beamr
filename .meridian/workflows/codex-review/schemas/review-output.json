@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "issues_found", "major_concerns"],
+      "description": "Overall verdict"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "requirement_id": {"type": "string"},
+          "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+          "description": {"type": "string"},
+          "suggestion": {"type": "string"}
+        },
+        "required": ["requirement_id", "severity", "description"]
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "One-paragraph summary of the review"
+    }
+  },
+  "required": ["verdict", "issues", "summary"]
+}

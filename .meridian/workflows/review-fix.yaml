@@ -1,0 +1,149 @@
+name: review-fix
+description: Fix review findings on a branch. A workflow-developer reads the findings, plans the fixes, applies them (Write/Edit are allowed for this profile), then dispatches run-checks-and-tests (brief 176) to verify the fix does not regress anything. Fix Verdict is the terminal step and gates on both "fix applied" and "checks passed".
+
+input:
+  branch:
+    type: text
+    required: true
+    description: Branch being fixed.
+  brief:
+    type: text
+    required: true
+    description: The originating brief — context for the developer.
+  original_diff:
+    type: text
+    required: false
+    description: The diff the reviewers read. Included so the developer can see what was originally proposed without re-running git.
+  findings:
+    type: text
+    required: true
+    description: Structured findings array (from review-synthesize.findings_to_address or mechanical-review.findings) that the developer must address.
+
+steps:
+  - name: Plan Fix
+    kind: action
+    target: function
+    profile: workflow-developer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {"type": "integer"},
+                "finding_ref": {"type": "string"},
+                "file": {"type": "string"},
+                "change": {"type": "string"}
+              },
+              "required": ["step", "finding_ref", "file", "change"]
+            }
+          },
+          "summary": {"type": "string"}
+        },
+        "required": ["plan", "summary"]
+      }
+    prompt: |
+      Read the findings below and produce a concise, numbered plan for fixing them. Do NOT write any code yet — this step is plan only. Apply Fix will execute the plan.
+
+      Branch: {input.branch}
+      Brief: {input.brief}
+
+      Original diff (what was proposed when these findings were raised):
+      {input.original_diff}
+
+      Findings to address:
+      {input.findings}
+
+      For each step in your plan, reference the finding it addresses, the file it touches, and the change you will make.
+
+      ## RESPONSE FORMAT
+
+      Your entire response MUST be a single JSON object matching the output_schema above, and nothing else. Start with `{` and end with `}`.
+    routes:
+      success: Apply Fix
+      failure: Apply Fix
+
+  - name: Apply Fix
+    kind: action
+    target: function
+    profile: workflow-developer
+    output_schema: |
+      {
+        "type": "object",
+        "properties": {
+          "applied": {"type": "boolean"},
+          "files_changed": {"type": "array", "items": {"type": "string"}},
+          "summary": {"type": "string"}
+        },
+        "required": ["applied", "files_changed", "summary"]
+      }
+    prompt: |
+      Apply the fix plan from the previous step. You have Write and Edit tools available. Do NOT run cargo, git, just, bun, or npm — the workflow will run checks after you finish.
+
+      Branch: {input.branch}
+      Brief: {input.brief}
+
+      Findings:
+      {input.findings}
+
+      Plan:
+      {Plan Fix.plan}
+
+      `applied` = true only if every finding's planned change was actually written. Report the list of files you touched so the workflow can scope its checks.
+
+      ## RESPONSE FORMAT
+
+      Your entire response MUST be a single JSON object matching the output_schema above, and nothing else. Start with `{` and end with `}`.
+    routes:
+      success: Capture Diff
+      failure: Capture Diff
+
+  # Capture the applied diff and carry the apply summary into a single
+  # JSON blob — both workflow outputs (`new_diff`, `summary`) sourced
+  # from this one step keeps the `from:` references single-shot.
+  - name: Capture Diff
+    kind: execute
+    command: >-
+      DIFF=$(git diff);
+      SUMMARY='{raw:Apply Fix.summary}';
+      jq -nc --arg diff "$DIFF" --arg summary "$SUMMARY"
+      '{new_diff: $diff, summary: $summary}'
+    parser: json
+    routes:
+      success: Run Checks
+      failure: Run Checks
+
+  # Run the full check cluster workspace-wide. The child workflow
+  # uses its own Detect Changes + crate-scoping internally when given
+  # explicit inputs; here we let it run workspace-wide because the
+  # fix may span crates and this step runs rarely.
+  - name: Run Checks
+    kind: dispatch
+    workflow: run-checks-and-tests
+    routes:
+      success: Fix Verdict
+      failure: Fix Verdict
+
+  # Terminal step — both the developer must claim `applied: true` AND
+  # the dispatched checks must pass. The engine uses this step's
+  # outcome to set the workflow's overall success/failure.
+  - name: Fix Verdict
+    kind: evaluate
+    mode: check
+    criteria: |
+      {Apply Fix.applied} == true
+      {Run Checks.pass} == true
+
+outputs:
+  pass:
+    type: boolean
+    from: "{Fix Verdict.passed}"
+  summary:
+    type: string
+    from: "{Capture Diff.data.summary}"
+  new_diff:
+    type: string
+    from: "{Capture Diff.data.new_diff}"

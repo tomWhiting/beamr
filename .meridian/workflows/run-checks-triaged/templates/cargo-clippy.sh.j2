@@ -1,0 +1,75 @@
+CRATES="{{ input.crates_affected | shell_escape }}"
+CLIPPY_EXIT=0
+if [ -z "$(echo "$CRATES" | tr -d '[:space:]')" ]; then
+  CLIPPY_OUT=$(cargo clippy --all-targets --message-format=json -q -- -D warnings 2>/dev/null) || CLIPPY_EXIT=$?
+else
+  CLIPPY_OUT=$(cargo clippy --all-targets --message-format=json -q $(printf -- '-p %s ' $CRATES) -- -D warnings 2>/dev/null) || CLIPPY_EXIT=$?
+fi
+
+BLOCKING_CODES='["clippy::unwrap_used","clippy::expect_used","clippy::get_unwrap","clippy::panic","clippy::todo","clippy::unimplemented","clippy::unreachable","clippy::future_not_send"]'
+
+if [ -z "$CLIPPY_OUT" ] && [ "$CLIPPY_EXIT" -ne 0 ]; then
+  jq -nc --argjson exit_code "$CLIPPY_EXIT" \
+    '{blocking_count:1,deferred_count:0,blocking_report:("cargo clippy crashed (exit " + ($exit_code|tostring) + "). Toolchain issue, not a lint failure."),deferred_report:"",total_count:1}'
+  exit 1
+fi
+
+if [ -z "$CLIPPY_OUT" ]; then
+  jq -nc '{blocking_count:0,deferred_count:0,blocking_report:"",deferred_report:"",total_count:0}'
+  exit 0
+fi
+
+ALL_DIAGS=$(echo "$CLIPPY_OUT" | jq -c '
+  select(.reason == "compiler-message") |
+  select(.message.level == "error" or .message.level == "warning") |
+  select(.message.message | test("generated [0-9]+ warning") | not) |
+  {
+    lint: (.message.code.code // "compile-error"),
+    level: .message.level,
+    msg: .message.message,
+    file: (.message.spans[0].file_name // "unknown"),
+    line: (.message.spans[0].line_start // 0)
+  }' 2>/dev/null || true)
+
+if [ -z "$ALL_DIAGS" ]; then
+  jq -nc '{blocking_count:0,deferred_count:0,blocking_report:"",deferred_report:"",total_count:0}'
+  exit 0
+fi
+
+BLOCKING=$(echo "$ALL_DIAGS" | jq -c --argjson codes "$BLOCKING_CODES" '
+  select(.level == "error" or (.lint as $l | $codes | index($l) != null))
+' 2>/dev/null || true)
+
+DEFERRED=$(echo "$ALL_DIAGS" | jq -c --argjson codes "$BLOCKING_CODES" '
+  select(.level != "error") |
+  select(.lint as $l | $codes | index($l) == null)
+' 2>/dev/null || true)
+
+if [ -n "$BLOCKING" ]; then
+  BLOCKING_COUNT=$(echo "$BLOCKING" | wc -l | tr -d ' ')
+  BLOCKING_REPORT=$(echo "$BLOCKING" | jq -r '"- \(.file):\(.line) [\(.lint)] \(.msg)"' 2>/dev/null)
+else
+  BLOCKING_COUNT=0
+  BLOCKING_REPORT=""
+fi
+
+if [ -n "$DEFERRED" ]; then
+  DEFERRED_COUNT=$(echo "$DEFERRED" | wc -l | tr -d ' ')
+  DEFERRED_REPORT=$(echo "$DEFERRED" | jq -r '"- \(.file):\(.line) [\(.lint)] \(.msg)"' 2>/dev/null)
+else
+  DEFERRED_COUNT=0
+  DEFERRED_REPORT=""
+fi
+
+jq -nc \
+  --argjson bc "$BLOCKING_COUNT" \
+  --argjson dc "$DEFERRED_COUNT" \
+  --arg br "$BLOCKING_REPORT" \
+  --arg dr "$DEFERRED_REPORT" \
+  '{blocking_count:$bc,deferred_count:$dc,blocking_report:$br,deferred_report:$dr,total_count:($bc+$dc)}'
+
+if [ "$BLOCKING_COUNT" -gt 0 ]; then
+  exit 1
+else
+  exit 0
+fi

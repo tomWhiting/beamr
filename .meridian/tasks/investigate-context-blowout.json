@@ -1,0 +1,27 @@
+{
+  "title": "Investigate which tool calls are blowing out the context window",
+  "task": "Analyze a Norn session JSONL file to find which tool calls produced the largest outputs and are responsible for context window exhaustion. The file is a JSON Lines format where each line is a session event. Tool results are the primary suspects — find the ones with the largest content.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Read the JSONL file at /Users/tom/.norn/sessions/18ca2468-5943-4cf0-be75-f6d44e8f511a/scout.jsonl. Each line is a JSON object representing a session event. Parse each line and identify all ToolResult events.",
+      "acceptance": "Report the total number of events and the number of ToolResult events found"
+    },
+    {
+      "id": "R2",
+      "description": "For each ToolResult event, calculate the character count of the content/output field. Sort by size descending. Report the top 10 largest tool results with: the tool name, the character count, and the first 200 characters of the content so we can see what the tool was returning.",
+      "acceptance": "A ranked list of the top 10 largest tool results by character count with tool name, size, and content preview"
+    },
+    {
+      "id": "R3",
+      "description": "Calculate the total characters across ALL tool results combined. Report what percentage of total session content is tool results vs assistant messages vs user messages. This tells us how much of the context is being consumed by tool output.",
+      "acceptance": "Breakdown of total characters by event type (tool results, assistant messages, user messages, other)"
+    },
+    {
+      "id": "R4",
+      "description": "For any tool result over 5,000 characters, report specifically: the tool name, the command or arguments that were passed to it, the output size, and whether this looks like something that should have been capped or handled differently.",
+      "acceptance": "Detailed report on every tool result over 5,000 characters with tool name, args, size, and assessment"
+    }
+  ],
+  "context": "This is a Norn agent session file from a quick-scout workflow that kept exhausting its context window. The session used gpt-5.5 to investigate compaction approaches across 11 reference harness codebases at /Users/tom/Developer/tools/harness/. We suspect tool results (especially bash and read) are returning too much data. The file is at /Users/tom/.norn/sessions/18ca2468-5943-4cf0-be75-f6d44e8f511a/scout.jsonl — do NOT modify it, only read and analyze."
+}

@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": ["summary", "commit_message", "enrichments"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {"type": "string"},
+    "commit_message": {"type": "string"},
+    "enrichments": {
+      "type": "array",
+      "description": "One entry per R# — hardening assessment.",
+      "items": {
+        "type": "object",
+        "required": ["id", "alignment", "issues_found", "fixes_applied"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "alignment": {"type": "string", "enum": ["aligned", "drifted", "fixed"]},
+          "issues_found": {"type": "array", "items": {"type": "string"}},
+          "fixes_applied": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

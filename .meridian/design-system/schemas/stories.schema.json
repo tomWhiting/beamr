@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cluster User Stories",
+  "description": "User stories grouped by persona. Each story describes what a persona needs and why.",
+  "type": "object",
+  "required": ["cluster", "personas"],
+  "properties": {
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name (e.g. messaging, diagnostics, exchange)"
+    },
+    "personas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "role", "stories"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Persona name (e.g. AI Agent, Human Administrator)"
+          },
+          "role": {
+            "type": "string",
+            "description": "Role description (e.g. Triaging an Inbox, Managing Members)"
+          },
+          "stories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "text"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^S\\d+$",
+                  "description": "Story ID in format S{number}, sequential across the cluster"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Full story text in 'As X, I want Y so that Z' format"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

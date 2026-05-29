@@ -1,0 +1,22 @@
+mkdir -p .yggdrasil/test-output
+{% if scout is defined %}cat > .yggdrasil/test-output/scout-output.json <<'__YGG_SCOUT_OUT__'
+{{ scout | tojson }}
+__YGG_SCOUT_OUT__
+echo "Saved scout output"
+{% endif %}
+{% if dev is defined %}cat > .yggdrasil/test-output/dev-output.json <<'__YGG_DEV_OUT__'
+{{ dev | tojson }}
+__YGG_DEV_OUT__
+echo "Saved dev output"
+{% endif %}
+{% if harden is defined %}cat > .yggdrasil/test-output/harden-output.json <<'__YGG_HARDEN_OUT__'
+{{ harden | tojson }}
+__YGG_HARDEN_OUT__
+echo "Saved harden output"
+{% endif %}
+{% if review is defined %}cat > .yggdrasil/test-output/review-output.json <<'__YGG_REVIEW_OUT__'
+{{ review | tojson }}
+__YGG_REVIEW_OUT__
+echo "Saved review output"
+{% endif %}
+echo "Output save complete"

@@ -1,0 +1,27 @@
+{
+  "title": "Task renderer — render list / children / ancestors as a comfy-table",
+  "task": "TaskRenderer (crates/norn-tui/src/tools/compact.rs around line 184) currently shows ONLY single-task results (`task: {action} \"{description}\"  ({status})`). The task tool also has list / children / ancestors / list_groups actions that return ARRAYS of task entries — the renderer ignores them, so calling `task` with action=list dumps the count silently into the header without showing the tasks. Fix: render arrays as a comfy-table.\n\nOUTCOME — `task` action=list shows a small bordered table with columns: status glyph, id (short), description (truncated to ~50 char width), status text. Same shape for children/ancestors. comfy-table is already a workspace dep (used in the markdown renderer for tables). Use a borderless or minimal preset so the table reads quietly.",
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Implement body / body_blocks for TaskRenderer when args.action is in {list, children, ancestors, list_groups}. Read result.tasks (or result.groups for list_groups) as the array. For each entry construct a row: status_glyph + entry.id[..8] + truncate_preview(entry.description, ~50) + entry.status. Render via comfy-table with the same preset used by the markdown table renderer (look at crates/norn-tui/src/render/markdown/emitter.rs for the existing comfy-table style for consistency).",
+      "acceptance": "Unit test: a list action with 3 tasks produces a body containing all three descriptions and all three status values. Empty tasks array renders an empty table (or omits the body). The single-task actions (create/get/update/complete/claim) still render via the existing header — no body for those (header already carries the description)."
+    },
+    {
+      "id": "R2",
+      "description": "Status glyphs. Map TaskStatus to a small coloured circle: pending=dim ●, in_progress=blue ●, completed=green ●, blocked=amber ●, failed=red ●. Reuse the existing colour constants from tools/helpers.rs (RED, AMBER, GREEN — add a BLUE constant if not already present). Define a small helper `task_status_glyph(status: &str) -> String` in compact.rs.",
+      "acceptance": "Unit test: each of the five statuses returns a string containing the U+25CF BLACK CIRCLE character with the right SGR colour. The glyph is one display column wide (verified by unicode-width = 1)."
+    },
+    {
+      "id": "R3",
+      "description": "Header tweak for the list action. Instead of just `task: list`, show `task: list  {N} tasks  ({duration})` where N is result.tasks.len(). Same for children/ancestors/list_groups. The single-task actions keep their existing description-based header.",
+      "acceptance": "Unit test: a list action with 5 tasks produces header containing `5 tasks`. An empty list produces `0 tasks`. cargo test -p norn-tui passes."
+    },
+    {
+      "id": "R4",
+      "description": "Gates pass: cargo check -p norn-tui; cargo clippy -p norn-tui --all-targets -- -D warnings; cargo test -p norn-tui; grep TODO/FIXME/HACK in changed files returns zero.",
+      "acceptance": "All four gates clean."
+    }
+  ],
+  "context": "FILES:\n- crates/norn-tui/src/tools/compact.rs — TaskRenderer at line 184.\n- crates/norn-tui/src/render/markdown/emitter.rs — existing comfy-table usage for markdown tables (search for `comfy_table::` or `Table::new()`). Match its preset/style.\n- crates/norn/src/tools/task/tool.rs — TaskTool. Result for list: `{action: 'list', tasks: [entry_json...]}`. Entry shape: {id, description, status, ...}.\n- crates/norn/src/tools/task/types.rs — TaskStatus enum: Pending / InProgress / Completed / Blocked / Failed.\n\nWHAT'S ALREADY CORRECT — don't reinvent:\n- comfy-table integration in the markdown emitter — REUSE the style for consistency.\n- The single-task header path (create/get/etc.) — preserve.\n- The streaming header — preserve.\n\nDESIGN TASTE: small, calm, READABLE. Use comfy-table's UTF8_HORIZONTAL_ONLY preset or similar — no heavy borders. The status glyph carries the eye; the description carries the meaning; the id is just for cross-reference and renders dim.\n\nSTANDARDS: no unwrap/expect/panic/todo; pedantic clippy clean; no TODO/FIXME/HACK; files under 500 LOC."
+}

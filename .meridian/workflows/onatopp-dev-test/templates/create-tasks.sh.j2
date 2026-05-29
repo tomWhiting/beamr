@@ -1,0 +1,15 @@
+TASK_DIR="$HOME/.claude/tasks/{{ input.brief.id | shell_escape }}"
+echo "Scout summary: {{ scout.summary | shell_escape }}"
+rm -rf "$TASK_DIR"
+mkdir -p "$TASK_DIR"
+TMPJSON=$(mktemp)
+cat > "$TMPJSON" <<'__YGG_TASKS_END__'
+{{ scout.tasks | tojson }}
+__YGG_TASKS_END__
+TOTAL=$(jq length "$TMPJSON")
+for i in $(seq 0 $((TOTAL - 1))); do
+  ID=$(jq -r ".[$i].id" "$TMPJSON")
+  jq ".[$i]" "$TMPJSON" > "$TASK_DIR/$ID.json"
+done
+rm -f "$TMPJSON"
+echo "Created $TOTAL tasks"

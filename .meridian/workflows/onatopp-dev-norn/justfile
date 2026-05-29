@@ -1,0 +1,301 @@
+# onatopp-dev-norn — CLI-based pipeline
+#
+# Same pipeline as workflow.rhai but using norn headless CLI instead of
+# in-process run_step_norn. Scout → Dev → Commit → Review → Commit → Done.
+#
+# Usage:
+#   just -f .meridian/workflows/onatopp-dev-norn/justfile run <brief.json> [design.json]
+#   just -f .meridian/workflows/onatopp-dev-norn/justfile scout <brief.json> [design.json]
+#   just -f .meridian/workflows/onatopp-dev-norn/justfile dev <brief.json> [design.json]
+#   just -f .meridian/workflows/onatopp-dev-norn/justfile review <brief.json> [design.json]
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+workflow_dir := ".meridian/workflows/onatopp-dev-norn"
+scripts_dir := workflow_dir / "scripts"
+schema_dir := ".run/schemas"
+work_dir := ".run"
+
+# Full pipeline: scout → dev → commit → review → commit
+run brief design="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{work_dir}}" "{{schema_dir}}"
+
+    BRIEF="{{brief}}"
+    DESIGN="{{design}}"
+    BRIEF_ID=$(jq -r '.id' "$BRIEF")
+
+    echo "=== onatopp-dev-norn: $BRIEF_ID ==="
+
+    just -f "{{workflow_dir}}/justfile" _write-schemas
+    just -f "{{workflow_dir}}/justfile" scout "$BRIEF" "$DESIGN"
+    just -f "{{workflow_dir}}/justfile" dev "$BRIEF" "$DESIGN"
+    just -f "{{workflow_dir}}/justfile" _commit-dev "$BRIEF"
+    just -f "{{workflow_dir}}/justfile" review "$BRIEF" "$DESIGN"
+    just -f "{{workflow_dir}}/justfile" _commit-review "$BRIEF"
+
+    REVIEW_PASS=$(jq -r '.output.pass // false' "{{work_dir}}/review-output.json")
+    echo ""
+    echo "=== COMPLETE: $BRIEF_ID — pass=$REVIEW_PASS ==="
+
+# Scout step only
+scout brief design="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{work_dir}}" "{{schema_dir}}"
+    just -f "{{workflow_dir}}/justfile" _write-schemas
+
+    BRIEF="{{brief}}"
+    DESIGN="{{design}}"
+    BRIEF_ID=$(jq -r '.id' "$BRIEF")
+    BRIEF_TITLE=$(jq -r '.title' "$BRIEF")
+    BRIEF_PURPOSE=$(jq -r '.purpose // ""' "$BRIEF")
+    CLUSTER=$(jq -r '.cluster // ""' "$BRIEF")
+
+    DESIGN_CTX=$(just -f "{{workflow_dir}}/justfile" _design-context "$BRIEF" "$DESIGN")
+    REQUIREMENTS=$(just -f "{{workflow_dir}}/justfile" _render-requirements "$BRIEF")
+    BOUNDARIES=$(just -f "{{workflow_dir}}/justfile" _render-boundaries "$BRIEF")
+    DESIGN_REF=""
+    [[ -n "$CLUSTER" ]] && DESIGN_REF="Full design document: docs/design/$CLUSTER/DESIGN.md"
+
+    cat > "{{work_dir}}/scout-prompt.md" << PROMPT
+    Explore the codebase and gather implementation context for each R# in this brief. You are read-only — do not modify files.
+
+    For each R#, find:
+    - 2-5 key files the implementer should look at (with line ranges)
+    - Conventions to match (sibling patterns, naming, error handling)
+    - A concrete implementation approach
+    - Any gotchas or edge cases the brief might not have considered
+
+    The implementing agent has the same tools you do — focus on saving them time, not cataloguing every file. Be concise.
+
+    $DESIGN_CTX
+
+    ## Brief: $BRIEF_ID — $BRIEF_TITLE
+
+    $BRIEF_PURPOSE
+
+    ## Requirements
+
+    $REQUIREMENTS
+
+    $BOUNDARIES
+
+    $DESIGN_REF
+    PROMPT
+
+    echo "--- SCOUT ---"
+    START=$(date +%s)
+    norn -p -q \
+        --profile norn-codebase-explorer \
+        -s "{{schema_dir}}/scout-schema.json" \
+        -f json \
+        -o "{{work_dir}}/scout-output.json" \
+        -- "$(cat "{{work_dir}}/scout-prompt.md")"
+    ELAPSED=$(( $(date +%s) - START ))
+    echo "Scout: ${ELAPSED}s"
+    jq -r '.output.summary // "no summary"' "{{work_dir}}/scout-output.json"
+
+# Dev step only (requires scout output)
+dev brief design="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    BRIEF="{{brief}}"
+    DESIGN="{{design}}"
+    BRIEF_ID=$(jq -r '.id' "$BRIEF")
+    BRIEF_TITLE=$(jq -r '.title' "$BRIEF")
+    BRIEF_TASK=$(jq -r '.task // ""' "$BRIEF")
+    CLUSTER=$(jq -r '.cluster // ""' "$BRIEF")
+
+    DESIGN_CTX=$(just -f "{{workflow_dir}}/justfile" _design-context "$BRIEF" "$DESIGN")
+    REQUIREMENTS=$(just -f "{{workflow_dir}}/justfile" _render-requirements "$BRIEF")
+    BOUNDARIES=$(just -f "{{workflow_dir}}/justfile" _render-boundaries "$BRIEF")
+    DESIGN_REF=""
+    [[ -n "$CLUSTER" ]] && DESIGN_REF="Full design document: docs/design/$CLUSTER/DESIGN.md"
+
+    SCOUT_CONTEXT=$(jq -r '.output.enrichments[] | "### \(.id)\nFiles: \(.files | join(", "))\nContext: \(.context | join("; "))\nApproach: \(.approach)\nNotes: \(.notes)\n"' "{{work_dir}}/scout-output.json")
+    SCOUT_VERIFY=$(jq -r '.output.verification[] | "- \(.)"' "{{work_dir}}/scout-output.json" 2>/dev/null || true)
+
+    cat > "{{work_dir}}/dev-prompt.md" << PROMPT
+    Implement every R# in this brief. Run cargo check, cargo clippy -- -D warnings, and cargo test on affected crates. Fix any failures before submitting.
+
+    $DESIGN_CTX
+
+    ## Brief: $BRIEF_ID — $BRIEF_TITLE
+
+    $BRIEF_TASK
+
+    ## Requirements
+
+    $REQUIREMENTS
+
+    ## Scout Context
+
+    $SCOUT_CONTEXT
+
+    ## Verification
+
+    $SCOUT_VERIFY
+
+    $BOUNDARIES
+
+    $DESIGN_REF
+
+    For each R#, report: status, files changed, how satisfied, any deviation. For each C# and S# assigned to the R#, report whether delivered. Attest: no panics/unwraps in library code, no unsafe, boundaries respected, tests pass.
+    PROMPT
+
+    echo "--- DEV ---"
+    START=$(date +%s)
+    norn -p -q \
+        --profile norn-developer \
+        -s "{{schema_dir}}/dev-schema.json" \
+        -f json \
+        -o "{{work_dir}}/dev-output.json" \
+        -- "$(cat "{{work_dir}}/dev-prompt.md")"
+    ELAPSED=$(( $(date +%s) - START ))
+    echo "Dev: ${ELAPSED}s"
+    jq -r '.output.summary // "no summary"' "{{work_dir}}/dev-output.json"
+
+# Review step only (requires scout + dev output)
+review brief design="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    BRIEF="{{brief}}"
+    DESIGN="{{design}}"
+    BRIEF_ID=$(jq -r '.id' "$BRIEF")
+    BRIEF_TITLE=$(jq -r '.title' "$BRIEF")
+    CLUSTER=$(jq -r '.cluster // ""' "$BRIEF")
+
+    DESIGN_CTX=$(just -f "{{workflow_dir}}/justfile" _design-context "$BRIEF" "$DESIGN")
+    REQUIREMENTS=$(just -f "{{workflow_dir}}/justfile" _render-requirements "$BRIEF")
+    BOUNDARIES=$(just -f "{{workflow_dir}}/justfile" _render-boundaries "$BRIEF")
+    DESIGN_REF=""
+    [[ -n "$CLUSTER" ]] && DESIGN_REF="Full design document: docs/design/$CLUSTER/DESIGN.md"
+
+    DEV_RESULTS=$(jq -r '.output.enrichments[] | "### \(.id): \(.status) — \(.how)\nFiles: \(if .files_changed then (.files_changed | map(.path) | join(", ")) else "none" end)\n"' "{{work_dir}}/dev-output.json")
+    DEV_ATTESTATION=$(jq -r '.output.attestation | "panics=\(.no_panics), unsafe=\(.no_unsafe), boundaries=\(.boundaries_respected), tests=\(.tests_pass)"' "{{work_dir}}/dev-output.json")
+    SCOUT_VERIFY=$(jq -r '.output.verification[] | "- \(.)"' "{{work_dir}}/scout-output.json" 2>/dev/null || true)
+
+    cat > "{{work_dir}}/review-prompt.md" << PROMPT
+    Review and harden the implementation. You have two jobs:
+
+    1. HARDEN: Fix naming drift, missing error handling, convention violations, edge cases. Use Edit and Write directly.
+    2. REVIEW: Verify acceptance criteria for each R#. Check the ACTUAL CODE (use git diff HEAD~1), not the dev summary. Tick checklist items. Confirm stories.
+
+    $DESIGN_CTX
+
+    ## Brief: $BRIEF_ID — $BRIEF_TITLE
+
+    ## Requirements
+
+    $REQUIREMENTS
+
+    ## Dev Results
+
+    $DEV_RESULTS
+
+    ## Verification Criteria
+
+    $SCOUT_VERIFY
+
+    Dev attestation: $DEV_ATTESTATION
+
+    $BOUNDARIES
+
+    $DESIGN_REF
+
+    Set pass=true only if all acceptance criteria are met and no blocking issues remain.
+    PROMPT
+
+    echo "--- REVIEW ---"
+    START=$(date +%s)
+    norn -p -q \
+        --profile norn-reviewer \
+        -s "{{schema_dir}}/review-schema.json" \
+        -f json \
+        -o "{{work_dir}}/review-output.json" \
+        -- "$(cat "{{work_dir}}/review-prompt.md")"
+    ELAPSED=$(( $(date +%s) - START ))
+    echo "Review: ${ELAPSED}s"
+    PASS=$(jq -r '.output.pass // false' "{{work_dir}}/review-output.json")
+    echo "Review: pass=$PASS"
+    jq -r '.output.summary // "no summary"' "{{work_dir}}/review-output.json"
+
+# Internal: commit after dev step
+_commit-dev brief:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    COMMIT_MSG=$(jq -r '.output.commit_message // "feat: implement brief"' "{{work_dir}}/dev-output.json")
+    echo "$COMMIT_MSG" > .commit-msg.tmp
+    bash "{{scripts_dir}}/commit-and-report.sh" .commit-msg.tmp || true
+    rm -f .commit-msg.tmp
+
+# Internal: commit after review step
+_commit-review brief:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REVIEW_PASS=$(jq -r '.output.pass // false' "{{work_dir}}/review-output.json")
+    if [[ "$REVIEW_PASS" == "true" && -n "$(git status --porcelain)" ]]; then
+        COMMIT_MSG=$(jq -r '.output.commit_message // "fix: address review findings"' "{{work_dir}}/review-output.json")
+        echo "$COMMIT_MSG" > .commit-msg.tmp
+        bash "{{scripts_dir}}/commit-and-report.sh" .commit-msg.tmp || true
+        rm -f .commit-msg.tmp
+    fi
+
+# Internal: extract design context from design.json
+_design-context brief design="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    BRIEF="{{brief}}"
+    DESIGN="{{design}}"
+    if [[ -z "$DESIGN" || ! -f "$DESIGN" ]]; then exit 0; fi
+
+    INTENTION=$(jq -r '.intention // ""' "$DESIGN")
+    [[ -n "$INTENTION" ]] && echo "**Intention:** $INTENTION" && echo ""
+
+    jq -r 'if .constraints and (.constraints | length) > 0 then "**Constraints:**\n" + ([.constraints[] | "- \(.id): \(.description)"] | join("\n")) + "\n" else "" end' "$DESIGN"
+
+    jq -r 'if .goals and (.goals | length) > 0 then "**Goals:**\n" + ([.goals[] | "- \(.)"] | join("\n")) + "\n" else "" end' "$DESIGN"
+
+    ANCHOR=$(jq -r '.design_anchor // ""' "$BRIEF")
+    if [[ -n "$ANCHOR" ]]; then
+        jq -r --arg anchor "$ANCHOR" \
+            'if .decisions and (.decisions | length) > 0 then "**Key Decisions:**\n" + ([.decisions[] | select(.status == "active") | select($anchor | contains(.id)) | "- \(.id): \(.title)" + (if .choice then " — " + .choice else "" end)] | join("\n")) + "\n" else "" end' "$DESIGN"
+    fi
+
+# Internal: render requirements as markdown
+_render-requirements brief:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jq -r '[.requirements[] | "### \(.id): \(.title)\n\n\(.spec)\n\n" + (if .files.create and (.files.create | length) > 0 then "Create: " + (.files.create | join(" ")) + "\n" else "" end) + (if .files.modify and (.files.modify | length) > 0 then "Modify: " + (.files.modify | join(" ")) + "\n" else "" end) + "\nAcceptance:\n" + ([.acceptance[] | "- \(.)"] | join("\n")) + "\n"] | join("\n")' "{{brief}}"
+
+# Internal: render boundaries
+_render-boundaries brief:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jq -r 'if .boundaries and (.boundaries | length) > 0 then "## Boundaries\n\n" + ([.boundaries[] | "- \(.)"] | join("\n")) + "\n" else "" end' "{{brief}}"
+
+# Internal: write schema files
+_write-schemas:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{schema_dir}}"
+
+    cat > "{{schema_dir}}/scout-schema.json" << 'SCHEMA'
+    {"type":"object","properties":{"summary":{"type":"string","description":"2-3 sentences orienting the implementer."},"enrichments":{"type":"array","description":"One entry per R#.","items":{"type":"object","properties":{"id":{"type":"string","description":"R# id from the brief."},"files":{"type":"array","items":{"type":"string"},"description":"Key files relevant to this R# (path:line-range). 2-5 per R#."},"context":{"type":"array","items":{"type":"string"},"description":"Key findings: conventions, type signatures, gotchas. 2-4 per R#."},"approach":{"type":"string","description":"How to implement this R#."},"notes":{"type":"string","description":"Edge cases, gotchas. Empty if none."}},"required":["id","files","context","approach","notes"],"additionalProperties":false}},"verification":{"type":"array","items":{"type":"string"},"description":"Concrete checks to run after implementation."}},"required":["summary","enrichments","verification"],"additionalProperties":false}
+    SCHEMA
+
+    cat > "{{schema_dir}}/dev-schema.json" << 'SCHEMA'
+    {"type":"object","properties":{"summary":{"type":"string","description":"1-2 sentences on what was done."},"commit_message":{"type":"string","description":"Conventional-commits style."},"enrichments":{"type":"array","description":"One entry per R#.","items":{"type":"object","properties":{"id":{"type":"string","description":"R# id."},"status":{"type":"string","enum":["implemented","blocked"]},"files_changed":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"change":{"type":"string","enum":["created","modified","deleted"]},"note":{"type":"string"}},"required":["path","change","note"],"additionalProperties":false}},"how":{"type":"string","description":"How this requirement was met."},"deviation":{"type":"string","description":"Empty if followed plan."},"checklist":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"done":{"type":"boolean"},"note":{"type":"string"}},"required":["id","done","note"],"additionalProperties":false}},"stories":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"satisfied":{"type":"boolean"},"note":{"type":"string"}},"required":["id","satisfied","note"],"additionalProperties":false}}},"required":["id","status","files_changed","how","deviation","checklist","stories"],"additionalProperties":false}},"attestation":{"type":"object","properties":{"no_panics":{"type":"boolean"},"no_unsafe":{"type":"boolean"},"boundaries_respected":{"type":"boolean"},"tests_pass":{"type":"boolean"}},"required":["no_panics","no_unsafe","boundaries_respected","tests_pass"],"additionalProperties":false}},"required":["summary","commit_message","enrichments","attestation"],"additionalProperties":false}
+    SCHEMA
+
+    cat > "{{schema_dir}}/review-schema.json" << 'SCHEMA'
+    {"type":"object","properties":{"summary":{"type":"string"},"commit_message":{"type":"string"},"pass":{"type":"boolean","description":"True only if all acceptance criteria met and no blocking issues remain."},"enrichments":{"type":"array","description":"One entry per R#.","items":{"type":"object","properties":{"id":{"type":"string"},"alignment":{"type":"string","enum":["aligned","drifted","fixed"]},"acceptance_met":{"type":"boolean"},"checklist":{"type":"array","items":{"type":"string"}},"stories":{"type":"array","items":{"type":"string"}},"issues":{"type":"array","items":{"type":"string"}},"fixes":{"type":"array","items":{"type":"string"}}},"required":["id","alignment","acceptance_met","checklist","stories","issues","fixes"],"additionalProperties":false}},"verification":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"passed":{"type":"boolean"},"note":{"type":"string"}},"required":["criterion","passed","note"],"additionalProperties":false}}},"required":["summary","commit_message","pass","enrichments","verification"],"additionalProperties":false}
+    SCHEMA
+
+# Clean up working files
+clean:
+    rm -rf "{{work_dir}}"

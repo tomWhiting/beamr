@@ -1,0 +1,54 @@
+{
+  "id": "T-001",
+  "cluster": "test-workflow",
+  "title": "Add version module to diagnostics crate",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C1", "C2", "C3", "C4"],
+  "stories": ["S1", "S2"],
+  "purpose": "The diagnostics crate needs to expose its version at runtime so that error messages and debug output can include the build version. This is a foundational piece — once the pattern is established here, other crates can adopt it. The version must be derived from Cargo.toml, not hardcoded, so it stays in sync across releases without manual intervention.",
+  "task": "Create a version module in the diagnostics crate that exports a VERSION constant and a version_info() function. The constant uses env!(\"CARGO_PKG_VERSION\") to pull the version from Cargo.toml at compile time. The version_info() function formats a string like \"diagnostics v0.1.0\" for use in error messages and debug output. Wire the module into lib.rs with a pub mod declaration and re-export VERSION at the crate root. Checks are run automatically after implementation — do not run cargo commands yourself.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Create version.rs with VERSION constant and version_info function",
+      "spec": "WHEN the diagnostics crate is compiled THE SYSTEM SHALL export a VERSION constant containing the crate version from Cargo.toml AND it SHALL provide a version_info() function that returns a formatted string including the crate name and version AND it SHALL NOT hardcode the version string.",
+      "acceptance": [
+        "crates/diagnostics/src/version.rs exists and contains a pub const VERSION",
+        "VERSION is assigned via env!(\"CARGO_PKG_VERSION\"), not a hardcoded string literal",
+        "version_info() function returns a formatted string containing the crate name and version",
+        "No hardcoded version strings anywhere in version.rs — only env! macro"
+      ],
+      "files": {
+        "create": ["crates/diagnostics/src/version.rs"]
+      },
+      "checklist": ["C1", "C3"],
+      "stories": ["S1", "S2"]
+    },
+    {
+      "id": "R2",
+      "title": "Wire version module into lib.rs",
+      "spec": "WHEN any consumer imports the diagnostics crate THE SYSTEM SHALL make VERSION available at the crate root via pub use AND it SHALL NOT break any existing public API.",
+      "acceptance": [
+        "pub mod version declaration present in lib.rs",
+        "pub use version::VERSION re-export present in lib.rs",
+        "No existing pub declarations removed or modified in lib.rs"
+      ],
+      "files": {
+        "modify": ["crates/diagnostics/src/lib.rs"]
+      },
+      "checklist": ["C2", "C4"],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT add any new dependencies to diagnostics/Cargo.toml",
+    "SHALL NOT modify any existing files except lib.rs",
+    "SHALL NOT change any existing public API"
+  ],
+  "verification": [
+    "version.rs contains env!(\"CARGO_PKG_VERSION\") not a hardcoded string",
+    "lib.rs contains pub mod version and pub use version::VERSION",
+    "grep -r confirms no existing public API removed from lib.rs"
+  ]
+}
