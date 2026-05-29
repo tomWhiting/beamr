@@ -1,0 +1,915 @@
+{
+  "cluster": "beamr",
+  "sections": [
+    {
+      "name": "Crate Setup",
+      "items": [
+        {
+          "id": "C1",
+          "text": "Workspace Cargo.toml at repo root declares members: beamr, beamr-cli",
+          "done": false
+        },
+        {
+          "id": "C2",
+          "text": "beamr crate exists at crates/beamr/ with edition 2024",
+          "done": false
+        },
+        {
+          "id": "C3",
+          "text": "beamr-cli crate exists at crates/beamr-cli/ as a binary crate with edition 2024",
+          "done": false
+        },
+        {
+          "id": "C4",
+          "text": "beamr/src/lib.rs declares public modules: atom, loader, term, process, interpreter, scheduler, gc, mailbox, supervision, native, hook, timer, module, error",
+          "done": false
+        },
+        {
+          "id": "C5",
+          "text": "beamr has no dependencies on any Meridian, Yggdrasil, or norn crates",
+          "done": false
+        },
+        {
+          "id": "C6",
+          "text": "beamr-cli depends on beamr only",
+          "done": false
+        },
+        {
+          "id": "C7",
+          "text": "cargo check --workspace passes clean",
+          "done": false
+        },
+        {
+          "id": "C8",
+          "text": "cargo clippy --workspace -- -D warnings passes clean",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Atom Table",
+      "items": [
+        {
+          "id": "C9",
+          "text": "Global atom table implemented as a concurrent map supporting lock-free reads",
+          "done": false
+        },
+        {
+          "id": "C10",
+          "text": "Inserting a new atom string returns a unique Atom index",
+          "done": false
+        },
+        {
+          "id": "C11",
+          "text": "Inserting an already-interned atom string returns the same index",
+          "done": false
+        },
+        {
+          "id": "C12",
+          "text": "Lookup by index returns the original atom string",
+          "done": false
+        },
+        {
+          "id": "C13",
+          "text": "Concurrent inserts from multiple threads never produce duplicate entries for the same string",
+          "done": false
+        },
+        {
+          "id": "C14",
+          "text": "Common atoms pre-registered at table creation: ok, error, true, false, nil, undefined, normal, kill, EXIT, badarg, badarith, badmatch, function_clause, case_clause, if_clause, undef, badfun, badarity, noproc",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Loader",
+      "items": [
+        {
+          "id": "C15",
+          "text": "Parses the .beam chunked binary container format (FOR1/BEAM header, chunk headers, chunk data)",
+          "done": false
+        },
+        {
+          "id": "C16",
+          "text": "Decodes the Atom/AtU8 chunk and registers all atoms in the global atom table",
+          "done": false
+        },
+        {
+          "id": "C17",
+          "text": "Decodes the Code chunk into a vector of internal Instruction values",
+          "done": false
+        },
+        {
+          "id": "C18",
+          "text": "Decodes the StrT chunk (string table) as a byte buffer",
+          "done": false
+        },
+        {
+          "id": "C19",
+          "text": "Decodes the ImpT chunk into import entries (module, function, arity)",
+          "done": false
+        },
+        {
+          "id": "C20",
+          "text": "Decodes the ExpT chunk into export entries (function, arity, label)",
+          "done": false
+        },
+        {
+          "id": "C21",
+          "text": "Decodes the FunT chunk into lambda entries (function, arity, label, num_free)",
+          "done": false
+        },
+        {
+          "id": "C22",
+          "text": "Decodes the LitT chunk by decompressing (zlib) and deserializing the external term format literals",
+          "done": false
+        },
+        {
+          "id": "C23",
+          "text": "Decodes the Line chunk into source location information",
+          "done": false
+        },
+        {
+          "id": "C24",
+          "text": "Decodes compact term encoding for instruction operands (tags, extended tags, literals, atoms, labels, registers)",
+          "done": false
+        },
+        {
+          "id": "C25",
+          "text": "Resolves imports against loaded modules and the BIF registry; resolved imports point to callable targets",
+          "done": false
+        },
+        {
+          "id": "C26",
+          "text": "Produces an unresolved-import report listing every import that could not be resolved, grouped by module",
+          "done": false
+        },
+        {
+          "id": "C27",
+          "text": "Validates instruction operands: register indices in range, label targets exist, arities match",
+          "done": false
+        },
+        {
+          "id": "C28",
+          "text": "Stores a successfully loaded module in the module registry by its atom name",
+          "done": false
+        },
+        {
+          "id": "C29",
+          "text": "Loading a .beam file produced by gleam build + erlc succeeds for a pure Gleam module with no external dependencies beyond erlang: built-ins",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Terms",
+      "items": [
+        {
+          "id": "C30",
+          "text": "Term is a 64-bit value with low-bit tagging to distinguish types",
+          "done": false
+        },
+        {
+          "id": "C31",
+          "text": "Small integer encoded as immediate: value fits in the non-tag bits, round-trips encode/decode",
+          "done": false
+        },
+        {
+          "id": "C32",
+          "text": "Atom encoded as immediate: atom index in non-tag bits, round-trips encode/decode",
+          "done": false
+        },
+        {
+          "id": "C33",
+          "text": "Pid encoded as immediate: process id data in non-tag bits, round-trips encode/decode",
+          "done": false
+        },
+        {
+          "id": "C34",
+          "text": "Nil represented as a distinguished constant value",
+          "done": false
+        },
+        {
+          "id": "C35",
+          "text": "Tuple allocated on heap as boxed: header word with arity followed by arity element words",
+          "done": false
+        },
+        {
+          "id": "C36",
+          "text": "List cons cell allocated on heap as boxed: two words (head, tail), proper list terminates in nil",
+          "done": false
+        },
+        {
+          "id": "C37",
+          "text": "Float allocated on heap as boxed: header word followed by an f64",
+          "done": false
+        },
+        {
+          "id": "C38",
+          "text": "Binary allocated on heap as boxed: header word followed by length and byte data",
+          "done": false
+        },
+        {
+          "id": "C39",
+          "text": "Big integer allocated on heap as boxed: header word followed by sign and digit limbs",
+          "done": false
+        },
+        {
+          "id": "C40",
+          "text": "Fun/closure allocated on heap as boxed: header with module, function index, arity, and captured environment terms",
+          "done": false
+        },
+        {
+          "id": "C41",
+          "text": "Map allocated on heap as boxed: supports flatmap representation (sorted key array + value array)",
+          "done": false
+        },
+        {
+          "id": "C42",
+          "text": "Reference allocated on heap as boxed: unique id for monitors and timers",
+          "done": false
+        },
+        {
+          "id": "C43",
+          "text": "Term equality comparison (== semantics): same-type immediates compare by value, boxed terms compare structurally",
+          "done": false
+        },
+        {
+          "id": "C44",
+          "text": "Term exact equality comparison (=:= semantics): integer 1 and float 1.0 are not equal",
+          "done": false
+        },
+        {
+          "id": "C45",
+          "text": "Term ordering follows the BEAM order: number < atom < reference < fun < port < pid < tuple < map < nil < list < binary",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Processes",
+      "items": [
+        {
+          "id": "C46",
+          "text": "Process struct contains: pid, heap, stack, mailbox, reduction counter, status, links, monitors, trap_exit flag, group_leader",
+          "done": false
+        },
+        {
+          "id": "C47",
+          "text": "New process starts with a small heap (233 words default)",
+          "done": false
+        },
+        {
+          "id": "C48",
+          "text": "spawn(Module, Function, Args) creates a new process, pushes the initial call frame, assigns a unique pid, and places it on a run queue",
+          "done": false
+        },
+        {
+          "id": "C49",
+          "text": "Process status transitions: new \u2192 running \u2192 (waiting | exiting), waiting \u2192 running on message or timeout",
+          "done": false
+        },
+        {
+          "id": "C50",
+          "text": "X registers (at least 256) hold function arguments and temporaries per process",
+          "done": false
+        },
+        {
+          "id": "C51",
+          "text": "Y registers are stack-allocated: allocate/deallocate instructions create/destroy stack frames with Y slots",
+          "done": false
+        },
+        {
+          "id": "C52",
+          "text": "Process exit deallocates its heap, removes it from the scheduler, and propagates exit signals to linked processes",
+          "done": false
+        },
+        {
+          "id": "C53",
+          "text": "A process that exits with reason 'normal' does not cause linked processes to exit (unless they monitor)",
+          "done": false
+        },
+        {
+          "id": "C54",
+          "text": "Each process has a unique Pid that is never reused during a VM instance",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Interpreter",
+      "items": [
+        {
+          "id": "C55",
+          "text": "Execution loop: fetch instruction at current code pointer, execute it, advance pointer (or jump)",
+          "done": false
+        },
+        {
+          "id": "C56",
+          "text": "Reduction counter decremented on each call/apply instruction",
+          "done": false
+        },
+        {
+          "id": "C57",
+          "text": "Process yields (returns to scheduler) when reduction counter reaches zero",
+          "done": false
+        },
+        {
+          "id": "C58",
+          "text": "label instruction sets a jump target; func_info provides function metadata for error reporting",
+          "done": false
+        },
+        {
+          "id": "C59",
+          "text": "move instruction copies a term between registers, from a literal, or from a stack slot",
+          "done": false
+        },
+        {
+          "id": "C60",
+          "text": "call and call_only instructions: local function call within the same module, saving or not saving a return address",
+          "done": false
+        },
+        {
+          "id": "C61",
+          "text": "call_ext and call_ext_only instructions: call into another module or a BIF, with import resolution",
+          "done": false
+        },
+        {
+          "id": "C62",
+          "text": "call_last and call_ext_last instructions: tail call that deallocates the current stack frame before jumping",
+          "done": false
+        },
+        {
+          "id": "C63",
+          "text": "return instruction: pop the return address from the stack, jump to it",
+          "done": false
+        },
+        {
+          "id": "C64",
+          "text": "allocate and allocate_zero instructions: push a stack frame with N Y-register slots",
+          "done": false
+        },
+        {
+          "id": "C65",
+          "text": "deallocate instruction: pop the top stack frame",
+          "done": false
+        },
+        {
+          "id": "C66",
+          "text": "test_heap instruction: ensure N words of heap space available, triggering GC if not",
+          "done": false
+        },
+        {
+          "id": "C67",
+          "text": "put_list instruction: allocate a cons cell on the heap from head and tail operands",
+          "done": false
+        },
+        {
+          "id": "C68",
+          "text": "put_tuple2 instruction: allocate a tuple on the heap from an element list",
+          "done": false
+        },
+        {
+          "id": "C69",
+          "text": "get_tuple_element instruction: extract the Nth element from a tuple into a register",
+          "done": false
+        },
+        {
+          "id": "C70",
+          "text": "get_hd and get_tl instructions: extract head or tail from a cons cell",
+          "done": false
+        },
+        {
+          "id": "C71",
+          "text": "Type test instructions (is_integer, is_float, is_atom, is_list, is_tuple, is_nil, is_binary, is_boolean, is_map, is_function2): branch to fail label if test fails",
+          "done": false
+        },
+        {
+          "id": "C72",
+          "text": "is_eq_exact and is_ne_exact instructions: exact equality comparison, branch on result",
+          "done": false
+        },
+        {
+          "id": "C73",
+          "text": "is_lt and is_ge instructions: term ordering comparison, branch on result",
+          "done": false
+        },
+        {
+          "id": "C74",
+          "text": "select_val instruction: multi-way branch on a term's value against a list of value/label pairs",
+          "done": false
+        },
+        {
+          "id": "C75",
+          "text": "select_tuple_arity instruction: multi-way branch on a tuple's arity against a list of arity/label pairs",
+          "done": false
+        },
+        {
+          "id": "C76",
+          "text": "jump instruction: unconditional jump to a label",
+          "done": false
+        },
+        {
+          "id": "C77",
+          "text": "gc_bif1, gc_bif2, gc_bif3 instructions: call a guard BIF that may trigger GC, branch to fail label on error",
+          "done": false
+        },
+        {
+          "id": "C78",
+          "text": "bif0, bif1, bif2 instructions: call a guard BIF that cannot trigger GC",
+          "done": false
+        },
+        {
+          "id": "C79",
+          "text": "send instruction: send the term in x(1) to the process identified by x(0)",
+          "done": false
+        },
+        {
+          "id": "C80",
+          "text": "loop_rec, loop_rec_end, remove_message instructions: selective receive mailbox scan",
+          "done": false
+        },
+        {
+          "id": "C81",
+          "text": "wait instruction: suspend the process until a message arrives",
+          "done": false
+        },
+        {
+          "id": "C82",
+          "text": "wait_timeout and timeout instructions: suspend with a deadline, resume on message or expiry",
+          "done": false
+        },
+        {
+          "id": "C83",
+          "text": "try, try_end, try_case, try_case_end instructions: exception handling for Gleam's try expressions",
+          "done": false
+        },
+        {
+          "id": "C84",
+          "text": "raise instruction: re-raise a caught exception",
+          "done": false
+        },
+        {
+          "id": "C85",
+          "text": "badmatch, case_end, if_end instructions: generate appropriate runtime errors for failed pattern matches and case/if exhaustion",
+          "done": false
+        },
+        {
+          "id": "C86",
+          "text": "make_fun2 instruction: create a closure term capturing the current environment",
+          "done": false
+        },
+        {
+          "id": "C87",
+          "text": "call_fun instruction: invoke a closure with arguments",
+          "done": false
+        },
+        {
+          "id": "C88",
+          "text": "apply and apply_last instructions: dynamic call with module and function as terms",
+          "done": false
+        },
+        {
+          "id": "C89",
+          "text": "bs_init2 instruction: initialize a binary construction context on the heap",
+          "done": false
+        },
+        {
+          "id": "C90",
+          "text": "bs_put_integer and bs_put_binary instructions: append integer/binary segments to a binary under construction",
+          "done": false
+        },
+        {
+          "id": "C91",
+          "text": "bs_start_match2 instruction: initialize a binary matching context from a binary term",
+          "done": false
+        },
+        {
+          "id": "C92",
+          "text": "bs_get_integer2 and bs_get_binary2 instructions: extract integer/binary segments from a match context",
+          "done": false
+        },
+        {
+          "id": "C93",
+          "text": "bs_match_string instruction: match a literal byte sequence in a match context",
+          "done": false
+        },
+        {
+          "id": "C94",
+          "text": "bs_test_tail2 instruction: verify remaining bits in a match context",
+          "done": false
+        },
+        {
+          "id": "C95",
+          "text": "has_map_fields instruction: test that a map contains specified keys, branch to fail label if not",
+          "done": false
+        },
+        {
+          "id": "C96",
+          "text": "get_map_elements instruction: extract values for specified keys from a map into registers",
+          "done": false
+        },
+        {
+          "id": "C97",
+          "text": "put_map_assoc and put_map_exact instructions: create a new map by adding/updating key-value pairs",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Scheduler",
+      "items": [
+        {
+          "id": "C98",
+          "text": "Scheduler starts N worker threads where N defaults to the number of CPU cores",
+          "done": false
+        },
+        {
+          "id": "C99",
+          "text": "Each worker thread maintains its own run queue of ready processes",
+          "done": false
+        },
+        {
+          "id": "C100",
+          "text": "Worker loop: dequeue process, set reduction budget, call interpreter, handle result (yield/wait/exit)",
+          "done": false
+        },
+        {
+          "id": "C101",
+          "text": "A yielded process is placed at the back of the run queue for re-scheduling",
+          "done": false
+        },
+        {
+          "id": "C102",
+          "text": "A waiting process is moved to the wait set and does not consume scheduler cycles",
+          "done": false
+        },
+        {
+          "id": "C103",
+          "text": "Message arrival to a waiting process moves it back to a run queue",
+          "done": false
+        },
+        {
+          "id": "C104",
+          "text": "Work stealing: an idle worker steals half the processes from the busiest worker's queue",
+          "done": false
+        },
+        {
+          "id": "C105",
+          "text": "High-priority queue: processes at high priority are dequeued before normal-priority processes",
+          "done": false
+        },
+        {
+          "id": "C106",
+          "text": "Max-priority queue: processes at max priority are dequeued before high and normal",
+          "done": false
+        },
+        {
+          "id": "C107",
+          "text": "Default reduction budget per schedule is 4000 reductions",
+          "done": false
+        },
+        {
+          "id": "C108",
+          "text": "No process runs more than one full budget without yielding, even in a tight computational loop",
+          "done": false
+        },
+        {
+          "id": "C109",
+          "text": "Dirty scheduler: a separate thread pool for long-running native function calls",
+          "done": false
+        },
+        {
+          "id": "C110",
+          "text": "A native call marked as dirty is dispatched to the dirty pool; the normal worker thread is freed immediately",
+          "done": false
+        },
+        {
+          "id": "C111",
+          "text": "Scheduler shutdown: all worker threads and dirty threads terminate cleanly when the VM shuts down",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Garbage Collection",
+      "items": [
+        {
+          "id": "C112",
+          "text": "GC is per-process: collecting one process's heap does not pause or affect any other process",
+          "done": false
+        },
+        {
+          "id": "C113",
+          "text": "Generational: heap split into young generation (nursery) and old generation",
+          "done": false
+        },
+        {
+          "id": "C114",
+          "text": "Minor GC: copy live objects from young generation to old generation, reclaim young space",
+          "done": false
+        },
+        {
+          "id": "C115",
+          "text": "Major GC: copy all live objects to fresh space, reclaim both young and old",
+          "done": false
+        },
+        {
+          "id": "C116",
+          "text": "GC triggered when the process's heap cannot satisfy an allocation request",
+          "done": false
+        },
+        {
+          "id": "C117",
+          "text": "Root set includes: X registers, Y registers (stack), and mailbox terms",
+          "done": false
+        },
+        {
+          "id": "C118",
+          "text": "All term references (on stack, in registers, in mailbox) updated to point to new locations after copy",
+          "done": false
+        },
+        {
+          "id": "C119",
+          "text": "After GC, all previously reachable terms are still reachable with identical values",
+          "done": false
+        },
+        {
+          "id": "C120",
+          "text": "Heap grows on demand following a Fibonacci-like size sequence",
+          "done": false
+        },
+        {
+          "id": "C121",
+          "text": "Heap shrinks after a major GC if utilization is below a threshold",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Mailbox",
+      "items": [
+        {
+          "id": "C122",
+          "text": "Each process has a mailbox backed by a lock-free MPSC queue",
+          "done": false
+        },
+        {
+          "id": "C123",
+          "text": "Sending a message copies the term into the receiver's heap and appends it to the receiver's mailbox",
+          "done": false
+        },
+        {
+          "id": "C124",
+          "text": "Selective receive scans the mailbox from the save pointer forward, testing each message against patterns",
+          "done": false
+        },
+        {
+          "id": "C125",
+          "text": "A matched message is removed from the mailbox and the save pointer resets to the beginning",
+          "done": false
+        },
+        {
+          "id": "C126",
+          "text": "Unmatched messages remain in the mailbox in their original order",
+          "done": false
+        },
+        {
+          "id": "C127",
+          "text": "If no message matches, the process suspends (status \u2192 waiting) and the save pointer is preserved",
+          "done": false
+        },
+        {
+          "id": "C128",
+          "text": "A new message arriving at a suspended process wakes it to re-scan from the save pointer",
+          "done": false
+        },
+        {
+          "id": "C129",
+          "text": "Multiple senders can enqueue messages to the same mailbox concurrently without data loss or corruption",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Supervision",
+      "items": [
+        {
+          "id": "C130",
+          "text": "link(PidA, PidB) creates a bidirectional link: both processes' link sets contain the other",
+          "done": false
+        },
+        {
+          "id": "C131",
+          "text": "When a linked process exits, an exit signal with the exit reason is sent to all linked processes",
+          "done": false
+        },
+        {
+          "id": "C132",
+          "text": "A process receiving an exit signal with a non-normal reason exits with that reason (unless it traps exits)",
+          "done": false
+        },
+        {
+          "id": "C133",
+          "text": "A process receiving an exit signal with reason 'normal' is not terminated",
+          "done": false
+        },
+        {
+          "id": "C134",
+          "text": "A process with trap_exit=true receives exit signals as {'EXIT', Pid, Reason} messages in its mailbox instead of dying",
+          "done": false
+        },
+        {
+          "id": "C135",
+          "text": "An exit signal with reason 'kill' terminates the target process unconditionally, even if it traps exits",
+          "done": false
+        },
+        {
+          "id": "C136",
+          "text": "A process killed by 'kill' propagates exit reason 'killed' (not 'kill') to its links",
+          "done": false
+        },
+        {
+          "id": "C137",
+          "text": "monitor(Pid) returns a reference and registers a monitor; the monitored process's death sends {'DOWN', Ref, process, Pid, Reason} to the monitor owner",
+          "done": false
+        },
+        {
+          "id": "C138",
+          "text": "demonitor(Ref) removes the monitor; no DOWN message is sent after demonitor",
+          "done": false
+        },
+        {
+          "id": "C139",
+          "text": "unlink(PidA, PidB) removes the bidirectional link; no exit signal is sent after unlink",
+          "done": false
+        },
+        {
+          "id": "C140",
+          "text": "Monitoring a process that has already exited immediately sends a DOWN message",
+          "done": false
+        },
+        {
+          "id": "C141",
+          "text": "Linking to a process that has already exited immediately sends an exit signal",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Native Boundary",
+      "items": [
+        {
+          "id": "C142",
+          "text": "BIF registry maps (Module, Function, Arity) to a Rust function pointer",
+          "done": false
+        },
+        {
+          "id": "C143",
+          "text": "NIF registry maps (Module, Function, Arity) to a Rust function pointer",
+          "done": false
+        },
+        {
+          "id": "C144",
+          "text": "Native functions receive arguments as a slice of Term values and a mutable reference to the calling process",
+          "done": false
+        },
+        {
+          "id": "C145",
+          "text": "Native functions return Result<Term, Term> where Err becomes the process exit reason",
+          "done": false
+        },
+        {
+          "id": "C146",
+          "text": "Native function registration is available before any module is loaded, so BIFs are present for import resolution",
+          "done": false
+        },
+        {
+          "id": "C147",
+          "text": "A native call marked as dirty causes the process to be migrated to the dirty scheduler pool for the duration of the call",
+          "done": false
+        },
+        {
+          "id": "C148",
+          "text": "The set of required native functions is derived from the loader's unresolved-import report, not hardcoded",
+          "done": false
+        },
+        {
+          "id": "C149",
+          "text": "Minimum BIFs for Gate 1: erlang:+/2, erlang:-/2, erlang:*/2, erlang:div/2, erlang:rem/2, erlang:</2, erlang:>=/2, erlang:=:=/2, erlang:=/=/2, erlang:error/1, erlang:display/1",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Reduction Boundary Hook",
+      "items": [
+        {
+          "id": "C150",
+          "text": "A configurable hook callback fires at process yield points (reduction budget exhausted or blocking on receive)",
+          "done": false
+        },
+        {
+          "id": "C151",
+          "text": "The hook receives the process pid, its current module/function/arity, and the reduction count consumed",
+          "done": false
+        },
+        {
+          "id": "C152",
+          "text": "The hook can return 'continue' (process resumes normally) or 'suspend' (process is held until explicitly resumed)",
+          "done": false
+        },
+        {
+          "id": "C153",
+          "text": "The hook callback is set per VM instance and can be changed at runtime",
+          "done": false
+        },
+        {
+          "id": "C154",
+          "text": "When no hook is registered, the yield path incurs no additional overhead (no function pointer call, no branch)",
+          "done": false
+        },
+        {
+          "id": "C155",
+          "text": "The hook cannot modify the process's registers, heap, or mailbox \u2014 it is read-only inspection plus a continue/suspend decision",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Timer",
+      "items": [
+        {
+          "id": "C156",
+          "text": "Timer wheel provides efficient scheduling and expiry of timeouts",
+          "done": false
+        },
+        {
+          "id": "C157",
+          "text": "wait_timeout instruction registers a timer; if it expires before a matching message arrives, the process resumes at the timeout label",
+          "done": false
+        },
+        {
+          "id": "C158",
+          "text": "Timer is cancelled automatically when the process receives a matching message before expiry",
+          "done": false
+        },
+        {
+          "id": "C159",
+          "text": "erlang:send_after/3 BIF sends a message to a process after a delay",
+          "done": false
+        },
+        {
+          "id": "C160",
+          "text": "erlang:start_timer/3 BIF sends a {timeout, Ref, Msg} tuple after a delay",
+          "done": false
+        },
+        {
+          "id": "C161",
+          "text": "erlang:cancel_timer/1 BIF cancels a pending timer and returns remaining time",
+          "done": false
+        },
+        {
+          "id": "C162",
+          "text": "Timer resolution is millisecond-granularity or better",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "CLI",
+      "items": [
+        {
+          "id": "C163",
+          "text": "beamr-cli binary accepts a path to a .beam file and a module:function/arity to execute",
+          "done": false
+        },
+        {
+          "id": "C164",
+          "text": "Loads the specified .beam file via beamr-loader and spawns a process calling the specified function",
+          "done": false
+        },
+        {
+          "id": "C165",
+          "text": "Registers basic I/O natives: erlang:display/1 prints a term to stdout",
+          "done": false
+        },
+        {
+          "id": "C166",
+          "text": "Prints the exit reason when the initial process terminates",
+          "done": false
+        },
+        {
+          "id": "C167",
+          "text": "Returns exit code 0 on normal termination, non-zero on crash",
+          "done": false
+        },
+        {
+          "id": "C168",
+          "text": "Prints the unresolved-import report if loading fails due to missing imports",
+          "done": false
+        }
+      ]
+    }
+  ]
+}
