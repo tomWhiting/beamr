@@ -132,7 +132,7 @@
       "spec": "beamr::term::boxed SHALL define header layouts and accessors for: big integer (sign + digit limbs), fun/closure (module atom, function index, arity, num_free captured terms), map (flatmap: sorted key array + value array), and reference (unique u64 id). Each SHALL use its own distinct header tag. It SHALL NOT implement full arithmetic on big integers \u2014 only the storage format. Map operations beyond construction and element access are deferred.",
       "acceptance": [
         "BigInt header stores sign and number of limbs; limbs are accessible as &[u64]",
-        "Closure header stores module, function index, arity, num_free; captured terms are accessible",
+        "Closure header stores module, function index, arity, num_free; Closure::free_var(0) returns the first captured term; Closure::free_var(n) for n >= num_free returns None",
         "Map stores keys and values; Map::get(key) performs linear scan on sorted keys",
         "Reference stores a unique u64 id; Reference::id() returns it",
         "Each type has a distinct header tag"

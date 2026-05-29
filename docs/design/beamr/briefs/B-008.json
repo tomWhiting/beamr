@@ -30,7 +30,7 @@
       "acceptance": [
         "BifRegistryImpl implements the BifRegistry trait from B-004",
         "register(erlang, +, 2, add_fn) succeeds",
-        "lookup(erlang, +, 2) returns Some(add_fn) after registration",
+        "lookup(erlang, +, 2) returns Some(NativeEntry) where entry.function is add_fn and entry.is_dirty is false",
         "lookup(erlang, unknown, 0) returns None",
         "Registering the same MFA twice returns an error"
       ],
@@ -94,7 +94,7 @@
     {
       "id": "R4",
       "title": "Dirty scheduler flag",
-      "spec": "The registry SHALL support marking a native function as dirty (requiring execution on the dirty scheduler pool). BifRegistryImpl::register_dirty(module, function, arity, func) SHALL set the dirty flag. The lookup result SHALL include the dirty flag so the interpreter knows whether to dispatch to the dirty pool. This brief SHALL NOT implement the dirty dispatch itself \u2014 only the flag in the registry.",
+      "spec": "The registry SHALL support marking a native function as dirty (requiring execution on the dirty scheduler pool). BifRegistryImpl::register_dirty(module, function, arity, func) SHALL set the dirty flag. The lookup result SHALL include the dirty flag so the interpreter knows whether to dispatch to the dirty pool. This brief SHALL NOT implement the dirty dispatch itself \u2014 only the flag in the registry. NOTE: C155 is split \u2014 this brief delivers the dirty flag on NativeEntry; dirty scheduler dispatch is deferred to the scheduler brief (B-019 or equivalent).",
       "acceptance": [
         "register_dirty sets a dirty flag on the registration entry",
         "lookup returns a NativeEntry struct with a is_dirty: bool field",
