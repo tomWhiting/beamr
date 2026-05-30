@@ -1,0 +1,68 @@
+{
+  "id": "B-028",
+  "cluster": "beamr",
+  "title": "Stdlib stubs — lists, maps, timer as native BIFs",
+  "depends_on": ["B-026"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": ["S4", "S9"],
+  "purpose": "gleam_erlang_ffi and gleam_otp import OTP stdlib functions. Implement as native Rust stubs with correct semantics rather than loading OTP .beam files.",
+  "task": "Implement lists:map/2, lists:foldr/3, lists:reverse/1, maps:from_list/1, maps:map/2, maps:merge/2, maps:remove/2, timer:sleep/1 in stdlib_stubs.rs.",
+  "boundaries": [
+    "Only functions imported by gleam_otp — not full stdlib",
+    "SHALL NOT load OTP .beam files",
+    "SHALL NOT implement io:* or string:* (separate brief)"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "lists module stubs",
+      "spec": "Implement lists:map/2, lists:foldr/3, lists:reverse/1 with correct semantics on proper lists.",
+      "acceptance": [
+        "lists:map(Fun, [1,2,3]) returns [2,4,6]",
+        "lists:foldr(Fun, 0, [1,2,3]) returns 6",
+        "lists:reverse([1,2,3]) returns [3,2,1]",
+        "Empty list returns empty list",
+        "Non-list returns badarg"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "maps module stubs",
+      "spec": "Implement maps:from_list/1, maps:map/2, maps:merge/2, maps:remove/2.",
+      "acceptance": [
+        "maps:from_list([{a,1},{b,2}]) returns #{a=>1,b=>2}",
+        "maps:map(Fun, #{a=>1}) applies to values",
+        "maps:merge(M1, M2) merges with M2 priority",
+        "maps:remove(Key, Map) removes key"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "timer:sleep/1",
+      "spec": "timer:sleep/1 suspends the calling process for N milliseconds, returns ok.",
+      "acceptance": [
+        "timer:sleep(0) returns ok immediately",
+        "timer:sleep(100) suspends ~100ms then returns ok",
+        "Non-integer returns badarg",
+        "All stubs registered under OTP module names"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S9"]
+    }
+  ]
+}

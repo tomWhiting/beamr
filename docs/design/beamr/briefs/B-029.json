@@ -1,0 +1,58 @@
+{
+  "id": "B-029",
+  "cluster": "beamr",
+  "title": "Utility stubs — logger, unicode, sys, gleam_stdlib identity",
+  "depends_on": ["B-026"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": ["S4"],
+  "purpose": "gleam_otp actor and supervisor import utility functions from OTP modules. Implement as native Rust stubs.",
+  "task": "Implement logger:warning/2, unicode:characters_to_list/1, unicode:characters_to_binary/1, sys:debug_options/1, gleam_stdlib:identity/1 in stdlib_stubs.rs.",
+  "boundaries": [
+    "Only functions imported by gleam_otp — not full modules",
+    "sys:debug_options returns empty list (no OTP debug tracing)",
+    "SHALL NOT implement io:format or io:fwrite"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "logger:warning/2 and gleam_stdlib:identity/1",
+      "spec": "logger:warning/2 writes warning to stderr. gleam_stdlib:identity/1 returns its argument unchanged.",
+      "acceptance": [
+        "logger:warning(Format, Args) writes to stderr",
+        "logger:warning with bad format is no-op",
+        "gleam_stdlib:identity(X) returns X"
+      ],
+      "files": { "modify": ["crates/beamr/src/native/stdlib_stubs.rs"] },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "unicode conversions",
+      "spec": "unicode:characters_to_list/1 and characters_to_binary/1 handle UTF-8 conversion. Binary passthrough for already-UTF-8 content.",
+      "acceptance": [
+        "characters_to_binary(<<hello>>) returns <<hello>>",
+        "characters_to_list(<<abc>>) returns [97,98,99]",
+        "characters_to_binary([104,105]) returns <<hi>>",
+        "Invalid input returns error tuple"
+      ],
+      "files": { "modify": ["crates/beamr/src/native/stdlib_stubs.rs"] },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "sys:debug_options/1",
+      "spec": "sys:debug_options/1 returns empty list (no-op stub for OTP debug tracing).",
+      "acceptance": [
+        "sys:debug_options([]) returns []",
+        "sys:debug_options(any) returns []",
+        "All utility stubs registered under OTP module names"
+      ],
+      "files": { "modify": ["crates/beamr/src/native/stdlib_stubs.rs"] },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    }
+  ]
+}

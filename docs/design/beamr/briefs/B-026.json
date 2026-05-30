@@ -1,0 +1,71 @@
+{
+  "id": "B-026",
+  "cluster": "beamr",
+  "title": "Gate 3 erlang BIFs — element, send, make_ref, spawn/1, type queries",
+  "depends_on": ["B-023a", "B-024"],
+  "blocked_by": [],
+  "checklist": ["C82", "C150"],
+  "stories": ["S4", "S8"],
+  "purpose": "gleam_erlang and gleam_otp import erlang BIFs beyond Gate 1+2. This brief registers element/2, send/2, make_ref/0, spawn/1, spawn_link/1, is_process_alive/1, and tuple_size/1 as Gate 3 BIFs.",
+  "task": "Implement 7 BIFs in gate3_bifs.rs and register via register_gate3_bifs().",
+  "boundaries": [
+    "This brief SHALL NOT implement spawn_monitor/1 or spawn_opt/2",
+    "This brief SHALL NOT implement send/3 (with options)",
+    "This brief SHALL NOT implement setelement/3"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "erlang:element/2",
+      "spec": "erlang:element/2 SHALL accept (Index, Tuple) with 1-based indexing. Return element or badarg.",
+      "acceptance": [
+        "element(1, {a,b,c}) returns a",
+        "element(3, {a,b,c}) returns c",
+        "element(0, {a}) returns badarg",
+        "Non-tuple returns badarg"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/gate3_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "erlang:send/2 and erlang:tuple_size/1",
+      "spec": "send/2 delivers message to target mailbox returning Message. tuple_size/1 returns tuple arity.",
+      "acceptance": [
+        "send(Pid, msg) delivers and returns msg",
+        "send to nonexistent pid returns msg (no crash)",
+        "tuple_size({a,b,c}) returns 3",
+        "tuple_size(non_tuple) returns badarg"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/gate3_bifs.rs"]
+      },
+      "checklist": ["C82", "C150"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "erlang:make_ref/0, is_process_alive/1, spawn/1, spawn_link/1",
+      "spec": "make_ref returns unique reference. is_process_alive checks process table. spawn/1 and spawn_link/1 accept zero-arity fun (MFA export only for now).",
+      "acceptance": [
+        "make_ref() returns unique values",
+        "is_process_alive(living) returns true",
+        "is_process_alive(dead) returns false",
+        "spawn(fun m:f/0) spawns and returns pid",
+        "spawn_link(fun m:f/0) spawns with link",
+        "spawn(closure) returns badarg (documented)",
+        "All 7 BIFs registered via register_gate3_bifs()"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/gate3_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs", "crates/beamr-cli/src/main.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S8"]
+    }
+  ]
+}

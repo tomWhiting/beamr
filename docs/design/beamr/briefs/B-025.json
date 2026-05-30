@@ -1,0 +1,60 @@
+{
+  "id": "B-025",
+  "cluster": "beamr",
+  "title": "Loader hardening — EXPORT_EXT literals and multi-module loading",
+  "depends_on": ["B-003"],
+  "blocked_by": [],
+  "checklist": ["C25", "C31", "C32"],
+  "stories": ["S1", "S8"],
+  "purpose": "The loader cannot load gleam@otp@actor.beam due to unsupported EXPORT_EXT (tag 113) in the LitT chunk. The CLI only loads single files. This brief adds EXPORT_EXT support and multi-module loading.",
+  "task": "Add EXPORT_EXT decoding to the ETF literal decoder. Add --dir flag to CLI for multi-module loading.",
+  "boundaries": [
+    "This brief SHALL NOT implement NEW_FUN_EXT (tag 112)",
+    "This brief SHALL NOT implement FUN_EXT (tag 117)",
+    "This brief SHALL NOT implement hot code loading or module versioning"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "EXPORT_EXT literal decoding",
+      "spec": "The ETF decoder SHALL handle tag 113 (EXPORT_EXT) and any other ETF tags encountered in gleam_erlang and gleam_otp .beam files.",
+      "acceptance": [
+        "gleam@otp@actor.beam loads without errors",
+        "All gleam_otp .beam files load successfully",
+        "EXPORT_EXT decodes to correct 3-tuples",
+        "Existing fixtures still load correctly"
+      ],
+      "files": { "modify": ["crates/beamr/src/loader/decode/"] },
+      "checklist": ["C25"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Multi-module loading in CLI",
+      "spec": "CLI SHALL accept --dir flag to load all .beam files from a directory into the module registry.",
+      "acceptance": [
+        "Cross-module imports resolve against loaded modules",
+        "Single-file mode still works",
+        "Missing --dir prints clear error"
+      ],
+      "files": { "modify": ["crates/beamr-cli/src/main.rs"] },
+      "checklist": ["C31", "C32"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "Loading test with real gleam_otp modules",
+      "spec": "Integration test SHALL verify all key gleam_otp .beam files load successfully.",
+      "acceptance": [
+        "Test loads each module without load errors",
+        "Unresolved imports reported not crash",
+        "Uses fixture .beam files from compiled gleam_otp"
+      ],
+      "files": {
+        "create": ["crates/beamr/tests/otp_loading.rs", "crates/beamr/tests/fixtures/otp/"]
+      },
+      "checklist": ["C32"],
+      "stories": ["S1"]
+    }
+  ]
+}

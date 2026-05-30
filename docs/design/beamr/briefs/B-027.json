@@ -1,0 +1,66 @@
+{
+  "id": "B-027",
+  "cluster": "beamr",
+  "title": "Type conversion BIFs and process registry",
+  "depends_on": ["B-026"],
+  "blocked_by": [],
+  "checklist": ["C141", "C150"],
+  "stories": ["S4", "S8"],
+  "purpose": "gleam_erlang_ffi imports type conversion BIFs and process registry BIFs. This brief implements them and adds a process name registry to SharedState.",
+  "task": "Implement type conversion BIFs, process registry (register/unregister/whereis), and demonitor/2.",
+  "boundaries": [
+    "This brief SHALL NOT implement register/2 for ports",
+    "This brief SHALL NOT implement binary_to_term/1 or term_to_binary/1",
+    "This brief SHALL NOT implement binary_to_integer or binary_to_float"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Type conversion BIFs",
+      "spec": "Implement atom_to_binary/2, binary_to_existing_atom/1, binary_to_list/1, list_to_binary/1, map_get/2.",
+      "acceptance": [
+        "atom_to_binary(hello, utf8) returns <<hello>>",
+        "binary_to_existing_atom(<<ok>>) returns ok",
+        "binary_to_list(<<abc>>) returns [97,98,99]",
+        "list_to_binary([97,98,99]) returns <<abc>>",
+        "map_get(key, #{key=>val}) returns val",
+        "map_get(missing, #{}) returns badkey error"
+      ],
+      "files": { "modify": ["crates/beamr/src/native/gate3_bifs.rs"] },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "Process registry BIFs",
+      "spec": "Implement register/2, unregister/1, whereis/1 backed by HashMap<Atom, u64> on SharedState via RegistryFacility trait.",
+      "acceptance": [
+        "register(name, Pid) associates name",
+        "whereis(name) returns Pid",
+        "unregister(name) removes association",
+        "whereis(unregistered) returns undefined",
+        "register(taken, Pid) returns badarg"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/gate3_bifs.rs", "crates/beamr/src/scheduler/mod.rs"],
+        "create": ["crates/beamr/src/native/registry.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R3",
+      "title": "erlang:demonitor/2",
+      "spec": "demonitor/2 accepts (Ref, Options) list. Support [flush] and [info] options. Empty list behaves like demonitor/1.",
+      "acceptance": [
+        "demonitor(Ref, []) behaves like demonitor/1",
+        "demonitor(Ref, [flush]) removes monitor and flushes DOWN",
+        "demonitor(Ref, [info]) returns true/false",
+        "Non-list second arg returns badarg"
+      ],
+      "files": { "modify": ["crates/beamr/src/native/gate3_bifs.rs"] },
+      "checklist": ["C141"],
+      "stories": ["S8"]
+    }
+  ]
+}
