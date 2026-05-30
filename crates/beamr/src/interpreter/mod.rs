@@ -80,7 +80,7 @@ fn run_loop(
             .checked_add(1)
             .ok_or(ExecError::InvalidOperand("instruction pointer"))?;
 
-        match opcodes::dispatch(process, module, registry, instruction, next_ip)? {
+        match opcodes::dispatch(process, module, instruction, next_ip)? {
             InstructionOutcome::Continue => process.set_code_position(Some(CodePosition {
                 module: module.name,
                 instruction_pointer: next_ip,

@@ -96,6 +96,8 @@ pub enum ProcessStatus {
     Yielded,
     /// Waiting for a message or timeout.
     Waiting,
+    /// Paused by the scheduler hook; will be requeued or waited on resume.
+    Suspended,
     /// Terminal state with exit reason.
     Exited(ExitReason),
 }
@@ -155,6 +157,7 @@ pub struct Process {
     handlers: Vec<ExceptionHandler>,
     current_exception: Option<Exception>,
     receive_timeout: Option<ReceiveTimeout>,
+    receive_timer_ref: Option<u64>,
     x_regs: [Term; 256],
     reduction_counter: u32,
     code_position: Option<CodePosition>,
@@ -180,6 +183,7 @@ impl Process {
             handlers: Vec::new(),
             current_exception: None,
             receive_timeout: None,
+            receive_timer_ref: None,
             x_regs: [Term::NIL; 256],
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
             code_position: None,
@@ -225,7 +229,11 @@ impl Process {
                 | (ProcessStatus::Running, ProcessStatus::Waiting)
                 | (ProcessStatus::Running, ProcessStatus::Exited(_))
                 | (ProcessStatus::Yielded, ProcessStatus::Running)
+                | (ProcessStatus::Yielded, ProcessStatus::Suspended)
                 | (ProcessStatus::Waiting, ProcessStatus::Running)
+                | (ProcessStatus::Waiting, ProcessStatus::Suspended)
+                | (ProcessStatus::Suspended, ProcessStatus::Running)
+                | (ProcessStatus::Suspended, ProcessStatus::Waiting)
         )
     }
 
@@ -333,6 +341,18 @@ impl Process {
     #[must_use]
     pub const fn receive_timeout(&self) -> Option<ReceiveTimeout> {
         self.receive_timeout
+    }
+
+    /// Store the timer reference for the active receive timeout, used by the
+    /// scheduler to cancel the timer when a message arrives first.
+    pub const fn set_receive_timer_ref(&mut self, timer_ref: Option<u64>) {
+        self.receive_timer_ref = timer_ref;
+    }
+
+    /// Active receive timer reference, when a timeout timer is outstanding.
+    #[must_use]
+    pub const fn receive_timer_ref(&self) -> Option<u64> {
+        self.receive_timer_ref
     }
 
     /// Read X register `n`.

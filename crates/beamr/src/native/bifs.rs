@@ -5,9 +5,13 @@
 //! provides the minimum arithmetic, comparison, and utility BIFs required by
 //! unresolved imports.
 
+use std::time::Duration;
+
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
 use crate::term::Term;
+use crate::term::boxed::write_tuple;
+use crate::timer::TimerRef;
 
 type Gate1Bif = (&'static str, u8, NativeFn);
 
@@ -23,6 +27,9 @@ const GATE1_BIFS: &[Gate1Bif] = &[
     ("=/=", 2, exact_not_equal),
     ("error", 1, error),
     ("display", 1, display),
+    ("send_after", 3, send_after),
+    ("start_timer", 3, start_timer),
+    ("cancel_timer", 1, cancel_timer),
 ];
 
 /// Registers all Gate 1 BIFs into the VM-owned BIF registry.
@@ -114,6 +121,54 @@ pub fn display(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Ter
     Ok(bool_term(true))
 }
 
+/// erlang:send_after/3 schedules `Msg` to be delivered to `Pid` after `Time` ms.
+pub fn send_after(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [delay, pid, message] = args else {
+        return Err(badarg());
+    };
+    let delay = duration_from_term(*delay)?;
+    let target_pid = pid.as_pid().ok_or_else(badarg)?;
+    let reference = context
+        .schedule_timer(delay, target_pid, *message)
+        .ok_or_else(badarg)?;
+    timer_ref_term(reference)
+}
+
+/// erlang:start_timer/3 schedules `{timeout, Ref, Msg}` delivery after `Time` ms.
+pub fn start_timer(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [delay, pid, message] = args else {
+        return Err(badarg());
+    };
+    let delay = duration_from_term(*delay)?;
+    let target_pid = pid.as_pid().ok_or_else(badarg)?;
+    let payload = *message;
+    let reference = context
+        .schedule_timer_with_reference(delay, target_pid, |reference| {
+            timeout_tuple_term(reference, payload).unwrap_or(payload)
+        })
+        .ok_or_else(badarg)?;
+    timer_ref_term(reference)
+}
+
+/// erlang:cancel_timer/1 cancels a pending timer and returns remaining ms or false.
+pub fn cancel_timer(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [reference] = args else {
+        return Err(badarg());
+    };
+    let reference = reference
+        .as_small_int()
+        .and_then(|id| u64::try_from(id).ok())
+        .map(TimerRef::from_id)
+        .ok_or_else(badarg)?;
+    match context.cancel_timer(reference) {
+        Some(remaining) => i64::try_from(remaining.as_millis())
+            .ok()
+            .and_then(Term::try_small_int)
+            .ok_or_else(badarg),
+        None => Ok(Term::atom(Atom::FALSE)),
+    }
+}
+
 fn arithmetic(args: &[Term], operation: fn(i64, i64) -> Option<i64>) -> Result<Term, Term> {
     let (left, right) = two_small_ints(args)?;
     let result = operation(left, right).ok_or_else(badarith)?;
@@ -129,6 +184,34 @@ fn two_small_ints(args: &[Term]) -> Result<(i64, i64), Term> {
         (Some(left), Some(right)) => Ok((left, right)),
         _ => Err(badarith()),
     }
+}
+
+fn duration_from_term(term: Term) -> Result<Duration, Term> {
+    let milliseconds = term
+        .as_small_int()
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(badarg)?;
+    Ok(Duration::from_millis(milliseconds))
+}
+
+fn timer_ref_term(reference: TimerRef) -> Result<Term, Term> {
+    i64::try_from(reference.id())
+        .ok()
+        .and_then(Term::try_small_int)
+        .ok_or_else(badarg)
+}
+
+fn timeout_tuple_term(reference: TimerRef, message: Term) -> Result<Term, Term> {
+    let words = Box::leak(Box::new([0_u64; 4]));
+    write_tuple(
+        words,
+        &[
+            Term::atom(Atom::TIMEOUT),
+            timer_ref_term(reference)?,
+            message,
+        ],
+    )
+    .ok_or_else(badarg)
 }
 
 fn bool_term(value: bool) -> Term {

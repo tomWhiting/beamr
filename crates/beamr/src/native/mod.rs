@@ -11,9 +11,12 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::atom::Atom;
 use crate::term::Term;
+use crate::timer::{TimerRef, TimerWheel};
 
 /// Registry key for a native module/function/arity tuple.
 pub type NativeKey = (Atom, Atom, u8);
@@ -23,13 +26,75 @@ pub type NativeKey = (Atom, Atom, u8);
 /// Native functions deliberately receive this allocation subset instead of the
 /// full process so they cannot inspect scheduler, mailbox, or process internals.
 #[derive(Debug, Default)]
-pub struct ProcessContext;
+pub struct ProcessContext {
+    pid: Option<u64>,
+    timers: Option<Arc<Mutex<TimerWheel>>>,
+}
 
 impl ProcessContext {
     /// Creates an empty process context.
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self {
+            pid: None,
+            timers: None,
+        }
+    }
+
+    /// Creates a context with timer services for asynchronous timer BIFs.
+    #[must_use]
+    pub fn with_timer_services(pid: u64, timers: Arc<Mutex<TimerWheel>>) -> Self {
+        Self {
+            pid: Some(pid),
+            timers: Some(timers),
+        }
+    }
+
+    /// Return the calling process id when provided by the runtime.
+    #[must_use]
+    pub const fn pid(&self) -> Option<u64> {
+        self.pid
+    }
+
+    /// Schedule a timer via the runtime timer wheel.
+    pub fn schedule_timer(
+        &mut self,
+        delay: Duration,
+        target_pid: u64,
+        message: Term,
+    ) -> Option<TimerRef> {
+        let timers = self.timers.as_ref()?;
+        Some(
+            timers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .schedule(delay, target_pid, message),
+        )
+    }
+
+    /// Reserve a timer reference and schedule with a message derived from it.
+    pub fn schedule_timer_with_reference<F>(
+        &mut self,
+        delay: Duration,
+        target_pid: u64,
+        message: F,
+    ) -> Option<TimerRef>
+    where
+        F: FnOnce(TimerRef) -> Term,
+    {
+        let timers = self.timers.as_ref()?;
+        let mut timers = timers.lock().unwrap_or_else(|error| error.into_inner());
+        let reference = timers.reserve_reference();
+        Some(timers.schedule_reserved(reference, delay, target_pid, message(reference)))
+    }
+
+    /// Cancel a timer via the runtime timer wheel.
+    pub fn cancel_timer(&mut self, reference: TimerRef) -> Option<Duration> {
+        let timers = self.timers.as_ref()?;
+        timers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancel(reference)
     }
 
     /// Allocates a term on the calling process heap.

@@ -30,6 +30,7 @@ impl Atom {
     pub const BADFUN: Self = Self(16);
     pub const BADARITY: Self = Self(17);
     pub const NOPROC: Self = Self(18);
+    pub const TIMEOUT: Self = Self(19);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -60,6 +61,7 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("badfun", Atom::BADFUN),
     ("badarity", Atom::BADARITY),
     ("noproc", Atom::NOPROC),
+    ("timeout", Atom::TIMEOUT),
 ];
 
 /// Concurrent intern table for atom strings.

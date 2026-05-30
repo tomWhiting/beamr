@@ -254,7 +254,7 @@ PROMPT
 
 echo "--- SCOUT ---"
 SCOUT_START=$(date +%s)
-norn -p \
+norn -p --no-session \
     --profile norn-codebase-explorer \
     -s "$OUTDIR/scout-schema.json" \
     -f json \
@@ -308,7 +308,7 @@ PROMPT
 echo ""
 echo "--- DEV ---"
 DEV_START=$(date +%s)
-norn -p \
+norn -p --no-session \
     --profile norn-developer \
     -s "$OUTDIR/dev-schema.json" \
     -f json \
@@ -376,7 +376,7 @@ while [[ "$REVIEW_ATTEMPT" -lt "$MAX_REVIEW_ATTEMPTS" && "$REVIEW_PASS" != "true
     echo ""
     echo "--- REVIEW (attempt $REVIEW_ATTEMPT) ---"
     REVIEW_START=$(date +%s)
-    norn -p \
+    norn -p --no-session \
         --profile norn-reviewer \
         -s "$OUTDIR/review-schema.json" \
         -f json \
