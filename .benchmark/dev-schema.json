@@ -1,0 +1,37 @@
+{
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "description": "1-2 sentences on what was done."},
+        "commit_message": {"type": "string", "description": "Conventional-commits style."},
+        "enrichments": {"type": "array", "description": "One entry per R#.", "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "R# id."},
+                "status": {"type": "string", "enum": ["implemented", "blocked"]},
+                "files_changed": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "change": {"type": "string", "enum": ["created", "modified", "deleted"]}, "note": {"type": "string"}},
+                    "required": ["path", "change", "note"], "additionalProperties": false
+                }},
+                "how": {"type": "string", "description": "How this requirement was met."},
+                "deviation": {"type": "string", "description": "Empty if followed plan."},
+                "checklist": {"type": "array", "items": {
+                    "type": "object", "properties": {"id": {"type": "string"}, "done": {"type": "boolean"}, "note": {"type": "string"}},
+                    "required": ["id", "done", "note"], "additionalProperties": false
+                }},
+                "stories": {"type": "array", "items": {
+                    "type": "object", "properties": {"id": {"type": "string"}, "satisfied": {"type": "boolean"}, "note": {"type": "string"}},
+                    "required": ["id", "satisfied", "note"], "additionalProperties": false
+                }}
+            },
+            "required": ["id", "status", "files_changed", "how", "deviation", "checklist", "stories"],
+            "additionalProperties": false
+        }},
+        "attestation": {"type": "object", "properties": {
+            "no_panics": {"type": "boolean"}, "no_unsafe": {"type": "boolean"},
+            "boundaries_respected": {"type": "boolean"}, "tests_pass": {"type": "boolean"}
+        }, "required": ["no_panics", "no_unsafe", "boundaries_respected", "tests_pass"], "additionalProperties": false}
+    },
+    "required": ["summary", "commit_message", "enrichments", "attestation"],
+    "additionalProperties": false
+}

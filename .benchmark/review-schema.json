@@ -1,0 +1,29 @@
+{
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "commit_message": {"type": "string"},
+        "pass": {"type": "boolean", "description": "True only if all acceptance criteria met and no blocking issues remain."},
+        "enrichments": {"type": "array", "description": "One entry per R#.", "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "alignment": {"type": "string", "enum": ["aligned", "drifted", "fixed"]},
+                "acceptance_met": {"type": "boolean"},
+                "checklist": {"type": "array", "items": {"type": "string"}},
+                "stories": {"type": "array", "items": {"type": "string"}},
+                "issues": {"type": "array", "items": {"type": "string"}},
+                "fixes": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["id", "alignment", "acceptance_met", "checklist", "stories", "issues", "fixes"],
+            "additionalProperties": false
+        }},
+        "verification": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"criterion": {"type": "string"}, "passed": {"type": "boolean"}, "note": {"type": "string"}},
+            "required": ["criterion", "passed", "note"], "additionalProperties": false
+        }}
+    },
+    "required": ["summary", "commit_message", "pass", "enrichments", "verification"],
+    "additionalProperties": false
+}

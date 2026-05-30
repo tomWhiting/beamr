@@ -1,0 +1,217 @@
+{
+  "id": "B-005",
+  "cluster": "beamr",
+  "title": "Implement term representation — tagging and immediates",
+  "depends_on": [
+    "B-001",
+    "B-002"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C33",
+    "C34",
+    "C35",
+    "C36",
+    "C37"
+  ],
+  "stories": [
+    "S19"
+  ],
+  "purpose": "Terms are the substrate — every value flowing through the interpreter is a term. This brief delivers the 64-bit tagged value type and all immediate term encodings (small integer, atom, pid, nil). Immediates require no heap allocation and are the hot path for pattern matching and arithmetic. The tagging scheme must be correct before any boxed types or the interpreter can build on it.",
+  "task": "Define the Term type in crates/beamr/src/term/mod.rs as a 64-bit value with low-bit tagging. Implement encoding and decoding for each immediate type: small integers (value in non-tag bits), atoms (Atom index in non-tag bits), pids (process id data in non-tag bits), and nil (a distinguished constant). Define tag constants and provide safe construction/extraction methods. The Term type must be Copy and fit in a machine word. Re-export the public API from term/mod.rs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Term tagged value type",
+      "spec": "beamr::term SHALL define a Term type as a 64-bit value with low-bit tagging to distinguish types. Term SHALL implement Copy, Clone, Debug. Term SHALL NOT expose its raw u64 as a public field — all access is through typed constructors and extractors. The tag layout SHALL reserve at least 3 low bits for primary tag discrimination.",
+      "acceptance": [
+        "Term is a public struct in beamr::term wrapping a u64",
+        "Term implements Copy, Clone, Debug",
+        "Term has no public fields",
+        "std::mem::size_of::<Term>() == 8",
+        "Tag constants are defined for: small integer, atom, pid, nil, boxed, list"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        {
+          "id": "C33",
+          "text": "Term is a 64-bit value with low-bit tagging to distinguish types"
+        }
+      ],
+      "stories": [
+        {
+          "id": "S19",
+          "text": "As an implementation agent, I want the term representation, heap, and GC to be defined in a single crate with clear module boundaries so that I can understand the term lifecycle without cross-crate indirection."
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Small integer immediate encoding",
+      "spec": "WHEN a small integer is encoded as a Term THE SYSTEM SHALL store the value in the non-tag bits and set the small-integer tag. WHEN a Term with a small-integer tag is decoded THE SYSTEM SHALL return the original integer value. The range SHALL cover at least i61 (signed, fitting in 64 bits minus tag). It SHALL NOT silently truncate values outside the representable range — out-of-range values require big integer boxing (B-006 scope).",
+      "acceptance": [
+        "Term::small_int(0) round-trips: term.as_small_int() == Some(0)",
+        "Term::small_int(42) round-trips: term.as_small_int() == Some(42)",
+        "Term::small_int(-1) round-trips: term.as_small_int() == Some(-1)",
+        "Term::small_int(i64::MAX >> 3) round-trips correctly (max representable value)",
+        "term.is_small_int() returns true for small integer terms, false for atoms"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        {
+          "id": "C34",
+          "text": "Small integer encoded as immediate: value fits in the non-tag bits, round-trips encode/decode"
+        }
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Atom immediate encoding",
+      "spec": "WHEN an Atom is encoded as a Term THE SYSTEM SHALL store the atom's u32 index in the non-tag bits and set the atom tag. WHEN a Term with an atom tag is decoded THE SYSTEM SHALL return the original Atom. It SHALL NOT require heap allocation — atom terms are always immediate.",
+      "acceptance": [
+        "Term::atom(Atom::OK) round-trips: term.as_atom() == Some(Atom::OK)",
+        "Term::atom(Atom::ERROR) round-trips: term.as_atom() == Some(Atom::ERROR)",
+        "term.is_atom() returns true for atom terms, false for integers",
+        "No heap allocation occurs when creating an atom term"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        {
+          "id": "C35",
+          "text": "Atom encoded as immediate: atom index in non-tag bits, round-trips encode/decode"
+        }
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Pid immediate encoding",
+      "spec": "WHEN a process identifier is encoded as a Term THE SYSTEM SHALL store the pid data in the non-tag bits and set the pid tag. WHEN a Term with a pid tag is decoded THE SYSTEM SHALL return the original pid data. It SHALL NOT require heap allocation for local pids.",
+      "acceptance": [
+        "Term::pid(0) round-trips: term.as_pid() == Some(0)",
+        "Term::pid(12345) round-trips: term.as_pid() == Some(12345)",
+        "term.is_pid() returns true for pid terms, false for atoms and integers"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        {
+          "id": "C36",
+          "text": "Pid encoded as immediate: process id data in non-tag bits, round-trips encode/decode"
+        }
+      ],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Nil constant",
+      "spec": "beamr::term SHALL define Term::NIL as a public associated constant representing the empty list / nil value. It SHALL be a distinguished value that is not equal to any small integer, atom, or pid term. term.is_nil() SHALL return true only for this value.",
+      "acceptance": [
+        "Term::NIL is a public associated constant",
+        "Term::NIL.is_nil() returns true",
+        "Term::small_int(0).is_nil() returns false",
+        "Term::atom(Atom::NIL).is_nil() returns false (atom nil is not list nil)",
+        "Term::NIL != Term::small_int(0)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        {
+          "id": "C37",
+          "text": "Nil represented as a distinguished constant value"
+        }
+      ],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Tag dispatch and type predicates",
+      "spec": "Term SHALL provide a tag() method returning a Tag enum and type predicate methods: is_small_int(), is_atom(), is_pid(), is_nil(), is_boxed(), is_list(). WHEN the interpreter dispatches on a term's type THE SYSTEM SHALL use these predicates or the Tag enum. It SHALL NOT require raw bit manipulation outside the term module.",
+      "acceptance": [
+        "Term::small_int(1).tag() returns Tag::SmallInt",
+        "Term::atom(Atom::OK).tag() returns Tag::Atom",
+        "Term::NIL.tag() returns Tag::Nil",
+        "All is_* predicates agree with the Tag enum for every term type",
+        "Tag enum is public and exhaustive for all supported types"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        {
+          "id": "C33",
+          "text": "Term is a 64-bit value with low-bit tagging to distinguish types"
+        }
+      ],
+      "stories": []
+    },
+    {
+      "id": "R7",
+      "title": "Unit tests for immediate terms",
+      "spec": "WHEN immediate terms are tested THE SYSTEM SHALL include round-trip tests for every immediate type, boundary tests for small integer range limits, and cross-type discrimination tests. Tests SHALL live in a #[cfg(test)] mod tests block within term/mod.rs.",
+      "acceptance": [
+        "cargo test -p beamr term passes with all tests green",
+        "Tests cover: small int encode/decode round-trip, atom encode/decode round-trip, pid encode/decode round-trip, nil constant, tag dispatch, cross-type is_* predicates return false"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        {
+          "id": "C34",
+          "text": "Small integer encoded as immediate: value fits in the non-tag bits, round-trips encode/decode"
+        },
+        {
+          "id": "C35",
+          "text": "Atom encoded as immediate: atom index in non-tag bits, round-trips encode/decode"
+        },
+        {
+          "id": "C36",
+          "text": "Pid encoded as immediate: process id data in non-tag bits, round-trips encode/decode"
+        },
+        {
+          "id": "C37",
+          "text": "Nil represented as a distinguished constant value"
+        }
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement boxed types (tuples, lists, floats, binaries, etc.) — B-006 scope",
+    "SHALL NOT implement term comparison or ordering — B-007 scope",
+    "SHALL NOT implement heap allocation — boxed terms need a heap, delivered by process/heap.rs in a later brief",
+    "SHALL NOT implement term-to-string display formatting beyond Debug — the interpreter needs it but it's not this brief's job"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr term passes with all tests green",
+    "std::mem::size_of::<Term>() == 8 (verified by a test)",
+    "Code inspection: Term has no public fields, all access via methods",
+    "Code inspection: term/mod.rs re-exports Term and Tag"
+  ]
+}

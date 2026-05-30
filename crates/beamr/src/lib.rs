@@ -1,8 +1,8 @@
-/// Beamr — a Rust runtime with the BEAM's execution model.
-///
-/// Loads `.beam` bytecode produced by the Gleam toolchain (via `erlc`)
-/// and executes it with preemptive scheduling, per-process isolation,
-/// supervision primitives, and a native function interface.
+//! Beamr — a Rust runtime with the BEAM's execution model.
+//!
+//! Loads `.beam` bytecode produced by the Gleam toolchain (via `erlc`)
+//! and executes it with preemptive scheduling, per-process isolation,
+//! supervision primitives, and a native function interface.
 pub mod atom;
 pub mod error;
 pub mod gc;
