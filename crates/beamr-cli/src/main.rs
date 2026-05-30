@@ -4,12 +4,16 @@ use std::{env, fmt};
 
 use beamr::atom::{Atom, AtomTable};
 use beamr::error::{ExecError, LoadError};
-use beamr::loader::{UnresolvedImportReport, load_module};
-use beamr::module::ModuleRegistry;
+use beamr::interpreter::{self, ExecutionResult};
+use beamr::loader::{Instruction, UnresolvedImportReport, load_module};
+use beamr::module::{Module, ModuleRegistry};
 use beamr::native::{BifRegistryImpl, NativeRegistrationError, bifs::register_gate1_bifs};
+use beamr::process::heap::DEFAULT_HEAP_SIZE;
 use beamr::process::registry::ProcessTable;
+use beamr::process::{CodePosition, ExitReason, Process};
+use beamr::term::{Tag, Term};
 
-const USAGE: &str = "Usage:\n  beamr <file.beam> [module:function/arity]\n  beamr imports <file.beam>\n  beamr --help|-h\n  beamr --version|-V";
+const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [-- <arg>...]\n  beamr imports <file.beam>\n  beamr --help|-h\n  beamr --version|-V";
 
 fn main() -> ExitCode {
     let outcome = run_cli(env::args().skip(1));
@@ -30,6 +34,7 @@ enum Command {
     Run {
         path: PathBuf,
         entry: Option<EntryPoint>,
+        args: Vec<String>,
     },
     Imports {
         path: PathBuf,
@@ -59,7 +64,13 @@ enum CliError {
     Exec(ExecError),
     NativeRegistration(NativeRegistrationError),
     UnresolvedImports(String),
-    ExecutionUnavailable,
+    ArityMismatch {
+        expected: u8,
+        actual: usize,
+    },
+    InvalidTerm(String),
+    ProcessExit(ExitReason),
+    ProcessDidNotComplete(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +90,7 @@ where
             env!("CARGO_PKG_VERSION")
         ))),
         Command::Imports { path } => run_imports(&path),
-        Command::Run { path, entry } => run_module(&path, entry.as_ref()),
+        Command::Run { path, entry, args } => run_module(&path, entry.as_ref(), &args),
     }
 }
 
@@ -89,21 +100,35 @@ where
     S: Into<String>,
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    let (command_args, runtime_args) = match args.iter().position(|arg| arg == "--") {
+        Some(separator) => (
+            args[..separator].to_vec(),
+            args[separator.saturating_add(1)..].to_vec(),
+        ),
+        None => (args, Vec::new()),
+    };
 
-    for arg in &args {
+    for (index, arg) in command_args.iter().enumerate() {
         if arg.starts_with('-') {
-            return match arg.as_str() {
-                "--help" | "-h" if args.len() == 1 => Ok(Command::Help),
-                "--version" | "-V" if args.len() == 1 => Ok(Command::Version),
-                "--help" | "-h" | "--version" | "-V" => Err(CliError::Usage(format!(
-                    "flag '{arg}' cannot be combined with other arguments\n{USAGE}"
-                ))),
-                _ => Err(CliError::UnknownFlag(arg.clone())),
-            };
+            match arg.as_str() {
+                "--help" | "-h" if command_args.len() == 1 && runtime_args.is_empty() => {
+                    return Ok(Command::Help);
+                }
+                "--version" | "-V" if command_args.len() == 1 && runtime_args.is_empty() => {
+                    return Ok(Command::Version);
+                }
+                "--entry" if index == 1 => continue,
+                "--help" | "-h" | "--version" | "-V" => {
+                    return Err(CliError::Usage(format!(
+                        "flag '{arg}' cannot be combined with other arguments\n{USAGE}"
+                    )));
+                }
+                _ => return Err(CliError::UnknownFlag(arg.clone())),
+            }
         }
     }
 
-    match args.as_slice() {
+    match command_args.as_slice() {
         [] => Err(CliError::Usage(format!("missing .beam file\n{USAGE}"))),
         [command] if command == "imports" => Err(CliError::Usage(format!(
             "imports requires a .beam file\n{USAGE}"
@@ -113,6 +138,7 @@ where
             Ok(Command::Run {
                 path: PathBuf::from(file),
                 entry: None,
+                args: runtime_args,
             })
         }
         [command, file] if command == "imports" => {
@@ -126,6 +152,15 @@ where
             Ok(Command::Run {
                 path: PathBuf::from(file),
                 entry: Some(parse_entry(entry)?),
+                args: runtime_args,
+            })
+        }
+        [file, flag, entry] if flag == "--entry" => {
+            validate_beam_path(file)?;
+            Ok(Command::Run {
+                path: PathBuf::from(file),
+                entry: Some(parse_entry(entry)?),
+                args: runtime_args,
             })
         }
         _ => Err(CliError::Usage(format!("too many arguments\n{USAGE}"))),
@@ -179,7 +214,11 @@ fn run_imports(path: &Path) -> Result<CliSuccess, CliError> {
     )))
 }
 
-fn run_module(path: &Path, entry: Option<&EntryPoint>) -> Result<CliSuccess, CliError> {
+fn run_module(
+    path: &Path,
+    entry: Option<&EntryPoint>,
+    runtime_args: &[String],
+) -> Result<CliSuccess, CliError> {
     let LoadContext {
         atom_table,
         module_registry,
@@ -203,14 +242,42 @@ fn run_module(path: &Path, entry: Option<&EntryPoint>) -> Result<CliSuccess, Cli
         None => (module.name, atom_table.intern("main"), 0),
     };
 
+    if runtime_args.len() != usize::from(arity) {
+        return Err(CliError::ArityMismatch {
+            expected: arity,
+            actual: runtime_args.len(),
+        });
+    }
+
+    let args = parse_runtime_args(runtime_args, &atom_table)?;
     let code_pointer = module_registry
         .lookup_mfa(module_atom, function_atom, arity)
         .map_err(CliError::Exec)?;
+    let instruction_pointer =
+        label_ip(&code_pointer.module, code_pointer.label).map_err(CliError::Exec)?;
     let process_table = ProcessTable::new();
     let pid = process_table.spawn();
-    let _ = (code_pointer, pid);
+    let mut process = Process::new(pid, DEFAULT_HEAP_SIZE);
+    process.set_code_position(Some(CodePosition {
+        module: code_pointer.module.name,
+        instruction_pointer,
+    }));
+    for (index, arg) in args.into_iter().enumerate() {
+        let register = u8::try_from(index).map_err(|_| CliError::Exec(ExecError::Badarg))?;
+        process.set_x_reg(register, arg);
+    }
 
-    Err(CliError::ExecutionUnavailable)
+    match interpreter::run_with_registry(&mut process, &code_pointer.module, &module_registry)
+        .map_err(CliError::Exec)?
+    {
+        ExecutionResult::Exited(ExitReason::Normal) => Ok(CliSuccess::Stdout(format!(
+            "{}\n",
+            format_term(process.x_reg(0), &atom_table)
+        ))),
+        ExecutionResult::Exited(reason) => Err(CliError::ProcessExit(reason)),
+        ExecutionResult::Yielded => Err(CliError::ProcessDidNotComplete("yielded")),
+        ExecutionResult::Waiting => Err(CliError::ProcessDidNotComplete("waiting")),
+    }
 }
 
 struct LoadContext {
@@ -241,6 +308,29 @@ fn load_context(path: &Path) -> Result<LoadContext, CliError> {
     })
 }
 
+fn parse_runtime_args(args: &[String], atom_table: &AtomTable) -> Result<Vec<Term>, CliError> {
+    args.iter()
+        .map(|arg| parse_runtime_arg(arg, atom_table))
+        .collect()
+}
+
+fn parse_runtime_arg(arg: &str, atom_table: &AtomTable) -> Result<Term, CliError> {
+    match arg.parse::<i64>() {
+        Ok(value) => {
+            Term::try_small_int(value).ok_or_else(|| CliError::InvalidTerm(arg.to_owned()))
+        }
+        Err(_) => Ok(Term::atom(atom_table.intern(arg))),
+    }
+}
+
+fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
+    module
+        .code
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Label { label: seen } if *seen == label))
+        .ok_or(ExecError::InvalidLabel { label })
+}
+
 fn format_import_report(report: &UnresolvedImportReport, atom_table: &AtomTable) -> String {
     let mut output = String::new();
     for import in report.imports() {
@@ -252,6 +342,25 @@ fn format_import_report(report: &UnresolvedImportReport, atom_table: &AtomTable)
         output.push('\n');
     }
     output
+}
+
+fn format_term(term: Term, atom_table: &AtomTable) -> String {
+    match term.tag() {
+        Tag::SmallInt => term
+            .as_small_int()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| format!("{term:?}")),
+        Tag::Atom => term
+            .as_atom()
+            .map(|atom| format_atom(atom, atom_table))
+            .unwrap_or_else(|| format!("{term:?}")),
+        Tag::Nil => "[]".to_owned(),
+        Tag::Pid => term
+            .as_pid()
+            .map(|pid| format!("<0.{pid}.0>"))
+            .unwrap_or_else(|| format!("{term:?}")),
+        Tag::Boxed | Tag::List => format!("{term:?}"),
+    }
 }
 
 fn format_atom(atom: Atom, atom_table: &AtomTable) -> String {
@@ -272,7 +381,10 @@ impl CliError {
             | Self::Exec(_)
             | Self::NativeRegistration(_)
             | Self::UnresolvedImports(_)
-            | Self::ExecutionUnavailable => 1,
+            | Self::ArityMismatch { .. }
+            | Self::InvalidTerm(_)
+            | Self::ProcessExit(_)
+            | Self::ProcessDidNotComplete(_) => 1,
         }
     }
 }
@@ -305,9 +417,15 @@ impl fmt::Display for CliError {
                 }
                 Ok(())
             }
-            Self::ExecutionUnavailable => formatter.write_str(
-                "execution unavailable: interpreter execution is not implemented in this build",
+            Self::ArityMismatch { expected, actual } => write!(
+                formatter,
+                "arity mismatch: entry expects {expected} argument(s), got {actual}"
             ),
+            Self::InvalidTerm(term) => write!(formatter, "invalid term literal '{term}'"),
+            Self::ProcessExit(reason) => write!(formatter, "process exited with {reason:?}"),
+            Self::ProcessDidNotComplete(state) => {
+                write!(formatter, "process did not complete: {state}")
+            }
         }
     }
 }
@@ -343,6 +461,7 @@ mod tests {
             Command::Run {
                 path: "hello.beam".into(),
                 entry: None,
+                args: Vec::new(),
             }
         );
     }
@@ -358,6 +477,24 @@ mod tests {
                     function: "main".into(),
                     arity: 0,
                 }),
+                args: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_entry_flag_and_runtime_args() {
+        assert_eq!(
+            parse_args(["hello.beam", "--entry", "hello:add/2", "--", "17", "25"])
+                .expect("run with --entry and args parses"),
+            Command::Run {
+                path: "hello.beam".into(),
+                entry: Some(EntryPoint {
+                    module: "hello".into(),
+                    function: "add".into(),
+                    arity: 2,
+                }),
+                args: vec!["17".into(), "25".into()],
             }
         );
     }
@@ -477,8 +614,8 @@ mod tests {
             run_cli(["imports", fixture.as_str()]).expect("imports report should be informational");
 
         let CliSuccess::Stdout(output) = result;
-        assert!(output.contains("erlang:get_module_info/1"));
-        assert!(output.contains("erlang:get_module_info/2"));
+        assert!(!output.contains("erlang:get_module_info/1"));
+        assert!(!output.contains("erlang:get_module_info/2"));
         assert!(!output.contains("erlang:display/1"));
         assert!(output.lines().all(|line| {
             let Some((_module, function_and_arity)) = line.split_once(':') else {

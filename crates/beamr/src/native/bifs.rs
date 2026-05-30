@@ -27,6 +27,8 @@ const GATE1_BIFS: &[Gate1Bif] = &[
     ("=/=", 2, exact_not_equal),
     ("error", 1, error),
     ("display", 1, display),
+    ("get_module_info", 1, get_module_info_1),
+    ("get_module_info", 2, get_module_info_2),
     ("send_after", 3, send_after),
     ("start_timer", 3, start_timer),
     ("cancel_timer", 1, cancel_timer),
@@ -119,6 +121,26 @@ pub fn display(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Ter
 
     println!("{term:?}");
     Ok(bool_term(true))
+}
+
+/// erlang:get_module_info/1 returns an empty property list for currently unused metadata.
+pub fn get_module_info_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [module] = args else {
+        return Err(badarg());
+    };
+    let _ = (module, context);
+
+    Ok(Term::NIL)
+}
+
+/// erlang:get_module_info/2 returns an empty value for currently unused metadata keys.
+pub fn get_module_info_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [module, key] = args else {
+        return Err(badarg());
+    };
+    let _ = (module, key, context);
+
+    Ok(Term::NIL)
 }
 
 /// erlang:send_after/3 schedules `Msg` to be delivered to `Pid` after `Time` ms.
@@ -422,6 +444,8 @@ mod tests {
             ("=/=", 2),
             ("error", 1),
             ("display", 1),
+            ("get_module_info", 1),
+            ("get_module_info", 2),
             ("send_after", 3),
             ("start_timer", 3),
             ("cancel_timer", 1),
