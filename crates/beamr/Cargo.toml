@@ -7,3 +7,6 @@ description = "A Rust runtime with the BEAM's execution model, targeting Gleam"
 [dependencies]
 dashmap = "6.1.0"
 flate2 = "1.1.9"
+
+[dev-dependencies]
+proptest = "1.11.0"
