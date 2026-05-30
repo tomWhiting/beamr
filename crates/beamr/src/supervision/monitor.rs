@@ -57,7 +57,7 @@ impl MonitorSet {
     pub fn monitor_pid(&mut self, watcher: &mut Process, target_pid: u64) -> Reference {
         let reference = self.allocate_reference();
         if let Some(reason) = self.dead.get(&target_pid).copied() {
-            let _ = enqueue_down_message(watcher, reference, target_pid, reason);
+            enqueue_down_message(watcher, reference, target_pid, reason);
             return reference;
         }
 
@@ -104,7 +104,7 @@ impl MonitorSet {
                 if let Some(index) = process_index_by_pid(processes, monitor.watcher()) {
                     let watcher = &mut processes[index];
                     watcher.remove_monitor(reference);
-                    let _ = enqueue_down_message(watcher, reference, target_pid, reason);
+                    enqueue_down_message(watcher, reference, target_pid, reason);
                 }
                 if let Some(index) = process_index_by_pid(processes, target_pid) {
                     processes[index].remove_monitor(reference);
@@ -125,8 +125,22 @@ fn enqueue_down_message(
     reference: Reference,
     target_pid: u64,
     reason: ExitReason,
-) -> Result<(), ()> {
-    let reference_term = allocate_reference_term(watcher, reference)?;
+) {
+    const DOWN_MESSAGE_WORDS: usize = 7;
+
+    while watcher.heap().available() < DOWN_MESSAGE_WORDS {
+        watcher.heap_mut().grow_to_next_capacity();
+    }
+
+    let reference_words = watcher
+        .heap_mut()
+        .alloc(2)
+        .expect("heap was grown to fit DOWN reference term");
+    // SAFETY: `alloc` returned a two-word region in the watcher heap for the
+    // boxed reference header and payload.
+    let reference_words = unsafe { std::slice::from_raw_parts_mut(reference_words, 2) };
+    let reference_term = boxed::write_reference(reference_words, reference)
+        .expect("two-word allocation fits a boxed reference");
     let elements = [
         Term::atom(Atom::DOWN),
         reference_term,
@@ -137,21 +151,12 @@ fn enqueue_down_message(
     let words = watcher
         .heap_mut()
         .alloc(1 + elements.len())
-        .map_err(|_| ())?;
+        .expect("heap was grown to fit DOWN message tuple");
     // SAFETY: `alloc` returned a live region with exactly the requested number
     // of words in the watcher heap, used only to initialize this tuple.
     let words = unsafe { std::slice::from_raw_parts_mut(words, 1 + elements.len()) };
-    let message = boxed::write_tuple(words, &elements).ok_or(())?;
+    let message = boxed::write_tuple(words, &elements).expect("tuple allocation has exact arity");
     watcher.mailbox_mut().push_owned(message);
-    Ok(())
-}
-
-fn allocate_reference_term(watcher: &mut Process, reference: Reference) -> Result<Term, ()> {
-    let words = watcher.heap_mut().alloc(2).map_err(|_| ())?;
-    // SAFETY: `alloc` returned a two-word region in the watcher heap for the
-    // boxed reference header and payload.
-    let words = unsafe { std::slice::from_raw_parts_mut(words, 2) };
-    boxed::write_reference(words, reference).ok_or(())
 }
 
 fn process_index_by_pid(processes: &[&mut Process], pid: u64) -> Option<usize> {
@@ -250,5 +255,27 @@ mod tests {
         );
         assert_eq!(tuple.get(3).and_then(Term::as_pid), Some(2));
         assert_eq!(tuple.get(4), Some(Term::atom(Atom::NORMAL)));
+    }
+
+    #[test]
+    fn down_delivery_grows_mailbox_heap_instead_of_dropping_signal() {
+        let mut monitors = MonitorSet::new();
+        let mut watcher = Process::new(1, 1);
+        watcher
+            .transition_to(ProcessStatus::Running)
+            .unwrap_or_else(|error| panic!("process starts: {error}"));
+        monitors.record_dead(2, ExitReason::Error);
+
+        let reference = monitors.monitor_pid(&mut watcher, 2);
+
+        assert_eq!(watcher.status(), ProcessStatus::Running);
+        assert!(watcher.heap().capacity() >= 7);
+        let tuple = down_tuple(&mut watcher);
+        assert_eq!(tuple.get(0), Some(Term::atom(Atom::DOWN)));
+        assert_eq!(
+            tuple.get(1).and_then(RefTerm::new).map(RefTerm::id),
+            Some(reference)
+        );
+        assert_eq!(tuple.get(4), Some(Term::atom(Atom::ERROR)));
     }
 }

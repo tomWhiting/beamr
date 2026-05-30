@@ -128,8 +128,9 @@ impl LinkSet {
     fn deliver_exit_signal(&mut self, source_pid: u64, target: &mut Process, reason: ExitReason) {
         if should_die_from_signal(target, reason) {
             let _ = target.transition_to(ProcessStatus::Exited(terminal_reason(reason)));
-        } else if target.trap_exit() {
-            let _ = enqueue_exit_message(target, source_pid, reason);
+        } else if target.trap_exit() && enqueue_exit_message(target, source_pid, reason).is_err() {
+            target.terminate(ExitReason::Error);
+            self.dead.insert(target.pid(), ExitReason::Error);
         }
     }
 }
@@ -152,6 +153,12 @@ fn enqueue_exit_message(
     source_pid: u64,
     reason: ExitReason,
 ) -> Result<(), ()> {
+    const EXIT_TUPLE_WORDS: usize = 4;
+
+    while target.heap().available() < EXIT_TUPLE_WORDS {
+        target.heap_mut().grow_to_next_capacity();
+    }
+
     let elements = [
         Term::atom(Atom::EXIT),
         Term::pid(source_pid),
@@ -293,7 +300,9 @@ mod tests {
         links.process_exited(&mut a, &mut [&mut b, &mut c], ExitReason::Kill);
 
         assert_eq!(b.status(), ProcessStatus::Exited(ExitReason::Killed));
+        assert_eq!(links.dead_reason(b.pid()), Some(ExitReason::Killed));
         assert_eq!(c.status(), ProcessStatus::Exited(ExitReason::Killed));
+        assert_eq!(links.dead_reason(c.pid()), Some(ExitReason::Killed));
 
         let mut d = running(4);
         d.set_trap_exit(true);
@@ -315,5 +324,25 @@ mod tests {
         links.link_pid(&mut caller, dead.pid());
 
         assert_eq!(caller.status(), ProcessStatus::Exited(ExitReason::Error));
+    }
+
+    #[test]
+    fn trapped_exit_delivery_grows_mailbox_heap_instead_of_dropping_signal() {
+        let mut links = LinkSet::new();
+        let mut watcher = Process::new(1, 1);
+        watcher
+            .transition_to(ProcessStatus::Running)
+            .unwrap_or_else(|error| panic!("process starts: {error}"));
+        watcher.set_trap_exit(true);
+
+        links.deliver_exit_signal(2, &mut watcher, ExitReason::Error);
+
+        assert_eq!(watcher.status(), ProcessStatus::Running);
+        assert!(watcher.heap().capacity() >= 4);
+        let tuple = mailbox_tuple(&mut watcher);
+        assert_eq!(tuple.get(0), Some(Term::atom(Atom::EXIT)));
+        assert_eq!(tuple.get(1).and_then(Term::as_pid), Some(2));
+        assert_eq!(tuple.get(2), Some(Term::atom(Atom::ERROR)));
+        assert_eq!(links.dead_reason(watcher.pid()), None);
     }
 }
