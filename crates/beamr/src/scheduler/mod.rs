@@ -201,13 +201,20 @@ impl Scheduler {
         pid
     }
 
+    /// Return a callback suitable for mailbox senders to wake `pid` after a
+    /// successful message delivery.
+    ///
+    /// Running and yielded processes are absent from the wait set, so invoking
+    /// the returned notifier for an already-runnable process is harmless and does
+    /// not duplicate it in a run queue.
+    pub fn wake_notifier(&self, pid: u64) -> impl Fn() + Send + Sync + 'static {
+        let shared = Arc::clone(&self.shared);
+        move || wake_process(&shared, pid)
+    }
+
     /// Wake a process that is in the Waiting state after message arrival.
     pub fn wake_process(&self, pid: u64) {
-        let mut wait_set = lock_or_recover(&self.shared.wait_set);
-        if let Some(scheduler_index) = wait_set.waiting.remove(&pid) {
-            wait_set.woken.push((pid, scheduler_index));
-            self.shared.wake_condvar.notify_all();
-        }
+        wake_process(&self.shared, pid);
     }
 
     /// Shut down all worker threads after their current time slice.
@@ -422,6 +429,14 @@ fn exit_process(process: &mut Process, reason: ExitReason) -> SliceOutcome {
 
 fn take_process(process: &mut Process) -> Process {
     std::mem::replace(process, Process::new(u64::MAX, DEFAULT_HEAP_SIZE))
+}
+
+fn wake_process(shared: &SharedState, pid: u64) {
+    let mut wait_set = lock_or_recover(&shared.wait_set);
+    if let Some(scheduler_index) = wait_set.waiting.remove(&pid) {
+        wait_set.woken.push((pid, scheduler_index));
+        shared.wake_condvar.notify_all();
+    }
 }
 
 fn drain_woken(shared: &SharedState, queue: &RunQueue, my_index: usize) {

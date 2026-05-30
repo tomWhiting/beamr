@@ -1,10 +1,16 @@
 use std::collections::HashMap as StdHashMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use super::*;
 use crate::atom::AtomTable;
 use crate::loader::Instruction;
 use crate::loader::decode::compact::Operand;
+use crate::mailbox::Mailbox;
+use crate::process::heap::Heap;
+use crate::term::boxed;
 
 fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
     Module {
@@ -194,7 +200,7 @@ fn multiple_processes_fairly_complete() {
 }
 
 #[test]
-fn waiting_process_wakes_event_driven() {
+fn mailbox_send_wakes_waiting_process_event_driven() {
     let registry = Arc::new(ModuleRegistry::new());
     let scheduler = Scheduler::new(
         SchedulerConfig {
@@ -209,8 +215,15 @@ fn waiting_process_wakes_event_driven() {
         let mut wait_set = lock_or_recover(&scheduler.shared.wait_set);
         wait_set.waiting.insert(pid, 0);
     }
+    let mailbox = Mailbox::new();
+    let sender = mailbox
+        .sender()
+        .with_wake_notifier(scheduler.wake_notifier(pid));
+    let mut receiver_heap = Heap::new(16);
 
-    scheduler.wake_process(pid);
+    sender
+        .send(Term::small_int(7), &mut receiver_heap)
+        .unwrap_or_else(|error| panic!("send succeeds: {error}"));
 
     let wait_set = lock_or_recover(&scheduler.shared.wait_set);
     assert!(!wait_set.waiting.contains_key(&pid));
@@ -222,6 +235,23 @@ fn waiting_process_wakes_event_driven() {
     );
     drop(wait_set);
     scheduler.shutdown();
+}
+
+#[test]
+fn mailbox_send_does_not_wake_when_copy_fails() {
+    let called = Arc::new(AtomicBool::new(false));
+    let called_by_wake = Arc::clone(&called);
+    let mailbox = Mailbox::new();
+    let sender = mailbox.sender().with_wake_notifier(move || {
+        called_by_wake.store(true, Ordering::Release);
+    });
+    let mut receiver_heap = Heap::new(0);
+    let mut sender_words = [0_u64; 2];
+    let too_large = boxed::write_cons(&mut sender_words, Term::small_int(1), Term::NIL)
+        .unwrap_or_else(|| panic!("source cons fits"));
+
+    assert!(sender.send(too_large, &mut receiver_heap).is_err());
+    assert!(!called.load(Ordering::Acquire));
 }
 
 #[test]
