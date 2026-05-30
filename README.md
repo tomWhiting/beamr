@@ -76,7 +76,7 @@ beamr/
 
 ## Architecture overview
 
-beamr is a single Rust crate implementing the BEAM execution model:
+beamr is a Rust workspace with a core VM crate (`beamr`) and a CLI crate (`beamr-cli`), implementing the BEAM execution model:
 
 - **Atom table** -- global interned string table (lock-free concurrent map)
 - **Loader** -- reads `.beam` files, decodes bytecode, resolves imports

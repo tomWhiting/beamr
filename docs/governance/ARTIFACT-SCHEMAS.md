@@ -97,7 +97,7 @@ What we chose and why.
 
 ## Research document
 
-Path: `docs/architecture/00-topic-name.md`
+Path: `docs/architecture/00-topic-name.md` (prefix `00-` distinguishes research/survey docs from per-component architecture docs which use `01-` through `NN-`)
 
 Survey or analysis documents. Must include:
 - Executive summary (1 paragraph)
@@ -116,9 +116,9 @@ Meta-documents about how the project runs. Self-referential: this file is a gove
 Path: `crates/*/src/**/*.rs`
 
 Constraints:
-- Under 500 lines
+- No file over 500 lines
 - No `.unwrap()` or `.expect()` outside `#[cfg(test)]`
-- Module-level inner doc comments (`//!`) not outer doc comments (`///`) on scaffold functions
+- Crate/module headers use inner doc comments (`//!`), item docs use outer doc comments (`///`), no blank line between doc comment and item
 - `BEAM:` comment prefix for non-obvious BEAM semantics
 - Explicit error types, never panics
 - Tests in `#[cfg(test)] mod tests` block within the same file
