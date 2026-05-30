@@ -104,7 +104,7 @@ impl TimerWheel {
         delay: Duration,
         target_pid: u64,
         message: Term,
-    ) -> TimerRef {
+    ) -> Option<TimerRef> {
         self.schedule_reserved_at(reference, Instant::now(), delay, target_pid, message)
     }
 
@@ -116,7 +116,10 @@ impl TimerWheel {
         delay: Duration,
         target_pid: u64,
         message: Term,
-    ) -> TimerRef {
+    ) -> Option<TimerRef> {
+        if self.entries.contains_key(&reference) {
+            return None;
+        }
         if now < self.start {
             self.start = now;
             self.current_tick = 0;
@@ -135,7 +138,7 @@ impl TimerWheel {
                 slot,
             },
         );
-        reference
+        Some(reference)
     }
 
     /// Deterministic scheduling variant used by tests and scheduler ticks.
@@ -148,6 +151,7 @@ impl TimerWheel {
     ) -> TimerRef {
         let reference = self.allocate_ref();
         self.schedule_reserved_at(reference, now, delay, target_pid, message)
+            .unwrap_or(reference)
     }
 
     /// Cancel a pending timer and return its remaining duration from now.
@@ -323,6 +327,39 @@ mod tests {
             wheel.cancel_at(reference, start + Duration::from_millis(1)),
             None
         );
+    }
+
+    #[test]
+    fn timer_reserved_reference_cannot_be_scheduled_twice() {
+        let start = Instant::now();
+        let mut wheel = TimerWheel::with_bucket_count(4);
+        let reference = wheel.reserve_reference();
+
+        assert_eq!(
+            wheel.schedule_reserved_at(
+                reference,
+                start,
+                Duration::from_millis(10),
+                1,
+                Term::small_int(1),
+            ),
+            Some(reference)
+        );
+        assert_eq!(
+            wheel.schedule_reserved_at(
+                reference,
+                start,
+                Duration::from_millis(20),
+                1,
+                Term::small_int(2),
+            ),
+            None
+        );
+
+        let expired = wheel.tick_at(start + Duration::from_millis(20));
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].message, Term::small_int(1));
+        assert!(wheel.is_empty());
     }
 
     #[test]

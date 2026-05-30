@@ -474,8 +474,14 @@ fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
                 HookDecision::Suspend => suspend_process(process),
             }
         }
-        Ok(ExecutionResult::Exited(reason)) => exit_process(process, reason),
-        Err(_error) => exit_process(process, ExitReason::Error),
+        Ok(ExecutionResult::Exited(reason)) => {
+            reconcile_receive_timer(shared, process);
+            exit_process(process, reason)
+        }
+        Err(_error) => {
+            reconcile_receive_timer(shared, process);
+            exit_process(process, ExitReason::Error)
+        }
     }
 }
 
@@ -583,7 +589,6 @@ fn drain_timers(shared: &SharedState) {
                 scheduled.0.set_receive_timer_ref(None);
                 lock_or_recover(&shared.receive_timers).remove(&timer.target_pid);
                 scheduled.0.mailbox_mut().reset_save_pointer();
-                let _transitioned = scheduled.0.transition_to(ProcessStatus::Running);
             }
         } else {
             let send_result = scheduled

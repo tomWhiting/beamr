@@ -85,7 +85,7 @@ impl ProcessContext {
         let timers = self.timers.as_ref()?;
         let mut timers = timers.lock().unwrap_or_else(|error| error.into_inner());
         let reference = timers.reserve_reference();
-        Some(timers.schedule_reserved(reference, delay, target_pid, message(reference)))
+        timers.schedule_reserved(reference, delay, target_pid, message(reference))
     }
 
     /// Cancel a timer via the runtime timer wheel.
