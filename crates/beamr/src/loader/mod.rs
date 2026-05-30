@@ -12,5 +12,8 @@ pub mod validate;
 pub use decode::{
     ExportEntry, ImportEntry, Instruction, LambdaEntry, LineInfo, Literal, decode_instructions,
 };
-pub use load::{ParsedModule, load_beam_chunks};
+pub use load::{
+    ParsedModule, UnresolvedImport, UnresolvedImportEntry, UnresolvedImportReport,
+    load_beam_chunks, load_module,
+};
 pub use parser::{FourCC, parse_beam_chunks};

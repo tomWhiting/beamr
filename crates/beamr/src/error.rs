@@ -45,7 +45,14 @@ pub enum ExecError {
     /// No function clause matched the provided arguments.
     FunctionClause,
     /// The target module, function, or arity is undefined.
-    Undef,
+    Undef {
+        /// Module atom.
+        module: crate::atom::Atom,
+        /// Function atom.
+        function: crate::atom::Atom,
+        /// Function arity.
+        arity: u8,
+    },
     /// An arithmetic operation failed.
     Badarith,
     /// User code exited explicitly.
@@ -57,7 +64,14 @@ impl fmt::Display for ExecError {
         match self {
             Self::Badmatch => formatter.write_str("pattern match failed"),
             Self::FunctionClause => formatter.write_str("no matching function clause"),
-            Self::Undef => formatter.write_str("undefined function"),
+            Self::Undef {
+                module,
+                function,
+                arity,
+            } => write!(
+                formatter,
+                "undefined function {module:?}:{function:?}/{arity}"
+            ),
             Self::Badarith => formatter.write_str("arithmetic operation failed"),
             Self::UserExit => formatter.write_str("process exited explicitly"),
         }

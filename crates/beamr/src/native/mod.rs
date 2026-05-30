@@ -91,48 +91,7 @@ pub trait BifRegistry {
     fn lookup(&self, module: Atom, function: Atom, arity: u8) -> Option<NativeEntry>;
 }
 
-/// One unresolved import produced by loader validation.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct UnresolvedImport {
-    /// Imported module atom.
-    pub module: Atom,
-    /// Imported function atom.
-    pub function: Atom,
-    /// Imported arity.
-    pub arity: u8,
-}
-
-impl UnresolvedImport {
-    /// Creates an unresolved import entry.
-    #[must_use]
-    pub const fn new(module: Atom, function: Atom, arity: u8) -> Self {
-        Self {
-            module,
-            function,
-            arity,
-        }
-    }
-}
-
-/// Loader unresolved-import report used to leash BIF implementation scope.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct UnresolvedImportReport {
-    imports: Vec<UnresolvedImport>,
-}
-
-impl UnresolvedImportReport {
-    /// Creates a report from unresolved import entries.
-    #[must_use]
-    pub fn new(imports: Vec<UnresolvedImport>) -> Self {
-        Self { imports }
-    }
-
-    /// Returns all unresolved import entries in this report.
-    #[must_use]
-    pub fn imports(&self) -> &[UnresolvedImport] {
-        &self.imports
-    }
-}
+pub use crate::loader::{UnresolvedImport, UnresolvedImportReport};
 
 #[derive(Clone, Debug, Default)]
 struct NativeRegistry {
@@ -217,8 +176,7 @@ impl BifRegistryImpl {
     pub fn coverage(&self, report: &UnresolvedImportReport) -> Vec<UnresolvedImport> {
         report
             .imports()
-            .iter()
-            .copied()
+            .into_iter()
             .filter(|import| {
                 self.lookup(import.module, import.function, import.arity)
                     .is_none()
