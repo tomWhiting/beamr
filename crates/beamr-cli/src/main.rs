@@ -1,5 +1,4 @@
-use std::env;
-use std::fmt;
+use std::{env, fmt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -7,8 +6,7 @@ use beamr::atom::{Atom, AtomTable};
 use beamr::error::{ExecError, LoadError};
 use beamr::loader::{UnresolvedImportReport, load_module};
 use beamr::module::ModuleRegistry;
-use beamr::native::bifs::register_gate1_bifs;
-use beamr::native::{BifRegistryImpl, NativeRegistrationError};
+use beamr::native::{BifRegistryImpl, NativeRegistrationError, bifs::register_gate1_bifs};
 use beamr::process::registry::ProcessTable;
 
 const USAGE: &str = "Usage:\n  beamr <file.beam> [module:function/arity]\n  beamr imports <file.beam>\n  beamr --help|-h\n  beamr --version|-V";
