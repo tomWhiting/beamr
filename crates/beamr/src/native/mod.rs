@@ -8,6 +8,7 @@
 pub mod bifs;
 pub mod gate3_bifs;
 mod context;
+pub mod gleam_ffi;
 pub mod links;
 pub mod process_bifs;
 pub mod registry;

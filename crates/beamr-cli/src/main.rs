@@ -13,6 +13,7 @@ use beamr::native::{
     gate3_bifs::register_gate3_bifs,
     stdlib_stubs::register_stdlib_stubs,
     selector_ffi::register_selector_bifs,
+    gleam_ffi::register_gleam_ffi_bifs,
 };
 use beamr::process::heap::DEFAULT_HEAP_SIZE;
 use beamr::process::registry::ProcessTable;
@@ -328,6 +329,7 @@ fn load_context(path: &Path, dirs: &[PathBuf]) -> Result<LoadContext, CliError> 
     register_gate3_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_stdlib_stubs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_selector_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_gleam_ffi_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     let module_registry = ModuleRegistry::new();
 
     // Load all .beam files from --dir directories first so they are
