@@ -110,6 +110,24 @@ bob resolves all issues autonomously. bearup is consulted only for:
 | `.github/workflows/` | bob's team | Dame Lisette |
 | `scripts/` | bob's team | Dame Lisette |
 
+### Agent spawn protocol
+
+When assigning any agent to a project-specific role, **immediately** set their Focus text:
+
+```bash
+collective member update "<member name>" \
+  --focus "<role, lens, repo path, key rules, manager>"
+```
+
+Focus persists across compactions. Without it, an agent that compacts wakes with no role context and defaults to whatever their prior scope was. This is the standard failure mode for project-specific agent roles.
+
+Check current Focus:
+```bash
+collective member info "<name>" --text
+```
+
+Current beamr Focus text is set on: Swarm (correctness reviewer), Dame Lisette (quality reviewer). Set on all future agents at spawn time.
+
 ## 5. Development Pipeline
 
 Five stages. Every component passes through all stages. No shortcuts.
