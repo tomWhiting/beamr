@@ -277,11 +277,30 @@ impl NifRegistry {
     }
 }
 
+/// Looks up a native function using import-resolution precedence: BIFs first,
+/// then host-registered NIFs.
+///
+/// Keeping this precedence in one helper prevents a host NIF from shadowing a
+/// built-in when the loader/interpreter wires native resolution through both
+/// registries.
+#[must_use]
+pub fn lookup_native(
+    bif_registry: &impl BifRegistry,
+    nif_registry: &NifRegistry,
+    module: Atom,
+    function: Atom,
+    arity: u8,
+) -> Option<NativeEntry> {
+    bif_registry
+        .lookup(module, function, arity)
+        .or_else(|| nif_registry.lookup(module, function, arity))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BifRegistryImpl, NativeRegistrationError, NifRegistry, ProcessContext, UnresolvedImport,
-        UnresolvedImportReport,
+        UnresolvedImportReport, lookup_native,
     };
     use crate::atom::AtomTable;
     use crate::term::Term;
@@ -352,6 +371,34 @@ mod tests {
             .expect("registered NIF");
         assert_eq!(bif_entry.function as usize, forty_two as usize);
         assert_eq!(nif_entry.function as usize, thirteen as usize);
+    }
+
+    #[test]
+    fn native_lookup_checks_bifs_before_nifs() {
+        let atom_table = AtomTable::new();
+        let erlang = atom_table.intern("erlang");
+        let plus = atom_table.intern("+");
+        let host_only = atom_table.intern("host_only");
+        let mut bif_registry = BifRegistryImpl::new();
+        let mut nif_registry = NifRegistry::new();
+
+        bif_registry
+            .register(erlang, plus, 2, forty_two)
+            .expect("register plus BIF");
+        nif_registry
+            .register(erlang, plus, 2, thirteen)
+            .expect("register plus NIF");
+        nif_registry
+            .register(erlang, host_only, 0, thirteen)
+            .expect("register host-only NIF");
+
+        let shadowed = lookup_native(&bif_registry, &nif_registry, erlang, plus, 2)
+            .expect("BIF should win over colliding NIF");
+        assert_eq!(shadowed.function as usize, forty_two as usize);
+
+        let host_entry = lookup_native(&bif_registry, &nif_registry, erlang, host_only, 0)
+            .expect("host-only NIF should resolve after BIF miss");
+        assert_eq!(host_entry.function as usize, thirteen as usize);
     }
 
     #[test]
