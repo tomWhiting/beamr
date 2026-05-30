@@ -10,8 +10,23 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::ExecError;
 use crate::module::{Module, ModuleRegistry};
+use crate::native::links::LinkFacility;
+use crate::native::spawn::SpawnFacility;
+use crate::native::supervision::SupervisionFacility;
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::timer::TimerWheel;
+
+/// Bundle of native services injected by the scheduler into BIF execution.
+pub struct NativeServices {
+    /// Timer wheel for asynchronous timer BIFs.
+    pub timers: Option<Arc<Mutex<TimerWheel>>>,
+    /// Spawn facility for process creation BIFs.
+    pub spawn_facility: Option<Arc<dyn SpawnFacility>>,
+    /// Link facility for link management BIFs.
+    pub link_facility: Option<Arc<dyn LinkFacility>>,
+    /// Supervision facility for monitor/demonitor/exit BIFs.
+    pub supervision_facility: Option<Arc<dyn SupervisionFacility>>,
+}
 
 /// Result of running a process until it yields, waits, exits, or faults.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -41,7 +56,13 @@ pub enum InstructionOutcome {
 
 /// Execute `process` against `module` until a scheduler boundary or exit.
 pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, ExecError> {
-    run_loop(process, module, None, None)
+    let empty = NativeServices {
+        timers: None,
+        spawn_facility: None,
+        link_facility: None,
+        supervision_facility: None,
+    };
+    run_loop(process, module, None, &empty)
 }
 
 /// Execute `process` with a registry so dynamic calls can cross module boundaries.
@@ -50,7 +71,13 @@ pub fn run_with_registry(
     initial_module: &Module,
     registry: &ModuleRegistry,
 ) -> Result<ExecutionResult, ExecError> {
-    run_loop(process, initial_module, Some(registry), None)
+    let empty = NativeServices {
+        timers: None,
+        spawn_facility: None,
+        link_facility: None,
+        supervision_facility: None,
+    };
+    run_loop(process, initial_module, Some(registry), &empty)
 }
 
 /// Execute `process` with timer services available to asynchronous timer BIFs.
@@ -59,14 +86,31 @@ pub fn run_with_timer_services(
     initial_module: &Module,
     timers: Arc<Mutex<TimerWheel>>,
 ) -> Result<ExecutionResult, ExecError> {
-    run_loop(process, initial_module, None, Some(timers))
+    let services = NativeServices {
+        timers: Some(timers),
+        spawn_facility: None,
+        link_facility: None,
+        supervision_facility: None,
+    };
+    run_loop(process, initial_module, None, &services)
+}
+
+/// Execute `process` with all native services and a module registry.
+/// Used by the scheduler for full BIF support.
+pub fn run_with_native_services(
+    process: &mut Process,
+    initial_module: &Module,
+    registry: &ModuleRegistry,
+    services: &NativeServices,
+) -> Result<ExecutionResult, ExecError> {
+    run_loop(process, initial_module, Some(registry), services)
 }
 
 fn run_loop(
     process: &mut Process,
     initial_module: &Module,
     registry: Option<&ModuleRegistry>,
-    timers: Option<Arc<Mutex<TimerWheel>>>,
+    services: &NativeServices,
 ) -> Result<ExecutionResult, ExecError> {
     if process.code_position().is_none() {
         process.set_code_position(Some(CodePosition {
@@ -93,12 +137,12 @@ fn run_loop(
             .checked_add(1)
             .ok_or(ExecError::InvalidOperand("instruction pointer"))?;
 
-        match opcodes::dispatch_with_timer_services(
+        match opcodes::dispatch_with_services(
             process,
             module,
             instruction,
             next_ip,
-            timers.as_ref(),
+            services,
             registry,
         )? {
             InstructionOutcome::Continue => process.set_code_position(Some(CodePosition {

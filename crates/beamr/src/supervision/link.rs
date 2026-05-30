@@ -106,6 +106,15 @@ impl LinkSet {
         }
     }
 
+    /// Record a process as dead without propagating signals.
+    ///
+    /// Used by the scheduler's supervision integration which handles propagation
+    /// itself through the process_bodies map. This only records the tombstone
+    /// so future `link_pid()` calls immediately signal.
+    pub fn process_exited_tombstone(&mut self, pid: u64, reason: ExitReason) {
+        self.dead.insert(pid, reason);
+    }
+
     fn mark_exited(
         &mut self,
         process: &mut Process,
@@ -146,6 +155,21 @@ pub const fn terminal_reason(signal: ExitReason) -> ExitReason {
 
 fn should_die_from_signal(target: &Process, reason: ExitReason) -> bool {
     reason == ExitReason::Kill || (reason != ExitReason::Normal && !target.trap_exit())
+}
+
+/// Deliver an {EXIT, SourcePid, Reason} message to a trapping process.
+///
+/// Used by the scheduler's supervision integration to deliver exit signals
+/// to processes that have `trap_exit` enabled. Falls back to terminating
+/// the process with `Error` if heap allocation fails.
+pub fn enqueue_exit_message_pub(
+    target: &mut Process,
+    source_pid: u64,
+    reason: ExitReason,
+) {
+    if enqueue_exit_message(target, source_pid, reason).is_err() {
+        target.terminate(ExitReason::Error);
+    }
 }
 
 fn enqueue_exit_message(

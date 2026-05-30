@@ -13,11 +13,19 @@ pub mod messaging;
 use std::sync::{Arc, Mutex};
 
 use crate::error::ExecError;
-use crate::interpreter::InstructionOutcome;
+use crate::interpreter::{InstructionOutcome, NativeServices};
 use crate::loader::Instruction;
 use crate::module::{Module, ModuleRegistry};
 use crate::process::Process;
 use crate::timer::TimerWheel;
+
+/// Optional runtime context passed alongside instruction dispatch.
+struct DispatchCtx<'a> {
+    receiver: Option<&'a mut Process>,
+    timers: Option<&'a Arc<Mutex<TimerWheel>>>,
+    registry: Option<&'a ModuleRegistry>,
+    services: Option<&'a NativeServices>,
+}
 
 /// Dispatch one already-fetched instruction.
 pub fn dispatch(
@@ -39,7 +47,23 @@ pub fn dispatch_with_timer_services(
     timers: Option<&Arc<Mutex<TimerWheel>>>,
     registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_inner(process, module, instruction, next_ip, None, timers, registry)
+    dispatch_common(process, module, instruction, next_ip, DispatchCtx {
+        receiver: None, timers, registry, services: None,
+    })
+}
+
+/// Dispatch one instruction with full native services for BIFs.
+pub fn dispatch_with_services(
+    process: &mut Process,
+    module: &Module,
+    instruction: &Instruction,
+    next_ip: usize,
+    services: &NativeServices,
+    registry: Option<&ModuleRegistry>,
+) -> Result<InstructionOutcome, ExecError> {
+    dispatch_common(process, module, instruction, next_ip, DispatchCtx {
+        receiver: None, timers: services.timers.as_ref(), registry, services: Some(services),
+    })
 }
 
 /// Dispatch one already-fetched instruction with an optional send target process.
@@ -56,17 +80,17 @@ pub fn dispatch_with_receiver(
     receiver: Option<&mut Process>,
     registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_inner(process, module, instruction, next_ip, receiver, None, registry)
+    dispatch_common(process, module, instruction, next_ip, DispatchCtx {
+        receiver, timers: None, registry, services: None,
+    })
 }
 
-fn dispatch_inner(
+fn dispatch_common(
     process: &mut Process,
     module: &Module,
     instruction: &Instruction,
     next_ip: usize,
-    receiver: Option<&mut Process>,
-    timers: Option<&Arc<Mutex<TimerWheel>>>,
-    registry: Option<&ModuleRegistry>,
+    ctx: DispatchCtx<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
     match instruction {
         Instruction::Label { label } => core::label(*label),
@@ -86,10 +110,12 @@ fn dispatch_inner(
             core::call(process, module, arity, label, next_ip, false)
         }
         Instruction::CallExt { arity, import } => {
-            core::call_ext(process, module, arity, import, next_ip, true, timers)
+            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services };
+            core::call_ext(process, module, arity, import, next_ip, true, &ext)
         }
         Instruction::CallExtOnly { arity, import } => {
-            core::call_ext(process, module, arity, import, next_ip, false, timers)
+            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services };
+            core::call_ext(process, module, arity, import, next_ip, false, &ext)
         }
         Instruction::CallLast {
             arity,
@@ -100,7 +126,10 @@ fn dispatch_inner(
             arity,
             import,
             deallocate,
-        } => core::call_ext_last(process, module, arity, import, deallocate, timers),
+        } => {
+            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services };
+            core::call_ext_last(process, module, arity, import, deallocate, &ext)
+        }
         Instruction::Return => core::return_(process),
         Instruction::Allocate { stack_need, .. } => core::allocate(process, module, stack_need),
         Instruction::AllocateHeap {
@@ -155,7 +184,7 @@ fn dispatch_inner(
         }
         Instruction::Jump { target } => guards::jump(module, target),
         Instruction::Bif { op, operands } => guards::bif(process, module, *op, operands),
-        Instruction::Send => messaging::send(process, receiver),
+        Instruction::Send => messaging::send(process, ctx.receiver),
         Instruction::LoopRec { fail, destination } => {
             messaging::loop_rec(process, module, fail, destination)
         }
@@ -182,12 +211,12 @@ fn dispatch_inner(
         Instruction::MakeFun { operands } => closures::make_fun(process, module, operands),
         Instruction::CallFun { arity } => closures::call_fun(process, module, arity, next_ip),
         Instruction::Apply { arity } => {
-            let registry = registry.ok_or(ExecError::InvalidOperand("apply: registry required"))?;
+            let registry = ctx.registry.ok_or(ExecError::InvalidOperand("apply: registry required"))?;
             closures::apply(process, registry, arity, next_ip, module.name)
         }
         Instruction::ApplyLast { arity, deallocate } => {
             let registry =
-                registry.ok_or(ExecError::InvalidOperand("apply_last: registry required"))?;
+                ctx.registry.ok_or(ExecError::InvalidOperand("apply_last: registry required"))?;
             closures::apply_last(process, registry, arity, deallocate, next_ip)
         }
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),

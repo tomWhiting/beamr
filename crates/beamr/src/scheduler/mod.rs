@@ -7,6 +7,7 @@
 pub mod dirty;
 pub mod run_queue;
 pub mod steal;
+mod supervision_integration;
 mod timer_integration;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -26,6 +27,8 @@ use crate::module::{Module, ModuleRegistry};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
+use crate::supervision::link::LinkSet;
+use crate::supervision::monitor::MonitorSet;
 use crate::term::Term;
 use crate::timer::TimerWheel;
 
@@ -52,6 +55,8 @@ struct SharedState {
     wake_condvar: Condvar,
     process_bodies: DashMap<u64, Mutex<Option<ScheduledProcess>>>,
     exit_tombstones: DashMap<u64, ExitReason>,
+    link_set: Mutex<LinkSet>,
+    monitor_set: Mutex<MonitorSet>,
     hook: Hook,
     timers: Arc<Mutex<TimerWheel>>,
     #[cfg(test)]
@@ -104,6 +109,8 @@ impl Scheduler {
             wake_condvar: Condvar::new(),
             process_bodies: DashMap::new(),
             exit_tombstones: DashMap::new(),
+            link_set: Mutex::new(LinkSet::new()),
+            monitor_set: Mutex::new(MonitorSet::new()),
             hook: Hook::new(),
             timers: Arc::new(Mutex::new(TimerWheel::new())),
             #[cfg(test)]
@@ -234,7 +241,7 @@ fn configured_thread_count(override_count: Option<usize>) -> usize {
 }
 
 fn scheduler_loop(
-    shared: &SharedState, queue: &RunQueue, my_index: usize,
+    shared: &Arc<SharedState>, queue: &RunQueue, my_index: usize,
     stealers: &[Stealer<u64>], inject: &SegQueue<SpawnRequest>,
 ) {
     let mut last_victim = my_index;
@@ -289,7 +296,7 @@ enum SliceOutcome {
     Exited(ExitReason),
 }
 
-fn run_process(shared: &SharedState, queue: &RunQueue, pid: u64, my_index: usize) {
+fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64, my_index: usize) {
     if shared.process_table.get(pid).is_none() { return; }
     let Some(mut process) = take_runnable_process(shared, pid) else { return; };
     let outcome = execute_slice(shared, &mut process);
@@ -331,7 +338,7 @@ fn store_runnable_process(shared: &SharedState, process: Process) {
     }
 }
 
-fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
+fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutcome {
     if !matches!(
         process.status(),
         ProcessStatus::New | ProcessStatus::Yielded
@@ -350,7 +357,10 @@ fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
     let Some(module) = shared.module_registry.lookup(module_atom) else {
         return exit_process(process, ExitReason::Error);
     };
-    let result = interpreter::run(process, &module);
+    let services = supervision_integration::build_native_services(shared);
+    let result = interpreter::run_with_native_services(
+        process, &module, &shared.module_registry, &services,
+    );
     let reductions = DEFAULT_REDUCTION_BUDGET.saturating_sub(process.reduction_counter());
     if matches!(result, Ok(ExecutionResult::Yielded) | Ok(ExecutionResult::Waiting))
         && timer_integration::invoke_hook(shared, process, reductions) == HookDecision::Suspend
@@ -387,6 +397,7 @@ fn exit_reason_from_status(status: ProcessStatus) -> ExitReason {
 
 fn cleanup_exited_process(shared: &SharedState, pid: u64, reason: ExitReason) {
     shared.exit_tombstones.insert(pid, reason);
+    supervision_integration::propagate_exit(shared, pid, reason);
     let _removed = shared.process_table.remove(pid);
     let _removed_body = shared.process_bodies.remove(&pid);
     let mut wait_set = lock_or_recover(&shared.wait_set);

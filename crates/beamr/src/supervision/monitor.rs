@@ -113,11 +113,81 @@ impl MonitorSet {
         }
     }
 
+    /// Collect all watcher (watcher_pid, reference) pairs for a target that has
+    /// exited, and remove the monitor entries. Used by the scheduler's
+    /// supervision integration which delivers DOWN messages through
+    /// process_bodies directly.
+    pub fn collect_watchers_and_remove(
+        &mut self,
+        target_pid: u64,
+        reason: ExitReason,
+    ) -> Vec<(u64, Reference)> {
+        self.record_dead(target_pid, reason);
+        let references = self.by_target.remove(&target_pid).unwrap_or_default();
+        let mut watchers = Vec::with_capacity(references.len());
+        for reference in references {
+            if let Some(monitor) = self.monitors.remove(&reference) {
+                watchers.push((monitor.watcher(), reference));
+            }
+        }
+        watchers
+    }
+
+    /// Allocate a unique monitor reference. Used by the scheduler's supervision
+    /// facility when creating monitors for already-dead targets.
+    pub fn allocate_reference_pub(&mut self) -> Reference {
+        self.allocate_reference()
+    }
+
+    /// Look up a monitor by reference without removing it.
+    #[must_use]
+    pub fn get_monitor(&self, reference: Reference) -> Option<crate::process::Monitor> {
+        self.monitors.get(&reference).copied()
+    }
+
+    /// Register a pre-built monitor entry. Used by the scheduler's supervision
+    /// facility when process bodies are managed via DashMap and cannot be passed
+    /// as `&mut Process` simultaneously.
+    pub fn register_monitor(
+        &mut self,
+        reference: Reference,
+        monitor: crate::process::Monitor,
+        target_pid: u64,
+    ) {
+        self.monitors.insert(reference, monitor);
+        self.by_target.entry(target_pid).or_default().push(reference);
+    }
+
+    /// Remove a monitor entry by reference. Used by the scheduler's supervision
+    /// facility for demonitor operations.
+    pub fn remove_monitor(&mut self, reference: Reference) {
+        if let Some(monitor) = self.monitors.remove(&reference)
+            && let Some(references) = self.by_target.get_mut(&monitor.target())
+        {
+            references.retain(|r| *r != reference);
+            if references.is_empty() {
+                self.by_target.remove(&monitor.target());
+            }
+        }
+    }
+
     fn allocate_reference(&mut self) -> Reference {
         let reference = self.next_reference;
         self.next_reference = self.next_reference.saturating_add(1);
         reference
     }
+}
+
+/// Enqueue a DOWN message on a watcher's mailbox. Public for scheduler
+/// supervision integration which delivers DOWN messages through
+/// process_bodies directly.
+pub fn enqueue_down_message_pub(
+    watcher: &mut Process,
+    reference: Reference,
+    target_pid: u64,
+    reason: ExitReason,
+) {
+    enqueue_down_message(watcher, reference, target_pid, reason);
 }
 
 fn enqueue_down_message(

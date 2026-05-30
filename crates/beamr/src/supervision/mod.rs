@@ -8,5 +8,5 @@
 pub mod link;
 pub mod monitor;
 
-pub use link::{LinkSet, link, terminal_reason, unlink};
-pub use monitor::MonitorSet;
+pub use link::{LinkSet, enqueue_exit_message_pub, link, terminal_reason, unlink};
+pub use monitor::{MonitorSet, enqueue_down_message_pub};
