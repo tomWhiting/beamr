@@ -61,17 +61,21 @@ impl<'a> CompactDecoder<'a> {
 
     pub(crate) fn read_operand(&mut self) -> Result<Operand, LoadError> {
         let (tag, value) = self.read_tagged_integer()?;
+        // BEAM compact term tags per the OTP standard:
+        //   0 = unsigned literal, 1 = integer (signed), 2 = atom,
+        //   3 = X register, 4 = Y register, 5 = label,
+        //   6 = character, 7 = extended
         match tag {
-            0 => Ok(Operand::Integer(value)),
-            1 => self.atom_operand(value),
-            2 => unsigned_u32(value, "x register").map(Operand::X),
-            3 => unsigned_u32(value, "y register").map(Operand::Y),
-            4 => unsigned_u32(value, "label").map(Operand::Label),
-            5 => Ok(Operand::Character(unsigned_u64(value, "character")?)),
-            6 => Ok(Operand::Unsigned(unsigned_u64(
+            0 => Ok(Operand::Unsigned(unsigned_u64(
                 value,
                 "unsigned compact operand",
             )?)),
+            1 => Ok(Operand::Integer(value)),
+            2 => self.atom_operand(value),
+            3 => unsigned_u32(value, "x register").map(Operand::X),
+            4 => unsigned_u32(value, "y register").map(Operand::Y),
+            5 => unsigned_u32(value, "label").map(Operand::Label),
+            6 => Ok(Operand::Character(unsigned_u64(value, "character")?)),
             7 => self.read_extended(value),
             other => Err(LoadError::DecodeError(format!(
                 "unsupported compact tag {other}"
@@ -175,7 +179,13 @@ impl<'a> CompactDecoder<'a> {
         let first = self.read_byte()?;
         let tag = first & 0x07;
         let value = if (first & 0x08) == 0 {
+            // Single-byte: 4-bit value in bits [7:4].
             i64::from(first >> 4)
+        } else if (first & 0x10) == 0 {
+            // Two-byte: 11-bit value from bits [7:5] of byte 1 and all of byte 2.
+            let high = i64::from(first >> 5);
+            let low = i64::from(self.read_byte()?);
+            (high << 8) | low
         } else {
             let descriptor = first >> 5;
             if descriptor < 7 {

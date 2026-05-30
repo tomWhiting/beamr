@@ -279,3 +279,59 @@ fn proof_7_hello_beam_fixture_loads_and_reports_imports() {
     assert!(!module.imports.is_empty());
     assert!(!module.exports.is_empty());
 }
+
+#[test]
+fn proof_8_proof_beam_gleam_114_fixture_loads_with_two_byte_compact_encoding() {
+    let atoms = AtomTable::new();
+    let bytes = include_bytes!("fixtures/proof.beam");
+    let module = beamr::loader::load_beam_chunks(bytes, &atoms).expect("proof.beam loads");
+
+    assert_eq!(atoms.resolve(module.name), Some("proof"));
+    assert!(!module.instructions.is_empty());
+    assert!(!module.exports.is_empty());
+}
+
+#[test]
+fn proof_9_compile_gleam_load_beam_execute_get_42() {
+    let atoms = AtomTable::new();
+    let mut bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&mut bifs, &atoms).expect("register BIFs");
+
+    let bytes = include_bytes!("fixtures/proof.beam");
+    let parsed = beamr::loader::load_beam_chunks(bytes, &atoms).expect("proof.beam loads");
+
+    let answer = atoms.intern("answer");
+    let export = parsed.exports.iter().find(|e| e.function == answer && e.arity == 0);
+    assert!(export.is_some(), "proof module exports answer/0");
+    let entry_label = export.unwrap().label;
+
+    let module = Module {
+        name: parsed.name,
+        exports: parsed.exports.iter().map(|e| ((e.function, e.arity), e.label)).collect(),
+        code: parsed.instructions,
+        literals: parsed.literals,
+        resolved_imports: Vec::new(),
+        lambdas: parsed.lambdas,
+        string_table: parsed.string_table,
+        line_info: parsed.line_info,
+    };
+
+    let mut process = Process::new(1, 256);
+
+    // Find the instruction index for the entry label
+    let entry_ip = module.code.iter().position(|instr| {
+        matches!(instr, Instruction::Label { label } if *label == entry_label)
+    }).expect("entry label exists in code");
+
+    process.set_x_reg(0, Term::NIL);
+    process.set_code_position(Some(beamr::process::CodePosition {
+        module: module.name,
+        instruction_pointer: entry_ip,
+    }));
+
+    let result = run(&mut process, &module);
+    assert_eq!(result, Ok(ExecutionResult::Exited(ExitReason::Normal)),
+        "proof:answer/0 should exit normally");
+    assert_eq!(process.x_reg(0), Term::small_int(42),
+        "proof:answer/0 should return 42");
+}
