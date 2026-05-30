@@ -20,9 +20,6 @@ pub(crate) fn collect(process: &mut Process) -> Result<GcStats, GcError> {
     let mut forwarding = ForwardingMap::new();
     let mut work_queue = VecDeque::new();
 
-    let young_used = process.heap().young_used();
-    process.heap_mut().ensure_old_available(young_used);
-
     let mut roots = process.roots();
     for root in &mut roots {
         *root = copy_young_term(process, *root, &mut forwarding, &mut work_queue, &mut stats)?;
@@ -61,7 +58,12 @@ fn copy_young_term(
     let Some(words) = object_size(term)? else {
         return Ok(term);
     };
-    process.heap_mut().ensure_old_available(words);
+    if process.heap().old_available() < words {
+        return Err(GcError::HeapFull(crate::process::heap::HeapFull::new(
+            words,
+            process.heap().old_available(),
+        )));
+    }
     let copied_words = process.heap().copy_words_from_ptr(src, words);
     let dst = process.heap_mut().alloc_old(words)?;
     crate::process::heap::Heap::write_words(dst, &copied_words);

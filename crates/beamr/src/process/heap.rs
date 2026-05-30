@@ -21,6 +21,15 @@ pub struct HeapFull {
 }
 
 impl HeapFull {
+    /// Create a heap-full error for an unsatisfied word request.
+    #[must_use]
+    pub const fn new(requested: usize, available: usize) -> Self {
+        Self {
+            requested,
+            available,
+        }
+    }
+
     /// Number of words requested by the failed allocation.
     #[must_use]
     pub const fn requested(self) -> usize {
@@ -63,28 +72,13 @@ impl HeapRegion {
         }
     }
 
-    fn with_used(words: Vec<u64>, used: usize) -> Self {
-        debug_assert!(used <= words.len());
-        Self {
-            words,
-            used,
-            high_water_mark: used,
-        }
-    }
-
     fn alloc(&mut self, words: usize) -> Result<*mut u64, HeapFull> {
         let Some(end) = self.used.checked_add(words) else {
-            return Err(HeapFull {
-                requested: words,
-                available: self.available(),
-            });
+            return Err(HeapFull::new(words, self.available()));
         };
 
         if end > self.capacity() {
-            return Err(HeapFull {
-                requested: words,
-                available: self.available(),
-            });
+            return Err(HeapFull::new(words, self.available()));
         }
 
         let start = self.used;
@@ -94,11 +88,11 @@ impl HeapRegion {
         Ok(ptr)
     }
 
-    const fn used(&self) -> usize {
+    pub(crate) const fn used(&self) -> usize {
         self.used
     }
 
-    fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.words.len()
     }
 
@@ -115,7 +109,7 @@ impl HeapRegion {
         self.used = 0;
     }
 
-    fn contains(&self, ptr: *const u64) -> bool {
+    pub(crate) fn contains(&self, ptr: *const u64) -> bool {
         let start = self.words.as_ptr().addr();
         let end = start.saturating_add(self.capacity() * std::mem::size_of::<u64>());
         let addr = ptr.addr();
@@ -276,52 +270,29 @@ impl Heap {
         self.young = HeapRegion::new(next);
     }
 
-    /// Ensure old space has enough free words for an upcoming promotion/copy.
-    pub(crate) fn ensure_old_available(&mut self, needed: usize) {
-        while self.old_available() < needed {
-            let current = self.old_capacity();
-            let next = current
-                .saturating_add(fibonacci_previous(current))
-                .max(current.saturating_add(needed));
-            self.grow_old_to(next);
+    /// Capacity to use for compacted old space after major GC copied `live_words`.
+    pub(crate) fn compacted_old_capacity_after_major(
+        &self,
+        live_words: usize,
+        threshold: f64,
+    ) -> usize {
+        let minimum = live_words.max(self.initial_capacity);
+        let target = fibonacci_capacity_for(minimum);
+        let utilization = live_words as f64 / self.old_capacity() as f64;
+        if utilization < threshold && self.old_capacity() > self.initial_capacity {
+            target.min(self.old_capacity()).max(minimum)
+        } else {
+            self.old_capacity().max(minimum)
         }
     }
 
-    /// Grow old generation capacity without moving existing words' base when not needed.
-    pub(crate) fn grow_old_to(&mut self, capacity: usize) {
-        if capacity <= self.old_capacity() {
-            return;
+    /// Test helper: enlarge empty old space so shrink policy can be exercised.
+    #[cfg(test)]
+    pub(crate) fn grow_empty_old_to_for_test(&mut self, capacity: usize) {
+        debug_assert_eq!(self.old.used(), 0);
+        if capacity > self.old_capacity() {
+            self.old = HeapRegion::new(capacity);
         }
-
-        let mut words = vec![0; capacity];
-        words[..self.old.used()].copy_from_slice(&self.old.words[..self.old.used()]);
-        self.old = HeapRegion::with_used(words, self.old.used());
-    }
-
-    /// Shrink old space after major GC when utilization is below `threshold`.
-    ///
-    /// The selected capacity is the smallest Fibonacci-like capacity that fits
-    /// live data, is at least the initial heap size, and never exceeds current
-    /// capacity when shrink is not warranted.
-    pub(crate) fn shrink_old_after_major_if_underutilized(&mut self, threshold: f64) {
-        let capacity = self.old_capacity();
-        if capacity == 0 {
-            return;
-        }
-
-        let utilization = self.old_used() as f64 / capacity as f64;
-        if utilization >= threshold || capacity <= self.initial_capacity {
-            return;
-        }
-
-        let target = fibonacci_capacity_for(self.old_used().max(self.initial_capacity));
-        if target >= capacity {
-            return;
-        }
-
-        let mut words = vec![0; target];
-        words[..self.old.used()].copy_from_slice(&self.old.words[..self.old.used()]);
-        self.old = HeapRegion::with_used(words, self.old.used());
     }
 
     pub(crate) fn copy_words_from_ptr(&self, src: *const u64, len: usize) -> Vec<u64> {
@@ -462,9 +433,10 @@ mod tests {
     #[test]
     fn shrink_never_goes_below_initial_size() {
         let mut heap = Heap::new(DEFAULT_HEAP_SIZE);
-        heap.grow_old_to(987);
-        heap.shrink_old_after_major_if_underutilized(0.25);
+        heap.grow_empty_old_to_for_test(987);
+        let target = heap.compacted_old_capacity_after_major(0, 0.25);
 
-        assert_eq!(heap.old_capacity(), DEFAULT_HEAP_SIZE);
+        assert_eq!(target, DEFAULT_HEAP_SIZE);
+        assert_eq!(heap.old_capacity(), 987);
     }
 }

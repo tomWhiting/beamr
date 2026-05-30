@@ -19,13 +19,11 @@ pub(crate) fn collect(process: &mut Process) -> Result<GcStats, GcError> {
     let mut stats = new_stats(process);
     let mut forwarding = ForwardingMap::new();
     let mut work_queue = VecDeque::new();
-    let mut fresh = process.heap().fresh_old_region(
-        process
-            .heap()
-            .old_capacity()
-            .max(process.heap().total_used())
-            .max(process.heap().capacity()),
-    );
+    let source_used = process.heap().total_used();
+    let fresh_capacity = process
+        .heap()
+        .compacted_old_capacity_after_major(source_used, MAJOR_SHRINK_THRESHOLD);
+    let mut fresh = process.heap().fresh_old_region(fresh_capacity);
 
     let mut roots = process.roots();
     for root in &mut roots {
@@ -55,9 +53,6 @@ pub(crate) fn collect(process: &mut Process) -> Result<GcStats, GcError> {
 
     process.heap_mut().replace_old(fresh);
     process.heap_mut().reset_young();
-    process
-        .heap_mut()
-        .shrink_old_after_major_if_underutilized(MAJOR_SHRINK_THRESHOLD);
     finish_stats(&mut stats, process);
     Ok(stats)
 }
@@ -140,7 +135,7 @@ mod gc_major_tests {
     #[test]
     fn major_gc_shrinks_underutilized_old_without_below_initial() {
         let mut process = Process::new(1, 233);
-        process.heap_mut().grow_old_to(987);
+        process.heap_mut().grow_empty_old_to_for_test(987);
         let reachable = alloc_tuple(&mut process, &[Term::small_int(1)]);
         process.set_x_reg(0, reachable);
 

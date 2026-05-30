@@ -102,26 +102,26 @@ pub fn collect_major(process: &mut Process) -> Result<GcStats, GcError> {
 /// Allocate in the process nursery, running per-process GC on HeapFull.
 ///
 /// The policy is: try nursery allocation, minor collect and retry, grow the
-/// nursery if still insufficient, then major collect when old space pressure
-/// exists. The function does not touch any process except `process`.
+/// nursery as needed, and run a full compaction only when promotion pressure
+/// during minor GC requires old-space compaction. The function does not touch
+/// any process except `process`.
 pub fn alloc(process: &mut Process, words: usize) -> Result<*mut u64, GcError> {
     match process.heap_mut().alloc(words) {
         Ok(ptr) => return Ok(ptr),
         Err(_heap_full) => {}
     }
 
-    collect_minor(process)?;
-    process.heap_mut().grow_to_next_capacity();
-    if let Ok(ptr) = process.heap_mut().alloc(words) {
-        return Ok(ptr);
+    match collect_minor(process) {
+        Ok(_stats) => {}
+        Err(GcError::HeapFull(_)) => {
+            collect_major(process)?;
+        }
+        Err(error) => return Err(error),
     }
 
+    process.heap_mut().grow_to_next_capacity();
     while process.heap().available() < words {
         process.heap_mut().grow_to_next_capacity();
-    }
-
-    if process.heap().old_available() == 0 {
-        collect_major(process)?;
     }
 
     process.heap_mut().alloc(words).map_err(GcError::from)
