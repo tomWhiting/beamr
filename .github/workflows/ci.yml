@@ -34,16 +34,20 @@ jobs:
       # TODO: expand to --workspace once core crate (B-001..B-008) lands clean
 
   file-size:
-    name: File size check
+    name: File size check (tokei)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: No file over 500 lines
+      - name: Install tokei
+        run: cargo install tokei --locked
+
+      - name: No file over 500 code lines
         run: |
-          violations=$(find crates/ -name '*.rs' -exec awk 'END { if (NR > 500) print FILENAME ": " NR " lines" }' {} \;)
+          violations=$(tokei crates/ --output json \
+            | jq -r 'to_entries[] | .value.reports[] | select(.stats.code > 500) | "\(.name): \(.stats.code) code lines"')
           if [ -n "$violations" ]; then
-            echo "Files exceeding 500-line limit:"
+            echo "Files exceeding 500 code-line limit (tokei counts code only, not comments/blanks):"
             echo "$violations"
             exit 1
           fi
