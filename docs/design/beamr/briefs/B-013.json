@@ -1,0 +1,156 @@
+{
+  "id": "B-013",
+  "cluster": "beamr",
+  "title": "Implement interpreter — guards, type tests, and branching opcodes",
+  "depends_on": ["B-010", "B-007", "B-008"],
+  "blocked_by": [],
+  "checklist": ["C73", "C74", "C75", "C76", "C77", "C78", "C79", "C80", "C81"],
+  "stories": ["S1", "S3", "S20"],
+  "purpose": "Every Gleam case expression and function clause compiles into a sequence of type tests, comparisons, and multi-way branches. Without these opcodes, the interpreter can call functions and move data but cannot make any decisions. This brief delivers the branching infrastructure that turns the interpreter from a straight-line executor into one that can run real Gleam programs with pattern matching, guards, and conditional flow.",
+  "task": "Implement the remaining interpreter opcodes for guards, type tests, and branching in crates/beamr/src/interpreter/opcodes.rs and crates/beamr/src/interpreter/pattern.rs. This includes: get_hd/get_tl for list decomposition, the full set of is_* type test instructions, is_eq_exact/is_ne_exact and is_lt/is_ge for comparison-and-branch, select_val and select_tuple_arity for multi-way dispatch, unconditional jump, and gc_bif/bif calls for guard expressions. All branch instructions follow the same pattern: test a condition, jump to a fail label if false, fall through if true.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "List decomposition opcodes",
+      "spec": "WHEN the interpreter executes get_hd or get_tl THE SYSTEM SHALL extract the head or tail from a cons cell term into a destination register. IF the operand is not a cons cell THE SYSTEM SHALL raise a badarg error. It SHALL NOT copy the list — only extract the pointer to head or tail.",
+      "acceptance": [
+        "get_hd on a cons cell [1 | 2] stores 1 in the destination register",
+        "get_tl on a cons cell [1 | 2] stores 2 in the destination register",
+        "get_hd on a non-list term raises badarg"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C73"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Type test instructions",
+      "spec": "WHEN the interpreter executes a type test instruction (is_integer, is_float, is_atom, is_list, is_tuple, is_nil, is_binary, is_boolean, is_map, is_function2) THE SYSTEM SHALL check the term's tag and branch to the fail label if the test fails. IF the test passes THE SYSTEM SHALL fall through to the next instruction. It SHALL NOT modify the tested term or any register other than the instruction pointer.",
+      "acceptance": [
+        "is_integer on Term::small_int(1) falls through; on Term::atom(ok) jumps to fail label",
+        "is_atom on Term::atom(ok) falls through; on Term::small_int(1) jumps to fail label",
+        "is_tuple on a tuple term falls through; on a list term jumps to fail label",
+        "is_nil on Term::NIL falls through; on Term::small_int(0) jumps to fail label",
+        "is_boolean on Term::atom(Atom::TRUE) falls through; on Term::atom(Atom::OK) jumps to fail label",
+        "is_function2 checks both function type and arity"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C74"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R3",
+      "title": "Exact equality and inequality branch instructions",
+      "spec": "WHEN the interpreter executes is_eq_exact THE SYSTEM SHALL compare two terms using exact equality (=:= semantics from B-007) and branch to the fail label if they are not exactly equal. is_ne_exact SHALL branch if they ARE exactly equal. It SHALL NOT use numeric equality (==) — these instructions use =:= semantics.",
+      "acceptance": [
+        "is_eq_exact with small_int(1) and small_int(1) falls through",
+        "is_eq_exact with small_int(1) and small_int(2) jumps to fail label",
+        "is_eq_exact with small_int(1) and float(1.0) jumps to fail label (exact, not numeric)",
+        "is_ne_exact with small_int(1) and small_int(2) falls through",
+        "is_ne_exact with small_int(1) and small_int(1) jumps to fail label"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C75"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Ordering comparison branch instructions",
+      "spec": "WHEN the interpreter executes is_lt THE SYSTEM SHALL compare two terms using BEAM term ordering (from B-007) and branch to the fail label if the first is not less than the second. is_ge SHALL branch if the first is not greater than or equal to the second. It SHALL NOT deviate from the BEAM ordering.",
+      "acceptance": [
+        "is_lt with small_int(1) and small_int(2) falls through (1 < 2)",
+        "is_lt with small_int(2) and small_int(1) jumps to fail label",
+        "is_ge with small_int(2) and small_int(1) falls through (2 >= 1)",
+        "is_ge with small_int(1) and small_int(2) jumps to fail label",
+        "is_lt with small_int(1) and atom(ok) falls through (number < atom in BEAM order)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C76"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Multi-way branch instructions",
+      "spec": "WHEN the interpreter executes select_val THE SYSTEM SHALL look up the source term in a list of value/label pairs and jump to the matching label, or jump to the fail label if no match. select_tuple_arity SHALL match on the source tuple's arity. Both SHALL use exact equality for value matching. It SHALL NOT fall through if no match — the fail label is mandatory.",
+      "acceptance": [
+        "select_val with atom(ok) matching {ok: L1, error: L2} jumps to L1",
+        "select_val with atom(error) matching {ok: L1, error: L2} jumps to L2",
+        "select_val with atom(unknown) matching {ok: L1, error: L2} jumps to fail label",
+        "select_tuple_arity with a 2-tuple matching {2: L1, 3: L2} jumps to L1",
+        "select_tuple_arity with a 4-tuple matching {2: L1, 3: L2} jumps to fail label"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/pattern.rs"]
+      },
+      "checklist": ["C77", "C78"],
+      "stories": ["S3"]
+    },
+    {
+      "id": "R6",
+      "title": "Unconditional jump",
+      "spec": "WHEN the interpreter executes jump THE SYSTEM SHALL set the instruction pointer to the target label. It SHALL NOT modify any registers or the stack.",
+      "acceptance": [
+        "jump to label L sets the instruction pointer to L",
+        "No registers are modified by a jump instruction"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C79"],
+      "stories": []
+    },
+    {
+      "id": "R7",
+      "title": "Guard BIF call instructions",
+      "spec": "WHEN the interpreter executes gc_bif1/gc_bif2/gc_bif3 THE SYSTEM SHALL call the named BIF with the provided arguments, store the result in the destination register, and branch to the fail label if the BIF returns Err. gc_bif variants MAY trigger GC before the call (via test_heap logic). bif0/bif1/bif2 SHALL call a guard BIF that cannot trigger GC. It SHALL NOT propagate BIF errors as process exits in guard context — guard failures branch to the fail label.",
+      "acceptance": [
+        "gc_bif2 calling erlang:+/2 with args [3, 4] stores 7 in the destination register",
+        "gc_bif2 calling erlang:+/2 with args [atom, 1] jumps to the fail label (guard failure, not process exit)",
+        "bif1 calling a guard BIF stores the result in the destination register",
+        "Guard BIF failure branches to fail label, does NOT exit the process"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C80", "C81"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R8",
+      "title": "Integration tests for branching opcodes",
+      "spec": "WHEN branching opcodes are tested THE SYSTEM SHALL include tests that execute instruction sequences combining type tests, comparisons, and multi-way branches — simulating compiled Gleam case expressions. Tests SHALL verify correct label dispatch for matching and non-matching cases.",
+      "acceptance": [
+        "A test simulates a case expression: is_tuple + select_tuple_arity dispatches to the correct branch",
+        "A test verifies guard BIF failure does not exit the process",
+        "cargo test -p beamr interpreter passes with all tests green"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs", "crates/beamr/src/interpreter/pattern.rs"]
+      },
+      "checklist": ["C74", "C77"],
+      "stories": ["S20"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement send/receive opcodes — B-014 scope",
+    "SHALL NOT implement exception handling (try/catch) — B-014 scope",
+    "SHALL NOT implement closure or binary opcodes — B-015/B-016 scope",
+    "SHALL NOT implement the execution loop itself — B-010 delivers the process struct that the execution loop in B-012 uses",
+    "SHALL NOT modify the Instruction enum or decoder — use the types from B-003 as-is"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr interpreter passes with all tests green",
+    "Code inspection: guard BIF failures branch to fail label, never exit the process",
+    "Code inspection: is_eq_exact uses exact (=:=) semantics, not numeric (==)"
+  ]
+}

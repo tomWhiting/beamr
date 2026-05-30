@@ -1,0 +1,138 @@
+{
+  "id": "B-014",
+  "cluster": "beamr",
+  "title": "Implement interpreter — send, receive, and exception handling opcodes",
+  "depends_on": ["B-010", "B-011", "B-013"],
+  "blocked_by": [],
+  "checklist": ["C82", "C83", "C84", "C85", "C86", "C87", "C88"],
+  "stories": ["S5", "S7", "S20"],
+  "purpose": "Message passing and exception handling are the two remaining interpreter capabilities needed for real Gleam programs. Without send/receive, processes are isolated compute nodes that cannot coordinate. Without try/catch, Gleam's Result-based error handling (which compiles to try instructions) cannot execute. This brief bridges the interpreter to the mailbox (B-011) and delivers the exception handling opcodes that Gleam's try expressions compile to.",
+  "task": "Implement send, receive, and exception handling opcodes in crates/beamr/src/interpreter/opcodes.rs. The send instruction puts a message in a target process's mailbox. The receive instructions (loop_rec, loop_rec_end, remove_message, wait, wait_timeout, timeout) implement selective receive by scanning the mailbox with pattern matching and suspending the process if no message matches. The exception handling instructions (try, try_end, try_case, try_case_end, raise, badmatch, case_end, if_end) implement Gleam's try expressions and generate appropriate runtime errors for pattern match failures.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Send instruction",
+      "spec": "WHEN the interpreter executes the send instruction THE SYSTEM SHALL send the term in x(1) to the process identified by the PID in x(0). The message SHALL be copied into the receiver's heap via the mailbox (B-011). The result (the sent message) SHALL be left in x(0). IF the target PID does not exist THE SYSTEM SHALL silently drop the message — it SHALL NOT crash the sender.",
+      "acceptance": [
+        "send with x(0)=pid(1) and x(1)=atom(hello) delivers atom(hello) to process 1's mailbox",
+        "After send, x(0) contains the sent message (atom(hello))",
+        "send to a non-existent PID does not crash — message is silently dropped"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C82"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R2",
+      "title": "Selective receive — mailbox scan instructions",
+      "spec": "WHEN the interpreter executes loop_rec THE SYSTEM SHALL fetch the next message from the mailbox (from the save pointer) into x(0) for pattern matching. IF no more messages exist THE SYSTEM SHALL jump to the fail label (which leads to wait). loop_rec_end SHALL advance the save pointer past the current message (it didn't match). remove_message SHALL remove the matched message from the mailbox and reset the save pointer. It SHALL NOT remove unmatched messages — they stay in order.",
+      "acceptance": [
+        "loop_rec loads the next unscanned message into x(0)",
+        "loop_rec with empty mailbox (past save pointer) jumps to fail label",
+        "loop_rec_end advances the save pointer by one",
+        "remove_message removes the matched message and resets save pointer to start",
+        "Messages not removed by remove_message remain in the mailbox in order"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C83"],
+      "stories": ["S5"]
+    },
+    {
+      "id": "R3",
+      "title": "Wait and timeout instructions",
+      "spec": "WHEN the interpreter executes wait THE SYSTEM SHALL suspend the process (status → Waiting) and yield to the scheduler. The process resumes when a new message arrives. wait_timeout SHALL suspend with a deadline — if no matching message arrives before the timeout, the process resumes at the timeout label. timeout SHALL be executed after a timeout fires to clean up the receive state. It SHALL NOT busy-wait — the process is removed from the run queue.",
+      "acceptance": [
+        "wait sets process status to Waiting and yields to scheduler",
+        "A Waiting process resumes when a message is delivered to its mailbox",
+        "wait_timeout with a 100ms timeout resumes at the timeout label if no message arrives",
+        "wait_timeout with a message arriving before timeout resumes at the normal continuation",
+        "The process is NOT in the run queue while waiting"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C84", "C85"],
+      "stories": ["S7"]
+    },
+    {
+      "id": "R4",
+      "title": "Exception handling — try/catch instructions",
+      "spec": "WHEN the interpreter executes try THE SYSTEM SHALL push an exception handler onto the process's handler stack, recording the catch label and the register to store the exception class/reason/trace. try_end SHALL pop the handler (try block succeeded). try_case SHALL pop the handler and make the caught exception available in registers for the catch clause. try_case_end SHALL raise a new error if the catch clause doesn't handle the exception. It SHALL NOT swallow exceptions — unhandled exceptions propagate as process exits.",
+      "acceptance": [
+        "try pushes a handler; try_end pops it on normal completion",
+        "An exception raised between try and try_end jumps to the catch label",
+        "try_case makes the exception class, reason, and stacktrace available in registers",
+        "try_case_end with an unhandled exception raises badmatch",
+        "Nested try blocks work correctly (inner handler catches first)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C86"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R5",
+      "title": "Raise instruction",
+      "spec": "WHEN the interpreter executes raise THE SYSTEM SHALL re-raise the caught exception with the original class, reason, and stacktrace. This is used in catch clauses that need to propagate the exception. It SHALL NOT create a new stacktrace — it preserves the original.",
+      "acceptance": [
+        "raise with class=error, reason=badarg re-raises {error, badarg, OriginalStacktrace}",
+        "The stacktrace from the original exception is preserved, not replaced"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C87"],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Runtime error generation instructions",
+      "spec": "WHEN the interpreter executes badmatch THE SYSTEM SHALL raise a {badmatch, Value} error with the non-matching value. case_end SHALL raise a {case_clause, Value} error. if_end SHALL raise an if_clause error. These are generated by the compiler for exhaustive pattern match failures. It SHALL NOT silently continue — these are always fatal to the process (unless caught by try).",
+      "acceptance": [
+        "badmatch with value 42 raises {badmatch, 42}",
+        "case_end with value atom(foo) raises {case_clause, foo}",
+        "if_end raises {if_clause, []}",
+        "All three are catchable by an enclosing try block"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C88"],
+      "stories": []
+    },
+    {
+      "id": "R7",
+      "title": "Integration tests",
+      "spec": "WHEN send/receive and exception handling are tested THE SYSTEM SHALL include tests that: send a message between two processes and receive it via selective receive, verify timeout behavior, verify try/catch captures an exception, and verify badmatch generates the correct error tuple.",
+      "acceptance": [
+        "A test sends a message from process A to process B and B receives it via loop_rec/remove_message",
+        "A test verifies wait suspends the process and it resumes on message arrival",
+        "A test verifies try/catch captures a badmatch exception",
+        "cargo test -p beamr interpreter passes with all tests green"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C82", "C83", "C86"],
+      "stories": ["S20"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the mailbox itself — B-011 delivers the mailbox, this brief calls into it",
+    "SHALL NOT implement timer wheel — wait_timeout registers a timeout but the timer infrastructure is a separate brief",
+    "SHALL NOT implement closure or binary opcodes — B-015/B-016 scope",
+    "SHALL NOT implement process linking or exit signal propagation — supervision brief scope"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr interpreter passes with all tests green",
+    "Code inspection: send to non-existent PID does not crash the sender",
+    "Code inspection: badmatch/case_end/if_end are catchable by try blocks"
+  ]
+}

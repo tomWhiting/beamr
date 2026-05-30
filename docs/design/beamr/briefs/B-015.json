@@ -1,0 +1,136 @@
+{
+  "id": "B-015",
+  "cluster": "beamr",
+  "title": "Implement interpreter — closures, dynamic dispatch, and map opcodes",
+  "depends_on": ["B-010", "B-006", "B-013"],
+  "blocked_by": [],
+  "checklist": ["C89", "C90", "C91", "C98", "C99", "C100"],
+  "stories": ["S1", "S20"],
+  "purpose": "Gleam uses closures extensively — every fn(x) { ... } compiles to make_fun2 + call_fun. Dynamic dispatch (apply) is used for behaviours and callback invocation. Map operations are used for Gleam records (which compile to Erlang maps). Without these opcodes, the interpreter cannot run any Gleam code that uses anonymous functions, callback patterns, or record access.",
+  "task": "Implement closure, dynamic dispatch, and map opcodes in crates/beamr/src/interpreter/opcodes.rs. make_fun2 creates a closure term on the heap capturing free variables from registers. call_fun invokes a closure. apply/apply_last perform dynamic calls with module and function as runtime terms. has_map_fields tests for key presence, get_map_elements extracts values by key, and put_map_assoc/put_map_exact create or update maps.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Closure creation — make_fun2",
+      "spec": "WHEN the interpreter executes make_fun2 THE SYSTEM SHALL allocate a closure term on the process heap capturing: the module atom, function index, arity, and num_free free variables copied from X registers. The result SHALL be stored in x(0). It SHALL NOT capture more registers than num_free specifies.",
+      "acceptance": [
+        "make_fun2 with num_free=0 creates a closure with no captured variables",
+        "make_fun2 with num_free=2 captures x(0) and x(1) as free variables",
+        "The resulting closure term's arity matches the lambda table entry",
+        "Closure::free_var(0) on the result returns the first captured value"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C89"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R2",
+      "title": "Closure invocation — call_fun",
+      "spec": "WHEN the interpreter executes call_fun THE SYSTEM SHALL extract the closure from the register, verify the arity matches the number of arguments, restore the captured free variables, and jump to the closure's code entry point. IF the term is not a closure THE SYSTEM SHALL raise a badfun error. IF the arity doesn't match THE SYSTEM SHALL raise a badarity error.",
+      "acceptance": [
+        "call_fun on a valid closure with matching arity jumps to the closure's code",
+        "Captured free variables are accessible in the closure's execution context",
+        "call_fun on a non-closure term raises {badfun, Term}",
+        "call_fun with wrong number of arguments raises {badarity, {Fun, Args}}"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C90"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "Dynamic dispatch — apply and apply_last",
+      "spec": "WHEN the interpreter executes apply THE SYSTEM SHALL read the module and function names from x(N) and x(N+1) (as atoms), look up the function in the module registry by MFA, and call it. apply_last SHALL do the same but as a tail call (deallocating the current frame). IF the module or function is not found THE SYSTEM SHALL raise an undef error. It SHALL NOT allow calling non-exported functions via apply.",
+      "acceptance": [
+        "apply with module=math, function=add, arity=2 calls math:add/2",
+        "apply with a non-existent module raises {undef, {Module, Function, Args}}",
+        "apply_last deallocates the current stack frame before jumping",
+        "apply cannot call non-exported functions"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C91"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Map field test — has_map_fields",
+      "spec": "WHEN the interpreter executes has_map_fields THE SYSTEM SHALL test that a map term contains all specified keys. IF any key is missing THE SYSTEM SHALL branch to the fail label. It SHALL NOT modify the map or any register other than the instruction pointer.",
+      "acceptance": [
+        "has_map_fields on a map with keys [a, b] checking for [a] falls through",
+        "has_map_fields on a map with keys [a, b] checking for [a, c] jumps to fail label",
+        "has_map_fields on a non-map term jumps to fail label"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C98"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Map element extraction — get_map_elements",
+      "spec": "WHEN the interpreter executes get_map_elements THE SYSTEM SHALL extract values for the specified keys from a map and store them in destination registers. IF any key is missing THE SYSTEM SHALL branch to the fail label. It SHALL NOT modify the source map.",
+      "acceptance": [
+        "get_map_elements extracts key 'a' from map #{a => 1, b => 2} and stores 1 in the destination register",
+        "Extracting a missing key jumps to fail label",
+        "Multiple keys can be extracted in one instruction"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C99"],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Map construction and update — put_map_assoc/put_map_exact",
+      "spec": "WHEN the interpreter executes put_map_assoc THE SYSTEM SHALL create a new map by adding or updating key-value pairs in an existing map (or empty map). put_map_exact SHALL update existing keys only — if a key does not exist in the source map, it SHALL branch to the fail label. Both SHALL allocate the new map on the process heap. It SHALL NOT modify the source map in place — maps are immutable.",
+      "acceptance": [
+        "put_map_assoc on empty map with pairs [a=>1, b=>2] creates #{a => 1, b => 2}",
+        "put_map_assoc on #{a => 1} with pairs [a=>2] creates #{a => 2} (update)",
+        "put_map_exact on #{a => 1} with pairs [a=>2] creates #{a => 2}",
+        "put_map_exact on #{a => 1} with pairs [b=>2] jumps to fail label (key b doesn't exist)",
+        "Source map is not modified"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C100"],
+      "stories": []
+    },
+    {
+      "id": "R7",
+      "title": "Integration tests",
+      "spec": "WHEN closures, dynamic dispatch, and map operations are tested THE SYSTEM SHALL include tests for: creating and invoking a closure with captured variables, apply to a known module, map creation and field extraction, and error cases (badfun, badarity, undef, missing map key).",
+      "acceptance": [
+        "A test creates a closure capturing x(0)=42, invokes it, and verifies x(0) was restored",
+        "A test verifies badfun error when calling a non-closure",
+        "A test creates a map, extracts a field, and verifies the value",
+        "cargo test -p beamr interpreter passes with all tests green"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes.rs"]
+      },
+      "checklist": ["C89", "C90", "C98"],
+      "stories": ["S20"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement binary construction or matching opcodes — B-016 scope",
+    "SHALL NOT implement hashmap representation for large maps — flatmap only per B-006",
+    "SHALL NOT implement map comprehensions or map iterators — not needed for Gate 1"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr interpreter passes with all tests green",
+    "Code inspection: closures capture only num_free registers, not the entire register file",
+    "Code inspection: put_map does not modify the source map in place"
+  ]
+}
