@@ -13,6 +13,7 @@ use crate::timer::{TimerRef, TimerWheel};
 
 use super::links::LinkFacility;
 use super::registry::RegistryFacility;
+use super::select::SelectFacility;
 use super::spawn::SpawnFacility;
 use super::supervision::SupervisionFacility;
 
@@ -20,6 +21,29 @@ use super::supervision::SupervisionFacility;
 ///
 /// Native functions deliberately receive this allocation subset instead of the
 /// full process so they cannot inspect scheduler, mailbox, or process internals.
+/// Trampoline request from a BIF that needs interpreter re-entry.
+///
+/// When a BIF returns normally but needs the interpreter to call a BEAM
+/// closure and use the closure's return value as the BIF's result, it stores
+/// a `TrampolineRequest` in the process context. The interpreter checks for
+/// this after each BIF call.
+#[derive(Clone, Debug)]
+pub struct TrampolineRequest {
+    /// The closure (fun) term to invoke.
+    pub fun: Term,
+    /// Arguments to pass to the closure.
+    pub args: Vec<Term>,
+}
+
+/// Suspend request from a BIF that wants the process to wait.
+///
+/// Used by `select` when no mailbox message matches any handler.
+#[derive(Copy, Clone, Debug)]
+pub struct SuspendRequest {
+    /// Optional timeout in milliseconds. `None` means wait indefinitely.
+    pub timeout_ms: Option<u64>,
+}
+
 pub struct ProcessContext {
     pid: Option<u64>,
     timers: Option<Arc<Mutex<TimerWheel>>>,
@@ -28,6 +52,9 @@ pub struct ProcessContext {
     link_facility: Option<Arc<dyn LinkFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
     registry_facility: Option<Arc<dyn RegistryFacility>>,
+    select_facility: Option<Arc<dyn SelectFacility>>,
+    trampoline: Option<TrampolineRequest>,
+    suspend: Option<SuspendRequest>,
 }
 
 impl fmt::Debug for ProcessContext {
@@ -52,6 +79,12 @@ impl fmt::Debug for ProcessContext {
                 "registry_facility",
                 &self.registry_facility.as_ref().map(|_| ".."),
             )
+            .field(
+                "select_facility",
+                &self.select_facility.as_ref().map(|_| ".."),
+            )
+            .field("trampoline", &self.trampoline)
+            .field("suspend", &self.suspend)
             .finish()
     }
 }
@@ -74,6 +107,9 @@ impl ProcessContext {
             link_facility: None,
             supervision_facility: None,
             registry_facility: None,
+            select_facility: None,
+            trampoline: None,
+            suspend: None,
         }
     }
 
@@ -88,6 +124,9 @@ impl ProcessContext {
             link_facility: None,
             supervision_facility: None,
             registry_facility: None,
+            select_facility: None,
+            trampoline: None,
+            suspend: None,
         }
     }
 
@@ -205,5 +244,80 @@ impl ProcessContext {
     /// changing the native calling convention.
     pub const fn allocate_term(&mut self, term: Term) -> Term {
         term
+    }
+
+    // --- Select facility ---
+
+    /// Return the select facility, if one has been configured.
+    #[must_use]
+    pub fn select_facility(&self) -> Option<&dyn SelectFacility> {
+        self.select_facility.as_deref()
+    }
+
+    /// Set the select facility for mailbox scanning BIFs.
+    pub fn set_select_facility(&mut self, facility: Option<Arc<dyn SelectFacility>>) {
+        self.select_facility = facility;
+    }
+
+    // --- Trampoline ---
+
+    /// Store a trampoline request for the interpreter to execute.
+    ///
+    /// The interpreter checks for a trampoline after each BIF call. When
+    /// present, it sets up the closure call and uses the closure's return
+    /// value as the BIF's return value.
+    pub fn set_trampoline(&mut self, fun: Term, args: Vec<Term>) {
+        self.trampoline = Some(TrampolineRequest { fun, args });
+    }
+
+    /// Take the trampoline request, clearing it from the context.
+    ///
+    /// Returns `None` if no trampoline was requested.
+    pub fn take_trampoline(&mut self) -> Option<TrampolineRequest> {
+        self.trampoline.take()
+    }
+
+    /// Check whether a trampoline request is pending.
+    #[must_use]
+    pub fn has_trampoline(&self) -> bool {
+        self.trampoline.is_some()
+    }
+
+    // --- Suspend ---
+
+    /// Request that the process be suspended (waiting for messages).
+    ///
+    /// Called by `select` when no mailbox message matches any handler.
+    pub fn request_suspend(&mut self, timeout_ms: Option<u64>) {
+        self.suspend = Some(SuspendRequest { timeout_ms });
+    }
+
+    /// Take the suspend request, clearing it from the context.
+    pub fn take_suspend(&mut self) -> Option<SuspendRequest> {
+        self.suspend.take()
+    }
+
+    // --- Heap allocation helpers ---
+
+    /// Allocate a tuple on a leaked heap.
+    ///
+    /// BIFs do not have access to the process heap, so boxed terms are
+    /// allocated via `Box::leak`. These allocations are permanent and will
+    /// not be garbage collected. This is acceptable for selector structures
+    /// which are short-lived configuration data.
+    pub fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> {
+        let words = 1 + elements.len();
+        let heap: &mut [u64] = Box::leak(vec![0u64; words].into_boxed_slice());
+        crate::term::boxed::write_tuple(heap, elements)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a cons cell on a leaked heap.
+    ///
+    /// See [`alloc_tuple`](Self::alloc_tuple) for allocation semantics.
+    pub fn alloc_cons(&mut self, head: Term, tail: Term) -> Result<Term, Term> {
+        let heap: &mut [u64] = Box::leak(Box::new([0u64; 2]));
+        crate::term::boxed::write_cons(heap, head, tail)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 }

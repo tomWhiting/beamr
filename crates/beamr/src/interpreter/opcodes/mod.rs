@@ -9,6 +9,7 @@ pub mod closures;
 pub mod core;
 pub mod guards;
 pub mod messaging;
+pub mod trampoline;
 
 use std::sync::{Arc, Mutex};
 

@@ -11,6 +11,8 @@ mod context;
 pub mod links;
 pub mod process_bifs;
 pub mod registry;
+pub mod select;
+pub mod selector_ffi;
 pub mod spawn;
 pub mod stdlib_stubs;
 pub mod supervision;
@@ -23,9 +25,10 @@ use std::fmt;
 use crate::atom::Atom;
 use crate::term::Term;
 
-pub use context::ProcessContext;
+pub use context::{ProcessContext, SuspendRequest, TrampolineRequest};
 pub use links::LinkFacility;
 pub use registry::RegistryFacility;
+pub use select::SelectFacility;
 pub use spawn::SpawnFacility;
 pub use supervision::SupervisionFacility;
 

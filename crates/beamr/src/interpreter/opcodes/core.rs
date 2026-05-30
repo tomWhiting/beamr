@@ -3,7 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::error::ExecError;
-use crate::interpreter::{InstructionOutcome, NativeServices};
+use crate::interpreter::InstructionOutcome;
+use crate::interpreter::NativeServices;
 use crate::loader::Literal;
 use crate::loader::decode::compact::Operand;
 use crate::module::{Module, ResolvedImportTarget};
@@ -12,6 +13,8 @@ use crate::process::{CodePosition, ExitReason, Process};
 use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
 use crate::timer::TimerWheel;
+
+use super::trampoline;
 
 /// Combined context for external calls carrying timer and facility services.
 pub struct ExtCallContext<'a> {
@@ -266,7 +269,33 @@ fn call_external_target(
                 context.set_link_facility(svc.link_facility.clone());
                 context.set_supervision_facility(svc.supervision_facility.clone());
             }
+
+            // Provide mailbox access for select BIFs.
+            let snapshot = trampoline::build_mailbox_snapshot(process);
+            context.set_select_facility(
+                snapshot
+                    .clone()
+                    .map(|s| s as Arc<dyn crate::native::SelectFacility>),
+            );
+
             let result = (entry.function)(&args, &mut context).map_err(|_| ExecError::Badarg)?;
+
+            // Handle mailbox removal if the select facility recorded one.
+            if let Some(snapshot) = snapshot {
+                trampoline::apply_mailbox_removal(process, &snapshot);
+            }
+
+            // Check for suspend request before trampoline (suspend takes priority
+            // when no message matched).
+            if let Some(suspend) = context.take_suspend() {
+                return trampoline::handle_suspend(process, module, suspend);
+            }
+
+            // Check for trampoline request from the BIF.
+            if let Some(trampoline_req) = context.take_trampoline() {
+                return trampoline::handle_trampoline(process, module, trampoline_req);
+            }
+
             process.set_x_reg(0, result);
             charge_reduction(process)?;
             Ok(InstructionOutcome::Continue)
@@ -323,7 +352,7 @@ pub(crate) fn jump_position_with_reduction(
     })
 }
 
-fn charge_reduction(process: &mut Process) -> Result<(), ExecError> {
+pub(crate) fn charge_reduction(process: &mut Process) -> Result<(), ExecError> {
     process.decrement_reductions(1);
     Ok(())
 }
@@ -439,3 +468,4 @@ pub(crate) fn heap_slice<'a>(ptr: *mut u64, words: usize) -> &'a mut [u64] {
     // heap. The slice is used immediately to initialise the new object.
     unsafe { std::slice::from_raw_parts_mut(ptr, words) }
 }
+
