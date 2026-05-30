@@ -17,7 +17,7 @@ use beamr::process::registry::ProcessTable;
 use beamr::process::{CodePosition, ExitReason, Process};
 use beamr::term::{Tag, Term};
 
-const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [-- <arg>...]\n  beamr imports <file.beam>\n  beamr --help|-h\n  beamr --version|-V";
+const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr imports <file.beam>\n  beamr --help|-h\n  beamr --version|-V";
 
 fn main() -> ExitCode {
     let outcome = run_cli(env::args().skip(1));
@@ -39,6 +39,7 @@ enum Command {
         path: PathBuf,
         entry: Option<EntryPoint>,
         args: Vec<String>,
+        dirs: Vec<PathBuf>,
     },
     Imports {
         path: PathBuf,
@@ -75,6 +76,7 @@ enum CliError {
     InvalidTerm(String),
     ProcessExit(ExitReason),
     ProcessDidNotComplete(&'static str),
+    MissingDirValue(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +96,12 @@ where
             env!("CARGO_PKG_VERSION")
         ))),
         Command::Imports { path } => run_imports(&path),
-        Command::Run { path, entry, args } => run_module(&path, entry.as_ref(), &args),
+        Command::Run {
+            path,
+            entry,
+            args,
+            dirs,
+        } => run_module(&path, entry.as_ref(), &args, &dirs),
     }
 }
 
@@ -112,13 +119,29 @@ where
         None => (args, Vec::new()),
     };
 
-    for (index, arg) in command_args.iter().enumerate() {
+    // Extract --dir values first, collecting into dirs and building
+    // a filtered list of remaining args.
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut filtered_args: Vec<String> = Vec::new();
+    let mut iter = command_args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--dir" {
+            let value = iter.next().ok_or_else(|| {
+                CliError::MissingDirValue("--dir requires a directory path".into())
+            })?;
+            dirs.push(PathBuf::from(value));
+        } else {
+            filtered_args.push(arg.clone());
+        }
+    }
+
+    for (index, arg) in filtered_args.iter().enumerate() {
         if arg.starts_with('-') {
             match arg.as_str() {
-                "--help" | "-h" if command_args.len() == 1 && runtime_args.is_empty() => {
+                "--help" | "-h" if filtered_args.len() == 1 && runtime_args.is_empty() => {
                     return Ok(Command::Help);
                 }
-                "--version" | "-V" if command_args.len() == 1 && runtime_args.is_empty() => {
+                "--version" | "-V" if filtered_args.len() == 1 && runtime_args.is_empty() => {
                     return Ok(Command::Version);
                 }
                 "--entry" if index == 1 => continue,
@@ -132,7 +155,7 @@ where
         }
     }
 
-    match command_args.as_slice() {
+    match filtered_args.as_slice() {
         [] => Err(CliError::Usage(format!("missing .beam file\n{USAGE}"))),
         [command] if command == "imports" => Err(CliError::Usage(format!(
             "imports requires a .beam file\n{USAGE}"
@@ -143,6 +166,7 @@ where
                 path: PathBuf::from(file),
                 entry: None,
                 args: runtime_args,
+                dirs,
             })
         }
         [command, file] if command == "imports" => {
@@ -157,6 +181,7 @@ where
                 path: PathBuf::from(file),
                 entry: Some(parse_entry(entry)?),
                 args: runtime_args,
+                dirs,
             })
         }
         [file, flag, entry] if flag == "--entry" => {
@@ -165,6 +190,7 @@ where
                 path: PathBuf::from(file),
                 entry: Some(parse_entry(entry)?),
                 args: runtime_args,
+                dirs,
             })
         }
         _ => Err(CliError::Usage(format!("too many arguments\n{USAGE}"))),
@@ -211,7 +237,7 @@ fn parse_entry(entry: &str) -> Result<EntryPoint, CliError> {
 fn run_imports(path: &Path) -> Result<CliSuccess, CliError> {
     let LoadContext {
         atom_table, report, ..
-    } = load_context(path)?;
+    } = load_context(path, &[])?;
     Ok(CliSuccess::Stdout(format_import_report(
         &report,
         &atom_table,
@@ -222,13 +248,14 @@ fn run_module(
     path: &Path,
     entry: Option<&EntryPoint>,
     runtime_args: &[String],
+    dirs: &[PathBuf],
 ) -> Result<CliSuccess, CliError> {
     let LoadContext {
         atom_table,
         module_registry,
         module,
         report,
-    } = load_context(path)?;
+    } = load_context(path, dirs)?;
 
     if !report.is_empty() {
         return Err(CliError::UnresolvedImports(format_import_report(
@@ -291,18 +318,25 @@ struct LoadContext {
     report: UnresolvedImportReport,
 }
 
-fn load_context(path: &Path) -> Result<LoadContext, CliError> {
-    let bytes = std::fs::read(path).map_err(|source| CliError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-
+fn load_context(path: &Path, dirs: &[PathBuf]) -> Result<LoadContext, CliError> {
     let atom_table = AtomTable::with_common_atoms();
     let mut bif_registry = BifRegistryImpl::new();
     register_gate1_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_gate2_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_gate3_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     let module_registry = ModuleRegistry::new();
+
+    // Load all .beam files from --dir directories first so they are
+    // available in the module registry when the main module resolves imports.
+    for dir in dirs {
+        load_beam_dir(dir, &atom_table, &module_registry, &bif_registry)?;
+    }
+
+    let bytes = std::fs::read(path).map_err(|source| CliError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
     let (module, report) = load_module(&bytes, &atom_table, &module_registry, &bif_registry)
         .map_err(CliError::Load)?;
 
@@ -312,6 +346,37 @@ fn load_context(path: &Path) -> Result<LoadContext, CliError> {
         module,
         report,
     })
+}
+
+/// Loads every `.beam` file in `dir` into the module registry.
+/// Files that fail to load are silently skipped (they may be
+/// modules with unsupported features that are not needed).
+fn load_beam_dir(
+    dir: &Path,
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &BifRegistryImpl,
+) -> Result<(), CliError> {
+    let entries = std::fs::read_dir(dir).map_err(|source| CliError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| CliError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let file_path = entry.path();
+        if file_path.extension().is_some_and(|ext| ext == "beam") {
+            let bytes = match std::fs::read(&file_path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            // Best-effort: skip files that fail to decode.
+            let _ = load_module(&bytes, atom_table, module_registry, bif_registry);
+        }
+    }
+    Ok(())
 }
 
 fn parse_runtime_args(args: &[String], atom_table: &AtomTable) -> Result<Vec<Term>, CliError> {
@@ -390,7 +455,8 @@ impl CliError {
             | Self::ArityMismatch { .. }
             | Self::InvalidTerm(_)
             | Self::ProcessExit(_)
-            | Self::ProcessDidNotComplete(_) => 1,
+            | Self::ProcessDidNotComplete(_)
+            | Self::MissingDirValue(_) => 1,
         }
     }
 }
@@ -432,6 +498,7 @@ impl fmt::Display for CliError {
             Self::ProcessDidNotComplete(state) => {
                 write!(formatter, "process did not complete: {state}")
             }
+            Self::MissingDirValue(message) => formatter.write_str(message),
         }
     }
 }
@@ -468,6 +535,7 @@ mod tests {
                 path: "hello.beam".into(),
                 entry: None,
                 args: Vec::new(),
+                dirs: Vec::new(),
             }
         );
     }
@@ -484,6 +552,7 @@ mod tests {
                     arity: 0,
                 }),
                 args: Vec::new(),
+                dirs: Vec::new(),
             }
         );
     }
@@ -501,6 +570,7 @@ mod tests {
                     arity: 2,
                 }),
                 args: vec!["17".into(), "25".into()],
+                dirs: Vec::new(),
             }
         );
     }
@@ -629,6 +699,54 @@ mod tests {
             };
             function_and_arity.split_once('/').is_some()
         }));
+    }
+
+
+    #[test]
+    fn parses_dir_flag_with_beam_file() {
+        assert_eq!(
+            parse_args(["hello.beam", "--dir", "/tmp/beams"])
+                .expect("--dir with beam file parses"),
+            Command::Run {
+                path: "hello.beam".into(),
+                entry: None,
+                args: Vec::new(),
+                dirs: vec!["/tmp/beams".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_multiple_dir_flags() {
+        assert_eq!(
+            parse_args([
+                "hello.beam",
+                "--dir",
+                "/tmp/a",
+                "--dir",
+                "/tmp/b",
+                "hello:main/0"
+            ])
+            .expect("multiple --dir flags parse"),
+            Command::Run {
+                path: "hello.beam".into(),
+                entry: Some(EntryPoint {
+                    module: "hello".into(),
+                    function: "main".into(),
+                    arity: 0,
+                }),
+                args: Vec::new(),
+                dirs: vec!["/tmp/a".into(), "/tmp/b".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_dir_without_value() {
+        let error =
+            parse_args(["hello.beam", "--dir"]).expect_err("--dir without value should fail");
+
+        assert!(matches!(error, CliError::MissingDirValue(_)));
     }
 
     fn write_temp_beam(contents: &str) -> std::path::PathBuf {
