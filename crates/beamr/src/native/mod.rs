@@ -15,6 +15,7 @@ pub mod registry;
 pub mod select;
 pub mod selector_ffi;
 pub mod spawn;
+pub mod otp_stubs;
 pub mod stdlib_stubs;
 pub mod supervision;
 

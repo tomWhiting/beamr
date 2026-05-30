@@ -43,6 +43,13 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("whereis", 1, bif_whereis),
     // demonitor/2 (R3)
     ("demonitor", 2, bif_demonitor_2),
+    // OTP support BIFs (B-032)
+    ("get", 0, bif_get),
+    ("pid_to_list", 1, bif_pid_to_list),
+    ("++", 2, bif_list_append),
+    ("not", 1, bif_not),
+    ("/=", 2, bif_not_equal),
+    ("length", 1, bif_length),
 ];
 
 /// Global monotonic counter for make_ref/0.
@@ -271,6 +278,123 @@ pub fn bif_demonitor_2(args: &[Term], context: &mut ProcessContext) -> Result<Te
     }
 }
 
+// ── OTP support BIFs (B-032) ──────────────────────────────────────────────
+
+/// erlang:get/0 — returns the process dictionary as a list of `{Key, Value}` pairs.
+///
+/// beamr does not implement a process dictionary. Returns an empty list,
+/// which is the correct result for a process that has never called `put/2`.
+pub fn bif_get(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    Ok(Term::NIL)
+}
+
+/// erlang:pid_to_list/1 — converts a PID to its string representation.
+///
+/// Returns a binary containing `"<0.N.0>"` for PID N, matching the Erlang
+/// convention for local PIDs.
+pub fn bif_pid_to_list(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [pid_term] = args else {
+        return Err(badarg());
+    };
+    let pid = pid_term.as_pid().ok_or_else(badarg)?;
+    let repr = format!("<0.{pid}.0>");
+    let bytes = repr.as_bytes();
+
+    // Build a proper list of integer code points (Erlang string).
+    let mut tail = Term::NIL;
+    for &byte in bytes.iter().rev() {
+        let int_term = Term::small_int(i64::from(byte));
+        let cell = Box::leak(Box::new([0u64; 2]));
+        tail = crate::term::boxed::write_cons(cell, int_term, tail).ok_or_else(badarg)?;
+    }
+    Ok(tail)
+}
+
+/// erlang:++/2 — appends two proper lists.
+///
+/// Returns a new list that is the concatenation of `ListA ++ ListB`.
+pub fn bif_list_append(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [list_a, list_b] = args else {
+        return Err(badarg());
+    };
+
+    // If ListA is empty, return ListB directly.
+    if list_a.is_nil() {
+        return Ok(*list_b);
+    }
+
+    // Collect all elements from ListA.
+    let mut elements = Vec::new();
+    let mut current = *list_a;
+    loop {
+        if current.is_nil() {
+            break;
+        }
+        let cons = Cons::new(current).ok_or_else(badarg)?;
+        elements.push(cons.head());
+        current = cons.tail();
+    }
+
+    // Build a new list: elements from A followed by B as the tail.
+    let mut tail = *list_b;
+    for element in elements.into_iter().rev() {
+        let cell = Box::leak(Box::new([0u64; 2]));
+        tail = crate::term::boxed::write_cons(cell, element, tail).ok_or_else(badarg)?;
+    }
+    Ok(tail)
+}
+
+/// erlang:not/1 — boolean negation.
+///
+/// Returns `true` if the argument is `false`, `false` if `true`.
+/// Raises badarg for non-boolean inputs.
+pub fn bif_not(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [term] = args else {
+        return Err(badarg());
+    };
+    let atom = term.as_atom().ok_or_else(badarg)?;
+    if atom == Atom::TRUE {
+        Ok(Term::atom(Atom::FALSE))
+    } else if atom == Atom::FALSE {
+        Ok(Term::atom(Atom::TRUE))
+    } else {
+        Err(badarg())
+    }
+}
+
+/// erlang:/=/2 — not-equal comparison (structural, not exact).
+///
+/// Returns `true` if the two terms are structurally different, `false`
+/// if they are equal. This is the `/=` operator (non-exact inequality).
+/// For the subset of types beamr supports, this is equivalent to `=/=`.
+pub fn bif_not_equal(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [left, right] = args else {
+        return Err(badarg());
+    };
+    Ok(bool_term(left != right))
+}
+
+/// erlang:length/1 — returns the length of a proper list.
+pub fn bif_length(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [list_term] = args else {
+        return Err(badarg());
+    };
+
+    let mut count: i64 = 0;
+    let mut current = *list_term;
+    loop {
+        if current.is_nil() {
+            return Term::try_small_int(count).ok_or_else(badarg);
+        }
+        let cons = Cons::new(current).ok_or_else(badarg)?;
+        count = count.checked_add(1).ok_or_else(badarg)?;
+        current = cons.tail();
+    }
+}
+
 fn bool_term(value: bool) -> Term {
     Term::atom(if value { Atom::TRUE } else { Atom::FALSE })
 }
@@ -278,7 +402,6 @@ fn bool_term(value: bool) -> Term {
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
 }
-
 
 #[cfg(test)]
 mod tests;
