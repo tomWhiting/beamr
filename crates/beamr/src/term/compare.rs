@@ -55,11 +55,15 @@ pub(crate) fn partial_eq(left: &Term, right: &Term) -> bool {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[allow(dead_code)]
 enum TermRank {
     Number,
     Atom,
     Reference,
     Fun,
+    // No port representation exists yet; keep the BEAM rank slot reserved so
+    // future port terms sort between fun and pid without renumbering ranks.
+    Port,
     Pid,
     Tuple,
     Map,
@@ -97,8 +101,6 @@ fn rank(term: Term) -> TermRank {
     } else if Binary::new(term).is_some() {
         TermRank::Binary
     } else {
-        // No port representation exists yet; unknown boxed terms sort after the
-        // implemented BEAM term kinds until the term layout grows a port value.
         TermRank::OtherBoxed
     }
 }
@@ -117,6 +119,7 @@ fn compare_same_rank(left: Term, right: Term, term_rank: TermRank) -> Ordering {
         TermRank::Atom => left.raw().cmp(&right.raw()),
         TermRank::Reference => reference_id(left).cmp(&reference_id(right)),
         TermRank::Fun => compare_closures(left, right),
+        TermRank::Port => Ordering::Equal,
         TermRank::Pid => left.as_pid().cmp(&right.as_pid()),
         TermRank::Tuple => compare_tuples(left, right),
         TermRank::Map => compare_maps(left, right),
@@ -213,9 +216,13 @@ fn compare_numbers(left: Term, right: Term) -> Ordering {
         (Some(NumberValue::Float(left)), Some(NumberValue::Float(right))) => {
             compare_f64(left, right)
         }
+        (Some(NumberValue::SmallInt(left)), None) => compare_small_int_to_bigint(left, right),
+        (None, Some(NumberValue::SmallInt(right))) => {
+            compare_small_int_to_bigint(right, left).reverse()
+        }
+        (Some(NumberValue::Float(left)), None) => compare_f64(left, bigint_to_f64(right)),
+        (None, Some(NumberValue::Float(right))) => compare_f64(bigint_to_f64(left), right),
         (None, None) => compare_bigints(left, right),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
     }
 }
 
@@ -238,16 +245,78 @@ fn binary_bytes(term: Term) -> &'static [u8] {
 
 fn compare_bigints(left: Term, right: Term) -> Ordering {
     match (BigInt::new(left), BigInt::new(right)) {
-        (Some(left), Some(right)) => match left.is_negative().cmp(&right.is_negative()) {
-            Ordering::Equal => match left.limb_count().cmp(&right.limb_count()) {
-                Ordering::Equal => left.limbs().cmp(right.limbs()),
-                order => order,
-            },
-            // Positive numbers sort after negative numbers.
-            Ordering::Less => Ordering::Greater,
-            Ordering::Greater => Ordering::Less,
-        },
+        (Some(left), Some(right)) => compare_bigint_values(left, right),
         _ => left.raw().cmp(&right.raw()),
+    }
+}
+
+fn compare_bigint_values(left: BigInt, right: BigInt) -> Ordering {
+    let left_limbs = normalized_limbs(left);
+    let right_limbs = normalized_limbs(right);
+    let left_negative = left.is_negative() && !left_limbs.is_empty();
+    let right_negative = right.is_negative() && !right_limbs.is_empty();
+
+    match (left_negative, right_negative) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => compare_magnitude(left_limbs, right_limbs),
+        (true, true) => compare_magnitude(left_limbs, right_limbs).reverse(),
+    }
+}
+
+fn compare_small_int_to_bigint(left: i64, right: Term) -> Ordering {
+    let Some(right) = BigInt::new(right) else {
+        return Ordering::Less;
+    };
+    let right_limbs = normalized_limbs(right);
+    let right_negative = right.is_negative() && !right_limbs.is_empty();
+
+    match (left.is_negative(), right_negative) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => compare_small_magnitude(left.unsigned_abs(), right_limbs),
+        (true, true) => compare_small_magnitude(left.unsigned_abs(), right_limbs).reverse(),
+    }
+}
+
+fn compare_small_magnitude(left: u64, right_limbs: &[u64]) -> Ordering {
+    match right_limbs.len().cmp(&1) {
+        Ordering::Less => left.cmp(&0),
+        Ordering::Equal => left.cmp(&right_limbs[0]),
+        Ordering::Greater => Ordering::Less,
+    }
+}
+
+fn compare_magnitude(left: &[u64], right: &[u64]) -> Ordering {
+    match left.len().cmp(&right.len()) {
+        Ordering::Equal => left.iter().rev().cmp(right.iter().rev()),
+        order => order,
+    }
+}
+
+fn normalized_limbs(bigint: BigInt) -> &'static [u64] {
+    let limbs = bigint.limbs();
+    let significant_len = limbs
+        .iter()
+        .rposition(|limb| *limb != 0)
+        .map_or(0, |index| index + 1);
+    &limbs[..significant_len]
+}
+
+fn bigint_to_f64(term: Term) -> f64 {
+    let Some(bigint) = BigInt::new(term) else {
+        return f64::NAN;
+    };
+
+    let mut value = 0.0_f64;
+    for limb in normalized_limbs(bigint).iter().rev() {
+        value = value.mul_add(18_446_744_073_709_551_616.0, *limb as f64);
+    }
+
+    if bigint.is_negative() && value != 0.0 {
+        -value
+    } else {
+        value
     }
 }
 
@@ -685,6 +754,25 @@ mod tests {
         assert_eq!(ref_a, ref_b);
         assert_eq!(closure_a, closure_b);
         assert_eq!(bin_a, bin_b);
+    }
+
+    #[test]
+    fn numeric_ordering_compares_bigints_by_value() {
+        let mut positive_small_heap = [0_u64; 4];
+        let mut positive_large_heap = [0_u64; 5];
+        let mut negative_small_heap = [0_u64; 4];
+        let mut negative_large_heap = [0_u64; 5];
+        let positive_small = write_bigint(&mut positive_small_heap, false, &[9]).unwrap();
+        let positive_large = write_bigint(&mut positive_large_heap, false, &[0, 1]).unwrap();
+        let negative_small = write_bigint(&mut negative_small_heap, true, &[9]).unwrap();
+        let negative_large = write_bigint(&mut negative_large_heap, true, &[0, 1]).unwrap();
+
+        assert!(negative_large < negative_small);
+        assert!(negative_small < Term::small_int(0));
+        assert_eq!(cmp(Term::small_int(9), positive_small), Ordering::Equal);
+        assert!(Term::small_int(10) > positive_small);
+        assert!(positive_small < positive_large);
+        assert!(negative_small < positive_small);
     }
 
     #[test]
