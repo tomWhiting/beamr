@@ -34,6 +34,7 @@ impl Atom {
     pub const KILLED: Self = Self(20);
     pub const DOWN: Self = Self(21);
     pub const PROCESS: Self = Self(22);
+    pub const TRAP_EXIT: Self = Self(23);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -68,6 +69,7 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("killed", Atom::KILLED),
     ("DOWN", Atom::DOWN),
     ("process", Atom::PROCESS),
+    ("trap_exit", Atom::TRAP_EXIT),
 ];
 
 /// Concurrent intern table for atom strings.

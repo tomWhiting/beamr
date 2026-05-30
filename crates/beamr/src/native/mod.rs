@@ -7,6 +7,7 @@
 //! use the same mechanism but have different ownership (per D6).
 pub mod bifs;
 mod context;
+pub mod links;
 pub mod process_bifs;
 pub mod spawn;
 
@@ -19,6 +20,7 @@ use crate::atom::Atom;
 use crate::term::Term;
 
 pub use context::ProcessContext;
+pub use links::LinkFacility;
 pub use spawn::SpawnFacility;
 
 /// Registry key for a native module/function/arity tuple.

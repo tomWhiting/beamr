@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::term::Term;
 use crate::timer::{TimerRef, TimerWheel};
 
+use super::links::LinkFacility;
 use super::spawn::SpawnFacility;
 
 /// Minimal process-facing context exposed to native code.
@@ -20,6 +21,7 @@ pub struct ProcessContext {
     pid: Option<u64>,
     timers: Option<Arc<Mutex<TimerWheel>>>,
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
+    link_facility: Option<Arc<dyn LinkFacility>>,
 }
 
 impl fmt::Debug for ProcessContext {
@@ -30,6 +32,10 @@ impl fmt::Debug for ProcessContext {
             .field(
                 "spawn_facility",
                 &self.spawn_facility.as_ref().map(|_| ".."),
+            )
+            .field(
+                "link_facility",
+                &self.link_facility.as_ref().map(|_| ".."),
             )
             .finish()
     }
@@ -49,6 +55,7 @@ impl ProcessContext {
             pid: None,
             timers: None,
             spawn_facility: None,
+            link_facility: None,
         }
     }
 
@@ -59,6 +66,7 @@ impl ProcessContext {
             pid: Some(pid),
             timers: Some(timers),
             spawn_facility: None,
+            link_facility: None,
         }
     }
 
@@ -82,6 +90,17 @@ impl ProcessContext {
     /// Set the spawn facility for process creation BIFs.
     pub fn set_spawn_facility(&mut self, facility: Option<Arc<dyn SpawnFacility>>) {
         self.spawn_facility = facility;
+    }
+
+    /// Return the link facility, if one has been configured.
+    #[must_use]
+    pub fn link_facility(&self) -> Option<&dyn LinkFacility> {
+        self.link_facility.as_deref()
+    }
+
+    /// Set the link facility for link management BIFs.
+    pub fn set_link_facility(&mut self, facility: Option<Arc<dyn LinkFacility>>) {
+        self.link_facility = facility;
     }
 
     /// Schedule a timer via the runtime timer wheel.

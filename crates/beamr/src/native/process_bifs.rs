@@ -1,10 +1,12 @@
-//! Process creation BIFs — self, spawn, spawn_link.
+//! Process management BIFs — self, spawn, spawn_link, link, unlink, process_flag.
 //!
-//! These BIFs provide the ability to query the calling process's PID and to
-//! create new processes from BEAM code. They are registered as Gate 2 BIFs
-//! alongside the Gate 1 arithmetic, comparison, and utility functions.
+//! These BIFs provide the ability to query the calling process's PID, create
+//! new processes, manage bidirectional links, and set process flags from BEAM
+//! code. They are registered as Gate 2 BIFs alongside the Gate 1 arithmetic,
+//! comparison, and utility functions.
 
 use crate::atom::{Atom, AtomTable};
+use crate::native::links::LinkError;
 use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
 use crate::term::Term;
 use crate::term::boxed::Cons;
@@ -15,6 +17,9 @@ const GATE2_BIFS: &[Gate2Bif] = &[
     ("self", 0, bif_self),
     ("spawn", 3, bif_spawn),
     ("spawn_link", 3, bif_spawn_link),
+    ("link", 1, bif_link),
+    ("unlink", 1, bif_unlink),
+    ("process_flag", 2, bif_process_flag),
 ];
 
 /// Registers all Gate 2 (process creation) BIFs into the VM-owned BIF registry.
@@ -91,14 +96,102 @@ fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
     }
 }
 
+/// erlang:link/1 — establishes a bidirectional link to the target process.
+pub fn bif_link(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [target_term] = args else {
+        return Err(badarg());
+    };
+
+    let target_pid = target_term.as_pid().ok_or_else(badarg)?;
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+
+    // Self-link is a no-op returning true.
+    if caller_pid == target_pid {
+        return Ok(Term::atom(Atom::TRUE));
+    }
+
+    let facility = context.link_facility().ok_or_else(badarg)?;
+    match facility.link(caller_pid, target_pid) {
+        Ok(()) => Ok(Term::atom(Atom::TRUE)),
+        Err(LinkError::NoProc) => Err(Term::atom(Atom::NOPROC)),
+        Err(LinkError::NoCaller) => Err(badarg()),
+    }
+}
+
+/// erlang:unlink/1 — removes the bidirectional link to the target process.
+pub fn bif_unlink(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [target_term] = args else {
+        return Err(badarg());
+    };
+
+    let target_pid = target_term.as_pid().ok_or_else(badarg)?;
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+
+    // Self-unlink is a no-op returning true.
+    if caller_pid == target_pid {
+        return Ok(Term::atom(Atom::TRUE));
+    }
+
+    let facility = context.link_facility().ok_or_else(badarg)?;
+    facility.unlink(caller_pid, target_pid).map_err(|_| badarg())?;
+
+    Ok(Term::atom(Atom::TRUE))
+}
+
+/// erlang:process_flag/2 — sets a process flag, returns the previous value.
+pub fn bif_process_flag(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [flag_term, value_term] = args else {
+        return Err(badarg());
+    };
+
+    let flag = flag_term.as_atom().ok_or_else(badarg)?;
+
+    if flag == Atom::TRAP_EXIT {
+        let new_value = atom_to_bool(*value_term).ok_or_else(badarg)?;
+        let caller_pid = context.pid().ok_or_else(badarg)?;
+        let facility = context.link_facility().ok_or_else(badarg)?;
+        let old_value = facility
+            .set_trap_exit(caller_pid, new_value)
+            .map_err(|_| badarg())?;
+        Ok(bool_to_atom(old_value))
+    } else {
+        Err(badarg())
+    }
+}
+
+/// Convert an atom term (`true`/`false`) to a Rust bool.
+fn atom_to_bool(term: Term) -> Option<bool> {
+    let atom = term.as_atom()?;
+    if atom == Atom::TRUE {
+        Some(true)
+    } else if atom == Atom::FALSE {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Convert a Rust bool to the corresponding atom term.
+const fn bool_to_atom(value: bool) -> Term {
+    if value {
+        Term::atom(Atom::TRUE)
+    } else {
+        Term::atom(Atom::FALSE)
+    }
+}
+
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bif_self, bif_spawn, bif_spawn_link, list_to_vec, register_gate2_bifs};
+    use super::{
+        bif_link, bif_process_flag, bif_self, bif_spawn, bif_spawn_link, bif_unlink, list_to_vec,
+        register_gate2_bifs,
+    };
     use crate::atom::{Atom, AtomTable};
+    use crate::native::links::{LinkError, LinkFacility, LinkRecord};
     use crate::native::spawn::{SpawnError, SpawnFacility, SpawnRecord};
     use crate::native::{BifRegistryImpl, ProcessContext};
     use crate::term::Term;
@@ -304,7 +397,14 @@ mod tests {
         register_gate2_bifs(&mut registry, &atom_table).expect("gate 2 BIF registration");
 
         let erlang = atom_table.intern("erlang");
-        for (name, arity) in [("self", 0), ("spawn", 3), ("spawn_link", 3)] {
+        for (name, arity) in [
+            ("self", 0),
+            ("spawn", 3),
+            ("spawn_link", 3),
+            ("link", 1),
+            ("unlink", 1),
+            ("process_flag", 2),
+        ] {
             let function = atom_table.intern(name);
             assert!(
                 registry.lookup(erlang, function, arity).is_some(),
@@ -397,5 +497,321 @@ mod tests {
         ) -> Result<u64, SpawnError> {
             Err(SpawnError::UnresolvedMfa)
         }
+    }
+
+    // --- Mock link facility ---
+
+    struct MockLinkFacility {
+        records: Mutex<Vec<LinkRecord>>,
+        trap_exit: Mutex<bool>,
+    }
+
+    impl MockLinkFacility {
+        fn new() -> Self {
+            Self {
+                records: Mutex::new(Vec::new()),
+                trap_exit: Mutex::new(false),
+            }
+        }
+
+        fn records(&self) -> Vec<LinkRecord> {
+            self.records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+    }
+
+    impl LinkFacility for MockLinkFacility {
+        fn link(&self, caller_pid: u64, target_pid: u64) -> Result<(), LinkError> {
+            self.records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(LinkRecord::Link {
+                    caller_pid,
+                    target_pid,
+                });
+            Ok(())
+        }
+
+        fn unlink(&self, caller_pid: u64, target_pid: u64) -> Result<(), LinkError> {
+            self.records
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(LinkRecord::Unlink {
+                    caller_pid,
+                    target_pid,
+                });
+            Ok(())
+        }
+
+        fn set_trap_exit(&self, _caller_pid: u64, value: bool) -> Result<bool, LinkError> {
+            let mut trap = self.trap_exit.lock().unwrap_or_else(|e| e.into_inner());
+            let old = *trap;
+            *trap = value;
+            Ok(old)
+        }
+    }
+
+    struct NoprocLinkFacility;
+
+    impl LinkFacility for NoprocLinkFacility {
+        fn link(&self, _caller_pid: u64, _target_pid: u64) -> Result<(), LinkError> {
+            Err(LinkError::NoProc)
+        }
+
+        fn unlink(&self, _caller_pid: u64, _target_pid: u64) -> Result<(), LinkError> {
+            Err(LinkError::NoProc)
+        }
+
+        fn set_trap_exit(&self, _caller_pid: u64, _value: bool) -> Result<bool, LinkError> {
+            Err(LinkError::NoCaller)
+        }
+    }
+
+    // --- erlang:link/1 tests ---
+
+    #[test]
+    fn link_establishes_bidirectional_link_via_facility() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        context.set_link_facility(Some(facility.clone()));
+
+        let result = bif_link(&[Term::pid(2)], &mut context);
+        assert_eq!(result, Ok(Term::atom(Atom::TRUE)));
+
+        let records = facility.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0],
+            LinkRecord::Link {
+                caller_pid: 1,
+                target_pid: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn link_self_is_noop_returning_true() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(5));
+        context.set_link_facility(Some(facility.clone()));
+
+        let result = bif_link(&[Term::pid(5)], &mut context);
+        assert_eq!(result, Ok(Term::atom(Atom::TRUE)));
+        assert!(facility.records().is_empty());
+    }
+
+    #[test]
+    fn link_returns_noproc_when_target_does_not_exist() {
+        let facility = Arc::new(NoprocLinkFacility);
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        context.set_link_facility(Some(facility));
+
+        let result = bif_link(&[Term::pid(99)], &mut context);
+        assert_eq!(result, Err(Term::atom(Atom::NOPROC)));
+    }
+
+    #[test]
+    fn link_returns_badarg_for_non_pid_argument() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+
+        let result = bif_link(&[Term::small_int(42)], &mut context);
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn link_returns_badarg_without_pid() {
+        let mut context = ProcessContext::new();
+        let result = bif_link(&[Term::pid(2)], &mut context);
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn link_returns_badarg_without_link_facility() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        let result = bif_link(&[Term::pid(2)], &mut context);
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn link_returns_badarg_with_wrong_arity() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        let result = bif_link(&[], &mut context);
+        assert_eq!(result, Err(badarg()));
+    }
+
+    // --- erlang:unlink/1 tests ---
+
+    #[test]
+    fn unlink_removes_link_via_facility() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        context.set_link_facility(Some(facility.clone()));
+
+        let result = bif_unlink(&[Term::pid(2)], &mut context);
+        assert_eq!(result, Ok(Term::atom(Atom::TRUE)));
+
+        let records = facility.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0],
+            LinkRecord::Unlink {
+                caller_pid: 1,
+                target_pid: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn unlink_self_is_noop_returning_true() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(5));
+        context.set_link_facility(Some(facility.clone()));
+
+        let result = bif_unlink(&[Term::pid(5)], &mut context);
+        assert_eq!(result, Ok(Term::atom(Atom::TRUE)));
+        assert!(facility.records().is_empty());
+    }
+
+    #[test]
+    fn unlink_returns_badarg_for_non_pid_argument() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+
+        let result = bif_unlink(&[Term::atom(Atom::OK)], &mut context);
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn unlink_returns_badarg_without_pid() {
+        let mut context = ProcessContext::new();
+        let result = bif_unlink(&[Term::pid(2)], &mut context);
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn unlink_returns_badarg_without_link_facility() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        let result = bif_unlink(&[Term::pid(2)], &mut context);
+        assert_eq!(result, Err(badarg()));
+    }
+
+    // --- erlang:process_flag/2 tests ---
+
+    #[test]
+    fn process_flag_trap_exit_sets_and_returns_previous_value() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        context.set_link_facility(Some(facility));
+
+        let result = bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::TRUE)],
+            &mut context,
+        );
+        assert_eq!(result, Ok(Term::atom(Atom::FALSE)));
+    }
+
+    #[test]
+    fn process_flag_trap_exit_returns_old_true_when_already_set() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        context.set_link_facility(Some(facility));
+
+        bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::TRUE)],
+            &mut context,
+        )
+        .unwrap();
+
+        let result = bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::FALSE)],
+            &mut context,
+        );
+        assert_eq!(result, Ok(Term::atom(Atom::TRUE)));
+    }
+
+    #[test]
+    fn process_flag_returns_badarg_for_unknown_flag() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        context.set_link_facility(Some(facility));
+
+        let result = bif_process_flag(
+            &[Term::atom(Atom::OK), Term::atom(Atom::TRUE)],
+            &mut context,
+        );
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn process_flag_returns_badarg_for_non_atom_flag() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+
+        let result = bif_process_flag(
+            &[Term::small_int(42), Term::atom(Atom::TRUE)],
+            &mut context,
+        );
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn process_flag_returns_badarg_for_non_bool_value() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        context.set_link_facility(Some(facility));
+
+        let result = bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::small_int(1)],
+            &mut context,
+        );
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn process_flag_returns_badarg_without_pid() {
+        let facility = Arc::new(MockLinkFacility::new());
+        let mut context = ProcessContext::new();
+        context.set_link_facility(Some(facility));
+
+        let result = bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::TRUE)],
+            &mut context,
+        );
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn process_flag_returns_badarg_without_link_facility() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+
+        let result = bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::TRUE)],
+            &mut context,
+        );
+        assert_eq!(result, Err(badarg()));
+    }
+
+    #[test]
+    fn process_flag_returns_badarg_with_wrong_arity() {
+        let mut context = ProcessContext::new();
+        context.set_pid(Some(1));
+        let result = bif_process_flag(&[Term::atom(Atom::TRAP_EXIT)], &mut context);
+        assert_eq!(result, Err(badarg()));
     }
 }
