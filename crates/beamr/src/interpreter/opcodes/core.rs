@@ -407,7 +407,7 @@ fn u16_from_u32(value: u32, context: &'static str) -> Result<u16, ExecError> {
     u16::try_from(value).map_err(|_| ExecError::InvalidOperand(context))
 }
 
-fn heap_slice<'a>(ptr: *mut u64, words: usize) -> &'a mut [u64] {
+pub(crate) fn heap_slice<'a>(ptr: *mut u64, words: usize) -> &'a mut [u64] {
     // SAFETY: `Heap::alloc(words)` returned a non-overlapping allocation with
     // exactly `words` contiguous machine words that remain owned by the process
     // heap. The slice is used immediately to initialise the new object.

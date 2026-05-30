@@ -307,7 +307,7 @@ pub(crate) mod tests {
         for term in process.x_regs() {
             assert_no_term_pointer_into_young(process, *term);
         }
-        for term in process.mailbox() {
+        for term in process.mailbox().scan_iter() {
             assert_no_term_pointer_into_young(process, *term);
         }
     }
@@ -378,7 +378,7 @@ pub(crate) mod tests {
             .push_frame(Atom::OK, 0, 3)
             .expect("frame fits");
         process.stack_mut().set_y_reg(2, y_term).expect("Y2 exists");
-        process.mailbox_mut().push_back(mail_term);
+        process.mailbox_mut().push_owned_for_test(mail_term);
         let expected = [snapshot(x_term), snapshot(y_term), snapshot(mail_term)];
 
         collect_minor(&mut process).expect("minor GC succeeds");
@@ -389,7 +389,7 @@ pub(crate) mod tests {
             expected[1]
         );
         assert_eq!(
-            snapshot(*process.mailbox().front().expect("mailbox root")),
+            snapshot(process.mailbox().front_for_test().expect("mailbox root")),
             expected[2]
         );
         assert_no_reachable_pointer_into_young(&process);
@@ -431,10 +431,10 @@ pub(crate) mod tests {
             process.set_x_reg(0, terms[terms.len() - 1]);
             process.stack_mut().push_frame(Atom::OK, 0, 2).expect("frame fits");
             process.stack_mut().set_y_reg(0, terms[terms.len() / 2]).expect("Y0 exists");
-            process.mailbox_mut().push_back(terms[terms.len() / 3]);
+            process.mailbox_mut().push_owned_for_test(terms[terms.len() / 3]);
             let expected_x = snapshot(process.x_reg(0));
             let expected_y = snapshot(process.stack().y_reg(0).expect("Y0 exists"));
-            let expected_mail = snapshot(*process.mailbox().front().expect("mailbox root"));
+            let expected_mail = snapshot(process.mailbox().front_for_test().expect("mailbox root"));
 
             if seed % 2 == 0 {
                 collect_minor(&mut process).expect("minor GC succeeds");
@@ -444,7 +444,7 @@ pub(crate) mod tests {
 
             prop_assert_eq!(snapshot(process.x_reg(0)), expected_x);
             prop_assert_eq!(snapshot(process.stack().y_reg(0).expect("Y0 exists")), expected_y);
-            prop_assert_eq!(snapshot(*process.mailbox().front().expect("mailbox root")), expected_mail);
+            prop_assert_eq!(snapshot(process.mailbox().front_for_test().expect("mailbox root")), expected_mail);
         }
     }
 }

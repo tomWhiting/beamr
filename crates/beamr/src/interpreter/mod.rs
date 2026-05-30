@@ -8,7 +8,7 @@ pub mod pattern;
 
 use crate::error::ExecError;
 use crate::module::Module;
-use crate::process::{CodePosition, ExitReason, Process};
+use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
 
 /// Result of running a process until it yields, waits, exits, or faults.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -38,6 +38,15 @@ pub enum InstructionOutcome {
 
 /// Execute `process` against `module` until a scheduler boundary or exit.
 pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, ExecError> {
+    if matches!(
+        process.status(),
+        ProcessStatus::New | ProcessStatus::Yielded | ProcessStatus::Waiting
+    ) {
+        process
+            .transition_to(ProcessStatus::Running)
+            .map_err(|_| ExecError::Badarg)?;
+    }
+
     if process.code_position().is_none() {
         process.set_code_position(Some(CodePosition {
             module: module.name,
@@ -67,13 +76,17 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
             InstructionOutcome::Yield => return Ok(ExecutionResult::Yielded),
             InstructionOutcome::Waiting => return Ok(ExecutionResult::Waiting),
             InstructionOutcome::Exit(reason) => {
+                if process.status() == ProcessStatus::Running {
+                    process
+                        .transition_to(ProcessStatus::Exited(reason))
+                        .map_err(|_| ExecError::Badarg)?;
+                }
                 process.set_code_position(None);
                 return Ok(ExecutionResult::Exited(reason));
             }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests;

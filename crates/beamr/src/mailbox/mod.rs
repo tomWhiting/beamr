@@ -73,11 +73,66 @@ impl Mailbox {
         self.arrival.len() + self.scan_list.len()
     }
 
+    /// Returns true when no arrived or scan-buffered messages are queued.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.message_count() == 0
+    }
+
     /// Move all currently arrived messages into the owner-only scan list.
     pub fn drain_arrival(&mut self) {
         while let Some(message) = self.arrival.pop() {
             self.scan_list.push_back(message);
         }
+    }
+
+    /// Drain arrivals and return the message at the current selective-receive save pointer.
+    pub(crate) fn current_message(&mut self) -> Option<Term> {
+        self.drain_arrival();
+        self.scan_list.get(self.save_pointer).copied()
+    }
+
+    /// Advance the selective-receive save pointer past the current message.
+    pub(crate) fn advance_save_pointer(&mut self) {
+        self.save_pointer = self
+            .save_pointer
+            .saturating_add(1)
+            .min(self.scan_list.len());
+    }
+
+    /// Remove the current matched message and reset selective-receive scanning.
+    pub(crate) fn remove_current_message(&mut self) -> Option<Term> {
+        self.drain_arrival();
+        let matched = self.scan_list.remove(self.save_pointer)?;
+        self.save_pointer = 0;
+        Some(matched)
+    }
+
+    /// Reset selective receive state after a timeout or successful match.
+    pub(crate) fn reset_save_pointer(&mut self) {
+        self.save_pointer = 0;
+    }
+
+    /// Test/GC helper: enqueue a term already owned by this process.
+    #[cfg(test)]
+    pub(crate) fn push_owned_for_test(&mut self, message: Term) {
+        self.scan_list.push_back(message);
+    }
+
+    /// Test helper: inspect the first scan-buffered message.
+    #[cfg(test)]
+    pub(crate) fn front_for_test(&self) -> Option<Term> {
+        self.scan_list.front().copied()
+    }
+
+    /// Iterate over queued owner-side messages for GC roots and tests.
+    pub(crate) fn scan_iter(&self) -> impl Iterator<Item = &Term> {
+        self.scan_list.iter()
+    }
+
+    /// Mutably iterate over owner-side queued messages for GC root rewriting.
+    pub(crate) fn scan_iter_mut(&mut self) -> impl Iterator<Item = &mut Term> {
+        self.scan_list.iter_mut()
     }
 
     #[cfg(test)]

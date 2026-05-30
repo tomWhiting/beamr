@@ -6,6 +6,7 @@
 
 pub mod core;
 pub mod guards;
+pub mod messaging;
 
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
@@ -107,6 +108,27 @@ pub fn dispatch(
         }
         Instruction::Jump { target } => guards::jump(module, target),
         Instruction::Bif { op, operands } => guards::bif(process, module, *op, operands),
+        Instruction::Send => messaging::send(process, None),
+        Instruction::LoopRec { fail, destination } => {
+            messaging::loop_rec(process, module, fail, destination)
+        }
+        Instruction::LoopRecEnd { fail } => messaging::loop_rec_end(process, module, fail),
+        Instruction::RemoveMessage => messaging::remove_message(process),
+        Instruction::Wait { fail } => messaging::wait(process, module, fail),
+        Instruction::WaitTimeout { fail, timeout } => {
+            messaging::wait_timeout(process, module, fail, timeout)
+        }
+        Instruction::Timeout => messaging::timeout(process),
+        Instruction::Try { destination, label } => {
+            messaging::try_(process, module, destination, label)
+        }
+        Instruction::TryEnd { source } => messaging::try_end(process, source),
+        Instruction::TryCase { source } => messaging::try_case(process, source),
+        Instruction::TryCaseEnd { source } => messaging::try_case_end(process, source),
+        Instruction::Raise { stacktrace, reason } => messaging::raise(process, stacktrace, reason),
+        Instruction::Badmatch { value } => messaging::badmatch(process, value),
+        Instruction::CaseEnd { value } => messaging::case_end(process, value),
+        Instruction::IfEnd => messaging::if_end(process),
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),
         other => Err(ExecError::UnsupportedOpcode {
             name: instruction_name(other),

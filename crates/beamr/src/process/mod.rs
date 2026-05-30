@@ -8,12 +8,13 @@ pub mod heap;
 pub mod registry;
 pub mod stack;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::atom::Atom;
+use crate::mailbox::Mailbox;
 use crate::process::heap::Heap;
 use crate::process::stack::Stack;
 use crate::term::Term;
@@ -33,6 +34,35 @@ pub struct CodePosition {
     pub module: Atom,
     /// Current instruction pointer in `module`.
     pub instruction_pointer: usize,
+}
+
+/// A try/catch handler installed by BEAM try-family opcodes.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ExceptionHandler {
+    /// Label/IP to jump to when an exception is raised.
+    pub catch_position: CodePosition,
+    /// Destination operand index supplied by the decoded try/catch instruction.
+    pub destination: u8,
+}
+
+/// Exception payload propagated through try handlers.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Exception {
+    /// Exception class, normally atom(error).
+    pub class: Term,
+    /// Exception reason term.
+    pub reason: Term,
+    /// Stacktrace term associated with the original raise.
+    pub stacktrace: Term,
+}
+
+/// Receive timeout state recorded while a process is waiting.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ReceiveTimeout {
+    /// Instruction pointer to resume at if the receive timeout expires.
+    pub timeout_position: CodePosition,
+    /// Timeout duration in milliseconds.
+    pub milliseconds: u64,
 }
 
 /// Reason a process exited.
@@ -112,7 +142,10 @@ pub struct Process {
     status: ProcessStatus,
     heap: Heap,
     stack: Stack,
-    mailbox: VecDeque<Term>,
+    mailbox: Mailbox,
+    handlers: Vec<ExceptionHandler>,
+    current_exception: Option<Exception>,
+    receive_timeout: Option<ReceiveTimeout>,
     x_regs: [Term; 256],
     reduction_counter: u32,
     code_position: Option<CodePosition>,
@@ -134,7 +167,10 @@ impl Process {
             status: ProcessStatus::New,
             heap: Heap::new(heap_size),
             stack: Stack::new(),
-            mailbox: VecDeque::new(),
+            mailbox: Mailbox::new(),
+            handlers: Vec::new(),
+            current_exception: None,
+            receive_timeout: None,
             x_regs: [Term::NIL; 256],
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
             code_position: None,
@@ -208,12 +244,12 @@ impl Process {
 
     /// Immutable placeholder mailbox access for future receive support.
     #[must_use]
-    pub const fn mailbox(&self) -> &VecDeque<Term> {
+    pub const fn mailbox(&self) -> &Mailbox {
         &self.mailbox
     }
 
     /// Mutable placeholder mailbox access for message enqueue/receive support.
-    pub fn mailbox_mut(&mut self) -> &mut VecDeque<Term> {
+    pub fn mailbox_mut(&mut self) -> &mut Mailbox {
         &mut self.mailbox
     }
 
@@ -223,7 +259,7 @@ impl Process {
         self.x_regs
             .iter()
             .chain(self.stack.y_regs())
-            .chain(self.mailbox.iter())
+            .chain(self.mailbox.scan_iter())
             .copied()
             .collect()
     }
@@ -244,12 +280,50 @@ impl Process {
             }
             index += 1;
         }
-        for root in &mut self.mailbox {
+        for root in self.mailbox.scan_iter_mut() {
             if let Some(value) = roots.get(index).copied() {
                 *root = value;
             }
             index += 1;
         }
+    }
+
+    /// Install an exception handler.
+    pub fn push_exception_handler(&mut self, handler: ExceptionHandler) {
+        self.handlers.push(handler);
+    }
+
+    /// Remove the most recently installed exception handler.
+    pub fn pop_exception_handler(&mut self) -> Option<ExceptionHandler> {
+        self.handlers.pop()
+    }
+
+    /// Number of installed exception handlers.
+    #[must_use]
+    pub fn exception_handler_count(&self) -> usize {
+        self.handlers.len()
+    }
+
+    /// Store the current caught exception.
+    pub const fn set_current_exception(&mut self, exception: Option<Exception>) {
+        self.current_exception = exception;
+    }
+
+    /// Current caught exception, when present.
+    #[must_use]
+    pub const fn current_exception(&self) -> Option<Exception> {
+        self.current_exception
+    }
+
+    /// Record receive timeout state for scheduler/timer integration.
+    pub const fn set_receive_timeout(&mut self, timeout: Option<ReceiveTimeout>) {
+        self.receive_timeout = timeout;
+    }
+
+    /// Receive timeout state, when waiting with a deadline.
+    #[must_use]
+    pub const fn receive_timeout(&self) -> Option<ReceiveTimeout> {
+        self.receive_timeout
     }
 
     /// Read X register `n`.
