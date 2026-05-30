@@ -12,6 +12,7 @@ use crate::timer::{TimerRef, TimerWheel};
 
 use super::links::LinkFacility;
 use super::spawn::SpawnFacility;
+use super::supervision::SupervisionFacility;
 
 /// Minimal process-facing context exposed to native code.
 ///
@@ -22,6 +23,7 @@ pub struct ProcessContext {
     timers: Option<Arc<Mutex<TimerWheel>>>,
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
     link_facility: Option<Arc<dyn LinkFacility>>,
+    supervision_facility: Option<Arc<dyn SupervisionFacility>>,
 }
 
 impl fmt::Debug for ProcessContext {
@@ -36,6 +38,10 @@ impl fmt::Debug for ProcessContext {
             .field(
                 "link_facility",
                 &self.link_facility.as_ref().map(|_| ".."),
+            )
+            .field(
+                "supervision_facility",
+                &self.supervision_facility.as_ref().map(|_| ".."),
             )
             .finish()
     }
@@ -56,6 +62,7 @@ impl ProcessContext {
             timers: None,
             spawn_facility: None,
             link_facility: None,
+            supervision_facility: None,
         }
     }
 
@@ -67,6 +74,7 @@ impl ProcessContext {
             timers: Some(timers),
             spawn_facility: None,
             link_facility: None,
+            supervision_facility: None,
         }
     }
 
@@ -101,6 +109,17 @@ impl ProcessContext {
     /// Set the link facility for link management BIFs.
     pub fn set_link_facility(&mut self, facility: Option<Arc<dyn LinkFacility>>) {
         self.link_facility = facility;
+    }
+
+    /// Return the supervision facility, if one has been configured.
+    #[must_use]
+    pub fn supervision_facility(&self) -> Option<&dyn SupervisionFacility> {
+        self.supervision_facility.as_deref()
+    }
+
+    /// Set the supervision facility for monitor/demonitor/exit BIFs.
+    pub fn set_supervision_facility(&mut self, facility: Option<Arc<dyn SupervisionFacility>>) {
+        self.supervision_facility = facility;
     }
 
     /// Schedule a timer via the runtime timer wheel.

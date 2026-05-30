@@ -10,6 +10,7 @@ mod context;
 pub mod links;
 pub mod process_bifs;
 pub mod spawn;
+pub mod supervision;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -22,6 +23,7 @@ use crate::term::Term;
 pub use context::ProcessContext;
 pub use links::LinkFacility;
 pub use spawn::SpawnFacility;
+pub use supervision::SupervisionFacility;
 
 /// Registry key for a native module/function/arity tuple.
 pub type NativeKey = (Atom, Atom, u8);
