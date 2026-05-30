@@ -160,6 +160,40 @@ impl Term {
         matches!(self.tag(), Tag::List)
     }
 
+    /// Creates a boxed heap-pointer term from a word-aligned heap address.
+    ///
+    /// The pointer must be aligned so its low tag bits are zero; heap words
+    /// (`u64`) satisfy this requirement. This constructor is intentionally
+    /// crate-visible so boxed term modules can build terms without exposing raw
+    /// bit manipulation outside `beamr::term`.
+    pub(crate) fn boxed_ptr(ptr: *const u64) -> Self {
+        Self::tagged_ptr(ptr, BOXED_TAG)
+    }
+
+    /// Creates a list heap-pointer term from a pointer to a cons cell head.
+    pub(crate) fn list_ptr(ptr: *const u64) -> Self {
+        Self::tagged_ptr(ptr, LIST_TAG)
+    }
+
+    /// Returns the untagged heap pointer for a boxed or list term.
+    pub(crate) fn heap_ptr(self) -> Option<*const u64> {
+        if self.is_boxed() || self.is_list() {
+            Some((self.0 & !TAG_MASK) as *const u64)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the raw encoded word for heap layout storage.
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Reconstructs a term from its raw encoded word.
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
     /// Decodes this term as a small integer, if it is one.
     pub const fn as_small_int(self) -> Option<i64> {
         if self.is_small_int() {
@@ -185,6 +219,13 @@ impl Term {
         } else {
             None
         }
+    }
+
+    fn tagged_ptr(ptr: *const u64, tag: u64) -> Self {
+        let raw = ptr as u64;
+        debug_assert_eq!(raw & TAG_MASK, 0, "heap term pointers must be aligned");
+
+        Self(raw | tag)
     }
 }
 
