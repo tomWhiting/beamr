@@ -47,8 +47,28 @@ pub enum Tag {
 ///
 /// The low three bits hold the primary tag. The remaining bits hold immediate
 /// payload data or, for future boxed/list terms, tagged heap pointer data.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug)]
 pub struct Term(u64);
+
+impl PartialEq for Term {
+    fn eq(&self, other: &Self) -> bool {
+        compare::partial_eq(self, other)
+    }
+}
+
+impl Eq for Term {}
+
+impl PartialOrd for Term {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Term {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        compare::cmp(*self, *other)
+    }
+}
 
 impl Term {
     /// Distinguished empty list / nil value.
