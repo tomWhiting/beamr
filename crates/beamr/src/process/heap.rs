@@ -1,14 +1,17 @@
-//! Per-process heap allocator.
+//! Per-process generational heap allocator.
 //!
-//! Each process starts with a small heap (233 words default). Boxed terms are
-//! allocated from this fixed-capacity bump buffer until the interpreter asks GC
-//! to reclaim or move live data. The heap is private — no other process can
-//! read or write it.
+//! Each process owns two private bump regions: a young generation (nursery) for
+//! new allocations and an old generation for promoted/live data. Regions use
+//! separate backing vectors so nursery and old objects are never mixed in the
+//! same memory area. The backing vectors are pre-sized and never grow while live
+//! pointers may refer into them; GC replaces regions only after rewriting roots.
 
 use std::fmt;
 
 /// Default per-process heap capacity, in machine words.
 pub const DEFAULT_HEAP_SIZE: usize = 233;
+
+const DEFAULT_OLD_HEAP_SIZE: usize = DEFAULT_HEAP_SIZE;
 
 /// Error returned when a heap allocation cannot be satisfied.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -18,6 +21,15 @@ pub struct HeapFull {
 }
 
 impl HeapFull {
+    /// Create a heap-full error for an unsatisfied word request.
+    #[must_use]
+    pub const fn new(requested: usize, available: usize) -> Self {
+        Self {
+            requested,
+            available,
+        }
+    }
+
     /// Number of words requested by the failed allocation.
     #[must_use]
     pub const fn requested(self) -> usize {
@@ -43,18 +55,16 @@ impl fmt::Display for HeapFull {
 
 impl std::error::Error for HeapFull {}
 
-/// Fixed-capacity bump allocator for one process heap.
+/// One fixed-capacity bump region inside a process heap.
 #[derive(Debug)]
-pub struct Heap {
+pub(crate) struct HeapRegion {
     words: Vec<u64>,
     used: usize,
     high_water_mark: usize,
 }
 
-impl Heap {
-    /// Create a heap with room for `capacity` machine words.
-    #[must_use]
-    pub fn new(capacity: usize) -> Self {
+impl HeapRegion {
+    fn new(capacity: usize) -> Self {
         Self {
             words: vec![0; capacity],
             used: 0,
@@ -62,25 +72,13 @@ impl Heap {
         }
     }
 
-    /// Allocate `words` contiguous machine words from the bump pointer.
-    ///
-    /// Zero-word allocations return the current bump pointer and do not advance
-    /// usage. The backing vector is pre-sized and never grown here, so pointers
-    /// returned by earlier successful allocations remain stable until GC or heap
-    /// destruction.
-    pub fn alloc(&mut self, words: usize) -> Result<*mut u64, HeapFull> {
+    fn alloc(&mut self, words: usize) -> Result<*mut u64, HeapFull> {
         let Some(end) = self.used.checked_add(words) else {
-            return Err(HeapFull {
-                requested: words,
-                available: self.available(),
-            });
+            return Err(HeapFull::new(words, self.available()));
         };
 
         if end > self.capacity() {
-            return Err(HeapFull {
-                requested: words,
-                available: self.available(),
-            });
+            return Err(HeapFull::new(words, self.available()));
         }
 
         let start = self.used;
@@ -90,28 +88,223 @@ impl Heap {
         Ok(ptr)
     }
 
-    /// Number of words currently allocated.
-    #[must_use]
-    pub const fn used(&self) -> usize {
+    pub(crate) const fn used(&self) -> usize {
         self.used
     }
 
-    /// Total word capacity of this heap.
-    #[must_use]
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.words.len()
     }
 
-    /// Maximum words that have been allocated at once since heap creation.
-    #[must_use]
-    pub const fn high_water_mark(&self) -> usize {
+    const fn high_water_mark(&self) -> usize {
         self.high_water_mark
     }
 
-    /// Number of words available before the heap reports [`HeapFull`].
+    fn available(&self) -> usize {
+        self.capacity().saturating_sub(self.used)
+    }
+
+    fn reset(&mut self) {
+        self.words[..self.used].fill(0);
+        self.used = 0;
+    }
+
+    pub(crate) fn contains(&self, ptr: *const u64) -> bool {
+        let start = self.words.as_ptr().addr();
+        let end = start.saturating_add(self.capacity() * std::mem::size_of::<u64>());
+        let addr = ptr.addr();
+        addr >= start && addr < end
+    }
+}
+
+/// Generational bump allocator for one process heap.
+#[derive(Debug)]
+pub struct Heap {
+    young: HeapRegion,
+    old: HeapRegion,
+    initial_capacity: usize,
+    previous_capacity: usize,
+}
+
+impl Heap {
+    /// Create a heap with room for `capacity` machine words in the nursery.
+    ///
+    /// `capacity()` reports nursery capacity because raw `alloc` targets the
+    /// nursery. The old generation is a distinct region with its own capacity.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        let previous_capacity = fibonacci_previous(capacity);
+        Self {
+            young: HeapRegion::new(capacity),
+            old: HeapRegion::new(DEFAULT_OLD_HEAP_SIZE.max(capacity)),
+            initial_capacity: capacity,
+            previous_capacity,
+        }
+    }
+
+    /// Allocate `words` contiguous machine words from the young generation.
+    pub fn alloc(&mut self, words: usize) -> Result<*mut u64, HeapFull> {
+        self.young.alloc(words)
+    }
+
+    /// Allocate `words` contiguous machine words from the old generation.
+    pub(crate) fn alloc_old(&mut self, words: usize) -> Result<*mut u64, HeapFull> {
+        self.old.alloc(words)
+    }
+
+    /// Allocate from a standalone fresh old-space region used during major GC.
+    pub(crate) fn alloc_in_region(
+        region: &mut HeapRegion,
+        words: usize,
+    ) -> Result<*mut u64, HeapFull> {
+        region.alloc(words)
+    }
+
+    /// Build a fresh old-space region for major compaction.
+    pub(crate) fn fresh_old_region(&self, capacity: usize) -> HeapRegion {
+        HeapRegion::new(capacity.max(self.initial_capacity))
+    }
+
+    /// Replace old generation with a compacted fresh region.
+    pub(crate) fn replace_old(&mut self, region: HeapRegion) {
+        self.old = region;
+    }
+
+    /// Number of words currently allocated in the young generation.
+    #[must_use]
+    pub const fn used(&self) -> usize {
+        self.young.used()
+    }
+
+    /// Total words currently allocated across young and old generations.
+    #[must_use]
+    pub const fn total_used(&self) -> usize {
+        self.young.used() + self.old.used()
+    }
+
+    /// Young-generation word capacity.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.young.capacity()
+    }
+
+    /// Total capacity across young and old generations.
+    #[must_use]
+    pub fn total_capacity(&self) -> usize {
+        self.young_capacity() + self.old_capacity()
+    }
+
+    /// Young-generation word capacity.
+    #[must_use]
+    pub fn young_capacity(&self) -> usize {
+        self.young.capacity()
+    }
+
+    /// Old-generation word capacity.
+    #[must_use]
+    pub fn old_capacity(&self) -> usize {
+        self.old.capacity()
+    }
+
+    /// Words currently allocated in the young generation.
+    #[must_use]
+    pub const fn young_used(&self) -> usize {
+        self.young.used()
+    }
+
+    /// Words currently allocated in the old generation.
+    #[must_use]
+    pub const fn old_used(&self) -> usize {
+        self.old.used()
+    }
+
+    /// Maximum nursery words allocated at once since heap creation or growth.
+    #[must_use]
+    pub const fn high_water_mark(&self) -> usize {
+        self.young.high_water_mark()
+    }
+
+    /// Number of words available before nursery allocation reports [`HeapFull`].
     #[must_use]
     pub fn available(&self) -> usize {
-        self.capacity().saturating_sub(self.used)
+        self.young.available()
+    }
+
+    /// Number of words available in old space before promotion fails.
+    #[must_use]
+    pub fn old_available(&self) -> usize {
+        self.old.available()
+    }
+
+    /// True if `ptr` points into the currently allocated young region storage.
+    #[must_use]
+    pub fn young_contains(&self, ptr: *const u64) -> bool {
+        self.young.contains(ptr)
+    }
+
+    /// True if `ptr` points into the currently allocated old region storage.
+    #[must_use]
+    pub fn old_contains(&self, ptr: *const u64) -> bool {
+        self.old.contains(ptr)
+    }
+
+    /// True if `ptr` points into any current heap region storage.
+    #[must_use]
+    pub fn contains(&self, ptr: *const u64) -> bool {
+        self.young_contains(ptr) || self.old_contains(ptr)
+    }
+
+    /// Reclaim the nursery wholesale after all live young objects are promoted.
+    pub(crate) fn reset_young(&mut self) {
+        self.young.reset();
+    }
+
+    /// Grow young generation to the next Fibonacci-like capacity.
+    pub fn grow_to_next_capacity(&mut self) {
+        let current = self.young_capacity();
+        let next = current
+            .saturating_add(self.previous_capacity)
+            .max(current + 1);
+        self.previous_capacity = current;
+        self.young = HeapRegion::new(next);
+    }
+
+    /// Capacity to use for compacted old space after major GC copied `live_words`.
+    pub(crate) fn compacted_old_capacity_after_major(
+        &self,
+        live_words: usize,
+        threshold: f64,
+    ) -> usize {
+        let minimum = live_words.max(self.initial_capacity);
+        let target = fibonacci_capacity_for(minimum);
+        let utilization = live_words as f64 / self.old_capacity() as f64;
+        if utilization < threshold && self.old_capacity() > self.initial_capacity {
+            target.min(self.old_capacity()).max(minimum)
+        } else {
+            self.old_capacity().max(minimum)
+        }
+    }
+
+    /// Test helper: enlarge empty old space so shrink policy can be exercised.
+    #[cfg(test)]
+    pub(crate) fn grow_empty_old_to_for_test(&mut self, capacity: usize) {
+        debug_assert_eq!(self.old.used(), 0);
+        if capacity > self.old_capacity() {
+            self.old = HeapRegion::new(capacity);
+        }
+    }
+
+    pub(crate) fn copy_words_from_ptr(&self, src: *const u64, len: usize) -> Vec<u64> {
+        // SAFETY: GC computes object sizes from valid object headers/cell tags;
+        // `src..src+len` belongs to the source heap region while copying.
+        unsafe { std::slice::from_raw_parts(src, len).to_vec() }
+    }
+
+    pub(crate) fn write_words(dst: *mut u64, words: &[u64]) {
+        // SAFETY: destination is freshly allocated for exactly `words.len()`
+        // words in a heap region and does not overlap the temporary source vec.
+        unsafe { std::ptr::copy_nonoverlapping(words.as_ptr(), dst, words.len()) }
     }
 }
 
@@ -121,26 +314,53 @@ impl Default for Heap {
     }
 }
 
+fn fibonacci_previous(capacity: usize) -> usize {
+    let mut prev = 144;
+    let mut current = DEFAULT_HEAP_SIZE;
+    while current < capacity {
+        let next = prev + current;
+        prev = current;
+        current = next;
+    }
+    prev.min(capacity)
+}
+
+fn fibonacci_capacity_for(needed: usize) -> usize {
+    let mut previous = 144;
+    let mut current = DEFAULT_HEAP_SIZE;
+    while current < needed {
+        let next = previous + current;
+        previous = current;
+        current = next;
+    }
+    current
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Heap, HeapFull};
+    use super::{DEFAULT_HEAP_SIZE, Heap, HeapFull};
 
     #[test]
-    fn new_heap_reports_capacity_and_zero_used() {
+    fn new_heap_reports_young_capacity_and_zero_used() {
         let heap = Heap::new(1024);
 
         assert_eq!(heap.capacity(), 1024);
+        assert_eq!(heap.young_capacity(), 1024);
         assert_eq!(heap.used(), 0);
+        assert_eq!(heap.young_used(), 0);
+        assert_eq!(heap.old_used(), 0);
         assert_eq!(heap.high_water_mark(), 0);
     }
 
     #[test]
-    fn alloc_returns_pointer_and_advances_used() {
+    fn alloc_returns_pointer_in_young_and_advances_used() {
         let mut heap = Heap::new(8);
 
         let ptr = heap.alloc(3).expect("allocation should fit");
 
         assert!(!ptr.is_null());
+        assert!(heap.young_contains(ptr));
+        assert!(!heap.old_contains(ptr));
         assert_eq!(heap.used(), 3);
         assert_eq!(heap.high_water_mark(), 3);
     }
@@ -184,5 +404,39 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(heap.used(), 0);
+    }
+
+    #[test]
+    fn young_and_old_are_distinct_regions() {
+        let mut heap = Heap::new(DEFAULT_HEAP_SIZE);
+        let young = heap.alloc(1).expect("young allocation fits");
+        let old = heap.alloc_old(1).expect("old allocation fits");
+
+        assert!(heap.young_contains(young));
+        assert!(heap.old_contains(old));
+        assert!(!heap.old_contains(young));
+        assert!(!heap.young_contains(old));
+    }
+
+    #[test]
+    fn grows_follow_fibonacci_like_sequence() {
+        let mut heap = Heap::new(DEFAULT_HEAP_SIZE);
+
+        heap.grow_to_next_capacity();
+        assert_eq!(heap.capacity(), 377);
+        heap.grow_to_next_capacity();
+        assert_eq!(heap.capacity(), 610);
+        heap.grow_to_next_capacity();
+        assert_eq!(heap.capacity(), 987);
+    }
+
+    #[test]
+    fn shrink_never_goes_below_initial_size() {
+        let mut heap = Heap::new(DEFAULT_HEAP_SIZE);
+        heap.grow_empty_old_to_for_test(987);
+        let target = heap.compacted_old_capacity_after_major(0, 0.25);
+
+        assert_eq!(target, DEFAULT_HEAP_SIZE);
+        assert_eq!(heap.old_capacity(), 987);
     }
 }

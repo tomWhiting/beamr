@@ -59,6 +59,16 @@ impl StackFrame {
         self.y_slots
     }
 
+    /// Iterator over all Y-register slots in this frame.
+    pub(crate) fn y_regs(&self) -> impl Iterator<Item = &Term> {
+        self.y_regs.iter()
+    }
+
+    /// Mutable iterator over all Y-register slots in this frame.
+    pub(crate) fn y_regs_mut(&mut self) -> impl Iterator<Item = &mut Term> {
+        self.y_regs.iter_mut()
+    }
+
     /// Read a Y-register in this frame.
     pub fn y_reg(&self, n: u16) -> Result<Term, StackError> {
         self.y_regs
@@ -191,6 +201,16 @@ impl Stack {
     #[must_use]
     pub const fn frame_limit(&self) -> usize {
         self.frame_limit
+    }
+
+    /// Iterator over every Y-register in every stack frame.
+    pub(crate) fn y_regs(&self) -> impl Iterator<Item = &Term> {
+        self.frames.iter().flat_map(StackFrame::y_regs)
+    }
+
+    /// Mutable iterator over every Y-register in every stack frame.
+    pub(crate) fn y_regs_mut(&mut self) -> impl Iterator<Item = &mut Term> {
+        self.frames.iter_mut().flat_map(StackFrame::y_regs_mut)
     }
 }
 

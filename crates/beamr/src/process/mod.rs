@@ -212,6 +212,46 @@ impl Process {
         &self.mailbox
     }
 
+    /// Mutable placeholder mailbox access for message enqueue/receive support.
+    pub fn mailbox_mut(&mut self) -> &mut VecDeque<Term> {
+        &mut self.mailbox
+    }
+
+    /// Snapshot every GC root owned by this process: all X registers, all
+    /// Y-register slots in all stack frames, and all mailbox terms.
+    pub(crate) fn roots(&self) -> Vec<Term> {
+        self.x_regs
+            .iter()
+            .chain(self.stack.y_regs())
+            .chain(self.mailbox.iter())
+            .copied()
+            .collect()
+    }
+
+    /// Replace every GC root with the next term yielded by `roots`, in the same
+    /// order as [`Process::roots`]. Extra yielded terms are ignored.
+    pub(crate) fn replace_roots(&mut self, roots: &[Term]) {
+        let mut index = 0;
+        for root in &mut self.x_regs {
+            if let Some(value) = roots.get(index).copied() {
+                *root = value;
+            }
+            index += 1;
+        }
+        for root in self.stack.y_regs_mut() {
+            if let Some(value) = roots.get(index).copied() {
+                *root = value;
+            }
+            index += 1;
+        }
+        for root in &mut self.mailbox {
+            if let Some(value) = roots.get(index).copied() {
+                *root = value;
+            }
+            index += 1;
+        }
+    }
+
     /// Read X register `n`.
     #[must_use]
     pub fn x_reg(&self, n: u8) -> Term {
