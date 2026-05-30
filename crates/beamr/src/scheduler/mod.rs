@@ -456,3 +456,5 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod supervision_tests;
