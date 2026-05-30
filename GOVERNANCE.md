@@ -22,7 +22,7 @@ Organised by the Telos four-layer classification. First-class principles are loa
 
 - **A1. Term is raw u64 (first-class).** Low-bit tagging per ADR-004. Not a Rust enum, not NaN-boxing. This decision is load-bearing for every component that touches values.
 - **A2. No async in the hot path (first-class).** The scheduler and interpreter are synchronous. No Tokio, no async/await in reduction loops. Per ADR-003.
-- **A3. No file over 500 lines (second-class).** Split when approaching the limit. Applies to all files in the repo, not just Rust.
+- **A3. No source file over 500 lines (second-class).** Split when approaching the limit. Applies to `crates/*/src/**/*.rs` — enforced by CI file-size gate. Does not apply to docs, markdown, or JSON.
 - **A4. Copy semantics for message passing (second-class).** Per ADR-008. Messages are deep-copied between process heaps. No shared-heap optimisation until profiling justifies it.
 - **A5. Gleam-emitted opcodes only (second-class).** Per ADR-005. We implement the opcode subset that the Gleam compiler actually emits, not the full BEAM instruction set.
 

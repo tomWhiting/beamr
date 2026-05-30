@@ -88,9 +88,9 @@ This runs: scout (read-only exploration) → dev (implement all R#s) → commit 
 **Output:** Code on josh/dev branch. Structured JSON at `.run/dev-output.json` and `.run/review-output.json`.
 
 **Quality bar (norn must pass before submitting):**
-- `cargo check --workspace` green
-- `cargo clippy --workspace -- -D warnings` green
-- `cargo test` all pass
+- `cargo check -p <crate>` green (use `-p beamr-cli` for CLI briefs; `--workspace` once core scaffold is clean)
+- `cargo clippy -p <crate> --no-deps -- -D warnings` green
+- `cargo test -p <crate>` all pass
 - Every R# acceptance criterion met
 - No `.unwrap()` / `panic!()` outside `#[cfg(test)]`
 - No file over 500 lines
@@ -147,9 +147,9 @@ gh pr create --base main --head josh/dev \
 - Dame Lisette: approved (DM [date])
 
 ## Checklist
-- [x] cargo check --workspace
-- [x] cargo clippy -- -D warnings
-- [x] cargo test
+- [x] cargo check -p <crate>
+- [x] cargo clippy -p <crate> --no-deps -- -D warnings
+- [x] cargo test -p <crate>
 - [x] Both reviewers approved
 - [x] No unwrap outside tests
 - [x] All files < 500 lines

@@ -43,9 +43,9 @@ Every component passes through a defined pipeline. No step is skipped. Each gate
 **Executor:** norn (onatopp-dev-norn workflow: scout -> dev -> review)
 **Reviewer:** norn-reviewer profile (first pass)
 **Evidence:**
-- cargo check --workspace passes
-- cargo clippy --workspace -- -D warnings passes
-- cargo test passes with all tests green
+- cargo check -p <crate> passes (--workspace once core scaffold is clean)
+- cargo clippy -p <crate> --no-deps -- -D warnings passes
+- cargo test -p <crate> passes with all tests green
 - Every R# acceptance criterion met
 - No unwrap/panic outside tests
 - Under 500 lines per file

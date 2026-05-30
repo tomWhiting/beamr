@@ -36,23 +36,55 @@ These are non-negotiable. Violating any of these is a blocking review finding.
 crates/
   beamr/          # Core VM — Tom's team owns. All stubs until B-001..B-008 land.
     src/
-      atom.rs     # Atom table (B-002)
-      bif.rs      # BIF registry (B-008)
-      gc.rs       # Garbage collector (B-017)
-      heap.rs     # Process heap (B-010)
-      lib.rs      # Crate root
-      loader.rs   # .beam parser (B-003)
-      mailbox.rs  # Mailbox + selective receive (B-011)
-      module.rs   # Module registry (B-004)
-      opcode.rs   # Opcode definitions (B-021)
-      process.rs  # Process struct (B-010)
-      scheduler.rs # Work-stealing scheduler (B-012)
-      stack.rs    # Process stack (B-010)
-      term.rs     # Tagged u64 terms (B-005, B-006, B-007)
-      vm.rs       # VM entry point
+      lib.rs                    # Crate root — declares all modules
+      error.rs                  # Error types (B-001)
+      module.rs                 # Module registry (B-004)
+      hook.rs                   # Reduction boundary hook (B-020)
+      timer.rs                  # Timer wheel (B-020)
+      atom/
+        mod.rs                  # Atom table public API (B-002)
+        table.rs                # DashMap-backed intern table
+      loader/
+        mod.rs                  # .beam parser public API (B-003)
+        decode.rs               # Chunk decoding
+        parser.rs               # IFF/FOR1 parser
+        validate.rs             # Import resolution + validation
+      term/
+        mod.rs                  # Term public API — raw u64 tagging (B-005)
+        boxed.rs                # Boxed types: tuples, lists, binaries, maps (B-006)
+        binary.rs               # Binary construction + matching (B-016)
+        compare.rs              # Term comparison + ordering (B-007)
+      process/
+        mod.rs                  # Process struct + lifecycle (B-010)
+        heap.rs                 # Per-process heap
+        stack.rs                # Call stack
+        registry.rs             # Process registry
+      interpreter/
+        mod.rs                  # Interpreter public API (B-013..B-016)
+        opcodes.rs              # Opcode dispatch (B-021)
+        pattern.rs              # Pattern matching / guards (B-013)
+      scheduler/
+        mod.rs                  # Scheduler public API (B-012)
+        run_queue.rs            # Per-scheduler run queue
+        steal.rs                # Work-stealing logic
+        dirty.rs                # Dirty CPU/IO scheduler pool (B-019)
+      mailbox/
+        mod.rs                  # Mailbox public API (B-011)
+        selective.rs            # Selective receive scan list
+      gc/
+        mod.rs                  # GC public API (B-017)
+        minor.rs                # Minor (young) collection
+        major.rs                # Major (full) collection
+      native/
+        mod.rs                  # BIF/NIF registry (B-008)
+        bifs.rs                 # Gate 1 BIF implementations
+      supervision/
+        mod.rs                  # Supervision public API (B-018)
+        link.rs                 # Process links
+        monitor.rs              # Process monitors
   beamr-cli/      # CLI — bob's team owns. Arg parsing done, execution stubbed.
     src/
-      main.rs     # 479 lines, 33 tests
+      main.rs                   # 479 lines, 33 tests
 ```
 
 ## Working with this repo
