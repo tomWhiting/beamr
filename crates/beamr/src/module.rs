@@ -213,29 +213,29 @@ mod tests {
         let registry = ModuleRegistry::new();
         registry.insert(empty_module(module_name));
 
-        assert_eq!(
+        assert!(matches!(
             registry.lookup_mfa(other, function, 0),
             Err(ExecError::Undef {
-                module: other,
-                function,
+                module,
+                function: undef_function,
                 arity: 0,
-            })
-        );
-        assert_eq!(
+            }) if module == other && undef_function == function
+        ));
+        assert!(matches!(
             registry.lookup_mfa(module_name, function, 0),
             Err(ExecError::Undef {
-                module: module_name,
-                function,
+                module,
+                function: undef_function,
                 arity: 0,
-            })
-        );
-        assert_eq!(
+            }) if module == module_name && undef_function == function
+        ));
+        assert!(matches!(
             registry.lookup_mfa(module_name, function, 1),
             Err(ExecError::Undef {
-                module: module_name,
-                function,
+                module,
+                function: undef_function,
                 arity: 1,
-            })
-        );
+            }) if module == module_name && undef_function == function
+        ));
     }
 }
