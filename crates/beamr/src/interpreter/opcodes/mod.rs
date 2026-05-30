@@ -111,11 +111,11 @@ fn dispatch_common(
             core::call(process, module, arity, label, next_ip, false)
         }
         Instruction::CallExt { arity, import } => {
-            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services };
+            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services, registry: ctx.registry };
             core::call_ext(process, module, arity, import, next_ip, true, &ext)
         }
         Instruction::CallExtOnly { arity, import } => {
-            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services };
+            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services, registry: ctx.registry };
             core::call_ext(process, module, arity, import, next_ip, false, &ext)
         }
         Instruction::CallLast {
@@ -128,7 +128,7 @@ fn dispatch_common(
             import,
             deallocate,
         } => {
-            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services };
+            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services, registry: ctx.registry };
             core::call_ext_last(process, module, arity, import, deallocate, &ext)
         }
         Instruction::Return => core::return_(process),

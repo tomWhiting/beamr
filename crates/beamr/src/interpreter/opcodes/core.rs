@@ -7,7 +7,7 @@ use crate::interpreter::InstructionOutcome;
 use crate::interpreter::NativeServices;
 use crate::loader::Literal;
 use crate::loader::decode::compact::Operand;
-use crate::module::{Module, ResolvedImportTarget};
+use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
 use crate::native::ProcessContext;
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::term::Term;
@@ -16,10 +16,11 @@ use crate::timer::TimerWheel;
 
 use super::trampoline;
 
-/// Combined context for external calls carrying timer and facility services.
+/// Combined context for external calls carrying timer, facility, and registry services.
 pub struct ExtCallContext<'a> {
     pub timers: Option<&'a Arc<Mutex<TimerWheel>>>,
     pub services: Option<&'a NativeServices>,
+    pub registry: Option<&'a ModuleRegistry>,
 }
 
 pub fn label(_label: u32) -> Result<InstructionOutcome, ExecError> {
@@ -241,11 +242,18 @@ fn call_external_target(
         return Err(ExecError::InvalidOperand("external call arity mismatch"));
     }
     match resolved.target {
-        ResolvedImportTarget::Code { module, label } => {
+        ResolvedImportTarget::Code { module: target_module, label } => {
+            let target_mod = ctx
+                .registry
+                .and_then(|r| r.lookup(target_module))
+                .ok_or(ExecError::Undef {
+                    module: target_module,
+                    function: crate::atom::Atom::UNDEFINED,
+                    arity,
+                })?;
             let target = CodePosition {
-                module,
-                instruction_pointer: usize::try_from(label)
-                    .map_err(|_| ExecError::InvalidLabel { label })?,
+                module: target_module,
+                instruction_pointer: label_ip(&target_mod, label)?,
             };
             jump_position_with_reduction(process, target)
         }

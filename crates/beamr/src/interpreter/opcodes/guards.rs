@@ -152,12 +152,19 @@ pub fn bif(
     }
 
     let mut context = ProcessContext::new();
+    context.set_pid(Some(process.pid()));
     match (entry.function)(&args, &mut context) {
         Ok(result) => {
             core::write_term(process, parsed.destination, result)?;
             Ok(InstructionOutcome::Continue)
         }
-        Err(_) => jump_label(module, parsed.fail),
+        Err(_) => {
+            let label = core::operand_label(parsed.fail)?;
+            if label == 0 {
+                return Err(ExecError::Badarg);
+            }
+            jump_label(module, parsed.fail)
+        }
     }
 }
 
