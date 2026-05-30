@@ -62,13 +62,16 @@ impl<'a> CompactDecoder<'a> {
     pub(crate) fn read_operand(&mut self) -> Result<Operand, LoadError> {
         let (tag, value) = self.read_tagged_integer()?;
         match tag {
-            0 => Ok(Operand::Unsigned(value as u64)),
-            1 => Ok(Operand::Integer(value)),
-            2 => self.atom_operand(value),
-            3 => unsigned_u32(value, "x register").map(Operand::X),
-            4 => unsigned_u32(value, "y register").map(Operand::Y),
-            5 => unsigned_u32(value, "label").map(Operand::Label),
-            6 => Ok(Operand::Character(unsigned_u64(value, "character")?)),
+            0 => Ok(Operand::Integer(value)),
+            1 => self.atom_operand(value),
+            2 => unsigned_u32(value, "x register").map(Operand::X),
+            3 => unsigned_u32(value, "y register").map(Operand::Y),
+            4 => unsigned_u32(value, "label").map(Operand::Label),
+            5 => Ok(Operand::Character(unsigned_u64(value, "character")?)),
+            6 => Ok(Operand::Unsigned(unsigned_u64(
+                value,
+                "unsigned compact operand",
+            )?)),
             7 => self.read_extended(value),
             other => Err(LoadError::DecodeError(format!(
                 "unsupported compact tag {other}"
@@ -108,7 +111,7 @@ impl<'a> CompactDecoder<'a> {
                 }
                 Ok(Operand::Allocation(entries))
             }
-            4 => {
+            0 | 4 => {
                 let index = self.read_unsigned_u64()?;
                 let literal = self
                     .literals
