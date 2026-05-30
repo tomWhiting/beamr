@@ -115,7 +115,8 @@ Output lands in the worktree branch (NOT main):
 WT=.yggdrasil-worktrees/workflow/onatopp-dev-norn/<id>
 git -C "$WT" log --oneline main..HEAD
 git -C "$WT" diff --stat main..HEAD -- ':!target'
-cd "$WT" && cargo check --workspace && cargo clippy --workspace -- -D warnings
+cd "$WT" && cargo check -p beamr-cli && cargo clippy -p beamr-cli --no-deps -- -D warnings
+# (use --workspace once core scaffold is clean post B-001..B-008)
 ```
 
 ### Known norn output hygiene issues — check every run

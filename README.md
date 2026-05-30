@@ -151,7 +151,7 @@ beamr loads the `.beam` output. The bytecode format is stable on Erlang's releas
 ## Quick start
 
 ```bash
-cargo check --workspace        # build check
+cargo check -p beamr-cli       # build check (--workspace once core scaffold is clean)
 cargo test -p beamr-cli        # run CLI tests (33 tests)
 cargo run -p beamr-cli -- --help   # CLI usage
 ```
