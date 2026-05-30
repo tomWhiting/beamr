@@ -296,6 +296,15 @@ fn decode_external_term(
             Ok(Literal::Binary(cursor.read_bytes(len)?.to_vec()))
         }
         110 | 111 => decode_big_integer(cursor, tag),
+        113 => {
+            // EXPORT_EXT: fun Module:Function/Arity encoded as
+            // tag(113) + Module(atom_ext) + Function(atom_ext) + Arity(small_integer_ext).
+            // Decoded as a 3-tuple {Module, Function, Arity}.
+            let module = decode_external_term(cursor, atom_table)?;
+            let function = decode_external_term(cursor, atom_table)?;
+            let arity = decode_external_term(cursor, atom_table)?;
+            Ok(Literal::Tuple(vec![module, function, arity]))
+        }
         116 => {
             let len = cursor.read_u32()? as usize;
             let mut pairs = Vec::with_capacity(len);
