@@ -315,8 +315,9 @@ impl fmt::Display for CliError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliError, Command, EntryPoint, parse_args, parse_entry};
+    use super::{CliError, CliSuccess, Command, EntryPoint, parse_args, parse_entry, run_cli};
     use beamr::error::{ExecError, LoadError};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_help_flags() {
@@ -442,11 +443,58 @@ mod tests {
             io_error.to_string(),
             "cannot read 'missing.beam': No such file or directory"
         );
+        assert_eq!(io_error.exit_code(), 2);
 
         let load_error = CliError::Load(LoadError::InvalidFormat);
         assert_eq!(load_error.to_string(), "load: invalid BEAM file format");
+        assert_eq!(load_error.exit_code(), 2);
 
         let exec_error = CliError::Exec(ExecError::Badarith);
         assert_eq!(exec_error.to_string(), "exec: arithmetic operation failed");
+        assert_eq!(exec_error.exit_code(), 1);
+    }
+
+    #[test]
+    fn malformed_beam_bytes_return_load_error_without_panicking() {
+        let path = write_temp_beam("not a valid beam file");
+
+        let error = run_cli([path.to_string_lossy().into_owned()])
+            .expect_err("garbage .beam bytes should fail as a load error");
+
+        assert!(matches!(error, CliError::Load(_)));
+        assert_eq!(error.exit_code(), 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn imports_report_for_fixture_is_informational_and_omits_gate1_bifs() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../beamr/tests/fixtures/hello.beam")
+            .to_string_lossy()
+            .into_owned();
+        let result =
+            run_cli(["imports", fixture.as_str()]).expect("imports report should be informational");
+
+        let CliSuccess::Stdout(output) = result;
+        assert!(output.contains("erlang:get_module_info/1"));
+        assert!(output.contains("erlang:get_module_info/2"));
+        assert!(!output.contains("erlang:display/1"));
+        assert!(output.lines().all(|line| {
+            let Some((_module, function_and_arity)) = line.split_once(':') else {
+                return false;
+            };
+            function_and_arity.split_once('/').is_some()
+        }));
+    }
+
+    fn write_temp_beam(contents: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        path.push(format!("beamr-cli-test-{nanos}.beam"));
+        std::fs::write(&path, contents).expect("temp .beam fixture should be writable");
+        path
     }
 }
