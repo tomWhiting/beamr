@@ -36,7 +36,7 @@
         "send to a non-existent PID does not crash \u2014 message is silently dropped"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/messaging.rs"
         ]
       },
@@ -59,7 +59,7 @@
         "Messages not removed by remove_message remain in the mailbox in order"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/messaging.rs"
         ]
       },
@@ -82,7 +82,7 @@
         "The process is NOT in the run queue while waiting"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/messaging.rs"
         ]
       },
@@ -106,7 +106,7 @@
         "Nested try blocks work correctly (inner handler catches first)"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/messaging.rs"
         ]
       },
@@ -126,7 +126,7 @@
         "The stacktrace from the original exception is preserved, not replaced"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/messaging.rs"
         ]
       },
@@ -146,7 +146,7 @@
         "All three are catchable by an enclosing try block"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/messaging.rs"
         ]
       },
@@ -166,7 +166,7 @@
         "cargo test -p beamr interpreter passes with all tests green"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/messaging.rs"
         ]
       },

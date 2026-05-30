@@ -2,17 +2,46 @@
   "id": "B-021",
   "cluster": "beamr",
   "title": "Implement interpreter execution loop and foundational opcodes",
-  "depends_on": ["B-003", "B-004", "B-005", "B-006", "B-008", "B-010"],
+  "depends_on": [
+    "B-003",
+    "B-004",
+    "B-005",
+    "B-006",
+    "B-008",
+    "B-010"
+  ],
   "blocked_by": [],
-  "checklist": ["C58", "C59", "C60", "C61", "C62", "C63", "C64", "C65", "C66", "C67", "C68", "C69", "C70", "C71", "C72"],
-  "stories": ["S1", "S13", "S18", "S20", "S25"],
-  "purpose": "This is the engine that makes everything else work. The execution loop fetches instructions, dispatches them, counts reductions, and yields when the budget runs out. The foundational opcodes — move, call, return, allocate, deallocate, test_heap, put_list, put_tuple2, get_tuple_element — are the minimum set needed to execute any Gleam function. Without this brief, we have data structures and registries but nothing that runs. Every subsequent interpreter brief (B-013 through B-016) builds on these primitives.",
+  "checklist": [
+    "C58",
+    "C59",
+    "C60",
+    "C61",
+    "C62",
+    "C63",
+    "C64",
+    "C65",
+    "C66",
+    "C67",
+    "C68",
+    "C69",
+    "C70",
+    "C71",
+    "C72"
+  ],
+  "stories": [
+    "S1",
+    "S13",
+    "S18",
+    "S20",
+    "S25"
+  ],
+  "purpose": "This is the engine that makes everything else work. The execution loop fetches instructions, dispatches them, counts reductions, and yields when the budget runs out. The foundational opcodes \u2014 move, call, return, allocate, deallocate, test_heap, put_list, put_tuple2, get_tuple_element \u2014 are the minimum set needed to execute any Gleam function. Without this brief, we have data structures and registries but nothing that runs. Every subsequent interpreter brief (B-013 through B-016) builds on these primitives.",
   "task": "Implement the core interpreter in crates/beamr/src/interpreter/. The execution loop (mod.rs) fetches the instruction at the current code pointer, dispatches it via the opcode table, and advances the pointer. Reduction counting: decrement on every call/apply, yield when zero. Implement the foundational opcodes in opcodes/core.rs: label/func_info (metadata), move (register/literal/stack transfer), call/call_only/call_ext/call_ext_only/call_last/call_ext_last (function calls + tail calls), return, allocate/allocate_zero/deallocate (stack frame management), test_heap (heap space check), put_list (cons cell), put_tuple2 (tuple), get_tuple_element (element access).",
   "requirements": [
     {
       "id": "R1",
       "title": "Execution loop",
-      "spec": "beamr::interpreter SHALL implement a run(process, module) -> ExecutionResult function that executes instructions in a loop. Each iteration SHALL: read the instruction at the current code pointer, dispatch it to the appropriate handler, and advance the pointer (or jump). ExecutionResult SHALL be one of: Yielded (reduction budget exhausted), Waiting (blocked on receive), Exited(reason). It SHALL NOT return control to the caller mid-instruction — each instruction completes atomically.",
+      "spec": "beamr::interpreter SHALL implement a run(process, module) -> ExecutionResult function that executes instructions in a loop. Each iteration SHALL: read the instruction at the current code pointer, dispatch it to the appropriate handler, and advance the pointer (or jump). ExecutionResult SHALL be one of: Yielded (reduction budget exhausted), Waiting (blocked on receive), Exited(reason). It SHALL NOT return control to the caller mid-instruction \u2014 each instruction completes atomically.",
       "acceptance": [
         "run() with a single 'return' instruction returns Exited(Normal)",
         "run() with a call chain executes all instructions in sequence",
@@ -20,10 +49,17 @@
         "ExecutionResult has variants: Yielded, Waiting, Exited(ExitReason)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/mod.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/mod.rs"
+        ]
       },
-      "checklist": ["C58"],
-      "stories": ["S1", "S18"]
+      "checklist": [
+        "C58"
+      ],
+      "stories": [
+        "S1",
+        "S18"
+      ]
     },
     {
       "id": "R2",
@@ -36,16 +72,23 @@
         "Unknown opcodes produce ExecError with the opcode number"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/opcodes.rs"],
-        "create": ["crates/beamr/src/interpreter/opcodes/mod.rs", "crates/beamr/src/interpreter/opcodes/core.rs"]
+        "delete": [
+          "crates/beamr/src/interpreter/opcodes.rs"
+        ],
+        "create": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs",
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
       },
-      "checklist": ["C58"],
+      "checklist": [
+        "C58"
+      ],
       "stories": []
     },
     {
       "id": "R3",
       "title": "Reduction counting and preemptive yield",
-      "spec": "WHEN the interpreter executes a call or apply instruction THE SYSTEM SHALL decrement the process's reduction counter. WHEN the counter reaches zero THE SYSTEM SHALL save the process state (code pointer, registers) and return Yielded. The scheduler resets the budget and re-schedules. It SHALL NOT skip the decrement on any call variant — every function entry point costs a reduction.",
+      "spec": "WHEN the interpreter executes a call or apply instruction THE SYSTEM SHALL decrement the process's reduction counter. WHEN the counter reaches zero THE SYSTEM SHALL save the process state (code pointer, registers) and return Yielded. The scheduler resets the budget and re-schedules. It SHALL NOT skip the decrement on any call variant \u2014 every function entry point costs a reduction.",
       "acceptance": [
         "A call instruction decrements the reduction counter by 1",
         "A process with budget 4000 yields after exactly 4000 call instructions",
@@ -53,15 +96,22 @@
         "Resuming a yielded process continues from where it left off"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
       },
-      "checklist": ["C59", "C60"],
-      "stories": ["S13"]
+      "checklist": [
+        "C59",
+        "C60"
+      ],
+      "stories": [
+        "S13"
+      ]
     },
     {
       "id": "R4",
       "title": "Label, func_info, and move instructions",
-      "spec": "label SHALL mark a jump target (no-op during sequential execution). func_info SHALL store module/function/arity for error reporting. move SHALL copy a term from source (X reg, Y reg, literal, atom) to destination (X reg, Y reg). It SHALL NOT allocate heap space — move copies the 64-bit Term value only.",
+      "spec": "label SHALL mark a jump target (no-op during sequential execution). func_info SHALL store module/function/arity for error reporting. move SHALL copy a term from source (X reg, Y reg, literal, atom) to destination (X reg, Y reg). It SHALL NOT allocate heap space \u2014 move copies the 64-bit Term value only.",
       "acceptance": [
         "label is a no-op that does not modify registers or stack",
         "func_info stores module, function, arity for error reporting",
@@ -70,14 +120,19 @@
         "move does not allocate heap space"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
       },
-      "checklist": ["C61", "C62"],
+      "checklist": [
+        "C61",
+        "C62"
+      ],
       "stories": []
     },
     {
       "id": "R5",
-      "title": "Call instructions — local, external, and tail calls",
+      "title": "Call instructions \u2014 local, external, and tail calls",
       "spec": "call SHALL save the return address and jump to a label. call_only SHALL jump without saving. call_ext/call_ext_only SHALL resolve via module or BIF registry. call_last/call_ext_last SHALL deallocate the current frame before jumping (tail call). All call variants SHALL decrement the reduction counter. It SHALL NOT leave stale return addresses after a tail call.",
       "acceptance": [
         "call saves return address and jumps to label",
@@ -87,10 +142,18 @@
         "All call variants decrement the reduction counter"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
       },
-      "checklist": ["C63", "C64", "C65"],
-      "stories": ["S1"]
+      "checklist": [
+        "C63",
+        "C64",
+        "C65"
+      ],
+      "stories": [
+        "S1"
+      ]
     },
     {
       "id": "R6",
@@ -102,9 +165,13 @@
         "After return, the stack frame count is decremented by one"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
       },
-      "checklist": ["C66"],
+      "checklist": [
+        "C66"
+      ],
       "stories": []
     },
     {
@@ -119,15 +186,21 @@
         "test_heap(10) signals GC-needed when insufficient"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
       },
-      "checklist": ["C67", "C68", "C69"],
+      "checklist": [
+        "C67",
+        "C68",
+        "C69"
+      ],
       "stories": []
     },
     {
       "id": "R8",
       "title": "Data construction opcodes",
-      "spec": "put_list SHALL allocate a cons cell on the heap from head and tail. put_tuple2 SHALL allocate a tuple from elements. get_tuple_element SHALL extract the Nth element into a register. It SHALL NOT allow get_tuple_element on non-tuple terms — raises badarg.",
+      "spec": "put_list SHALL allocate a cons cell on the heap from head and tail. put_tuple2 SHALL allocate a tuple from elements. get_tuple_element SHALL extract the Nth element into a register. It SHALL NOT allow get_tuple_element on non-tuple terms \u2014 raises badarg.",
       "acceptance": [
         "put_list with head=1, tail=NIL creates [1]",
         "put_tuple2 with [1, 2, 3] creates a 3-tuple",
@@ -135,33 +208,48 @@
         "get_tuple_element on a non-tuple raises badarg"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
       },
-      "checklist": ["C70", "C71", "C72"],
+      "checklist": [
+        "C70",
+        "C71",
+        "C72"
+      ],
       "stories": []
     },
     {
       "id": "R9",
       "title": "Gate 1 proof-of-life test",
-      "spec": "WHEN the interpreter is tested THE SYSTEM SHALL include a test that loads a .beam file, spawns a process, and runs it to completion — validating the full pipeline (load → spawn → execute → exit).",
+      "spec": "WHEN the interpreter is tested THE SYSTEM SHALL include a test that loads a .beam file, spawns a process, and runs it to completion \u2014 validating the full pipeline (load \u2192 spawn \u2192 execute \u2192 exit).",
       "acceptance": [
         "A test loads a compiled Gleam fibonacci module, calls fib(10), gets the correct result",
         "The process exits normally after the function returns",
         "cargo test -p beamr interpreter passes with all tests green"
       ],
       "files": {
-        "modify": ["crates/beamr/src/interpreter/mod.rs"]
+        "modify": [
+          "crates/beamr/src/interpreter/mod.rs"
+        ]
       },
-      "checklist": ["C58", "C59", "C60"],
-      "stories": ["S20", "S25"]
+      "checklist": [
+        "C58",
+        "C59",
+        "C60"
+      ],
+      "stories": [
+        "S20",
+        "S25"
+      ]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement branching/guard opcodes — B-013 scope",
-    "SHALL NOT implement send/receive or exception opcodes — B-014 scope",
-    "SHALL NOT implement closure, apply, or map opcodes — B-015 scope",
-    "SHALL NOT implement binary opcodes — B-016 scope",
-    "SHALL NOT implement the scheduler — this brief produces ExecutionResult, the scheduler (B-012) drives the loop"
+    "SHALL NOT implement branching/guard opcodes \u2014 B-013 scope",
+    "SHALL NOT implement send/receive or exception opcodes \u2014 B-014 scope",
+    "SHALL NOT implement closure, apply, or map opcodes \u2014 B-015 scope",
+    "SHALL NOT implement binary opcodes \u2014 B-016 scope",
+    "SHALL NOT implement the scheduler \u2014 this brief produces ExecutionResult, the scheduler (B-012) drives the loop"
   ],
   "verification": [
     "cargo check --workspace passes",

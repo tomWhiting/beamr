@@ -38,7 +38,7 @@
         "get_hd on a non-list term raises badarg"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/guards.rs"
         ]
       },
@@ -60,7 +60,7 @@
         "is_function2 checks both function type and arity"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/guards.rs"
         ]
       },
@@ -83,7 +83,7 @@
         "is_ne_exact with small_int(1) and small_int(1) jumps to fail label"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/guards.rs"
         ]
       },
@@ -104,7 +104,7 @@
         "is_lt with small_int(1) and atom(ok) falls through (number < atom in BEAM order)"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/guards.rs"
         ]
       },
@@ -146,7 +146,7 @@
         "No registers are modified by a jump instruction"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/guards.rs"
         ]
       },
@@ -166,7 +166,7 @@
         "Guard BIF failure branches to fail label, does NOT exit the process"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/guards.rs"
         ]
       },
@@ -189,8 +189,10 @@
       ],
       "files": {
         "modify": [
-          "crates/beamr/src/interpreter/opcodes/guards.rs",
           "crates/beamr/src/interpreter/pattern.rs"
+        ],
+        "create": [
+          "crates/beamr/src/interpreter/opcodes/guards.rs"
         ]
       },
       "checklist": [

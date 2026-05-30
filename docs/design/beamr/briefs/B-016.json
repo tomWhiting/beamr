@@ -35,7 +35,7 @@
         "Insufficient heap space branches to fail label (GC opportunity)"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/binary.rs"
         ]
       },
@@ -55,7 +55,7 @@
         "Writing past capacity raises badarg"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/binary.rs"
         ]
       },
@@ -74,7 +74,7 @@
         "The match context references the original binary data (no copy)"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/binary.rs"
         ]
       },
@@ -94,7 +94,7 @@
         "Extracting past the end of the binary branches to fail label"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/binary.rs"
         ]
       },
@@ -116,7 +116,7 @@
         "bs_test_tail2 with 0 bits but data remaining branches to fail label"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/binary.rs"
         ]
       },
@@ -137,7 +137,7 @@
         "cargo test -p beamr interpreter passes with all tests green"
       ],
       "files": {
-        "modify": [
+        "create": [
           "crates/beamr/src/interpreter/opcodes/binary.rs"
         ]
       },
