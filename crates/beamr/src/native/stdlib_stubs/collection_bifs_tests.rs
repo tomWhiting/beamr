@@ -6,7 +6,8 @@ use crate::term::Term;
 use crate::term::boxed::{write_cons, write_map, write_tuple, Cons, Map};
 
 use super::collection_bifs::{
-    bif_lists_reverse, bif_maps_from_list, bif_maps_merge, bif_maps_remove, bif_timer_sleep,
+    bif_lists_reverse, bif_maps_from_list, bif_maps_map, bif_maps_merge, bif_maps_remove,
+    bif_timer_sleep,
 };
 use super::register_stdlib_stubs;
 
@@ -260,6 +261,35 @@ fn maps_remove_rejects_wrong_arity() {
     assert_eq!(bif_maps_remove(&[], &mut ctx), Err(badarg()));
 }
 
+// ---- maps:map/2 (stub — returns badarg) ----
+
+#[test]
+fn maps_map_stub_returns_badarg() {
+    let mut ctx = context();
+
+    let mut heap = [0u64; 4];
+    let m = write_map(
+        &mut heap,
+        &[Term::small_int(1)],
+        &[Term::atom(Atom::OK)],
+    )
+    .unwrap();
+
+    // Even with valid-looking arguments, the stub returns badarg because
+    // it cannot re-enter the interpreter to call the closure.
+    assert_eq!(
+        bif_maps_map(&[Term::atom(Atom::OK), m], &mut ctx),
+        Err(badarg())
+    );
+}
+
+#[test]
+fn maps_map_stub_rejects_wrong_arity() {
+    let mut ctx = context();
+    assert_eq!(bif_maps_map(&[], &mut ctx), Err(badarg()));
+    assert_eq!(bif_maps_map(&[Term::NIL], &mut ctx), Err(badarg()));
+}
+
 // ---- lists:reverse/1 ----
 
 #[test]
@@ -382,6 +412,7 @@ fn register_stdlib_stubs_includes_collection_bifs() {
         ("maps", "from_list", 1),
         ("maps", "merge", 2),
         ("maps", "remove", 2),
+        ("maps", "map", 2),
         ("lists", "reverse", 1),
         ("timer", "sleep", 1),
     ];

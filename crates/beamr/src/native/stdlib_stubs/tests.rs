@@ -264,6 +264,7 @@ fn register_stdlib_stubs_registers_all_expected_mfas() {
         ("maps", "from_list", 1),
         ("maps", "merge", 2),
         ("maps", "remove", 2),
+        ("maps", "map", 2),
         ("lists", "reverse", 1),
         ("timer", "sleep", 1),
     ];

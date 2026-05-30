@@ -17,7 +17,8 @@ use crate::term::binary::Binary;
 use crate::term::boxed::Cons;
 
 use collection_bifs::{
-    bif_lists_reverse, bif_maps_from_list, bif_maps_merge, bif_maps_remove, bif_timer_sleep,
+    bif_lists_reverse, bif_maps_from_list, bif_maps_map, bif_maps_merge, bif_maps_remove,
+    bif_timer_sleep,
 };
 
 /// A stub BIF entry: (module_name, function_name, arity, implementation).
@@ -33,6 +34,9 @@ const STDLIB_STUBS: &[StubBif] = &[
     ("maps", "from_list", 1, bif_maps_from_list),
     ("maps", "merge", 2, bif_maps_merge),
     ("maps", "remove", 2, bif_maps_remove),
+    // maps:map/2 is a stub — requires interpreter re-entry for closures.
+    // The real implementation needs compiled BEAM bytecode; see B-028b.
+    ("maps", "map", 2, bif_maps_map),
     ("lists", "reverse", 1, bif_lists_reverse),
     ("timer", "sleep", 1, bif_timer_sleep),
 ];
