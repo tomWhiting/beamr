@@ -213,22 +213,22 @@ fn resolve_imports(
     let mut unresolved = Vec::new();
 
     for import in &parsed.imports {
-        let target = module_registry
-            .lookup(import.module)
-            .and_then(|module| {
-                module
-                    .exports
-                    .get(&(import.function, import.arity))
-                    .copied()
-                    .map(|label| ResolvedImportTarget::Code {
-                        module: import.module,
-                        label,
-                    })
-            })
+        let target = bif_registry
+            .lookup(import.module, import.function, import.arity)
+            .map(ResolvedImportTarget::Native)
             .or_else(|| {
-                bif_registry
-                    .lookup(import.module, import.function, import.arity)
-                    .map(ResolvedImportTarget::Native)
+                module_registry
+                    .lookup(import.module)
+                    .and_then(|module| {
+                        module
+                            .exports
+                            .get(&(import.function, import.arity))
+                            .copied()
+                            .map(|label| ResolvedImportTarget::Code {
+                                module: import.module,
+                                label,
+                            })
+                    })
             });
 
         match target {

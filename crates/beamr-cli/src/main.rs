@@ -14,6 +14,7 @@ use beamr::native::{
     stdlib_stubs::register_stdlib_stubs,
     selector_ffi::register_selector_bifs,
     gleam_ffi::register_gleam_ffi_bifs,
+    meridian_ffi::register_meridian_ffi,
     otp_stubs::{register_otp_stubs, init_otp_atoms},
 };
 use beamr::process::ExitReason;
@@ -322,6 +323,7 @@ fn load_context(path: &Path, dirs: &[PathBuf]) -> Result<LoadContext, CliError> 
     register_stdlib_stubs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_selector_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_gleam_ffi_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_meridian_ffi(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     init_otp_atoms(&atom_table);
     register_otp_stubs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     let module_registry = ModuleRegistry::new();
@@ -385,12 +387,18 @@ fn parse_runtime_args(args: &[String], atom_table: &AtomTable) -> Result<Vec<Ter
         .collect()
 }
 
-fn parse_runtime_arg(arg: &str, atom_table: &AtomTable) -> Result<Term, CliError> {
+fn parse_runtime_arg(arg: &str, _atom_table: &AtomTable) -> Result<Term, CliError> {
     match arg.parse::<i64>() {
         Ok(value) => {
             Term::try_small_int(value).ok_or_else(|| CliError::InvalidTerm(arg.to_owned()))
         }
-        Err(_) => Ok(Term::atom(atom_table.intern(arg))),
+        Err(_) => {
+            let bytes = arg.as_bytes();
+            let words = 2 + bytes.len().div_ceil(8);
+            let heap: &mut [u64] = Box::leak(vec![0u64; words].into_boxed_slice());
+            beamr::term::binary::write_binary(heap, bytes)
+                .ok_or_else(|| CliError::InvalidTerm(arg.to_owned()))
+        }
     }
 }
 
@@ -422,7 +430,23 @@ fn format_term(term: Term, atom_table: &AtomTable) -> String {
             .as_pid()
             .map(|pid| format!("<0.{pid}.0>"))
             .unwrap_or_else(|| format!("{term:?}")),
-        Tag::Boxed | Tag::List => format!("{term:?}"),
+        Tag::Boxed => {
+            if let Some(binary) = beamr::term::binary::Binary::new(term) {
+                match std::str::from_utf8(binary.as_bytes()) {
+                    Ok(s) => format!("<<\"{s}\">>"),
+                    Err(_) => format!("<<{} bytes>>", binary.len()),
+                }
+            } else if let Some(tuple) = beamr::term::boxed::Tuple::new(term) {
+                let elements: Vec<String> = (0..tuple.arity())
+                    .filter_map(|i| tuple.get(i))
+                    .map(|t| format_term(t, atom_table))
+                    .collect();
+                format!("{{{}}}", elements.join(", "))
+            } else {
+                format!("{term:?}")
+            }
+        }
+        Tag::List => format!("{term:?}"),
     }
 }
 

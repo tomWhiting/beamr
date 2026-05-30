@@ -80,13 +80,7 @@ pub fn call_ext(
     save_return: bool,
     ctx: &ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
-    if save_return {
-        process
-            .stack_mut()
-            .push_frame(module.name, return_ip, 0)
-            .map_err(ExecError::from)?;
-    }
-    call_external_target(process, module, arity, import, ctx)
+    call_external_target(process, module, arity, import, save_return, return_ip, ctx)
 }
 
 pub fn call_last(
@@ -111,7 +105,7 @@ pub fn call_ext_last(
     ctx: &ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
     deallocate_frame(process, deallocate)?;
-    call_external_target(process, module, arity, import, ctx)
+    call_external_target(process, module, arity, import, false, 0, ctx)
 }
 
 pub fn return_(process: &mut Process) -> Result<InstructionOutcome, ExecError> {
@@ -228,6 +222,8 @@ fn call_external_target(
     module: &Module,
     arity: &Operand,
     import: &Operand,
+    save_return: bool,
+    return_ip: usize,
     ctx: &ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
     let arity = operand_u8(arity, "external call arity")?;
@@ -243,6 +239,12 @@ fn call_external_target(
     }
     match resolved.target {
         ResolvedImportTarget::Code { module: target_module, label } => {
+            if save_return {
+                process
+                    .stack_mut()
+                    .push_frame(module.name, return_ip, 0)
+                    .map_err(ExecError::from)?;
+            }
             let target_mod = ctx
                 .registry
                 .and_then(|r| r.lookup(target_module))
