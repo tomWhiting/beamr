@@ -279,10 +279,7 @@ fn branching_opcode_sequence_dispatches_like_case_expression() {
         vec![
             Instruction::PutTuple2 {
                 destination: Operand::X(0),
-                elements: Operand::List(vec![
-                    Operand::Atom(Some(Atom::OK)),
-                    Operand::Integer(42),
-                ]),
+                elements: Operand::List(vec![Operand::Atom(Some(Atom::OK)), Operand::Integer(42)]),
             },
             Instruction::TypeTest {
                 op: crate::loader::decode::TypeTestOp::IsTuple,

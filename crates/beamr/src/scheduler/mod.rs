@@ -1,8 +1,455 @@
 //! Scheduler — fairness across every core.
 //!
-//! N OS threads, each with a run queue of ready processes. Work
-//! stealing keeps all cores busy. No async runtime in the hot
-//! path (per D3) — plain OS threads plus lock-free queues.
+//! N OS threads, each with a run queue of ready processes. Work stealing keeps
+//! all cores busy. No async runtime in the hot path (per D3) — plain OS threads
+//! plus lock-free queues.
+
 pub mod dirty;
 pub mod run_queue;
 pub mod steal;
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
+
+use crossbeam_deque::Stealer;
+use crossbeam_queue::SegQueue;
+
+use crate::atom::Atom;
+use crate::error::ExecError;
+use crate::interpreter::{self, ExecutionResult};
+use crate::loader::Instruction;
+use crate::module::{Module, ModuleRegistry};
+use crate::process::heap::DEFAULT_HEAP_SIZE;
+use crate::process::registry::ProcessTable;
+use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
+use crate::term::Term;
+
+use run_queue::RunQueue;
+
+/// Default number of reductions per scheduler time slice.
+pub const DEFAULT_REDUCTION_BUDGET: u32 = crate::process::DEFAULT_REDUCTION_BUDGET;
+
+/// Configuration for the scheduler thread pool.
+#[derive(Clone, Debug, Default)]
+pub struct SchedulerConfig {
+    /// Number of scheduler threads. Defaults to `available_parallelism()`.
+    pub thread_count: Option<usize>,
+}
+
+struct SharedState {
+    shutdown: AtomicBool,
+    process_table: ProcessTable,
+    module_registry: Arc<ModuleRegistry>,
+    spawn_counter: AtomicUsize,
+    thread_count: usize,
+    next_pid: AtomicU64,
+    wait_set: Mutex<WaitSet>,
+    wake_condvar: Condvar,
+    #[cfg(test)]
+    idle_parks: AtomicUsize,
+}
+
+#[derive(Default)]
+struct WaitSet {
+    waiting: HashMap<u64, usize>,
+    woken: Vec<(u64, usize)>,
+}
+
+struct SpawnRequest {
+    pid: u64,
+    module: Atom,
+    instruction_pointer: usize,
+    args: Vec<Term>,
+}
+
+/// Work-stealing scheduler with N OS threads.
+pub struct Scheduler {
+    shared: Arc<SharedState>,
+    threads: Mutex<Vec<JoinHandle<()>>>,
+    inject_queues: Vec<Arc<SegQueue<SpawnRequest>>>,
+    worker_names: Vec<String>,
+}
+
+impl Scheduler {
+    /// Create and start a scheduler with the supplied module registry.
+    pub fn new(
+        config: SchedulerConfig,
+        module_registry: Arc<ModuleRegistry>,
+    ) -> Result<Self, String> {
+        let thread_count = configured_thread_count(config.thread_count);
+        let shared = Arc::new(SharedState {
+            shutdown: AtomicBool::new(false),
+            process_table: ProcessTable::new(),
+            module_registry,
+            spawn_counter: AtomicUsize::new(0),
+            thread_count,
+            next_pid: AtomicU64::new(0),
+            wait_set: Mutex::new(WaitSet::default()),
+            wake_condvar: Condvar::new(),
+            #[cfg(test)]
+            idle_parks: AtomicUsize::new(0),
+        });
+
+        let inject_queues: Vec<_> = (0..thread_count)
+            .map(|_| Arc::new(SegQueue::new()))
+            .collect();
+        let barrier = Arc::new(std::sync::Barrier::new(thread_count + 1));
+        let stealers_ready: Arc<Mutex<Option<Vec<Stealer<u64>>>>> = Arc::new(Mutex::new(None));
+        let mut stealer_receivers = Vec::with_capacity(thread_count);
+        let mut threads = Vec::with_capacity(thread_count);
+        let mut worker_names = Vec::with_capacity(thread_count);
+
+        for (index, inject_queue) in inject_queues.iter().enumerate() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            stealer_receivers.push(rx);
+            let shared_for_thread = Arc::clone(&shared);
+            let barrier_for_thread = Arc::clone(&barrier);
+            let ready_for_thread = Arc::clone(&stealers_ready);
+            let inject = Arc::clone(inject_queue);
+            let thread_name = format!("beamr-sched-{index}");
+            worker_names.push(thread_name.clone());
+
+            let handle = std::thread::Builder::new()
+                .name(thread_name.clone())
+                .spawn(move || {
+                    let queue = RunQueue::new();
+                    if tx.send(queue.stealer()).is_err() {
+                        return;
+                    }
+                    barrier_for_thread.wait();
+                    let stealers = {
+                        let guard = lock_or_recover(&ready_for_thread);
+                        guard.as_ref().cloned().unwrap_or_default()
+                    };
+                    scheduler_loop(&shared_for_thread, &queue, index, &stealers, &inject);
+                })
+                .map_err(|error| format!("failed to spawn {thread_name}: {error}"))?;
+            threads.push(handle);
+        }
+
+        let mut stealers = Vec::with_capacity(thread_count);
+        for rx in stealer_receivers {
+            let stealer = rx
+                .recv()
+                .map_err(|error| format!("failed to receive scheduler stealer: {error}"))?;
+            stealers.push(stealer);
+        }
+        {
+            let mut guard = lock_or_recover(&stealers_ready);
+            *guard = Some(stealers);
+        }
+        barrier.wait();
+
+        Ok(Self {
+            shared,
+            threads: Mutex::new(threads),
+            inject_queues,
+            worker_names,
+        })
+    }
+
+    /// Spawn a process at an exported module/function/arity entrypoint.
+    pub fn spawn(
+        &self,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<Term>,
+    ) -> Result<u64, ExecError> {
+        let arity = u8::try_from(args.len()).map_err(|_| ExecError::Badarg)?;
+        let entry = self
+            .shared
+            .module_registry
+            .lookup_mfa(entry_module, entry_function, arity)?;
+        let instruction_pointer = label_ip(&entry.module, entry.label)?;
+        Ok(self.enqueue_spawn(entry.module.name, instruction_pointer, args))
+    }
+
+    /// Spawn a process at the beginning of a module.
+    ///
+    /// This compatibility helper is used by existing loader/interpreter tests
+    /// that build synthetic modules without export tables.
+    pub fn spawn_process(&self, module: &Arc<Module>) -> u64 {
+        self.enqueue_spawn(module.name, 0, Vec::new())
+    }
+
+    fn enqueue_spawn(&self, module: Atom, instruction_pointer: usize, args: Vec<Term>) -> u64 {
+        let pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
+        self.shared.process_table.spawn_with_pid(pid);
+        let index =
+            self.shared.spawn_counter.fetch_add(1, Ordering::Relaxed) % self.shared.thread_count;
+        self.inject_queues[index].push(SpawnRequest {
+            pid,
+            module,
+            instruction_pointer,
+            args,
+        });
+        self.shared.wake_condvar.notify_all();
+        pid
+    }
+
+    /// Wake a process that is in the Waiting state after message arrival.
+    pub fn wake_process(&self, pid: u64) {
+        let mut wait_set = lock_or_recover(&self.shared.wait_set);
+        if let Some(scheduler_index) = wait_set.waiting.remove(&pid) {
+            wait_set.woken.push((pid, scheduler_index));
+            self.shared.wake_condvar.notify_all();
+        }
+    }
+
+    /// Shut down all worker threads after their current time slice.
+    pub fn shutdown(&self) {
+        self.shared.shutdown.store(true, Ordering::Release);
+        self.shared.wake_condvar.notify_all();
+
+        let mut threads = lock_or_recover(&self.threads);
+        for handle in threads.drain(..) {
+            if let Err(payload) = handle.join() {
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+
+    /// Access the live process table.
+    #[must_use]
+    pub fn process_table(&self) -> &ProcessTable {
+        &self.shared.process_table
+    }
+
+    /// Number of scheduler worker threads.
+    #[must_use]
+    pub fn thread_count(&self) -> usize {
+        self.shared.thread_count
+    }
+
+    /// Names assigned to scheduler worker threads.
+    #[must_use]
+    pub fn worker_names(&self) -> &[String] {
+        &self.worker_names
+    }
+
+    #[cfg(test)]
+    fn idle_park_count(&self) -> usize {
+        self.shared.idle_parks.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn configured_thread_count(override_count: Option<usize>) -> usize {
+    override_count
+        .filter(|count| *count > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        })
+}
+
+fn scheduler_loop(
+    shared: &SharedState,
+    queue: &RunQueue,
+    my_index: usize,
+    stealers: &[Stealer<u64>],
+    inject: &SegQueue<SpawnRequest>,
+) {
+    let mut local_processes = HashMap::new();
+    let mut last_victim = my_index;
+
+    loop {
+        if shared.shutdown.load(Ordering::Acquire) {
+            return;
+        }
+
+        drain_injected(queue, inject, &mut local_processes);
+        drain_woken(shared, queue, my_index);
+
+        let pid = match queue.pop() {
+            Some(pid) => pid,
+            None => {
+                let (result, next_victim) =
+                    steal::try_steal(queue, my_index, stealers, last_victim);
+                last_victim = next_victim;
+                match result {
+                    steal::StealResult::Stolen { .. } => match queue.pop() {
+                        Some(pid) => pid,
+                        None => {
+                            park_thread(shared);
+                            continue;
+                        }
+                    },
+                    steal::StealResult::Empty => {
+                        park_thread(shared);
+                        continue;
+                    }
+                }
+            }
+        };
+
+        run_process(shared, queue, pid, my_index, &mut local_processes);
+    }
+}
+
+fn drain_injected(
+    queue: &RunQueue,
+    inject: &SegQueue<SpawnRequest>,
+    local_processes: &mut HashMap<u64, Process>,
+) {
+    while let Some(request) = inject.pop() {
+        let mut process = Process::new(request.pid, DEFAULT_HEAP_SIZE);
+        process.set_code_position(Some(CodePosition {
+            module: request.module,
+            instruction_pointer: request.instruction_pointer,
+        }));
+        for (index, arg) in request.args.into_iter().enumerate().take(256) {
+            if let Ok(register) = u8::try_from(index) {
+                process.set_x_reg(register, arg);
+            }
+        }
+        local_processes.insert(request.pid, process);
+        queue.push(request.pid);
+    }
+}
+
+enum SliceOutcome {
+    Requeue(Process),
+    Wait(Process),
+    Exited,
+}
+
+fn run_process(
+    shared: &SharedState,
+    queue: &RunQueue,
+    pid: u64,
+    my_index: usize,
+    local_processes: &mut HashMap<u64, Process>,
+) {
+    if shared.process_table.get(pid).is_none() {
+        return;
+    }
+
+    let mut process = local_processes
+        .remove(&pid)
+        .unwrap_or_else(|| Process::new(pid, DEFAULT_HEAP_SIZE));
+
+    let outcome = execute_slice(shared, &mut process);
+    match outcome {
+        SliceOutcome::Requeue(process) => {
+            local_processes.insert(pid, process);
+            queue.push(pid);
+        }
+        SliceOutcome::Wait(process) => {
+            local_processes.insert(pid, process);
+            let mut wait_set = lock_or_recover(&shared.wait_set);
+            wait_set.waiting.insert(pid, my_index);
+        }
+        SliceOutcome::Exited => {
+            let _removed = shared.process_table.remove(pid);
+        }
+    }
+}
+
+fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
+    if !matches!(
+        process.status(),
+        ProcessStatus::New | ProcessStatus::Yielded | ProcessStatus::Waiting
+    ) {
+        return SliceOutcome::Exited;
+    }
+    if process.transition_to(ProcessStatus::Running).is_err() {
+        return SliceOutcome::Exited;
+    }
+    process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
+
+    let module_atom = match process.code_position() {
+        Some(position) => position.module,
+        None => return exit_process(process, ExitReason::Normal),
+    };
+    let Some(module) = shared.module_registry.lookup(module_atom) else {
+        return exit_process(process, ExitReason::Error);
+    };
+
+    match interpreter::run(process, &module) {
+        Ok(ExecutionResult::Yielded) => {
+            let _transitioned = process.transition_to(ProcessStatus::Yielded);
+            process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
+            SliceOutcome::Requeue(take_process(process))
+        }
+        Ok(ExecutionResult::Waiting) => {
+            let _transitioned = process.transition_to(ProcessStatus::Waiting);
+            SliceOutcome::Wait(take_process(process))
+        }
+        Ok(ExecutionResult::Exited(reason)) => exit_process(process, reason),
+        Err(_error) => exit_process(process, ExitReason::Error),
+    }
+}
+
+fn exit_process(process: &mut Process, reason: ExitReason) -> SliceOutcome {
+    let _transitioned = process.transition_to(ProcessStatus::Exited(reason));
+    SliceOutcome::Exited
+}
+
+fn take_process(process: &mut Process) -> Process {
+    std::mem::replace(process, Process::new(u64::MAX, DEFAULT_HEAP_SIZE))
+}
+
+fn drain_woken(shared: &SharedState, queue: &RunQueue, my_index: usize) {
+    let woken = {
+        let mut wait_set = lock_or_recover(&shared.wait_set);
+        let mut mine = Vec::new();
+        wait_set.woken.retain(|(pid, scheduler_index)| {
+            if *scheduler_index == my_index {
+                mine.push(*pid);
+                false
+            } else {
+                true
+            }
+        });
+        mine
+    };
+
+    for pid in woken {
+        if shared.process_table.get(pid).is_some() {
+            queue.push(pid);
+        }
+    }
+}
+
+fn park_thread(shared: &SharedState) {
+    #[cfg(test)]
+    shared.idle_parks.fetch_add(1, Ordering::Relaxed);
+
+    if shared.shutdown.load(Ordering::Acquire) {
+        return;
+    }
+    let guard = lock_or_recover(&shared.wait_set);
+    let timeout = std::time::Duration::from_millis(5);
+    let result = shared.wake_condvar.wait_timeout(guard, timeout);
+    match result {
+        Ok((_guard, _timeout)) => {}
+        Err(error) => {
+            let _recovered = error.into_inner();
+        }
+    }
+}
+
+fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
+    module
+        .code
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Label { label: seen } if *seen == label))
+        .ok_or(ExecError::InvalidLabel { label })
+}
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(test)]
+mod tests;

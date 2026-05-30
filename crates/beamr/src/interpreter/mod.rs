@@ -74,6 +74,5 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
     }
 }
 
-
 #[cfg(test)]
 mod tests;
