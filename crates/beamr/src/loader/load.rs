@@ -322,9 +322,8 @@ mod tests {
         let atoms = AtomTable::new();
         let erlang = atoms.intern("erlang");
         let unknown = atoms.intern("unknown");
-        let report = UnresolvedImportReport::new(vec![UnresolvedImportEntry::new(
-            erlang, unknown, 0,
-        )]);
+        let report =
+            UnresolvedImportReport::new(vec![UnresolvedImportEntry::new(erlang, unknown, 0)]);
 
         assert_eq!(report.entries_for(erlang).len(), 1);
         assert!(report.entries_by_module().contains_key(&erlang));
@@ -376,8 +375,9 @@ mod tests {
         };
         target.exports.insert((function, 0), 42);
         registry.insert(target);
-        let mut parsed = load_beam_chunks(include_bytes!("../../tests/fixtures/hello.beam"), &atoms)
-            .expect("fixture parses");
+        let mut parsed =
+            load_beam_chunks(include_bytes!("../../tests/fixtures/hello.beam"), &atoms)
+                .expect("fixture parses");
         parsed.imports = vec![crate::loader::ImportEntry {
             module: callee,
             function,
@@ -388,7 +388,10 @@ mod tests {
 
         assert!(report.is_empty());
         assert!(matches!(
-            resolved.first().and_then(|entry| entry.as_ref()).map(|entry| entry.target),
+            resolved
+                .first()
+                .and_then(|entry| entry.as_ref())
+                .map(|entry| entry.target),
             Some(ResolvedImportTarget::Code { label: 42, .. })
         ));
     }
@@ -399,8 +402,9 @@ mod tests {
         let erlang = atoms.intern("erlang");
         let now = atoms.intern("now");
         let registry = ModuleRegistry::new();
-        let mut parsed = load_beam_chunks(include_bytes!("../../tests/fixtures/hello.beam"), &atoms)
-            .expect("fixture parses");
+        let mut parsed =
+            load_beam_chunks(include_bytes!("../../tests/fixtures/hello.beam"), &atoms)
+                .expect("fixture parses");
         parsed.imports = vec![crate::loader::ImportEntry {
             module: erlang,
             function: now,
@@ -419,7 +423,10 @@ mod tests {
 
         assert!(report.is_empty());
         assert!(matches!(
-            resolved.first().and_then(|entry| entry.as_ref()).map(|entry| entry.target),
+            resolved
+                .first()
+                .and_then(|entry| entry.as_ref())
+                .map(|entry| entry.target),
             Some(ResolvedImportTarget::Native(_))
         ));
     }
