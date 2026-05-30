@@ -6,3 +6,4 @@ target/
 *~
 .claude/projects/
 .benchmark/
+.yggdrasil-worktrees/
