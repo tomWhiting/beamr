@@ -80,6 +80,7 @@ mod tests {
     use crate::atom::{Atom, AtomTable};
     use crate::error::ExecError;
     use crate::loader::decode::compact::Operand;
+    use crate::loader::decode::{BifOp, TypeTestOp};
     use crate::loader::{Instruction, Literal};
     use crate::module::{Module, ResolvedImport, ResolvedImportTarget};
     use crate::native::{NativeEntry, ProcessContext};
@@ -287,6 +288,123 @@ mod tests {
                 available: 8,
             })
         );
+    }
+
+    #[test]
+    fn branching_sequence_dispatches_tuple_case_by_arity() {
+        let module = module(
+            Atom::OK,
+            vec![
+                Instruction::PutTuple2 {
+                    destination: Operand::X(0),
+                    elements: Operand::List(vec![Operand::Integer(1), Operand::Integer(2)]),
+                },
+                Instruction::TypeTest {
+                    op: TypeTestOp::IsTuple,
+                    fail: Operand::Label(99),
+                    value: Operand::X(0),
+                },
+                Instruction::SelectTupleArity {
+                    value: Operand::X(0),
+                    fail: Operand::Label(99),
+                    list: Operand::List(vec![
+                        Operand::Unsigned(2),
+                        Operand::Label(2),
+                        Operand::Unsigned(3),
+                        Operand::Label(3),
+                    ]),
+                },
+                Instruction::Label { label: 2 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::OK)),
+                    destination: Operand::X(1),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 3 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::ERROR)),
+                    destination: Operand::X(1),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 99 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::UNDEFINED)),
+                    destination: Operand::X(1),
+                },
+                Instruction::Return,
+            ],
+        );
+        let mut process = Process::new(1, 32);
+
+        assert_eq!(
+            run(&mut process, &module),
+            Ok(ExecutionResult::Exited(ExitReason::Normal))
+        );
+        assert_eq!(process.x_reg(1), Term::atom(Atom::OK));
+    }
+
+    #[test]
+    fn branching_sequence_select_val_dispatches_and_guard_bif_failure_returns_normally() {
+        let import = ResolvedImport {
+            module: Atom::OK,
+            function: Atom::OK,
+            arity: 2,
+            target: ResolvedImportTarget::Native(NativeEntry {
+                function: crate::native::bifs::add,
+                is_dirty: false,
+            }),
+        };
+        let mut module = module(
+            Atom::OK,
+            vec![
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::ERROR)),
+                    destination: Operand::X(0),
+                },
+                Instruction::SelectVal {
+                    value: Operand::X(0),
+                    fail: Operand::Label(99),
+                    list: Operand::List(vec![
+                        Operand::Atom(Some(Atom::OK)),
+                        Operand::Label(10),
+                        Operand::Atom(Some(Atom::ERROR)),
+                        Operand::Label(20),
+                    ]),
+                },
+                Instruction::Label { label: 10 },
+                Instruction::Move {
+                    source: Operand::Integer(10),
+                    destination: Operand::X(1),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 20 },
+                Instruction::Bif {
+                    op: BifOp::GcBif2,
+                    operands: vec![
+                        Operand::Label(99),
+                        Operand::Unsigned(0),
+                        Operand::Atom(Some(Atom::OK)),
+                        Operand::Integer(1),
+                        Operand::X(1),
+                    ],
+                },
+                Instruction::Return,
+                Instruction::Label { label: 99 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::BADARG)),
+                    destination: Operand::X(1),
+                },
+                Instruction::Return,
+            ],
+        );
+        module.resolved_imports.push(import);
+        let mut process = Process::new(1, 32);
+
+        assert_eq!(
+            run(&mut process, &module),
+            Ok(ExecutionResult::Exited(ExitReason::Normal))
+        );
+        assert_eq!(process.x_reg(1), Term::atom(Atom::BADARG));
     }
 
     fn add_one(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {

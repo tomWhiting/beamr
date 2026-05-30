@@ -1,6 +1,6 @@
-use std::{env, fmt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::{env, fmt};
 
 use beamr::atom::{Atom, AtomTable};
 use beamr::error::{ExecError, LoadError};

@@ -302,7 +302,7 @@ fn charge_reduction(process: &mut Process) -> Result<(), ExecError> {
     Ok(())
 }
 
-fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
+pub(crate) fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
     module
         .code
         .iter()
@@ -310,7 +310,7 @@ fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
         .ok_or(ExecError::InvalidLabel { label })
 }
 
-fn read_term(process: &Process, operand: &Operand) -> Result<Term, ExecError> {
+pub(crate) fn read_term(process: &Process, operand: &Operand) -> Result<Term, ExecError> {
     match operand {
         Operand::Integer(value) => Term::try_small_int(*value).ok_or(ExecError::Badarg),
         Operand::Unsigned(value) => {
@@ -330,7 +330,11 @@ fn read_term(process: &Process, operand: &Operand) -> Result<Term, ExecError> {
     }
 }
 
-fn write_term(process: &mut Process, destination: &Operand, value: Term) -> Result<(), ExecError> {
+pub(crate) fn write_term(
+    process: &mut Process,
+    destination: &Operand,
+    value: Term,
+) -> Result<(), ExecError> {
     match destination {
         Operand::X(index) => {
             process.set_x_reg(u8_from_u32(*index, "X register")?, value);
@@ -362,7 +366,7 @@ fn operand_atom(operand: &Operand) -> Result<crate::atom::Atom, ExecError> {
     }
 }
 
-fn operand_label(operand: &Operand) -> Result<u32, ExecError> {
+pub(crate) fn operand_label(operand: &Operand) -> Result<u32, ExecError> {
     match operand {
         Operand::Label(label) => Ok(*label),
         Operand::Unsigned(value) => {
@@ -375,7 +379,7 @@ fn operand_label(operand: &Operand) -> Result<u32, ExecError> {
     }
 }
 
-fn operand_usize(operand: &Operand, context: &'static str) -> Result<usize, ExecError> {
+pub(crate) fn operand_usize(operand: &Operand, context: &'static str) -> Result<usize, ExecError> {
     match operand {
         Operand::Unsigned(value) => {
             usize::try_from(*value).map_err(|_| ExecError::InvalidOperand(context))

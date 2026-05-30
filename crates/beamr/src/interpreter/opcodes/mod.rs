@@ -5,6 +5,7 @@
 //! changing the execution loop.
 
 pub mod core;
+pub mod guards;
 
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
@@ -78,6 +79,34 @@ pub fn dispatch(
             index,
             destination,
         } => core::get_tuple_element(process, source, index, destination),
+        Instruction::GetHd {
+            source,
+            destination,
+        } => guards::get_hd(process, source, destination),
+        Instruction::GetTl {
+            source,
+            destination,
+        } => guards::get_tl(process, source, destination),
+        Instruction::TypeTest { op, fail, value } => {
+            guards::type_test(process, module, *op, fail, value)
+        }
+        Instruction::Comparison {
+            op,
+            fail,
+            left,
+            right,
+        } => guards::comparison(process, module, *op, fail, left, right),
+        Instruction::TestArity { fail, tuple, arity } => {
+            guards::test_arity(process, module, fail, tuple, arity)
+        }
+        Instruction::SelectVal { value, fail, list } => {
+            crate::interpreter::pattern::select_val(process, module, value, fail, list)
+        }
+        Instruction::SelectTupleArity { value, fail, list } => {
+            crate::interpreter::pattern::select_tuple_arity(process, module, value, fail, list)
+        }
+        Instruction::Jump { target } => guards::jump(module, target),
+        Instruction::Bif { op, operands } => guards::bif(process, module, *op, operands),
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),
         other => Err(ExecError::UnsupportedOpcode {
             name: instruction_name(other),
