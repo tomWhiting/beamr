@@ -53,13 +53,19 @@ impl Hook {
     where
         F: Fn(HookEvent) -> HookDecision + Send + Sync + 'static,
     {
-        let mut slot = self.callback.write().unwrap_or_else(|error| error.into_inner());
+        let mut slot = self
+            .callback
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
         *slot = Some(Arc::new(callback));
     }
 
     /// Remove the hook callback. After this returns, the registration slot is `None`.
     pub fn unregister(&self) {
-        let mut slot = self.callback.write().unwrap_or_else(|error| error.into_inner());
+        let mut slot = self
+            .callback
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
         *slot = None;
     }
 
@@ -140,7 +146,9 @@ mod tests {
         assert_eq!(hook.invoke(event()), HookDecision::Continue);
 
         assert_eq!(
-            seen.lock().unwrap_or_else(|error| error.into_inner()).as_slice(),
+            seen.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
             &[event()]
         );
     }

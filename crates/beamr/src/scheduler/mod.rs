@@ -48,6 +48,7 @@ struct SharedState {
     wait_set: Mutex<WaitSet>,
     wake_condvar: Condvar,
     process_bodies: DashMap<u64, Mutex<Option<ScheduledProcess>>>,
+    exit_tombstones: DashMap<u64, ExitReason>,
     #[cfg(test)]
     idle_parks: AtomicUsize,
 }
@@ -100,6 +101,7 @@ impl Scheduler {
             wait_set: Mutex::new(WaitSet::default()),
             wake_condvar: Condvar::new(),
             process_bodies: DashMap::new(),
+            exit_tombstones: DashMap::new(),
             #[cfg(test)]
             idle_parks: AtomicUsize::new(0),
         });
@@ -339,7 +341,7 @@ fn build_process(request: SpawnRequest) -> Process {
 enum SliceOutcome {
     Requeue(Process),
     Wait(Process),
-    Exited,
+    Exited(ExitReason),
 }
 
 fn run_process(shared: &SharedState, queue: &RunQueue, pid: u64, my_index: usize) {
@@ -362,9 +364,8 @@ fn run_process(shared: &SharedState, queue: &RunQueue, pid: u64, my_index: usize
             let mut wait_set = lock_or_recover(&shared.wait_set);
             wait_set.waiting.insert(pid, my_index);
         }
-        SliceOutcome::Exited => {
-            let _removed = shared.process_table.remove(pid);
-            let _removed_body = shared.process_bodies.remove(&pid);
+        SliceOutcome::Exited(reason) => {
+            cleanup_exited_process(shared, pid, reason);
         }
     }
 }
@@ -392,10 +393,10 @@ fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
         process.status(),
         ProcessStatus::New | ProcessStatus::Yielded | ProcessStatus::Waiting
     ) {
-        return SliceOutcome::Exited;
+        return SliceOutcome::Exited(exit_reason_from_status(process.status()));
     }
     if process.transition_to(ProcessStatus::Running).is_err() {
-        return SliceOutcome::Exited;
+        return SliceOutcome::Exited(exit_reason_from_status(process.status()));
     }
     process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
 
@@ -423,8 +424,24 @@ fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
 }
 
 fn exit_process(process: &mut Process, reason: ExitReason) -> SliceOutcome {
-    let _transitioned = process.transition_to(ProcessStatus::Exited(reason));
-    SliceOutcome::Exited
+    process.terminate(reason);
+    SliceOutcome::Exited(reason)
+}
+
+fn exit_reason_from_status(status: ProcessStatus) -> ExitReason {
+    match status {
+        ProcessStatus::Exited(reason) => reason,
+        _ => ExitReason::Error,
+    }
+}
+
+fn cleanup_exited_process(shared: &SharedState, pid: u64, reason: ExitReason) {
+    shared.exit_tombstones.insert(pid, reason);
+    let _removed = shared.process_table.remove(pid);
+    let _removed_body = shared.process_bodies.remove(&pid);
+    let mut wait_set = lock_or_recover(&shared.wait_set);
+    wait_set.waiting.remove(&pid);
+    wait_set.woken.retain(|(woken_pid, _)| *woken_pid != pid);
 }
 
 fn take_process(process: &mut Process) -> Process {

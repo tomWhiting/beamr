@@ -22,10 +22,43 @@ use crate::term::Term;
 /// Default number of reductions assigned to a fresh process time slice.
 pub const DEFAULT_REDUCTION_BUDGET: u32 = 4000;
 
-/// Placeholder for process monitors; supervision semantics are implemented in a
-/// later brief.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Monitor;
+/// Per-process monitor metadata.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Monitor {
+    reference: u64,
+    watcher: u64,
+    target: u64,
+}
+
+impl Monitor {
+    /// Create monitor metadata for `watcher` observing `target`.
+    #[must_use]
+    pub const fn new(reference: u64, watcher: u64, target: u64) -> Self {
+        Self {
+            reference,
+            watcher,
+            target,
+        }
+    }
+
+    /// Unique monitor reference id.
+    #[must_use]
+    pub const fn reference(self) -> u64 {
+        self.reference
+    }
+
+    /// PID that owns the monitor and receives DOWN messages.
+    #[must_use]
+    pub const fn watcher(self) -> u64 {
+        self.watcher
+    }
+
+    /// PID being observed by the monitor.
+    #[must_use]
+    pub const fn target(self) -> u64 {
+        self.target
+    }
+}
 
 /// Current code location for a process.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -81,8 +114,29 @@ pub enum ExitReason {
     Normal,
     /// Untrappable kill exit.
     Kill,
+    /// Terminal reason reported by a process that received `kill`.
+    Killed,
     /// Placeholder error exit until error terms land.
     Error,
+}
+
+impl ExitReason {
+    /// Atom representation used in EXIT and DOWN messages.
+    #[must_use]
+    pub const fn as_atom(self) -> Atom {
+        match self {
+            Self::Normal => Atom::NORMAL,
+            Self::Kill => Atom::KILL,
+            Self::Killed => Atom::KILLED,
+            Self::Error => Atom::ERROR,
+        }
+    }
+
+    /// Term representation used in EXIT and DOWN messages.
+    #[must_use]
+    pub const fn as_term(self) -> Term {
+        Term::atom(self.as_atom())
+    }
 }
 
 /// Lifecycle state for a process.
@@ -421,16 +475,45 @@ impl Process {
         self.current_mfa = current_mfa;
     }
 
-    /// Linked process IDs. Link propagation is handled by a later brief.
+    /// Linked process IDs.
     #[must_use]
     pub const fn links(&self) -> &HashSet<u64> {
         &self.links
     }
 
-    /// Monitor placeholders. Monitor behavior is handled by a later brief.
+    /// Add a linked process id. Returns whether the set changed.
+    pub fn add_link(&mut self, pid: u64) -> bool {
+        pid != self.pid && self.links.insert(pid)
+    }
+
+    /// Remove a linked process id. Returns whether the set changed.
+    pub fn remove_link(&mut self, pid: u64) -> bool {
+        self.links.remove(&pid)
+    }
+
+    /// Remove all links and return the previous link set.
+    pub fn take_links(&mut self) -> HashSet<u64> {
+        std::mem::take(&mut self.links)
+    }
+
+    /// Monitor metadata attached to this process.
     #[must_use]
     pub const fn monitors(&self) -> &Vec<Monitor> {
         &self.monitors
+    }
+
+    /// Add monitor metadata owned by or targeting this process.
+    pub fn add_monitor(&mut self, monitor: Monitor) {
+        self.monitors.push(monitor);
+    }
+
+    /// Remove monitor metadata by reference. Returns removed metadata.
+    pub fn remove_monitor(&mut self, reference: u64) -> Option<Monitor> {
+        let index = self
+            .monitors
+            .iter()
+            .position(|monitor| monitor.reference() == reference)?;
+        Some(self.monitors.remove(index))
     }
 
     /// Whether this process traps exits.
@@ -453,6 +536,23 @@ impl Process {
     /// Set group leader placeholder PID.
     pub const fn set_group_leader(&mut self, group_leader: Option<u64>) {
         self.group_leader = group_leader;
+    }
+
+    /// Mark the process exited and release owned runtime state that can keep
+    /// heap terms alive after process death.
+    pub fn terminate(&mut self, reason: ExitReason) {
+        self.status = ProcessStatus::Exited(reason);
+        self.heap = Heap::new(1);
+        self.stack = Stack::new();
+        self.mailbox = Mailbox::new();
+        self.handlers.clear();
+        self.current_exception = None;
+        self.receive_timeout = None;
+        self.receive_timer_ref = None;
+        self.x_regs = [Term::NIL; 256];
+        self.reduction_counter = 0;
+        self.code_position = None;
+        self.current_mfa = None;
     }
 }
 

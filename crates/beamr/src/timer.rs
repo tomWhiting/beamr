@@ -264,7 +264,8 @@ mod tests {
     fn timer_schedule_and_tick_expire_due_timers() {
         let start = Instant::now();
         let mut wheel = TimerWheel::with_bucket_count(8);
-        let reference = wheel.schedule_at(start, Duration::from_millis(10), 12, Term::atom(Atom::OK));
+        let reference =
+            wheel.schedule_at(start, Duration::from_millis(10), 12, Term::atom(Atom::OK));
 
         assert!(wheel.tick_at(start + Duration::from_millis(9)).is_empty());
         let expired = wheel.tick_at(start + Duration::from_millis(10));
@@ -297,7 +298,10 @@ mod tests {
         let reference = wheel.schedule_at(start, Duration::from_millis(1), 1, Term::small_int(1));
 
         assert_eq!(wheel.tick_at(start + Duration::from_millis(1)).len(), 1);
-        assert_eq!(wheel.cancel_at(reference, start + Duration::from_millis(1)), None);
+        assert_eq!(
+            wheel.cancel_at(reference, start + Duration::from_millis(1)),
+            None
+        );
     }
 
     #[test]

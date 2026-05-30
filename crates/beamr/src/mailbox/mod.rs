@@ -114,10 +114,15 @@ impl Mailbox {
         self.save_pointer = 0;
     }
 
+    /// Enqueue a term already owned by this process.
+    pub(crate) fn push_owned(&mut self, message: Term) {
+        self.scan_list.push_back(message);
+    }
+
     /// Test/GC helper: enqueue a term already owned by this process.
     #[cfg(test)]
     pub(crate) fn push_owned_for_test(&mut self, message: Term) {
-        self.scan_list.push_back(message);
+        self.push_owned(message);
     }
 
     /// Test helper: inspect the first scan-buffered message.
