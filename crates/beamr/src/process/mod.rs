@@ -92,6 +92,20 @@ impl std::error::Error for ProcessError {}
 ///
 /// The `Rc` marker intentionally makes `Process` neither [`Send`] nor [`Sync`]:
 /// ownership must remain with one scheduler thread at a time.
+///
+/// ```compile_fail
+/// use beamr::process::Process;
+///
+/// let process = Process::new(0, 233);
+/// std::thread::spawn(move || {
+///     process.pid()
+/// });
+/// ```
+///
+/// ```compile_fail
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<beamr::process::Process>();
+/// ```
 #[derive(Debug)]
 pub struct Process {
     pid: u64,

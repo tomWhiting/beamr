@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
+use dashmap::mapref::one::Ref;
 
 use crate::process::Process;
 use crate::process::heap::DEFAULT_HEAP_SIZE;
@@ -61,10 +62,10 @@ impl ProcessTable {
         pid
     }
 
-    /// Get the ownership handle for `pid`, when the process is still live.
+    /// Get a reference to the ownership handle for `pid`, when the process is still live.
     #[must_use]
-    pub fn get(&self, pid: u64) -> Option<ProcessHandle> {
-        self.processes.get(&pid).map(|entry| *entry.value())
+    pub fn get(&self, pid: u64) -> Option<Ref<'_, u64, ProcessHandle>> {
+        self.processes.get(&pid)
     }
 
     /// Remove `pid` from the process table on exit.
@@ -121,14 +122,14 @@ mod tests {
 
         let pid = table.spawn();
 
-        assert_eq!(table.get(pid), Some(ProcessHandle { pid }));
+        assert_eq!(table.get(pid).as_deref(), Some(&ProcessHandle { pid }));
     }
 
     #[test]
     fn get_returns_none_for_missing_process() {
         let table = ProcessTable::new();
 
-        assert_eq!(table.get(99), None);
+        assert!(table.get(99).is_none());
     }
 
     #[test]
@@ -139,8 +140,11 @@ mod tests {
         assert_eq!(table.remove(first), Some(ProcessHandle { pid: first }));
         let second = table.spawn();
 
-        assert_eq!(table.get(first), None);
+        assert!(table.get(first).is_none());
         assert_eq!(second, 1);
-        assert_eq!(table.get(second), Some(ProcessHandle { pid: second }));
+        assert_eq!(
+            table.get(second).as_deref(),
+            Some(&ProcessHandle { pid: second })
+        );
     }
 }
