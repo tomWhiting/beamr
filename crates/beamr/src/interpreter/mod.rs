@@ -99,6 +99,7 @@ fn run_loop(
             instruction,
             next_ip,
             timers.as_ref(),
+            registry,
         )? {
             InstructionOutcome::Continue => process.set_code_position(Some(CodePosition {
                 module: module.name,

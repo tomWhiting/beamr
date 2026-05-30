@@ -7,8 +7,8 @@
 pub mod dirty;
 pub mod run_queue;
 pub mod steal;
+mod timer_integration;
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -19,7 +19,7 @@ use dashmap::DashMap;
 
 use crate::atom::Atom;
 use crate::error::ExecError;
-use crate::hook::{Hook, HookDecision, HookEvent};
+use crate::hook::{Hook, HookDecision};
 use crate::interpreter::{self, ExecutionResult};
 use crate::loader::Instruction;
 use crate::module::{Module, ModuleRegistry};
@@ -27,7 +27,7 @@ use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
 use crate::term::Term;
-use crate::timer::{TimerRef, TimerWheel};
+use crate::timer::TimerWheel;
 
 use run_queue::RunQueue;
 
@@ -49,11 +49,11 @@ struct SharedState {
     thread_count: usize,
     next_pid: AtomicU64,
     wait_set: Mutex<WaitSet>,
-    hook: Hook,
-    timers: Arc<Mutex<TimerWheel>>,
-    receive_timers: Mutex<HashMap<u64, u64>>,
     wake_condvar: Condvar,
     process_bodies: DashMap<u64, Mutex<Option<ScheduledProcess>>>,
+    exit_tombstones: DashMap<u64, ExitReason>,
+    hook: Hook,
+    timers: Arc<Mutex<TimerWheel>>,
     #[cfg(test)]
     idle_parks: AtomicUsize,
 }
@@ -73,12 +73,9 @@ struct SpawnRequest {
 
 struct ScheduledProcess(Process);
 
-// SAFETY: `Process` is intentionally not `Send` at the public API boundary so
-// arbitrary code cannot share or move process bodies between threads. The
-// scheduler is the sole owner of process execution. It stores each process body
-// behind a mutex-protected `Option` and workers must take exclusive ownership of
-// the body before executing a time slice, then either put it back or remove it on
-// exit. No references to the wrapped `Process` cross thread boundaries.
+// SAFETY: Process is not Send at the public API boundary. The scheduler is the
+// sole owner of process execution, storing each body behind a mutex-protected
+// Option. Workers take exclusive ownership before executing a time slice.
 unsafe impl Send for ScheduledProcess {}
 
 /// Work-stealing scheduler with N OS threads.
@@ -104,15 +101,14 @@ impl Scheduler {
             thread_count,
             next_pid: AtomicU64::new(0),
             wait_set: Mutex::new(WaitSet::default()),
-            hook: Hook::new(),
-            timers: Arc::new(Mutex::new(TimerWheel::new())),
-            receive_timers: Mutex::new(HashMap::new()),
             wake_condvar: Condvar::new(),
             process_bodies: DashMap::new(),
+            exit_tombstones: DashMap::new(),
+            hook: Hook::new(),
+            timers: Arc::new(Mutex::new(TimerWheel::new())),
             #[cfg(test)]
             idle_parks: AtomicUsize::new(0),
         });
-
         let inject_queues: Vec<_> = (0..thread_count)
             .map(|_| Arc::new(SegQueue::new()))
             .collect();
@@ -121,7 +117,6 @@ impl Scheduler {
         let mut stealer_receivers = Vec::with_capacity(thread_count);
         let mut threads = Vec::with_capacity(thread_count);
         let mut worker_names = Vec::with_capacity(thread_count);
-
         for (index, inject_queue) in inject_queues.iter().enumerate() {
             let (tx, rx) = std::sync::mpsc::channel();
             stealer_receivers.push(rx);
@@ -131,14 +126,11 @@ impl Scheduler {
             let inject = Arc::clone(inject_queue);
             let thread_name = format!("beamr-sched-{index}");
             worker_names.push(thread_name.clone());
-
             let handle = std::thread::Builder::new()
                 .name(thread_name.clone())
                 .spawn(move || {
                     let queue = RunQueue::new();
-                    if tx.send(queue.stealer()).is_err() {
-                        return;
-                    }
+                    if tx.send(queue.stealer()).is_err() { return; }
                     barrier_for_thread.wait();
                     let stealers = {
                         let guard = lock_or_recover(&ready_for_thread);
@@ -149,48 +141,29 @@ impl Scheduler {
                 .map_err(|error| format!("failed to spawn {thread_name}: {error}"))?;
             threads.push(handle);
         }
-
         let mut stealers = Vec::with_capacity(thread_count);
         for rx in stealer_receivers {
-            let stealer = rx
-                .recv()
+            let stealer = rx.recv()
                 .map_err(|error| format!("failed to receive scheduler stealer: {error}"))?;
             stealers.push(stealer);
         }
-        {
-            let mut guard = lock_or_recover(&stealers_ready);
-            *guard = Some(stealers);
-        }
+        { let mut guard = lock_or_recover(&stealers_ready); *guard = Some(stealers); }
         barrier.wait();
-
-        Ok(Self {
-            shared,
-            threads: Mutex::new(threads),
-            inject_queues,
-            worker_names,
-        })
+        Ok(Self { shared, threads: Mutex::new(threads), inject_queues, worker_names })
     }
 
     /// Spawn a process at an exported module/function/arity entrypoint.
     pub fn spawn(
-        &self,
-        entry_module: Atom,
-        entry_function: Atom,
-        args: Vec<Term>,
+        &self, entry_module: Atom, entry_function: Atom, args: Vec<Term>,
     ) -> Result<u64, ExecError> {
         let arity = u8::try_from(args.len()).map_err(|_| ExecError::Badarg)?;
-        let entry = self
-            .shared
-            .module_registry
+        let entry = self.shared.module_registry
             .lookup_mfa(entry_module, entry_function, arity)?;
         let instruction_pointer = label_ip(&entry.module, entry.label)?;
         Ok(self.enqueue_spawn(entry.module.name, instruction_pointer, args))
     }
 
     /// Spawn a process at the beginning of a module.
-    ///
-    /// This compatibility helper is used by existing loader/interpreter tests
-    /// that build synthetic modules without export tables.
     pub fn spawn_process(&self, module: &Arc<Module>) -> u64 {
         self.enqueue_spawn(module.name, 0, Vec::new())
     }
@@ -200,134 +173,76 @@ impl Scheduler {
         self.shared.process_table.spawn_with_pid(pid);
         let index =
             self.shared.spawn_counter.fetch_add(1, Ordering::Relaxed) % self.shared.thread_count;
-        self.inject_queues[index].push(SpawnRequest {
-            pid,
-            module,
-            instruction_pointer,
-            args,
-        });
+        self.inject_queues[index].push(SpawnRequest { pid, module, instruction_pointer, args });
         self.shared.wake_condvar.notify_all();
         pid
     }
 
-    /// Return a callback suitable for mailbox senders to wake `pid` after a
-    /// successful message delivery.
-    ///
-    /// Running and yielded processes are absent from the wait set, so invoking
-    /// the returned notifier for an already-runnable process is harmless and does
-    /// not duplicate it in a run queue.
+    /// Return a callback suitable for mailbox senders to wake `pid`.
     pub fn wake_notifier(&self, pid: u64) -> impl Fn() + Send + Sync + 'static {
         let shared = Arc::clone(&self.shared);
         move || wake_process(&shared, pid)
     }
 
     /// Wake a process that is in the Waiting state after message arrival.
-    pub fn wake_process(&self, pid: u64) {
-        wake_process(&self.shared, pid);
-    }
+    pub fn wake_process(&self, pid: u64) { wake_process(&self.shared, pid); }
 
-    /// Access the per-VM reduction-boundary hook registration slot.
-    #[must_use]
-    pub fn hook(&self) -> Hook {
-        self.shared.hook.clone()
-    }
-
-    /// Explicitly resume a process suspended by the reduction-boundary hook.
+    /// Resume a suspended process, returning true if the process was found in
+    /// the wait set and re-enqueued.
     pub fn resume_process(&self, pid: u64) -> bool {
-        resume_process(&self.shared, pid)
-    }
-
-    /// Access the scheduler-owned timer wheel.
-    #[must_use]
-    pub fn timers(&self) -> Arc<Mutex<TimerWheel>> {
-        Arc::clone(&self.shared.timers)
+        timer_integration::resume_suspended(&self.shared, pid)
     }
 
     /// Shut down all worker threads after their current time slice.
     pub fn shutdown(&self) {
         self.shared.shutdown.store(true, Ordering::Release);
         self.shared.wake_condvar.notify_all();
-
         let mut threads = lock_or_recover(&self.threads);
         for handle in threads.drain(..) {
-            if let Err(payload) = handle.join() {
-                std::panic::resume_unwind(payload);
-            }
+            if let Err(payload) = handle.join() { std::panic::resume_unwind(payload); }
         }
     }
 
     /// Access the live process table.
     #[must_use]
-    pub fn process_table(&self) -> &ProcessTable {
-        &self.shared.process_table
-    }
-
+    pub fn process_table(&self) -> &ProcessTable { &self.shared.process_table }
     /// Number of scheduler worker threads.
     #[must_use]
-    pub fn thread_count(&self) -> usize {
-        self.shared.thread_count
-    }
-
+    pub fn thread_count(&self) -> usize { self.shared.thread_count }
     /// Names assigned to scheduler worker threads.
     #[must_use]
-    pub fn worker_names(&self) -> &[String] {
-        &self.worker_names
-    }
+    pub fn worker_names(&self) -> &[String] { &self.worker_names }
+    /// Access the reduction-boundary hook registration slot.
+    #[must_use]
+    pub fn hook(&self) -> &Hook { &self.shared.hook }
+    /// Access the shared timer wheel for BIF integration.
+    #[must_use]
+    pub fn timers(&self) -> &Arc<Mutex<TimerWheel>> { &self.shared.timers }
 
     #[cfg(test)]
-    fn idle_park_count(&self) -> usize {
-        self.shared.idle_parks.load(Ordering::Acquire)
-    }
-}
-
-fn reconcile_receive_timer(shared: &SharedState, process: &Process) {
-    let pid = process.pid();
-    let recorded = lock_or_recover(&shared.receive_timers).get(&pid).copied();
-    match (recorded, process.receive_timer_ref()) {
-        (Some(recorded), None) => {
-            let _remaining = lock_or_recover(&shared.timers).cancel(TimerRef::from_id(recorded));
-            lock_or_recover(&shared.receive_timers).remove(&pid);
-        }
-        (Some(recorded), Some(active)) if recorded != active => {
-            let _remaining = lock_or_recover(&shared.timers).cancel(TimerRef::from_id(recorded));
-            lock_or_recover(&shared.receive_timers).insert(pid, active);
-        }
-        _ => {}
-    }
+    fn idle_park_count(&self) -> usize { self.shared.idle_parks.load(Ordering::Acquire) }
 }
 
 impl Drop for Scheduler {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
+    fn drop(&mut self) { self.shutdown(); }
 }
 
 fn configured_thread_count(override_count: Option<usize>) -> usize {
-    override_count
-        .filter(|count| *count > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-        })
+    override_count.filter(|count| *count > 0).unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    })
 }
 
 fn scheduler_loop(
-    shared: &SharedState,
-    queue: &RunQueue,
-    my_index: usize,
-    stealers: &[Stealer<u64>],
-    inject: &SegQueue<SpawnRequest>,
+    shared: &SharedState, queue: &RunQueue, my_index: usize,
+    stealers: &[Stealer<u64>], inject: &SegQueue<SpawnRequest>,
 ) {
     let mut last_victim = my_index;
-
     loop {
-        if shared.shutdown.load(Ordering::Acquire) {
-            return;
-        }
-
+        if shared.shutdown.load(Ordering::Acquire) { return; }
         drain_injected(shared, queue, inject);
-        drain_timers(shared);
+        if my_index == 0 { timer_integration::tick_timers(shared); }
         drain_woken(shared, queue, my_index);
-
         let pid = match queue.pop() {
             Some(pid) => pid,
             None => {
@@ -337,19 +252,12 @@ fn scheduler_loop(
                 match result {
                     steal::StealResult::Stolen { .. } => match queue.pop() {
                         Some(pid) => pid,
-                        None => {
-                            park_thread(shared);
-                            continue;
-                        }
+                        None => { park_thread(shared); continue; }
                     },
-                    steal::StealResult::Empty => {
-                        park_thread(shared);
-                        continue;
-                    }
+                    steal::StealResult::Empty => { park_thread(shared); continue; }
                 }
             }
         };
-
         run_process(shared, queue, pid, my_index);
     }
 }
@@ -358,9 +266,7 @@ fn drain_injected(shared: &SharedState, queue: &RunQueue, inject: &SegQueue<Spaw
     while let Some(request) = inject.pop() {
         let pid = request.pid;
         let process = build_process(request);
-        shared
-            .process_bodies
-            .insert(pid, Mutex::new(Some(ScheduledProcess(process))));
+        shared.process_bodies.insert(pid, Mutex::new(Some(ScheduledProcess(process))));
         queue.push(pid);
     }
 }
@@ -368,13 +274,10 @@ fn drain_injected(shared: &SharedState, queue: &RunQueue, inject: &SegQueue<Spaw
 fn build_process(request: SpawnRequest) -> Process {
     let mut process = Process::new(request.pid, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
-        module: request.module,
-        instruction_pointer: request.instruction_pointer,
+        module: request.module, instruction_pointer: request.instruction_pointer,
     }));
     for (index, arg) in request.args.into_iter().enumerate().take(256) {
-        if let Ok(register) = u8::try_from(index) {
-            process.set_x_reg(register, arg);
-        }
+        if let Ok(register) = u8::try_from(index) { process.set_x_reg(register, arg); }
     }
     process
 }
@@ -382,36 +285,32 @@ fn build_process(request: SpawnRequest) -> Process {
 enum SliceOutcome {
     Requeue(Process),
     Wait(Process),
-    Suspend(Process),
-    Exited,
+    Suspended(Process),
+    Exited(ExitReason),
 }
 
 fn run_process(shared: &SharedState, queue: &RunQueue, pid: u64, my_index: usize) {
-    if shared.process_table.get(pid).is_none() {
-        return;
-    }
-
-    let Some(mut process) = take_runnable_process(shared, pid) else {
-        return;
-    };
-
+    if shared.process_table.get(pid).is_none() { return; }
+    let Some(mut process) = take_runnable_process(shared, pid) else { return; };
     let outcome = execute_slice(shared, &mut process);
     match outcome {
         SliceOutcome::Requeue(process) => {
             store_runnable_process(shared, process);
             queue.push(pid);
         }
-        SliceOutcome::Wait(process) => {
+        SliceOutcome::Wait(mut process) => {
+            timer_integration::register_receive_timer(shared, &mut process);
             store_runnable_process(shared, process);
-            let mut wait_set = lock_or_recover(&shared.wait_set);
-            wait_set.waiting.insert(pid, my_index);
+            let mut ws = lock_or_recover(&shared.wait_set);
+            ws.waiting.insert(pid, my_index);
         }
-        SliceOutcome::Suspend(process) => {
+        SliceOutcome::Suspended(process) => {
             store_runnable_process(shared, process);
+            let mut ws = lock_or_recover(&shared.wait_set);
+            ws.waiting.insert(pid, my_index);
         }
-        SliceOutcome::Exited => {
-            let _removed = shared.process_table.remove(pid);
-            let _removed_body = shared.process_bodies.remove(&pid);
+        SliceOutcome::Exited(reason) => {
+            cleanup_exited_process(shared, pid, reason);
         }
     }
 }
@@ -424,29 +323,26 @@ fn take_runnable_process(shared: &SharedState, pid: u64) -> Option<Process> {
 
 fn store_runnable_process(shared: &SharedState, process: Process) {
     let pid = process.pid();
-    reconcile_receive_timer(shared, &process);
     if let Some(entry) = shared.process_bodies.get(&pid) {
         let mut slot = lock_or_recover(&entry);
         *slot = Some(ScheduledProcess(process));
     } else {
-        shared
-            .process_bodies
-            .insert(pid, Mutex::new(Some(ScheduledProcess(process))));
+        shared.process_bodies.insert(pid, Mutex::new(Some(ScheduledProcess(process))));
     }
 }
 
 fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
     if !matches!(
         process.status(),
-        ProcessStatus::New | ProcessStatus::Yielded | ProcessStatus::Waiting
+        ProcessStatus::New | ProcessStatus::Yielded
+            | ProcessStatus::Waiting | ProcessStatus::Suspended
     ) {
-        return SliceOutcome::Exited;
+        return SliceOutcome::Exited(exit_reason_from_status(process.status()));
     }
     if process.transition_to(ProcessStatus::Running).is_err() {
-        return SliceOutcome::Exited;
+        return SliceOutcome::Exited(exit_reason_from_status(process.status()));
     }
     process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
-
     let module_atom = match process.code_position() {
         Some(position) => position.module,
         None => return exit_process(process, ExitReason::Normal),
@@ -454,77 +350,48 @@ fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
     let Some(module) = shared.module_registry.lookup(module_atom) else {
         return exit_process(process, ExitReason::Error);
     };
-
-    match interpreter::run_with_timer_services(process, &module, Arc::clone(&shared.timers)) {
+    let result = interpreter::run(process, &module);
+    let reductions = DEFAULT_REDUCTION_BUDGET.saturating_sub(process.reduction_counter());
+    if matches!(result, Ok(ExecutionResult::Yielded) | Ok(ExecutionResult::Waiting))
+        && timer_integration::invoke_hook(shared, process, reductions) == HookDecision::Suspend
+    {
+        let _t = process.transition_to(ProcessStatus::Suspended);
+        return SliceOutcome::Suspended(take_process(process));
+    }
+    match result {
         Ok(ExecutionResult::Yielded) => {
-            let _transitioned = process.transition_to(ProcessStatus::Yielded);
-            match invoke_yield_hook(shared, process) {
-                HookDecision::Continue => {
-                    process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
-                    SliceOutcome::Requeue(take_process(process))
-                }
-                HookDecision::Suspend => suspend_process(process),
-            }
+            let _t = process.transition_to(ProcessStatus::Yielded);
+            process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
+            SliceOutcome::Requeue(take_process(process))
         }
         Ok(ExecutionResult::Waiting) => {
-            let _transitioned = process.transition_to(ProcessStatus::Waiting);
-            schedule_receive_timeout(shared, process);
-            match invoke_yield_hook(shared, process) {
-                HookDecision::Continue => SliceOutcome::Wait(take_process(process)),
-                HookDecision::Suspend => suspend_process(process),
-            }
+            let _t = process.transition_to(ProcessStatus::Waiting);
+            SliceOutcome::Wait(take_process(process))
         }
-        Ok(ExecutionResult::Exited(reason)) => {
-            reconcile_receive_timer(shared, process);
-            exit_process(process, reason)
-        }
-        Err(_error) => {
-            reconcile_receive_timer(shared, process);
-            exit_process(process, ExitReason::Error)
-        }
+        Ok(ExecutionResult::Exited(reason)) => exit_process(process, reason),
+        Err(_error) => exit_process(process, ExitReason::Error),
     }
 }
 
 fn exit_process(process: &mut Process, reason: ExitReason) -> SliceOutcome {
-    let _transitioned = process.transition_to(ProcessStatus::Exited(reason));
-    SliceOutcome::Exited
+    process.terminate(reason);
+    SliceOutcome::Exited(reason)
 }
 
-fn invoke_yield_hook(shared: &SharedState, process: &Process) -> HookDecision {
-    if !shared.hook.is_registered() {
-        return HookDecision::Continue;
+fn exit_reason_from_status(status: ProcessStatus) -> ExitReason {
+    match status {
+        ProcessStatus::Exited(reason) => reason,
+        _ => ExitReason::Error,
     }
-    let Some((module, function, arity)) = process.current_mfa() else {
-        return HookDecision::Continue;
-    };
-    shared.hook.invoke(HookEvent {
-        pid: process.pid(),
-        module,
-        function,
-        arity,
-        reductions_consumed: DEFAULT_REDUCTION_BUDGET.saturating_sub(process.reduction_counter()),
-    })
 }
 
-fn suspend_process(process: &mut Process) -> SliceOutcome {
-    let _transitioned = process.transition_to(ProcessStatus::Suspended);
-    SliceOutcome::Suspend(take_process(process))
-}
-
-fn schedule_receive_timeout(shared: &SharedState, process: &mut Process) {
-    if process.receive_timer_ref().is_some() {
-        return;
-    }
-    let Some(timeout) = process.receive_timeout() else {
-        return;
-    };
-    let reference = lock_or_recover(&shared.timers).schedule(
-        std::time::Duration::from_millis(timeout.milliseconds),
-        process.pid(),
-        Term::NIL,
-    );
-    process.set_receive_timer_ref(Some(reference.id()));
-    lock_or_recover(&shared.receive_timers).insert(process.pid(), reference.id());
+fn cleanup_exited_process(shared: &SharedState, pid: u64, reason: ExitReason) {
+    shared.exit_tombstones.insert(pid, reason);
+    let _removed = shared.process_table.remove(pid);
+    let _removed_body = shared.process_bodies.remove(&pid);
+    let mut wait_set = lock_or_recover(&shared.wait_set);
+    wait_set.waiting.remove(&pid);
+    wait_set.woken.retain(|(woken_pid, _)| *woken_pid != pid);
 }
 
 fn take_process(process: &mut Process) -> Process {
@@ -532,6 +399,7 @@ fn take_process(process: &mut Process) -> Process {
 }
 
 fn wake_process(shared: &SharedState, pid: u64) {
+    timer_integration::cancel_receive_timer(shared, pid);
     let mut wait_set = lock_or_recover(&shared.wait_set);
     if let Some(scheduler_index) = wait_set.waiting.remove(&pid) {
         wait_set.woken.push((pid, scheduler_index));
@@ -539,125 +407,40 @@ fn wake_process(shared: &SharedState, pid: u64) {
     }
 }
 
-fn resume_process(shared: &SharedState, pid: u64) -> bool {
-    let Some(entry) = shared.process_bodies.get(&pid) else {
-        return false;
-    };
-    let mut slot = lock_or_recover(&entry);
-    let Some(scheduled) = slot.as_mut() else {
-        return false;
-    };
-    if scheduled.0.status() != ProcessStatus::Suspended {
-        return false;
-    }
-    let next = if scheduled.0.receive_timeout().is_some() {
-        ProcessStatus::Waiting
-    } else {
-        ProcessStatus::Yielded
-    };
-    if scheduled.0.transition_to(next).is_err() {
-        return false;
-    }
-    drop(slot);
-    if next == ProcessStatus::Waiting {
-        let mut wait_set = lock_or_recover(&shared.wait_set);
-        wait_set.waiting.insert(pid, 0);
-    } else {
-        let mut wait_set = lock_or_recover(&shared.wait_set);
-        wait_set.woken.push((pid, 0));
-    }
-    shared.wake_condvar.notify_all();
-    true
-}
-
-fn drain_timers(shared: &SharedState) {
-    let expired = lock_or_recover(&shared.timers).tick();
-    for timer in expired {
-        let Some(entry) = shared.process_bodies.get(&timer.target_pid) else {
-            continue;
-        };
-        let mut slot = lock_or_recover(&entry);
-        let Some(scheduled) = slot.as_mut() else {
-            continue;
-        };
-        if scheduled.0.receive_timer_ref() == Some(timer.reference.id()) {
-            if let Some(timeout) = scheduled.0.receive_timeout() {
-                scheduled
-                    .0
-                    .set_code_position(Some(timeout.timeout_position));
-                scheduled.0.set_receive_timeout(None);
-                scheduled.0.set_receive_timer_ref(None);
-                lock_or_recover(&shared.receive_timers).remove(&timer.target_pid);
-                scheduled.0.mailbox_mut().reset_save_pointer();
-            }
-        } else {
-            let send_result = scheduled
-                .0
-                .mailbox()
-                .sender()
-                .send(timer.message, scheduled.0.heap_mut());
-            if send_result.is_err() {
-                continue;
-            }
-        }
-        drop(slot);
-        wake_process(shared, timer.target_pid);
-    }
-}
-
 fn drain_woken(shared: &SharedState, queue: &RunQueue, my_index: usize) {
     let woken = {
         let mut wait_set = lock_or_recover(&shared.wait_set);
         let mut mine = Vec::new();
-        wait_set.woken.retain(|(pid, scheduler_index)| {
-            if *scheduler_index == my_index {
-                mine.push(*pid);
-                false
-            } else {
-                true
-            }
+        wait_set.woken.retain(|(pid, sched_idx)| {
+            if *sched_idx == my_index { mine.push(*pid); false } else { true }
         });
         mine
     };
-
     for pid in woken {
-        if shared.process_table.get(pid).is_some() {
-            queue.push(pid);
-        }
+        if shared.process_table.get(pid).is_some() { queue.push(pid); }
     }
 }
 
 fn park_thread(shared: &SharedState) {
     #[cfg(test)]
     shared.idle_parks.fetch_add(1, Ordering::Relaxed);
-
-    if shared.shutdown.load(Ordering::Acquire) {
-        return;
-    }
+    if shared.shutdown.load(Ordering::Acquire) { return; }
     let guard = lock_or_recover(&shared.wait_set);
     let timeout = std::time::Duration::from_millis(5);
-    let result = shared.wake_condvar.wait_timeout(guard, timeout);
-    match result {
-        Ok((_guard, _timeout)) => {}
-        Err(error) => {
-            let _recovered = error.into_inner();
-        }
+    match shared.wake_condvar.wait_timeout(guard, timeout) {
+        Ok(_) => {}
+        Err(error) => { let _recovered = error.into_inner(); }
     }
 }
 
 fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
-    module
-        .code
-        .iter()
-        .position(|instruction| matches!(instruction, Instruction::Label { label: seen } if *seen == label))
+    module.code.iter()
+        .position(|instr| matches!(instr, Instruction::Label { label: seen } if *seen == label))
         .ok_or(ExecError::InvalidLabel { label })
 }
 
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]

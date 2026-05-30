@@ -378,6 +378,7 @@ mod tests {
                 &Instruction::Send,
                 1,
                 Some(&mut receiver),
+                None,
             ),
             Ok(InstructionOutcome::Continue)
         );

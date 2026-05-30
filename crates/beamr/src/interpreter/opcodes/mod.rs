@@ -4,6 +4,8 @@
 //! live in [`core`]; later opcode families can add sibling modules without
 //! changing the execution loop.
 
+pub mod binary;
+pub mod closures;
 pub mod core;
 pub mod guards;
 pub mod messaging;
@@ -13,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::Instruction;
-use crate::module::Module;
+use crate::module::{Module, ModuleRegistry};
 use crate::process::Process;
 use crate::timer::TimerWheel;
 
@@ -23,8 +25,9 @@ pub fn dispatch(
     module: &Module,
     instruction: &Instruction,
     next_ip: usize,
+    registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_with_receiver(process, module, instruction, next_ip, None)
+    dispatch_with_receiver(process, module, instruction, next_ip, None, registry)
 }
 
 /// Dispatch one instruction with optional timer services for native BIFs.
@@ -34,8 +37,9 @@ pub fn dispatch_with_timer_services(
     instruction: &Instruction,
     next_ip: usize,
     timers: Option<&Arc<Mutex<TimerWheel>>>,
+    registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_inner(process, module, instruction, next_ip, None, timers)
+    dispatch_inner(process, module, instruction, next_ip, None, timers, registry)
 }
 
 /// Dispatch one already-fetched instruction with an optional send target process.
@@ -50,8 +54,9 @@ pub fn dispatch_with_receiver(
     instruction: &Instruction,
     next_ip: usize,
     receiver: Option<&mut Process>,
+    registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_inner(process, module, instruction, next_ip, receiver, None)
+    dispatch_inner(process, module, instruction, next_ip, receiver, None, registry)
 }
 
 fn dispatch_inner(
@@ -61,6 +66,7 @@ fn dispatch_inner(
     next_ip: usize,
     receiver: Option<&mut Process>,
     timers: Option<&Arc<Mutex<TimerWheel>>>,
+    registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
     match instruction {
         Instruction::Label { label } => core::label(*label),
@@ -170,6 +176,19 @@ fn dispatch_inner(
         Instruction::Badmatch { value } => messaging::badmatch(process, value),
         Instruction::CaseEnd { value } => messaging::case_end(process, value),
         Instruction::IfEnd => messaging::if_end(process),
+        Instruction::BinaryOp { op, operands } => binary::binary_op(process, module, *op, operands),
+        Instruction::MapOp { op, operands } => closures::map_op(process, module, *op, operands),
+        Instruction::MakeFun { operands } => closures::make_fun(process, module, operands),
+        Instruction::CallFun { arity } => closures::call_fun(process, module, arity, next_ip),
+        Instruction::Apply { arity } => {
+            let registry = registry.ok_or(ExecError::InvalidOperand("apply: registry required"))?;
+            closures::apply(process, registry, arity, next_ip, module.name)
+        }
+        Instruction::ApplyLast { arity, deallocate } => {
+            let registry =
+                registry.ok_or(ExecError::InvalidOperand("apply_last: registry required"))?;
+            closures::apply_last(process, registry, arity, deallocate, next_ip)
+        }
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),
         other => Err(ExecError::UnsupportedOpcode {
             name: instruction_name(other),
