@@ -64,6 +64,7 @@ impl Mailbox {
     pub fn sender(&self) -> MailboxSender {
         MailboxSender {
             arrival: Arc::clone(&self.arrival),
+            wake: None,
         }
     }
 
@@ -147,12 +148,34 @@ impl Mailbox {
 }
 
 /// Cloneable handle used by other processes to enqueue copied messages.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MailboxSender {
     arrival: Arc<SegQueue<Term>>,
+    wake: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+}
+
+impl std::fmt::Debug for MailboxSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailboxSender")
+            .field("arrival", &self.arrival)
+            .field("has_wake_notifier", &self.wake.is_some())
+            .finish()
+    }
 }
 
 impl MailboxSender {
+    /// Attach a wake notifier that runs after each successful enqueue.
+    ///
+    /// The scheduler uses this hook to move a waiting receiver back to a run
+    /// queue. The hook is intentionally invoked only after `copy_term` succeeds
+    /// and the message is visible in the arrival queue, so failed sends cannot
+    /// cause spurious wake-ups.
+    #[must_use]
+    pub fn with_wake_notifier(mut self, wake: impl Fn() + Send + Sync + 'static) -> Self {
+        self.wake = Some(Arc::new(wake));
+        self
+    }
+
     /// Deep-copy `message` into `receiver_heap` and enqueue the copied term.
     ///
     /// This method only touches the lock-free arrival queue. It does not borrow,
@@ -160,6 +183,9 @@ impl MailboxSender {
     pub fn send(&self, message: Term, receiver_heap: &mut Heap) -> Result<(), SendError> {
         let copied = copy_term(message, receiver_heap)?;
         self.arrival.push(copied);
+        if let Some(wake) = &self.wake {
+            wake();
+        }
         Ok(())
     }
 

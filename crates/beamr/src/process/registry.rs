@@ -62,6 +62,15 @@ impl ProcessTable {
         pid
     }
 
+    /// Register a process handle with a pre-assigned PID.
+    ///
+    /// Used by the scheduler, which owns process body creation and run-queue
+    /// placement while the process table provides concurrent liveness lookup.
+    pub fn spawn_with_pid(&self, pid: u64) {
+        let handle = ProcessHandle { pid };
+        self.processes.insert(pid, handle);
+    }
+
     /// Get a reference to the ownership handle for `pid`, when the process is still live.
     #[must_use]
     pub fn get(&self, pid: u64) -> Option<Ref<'_, u64, ProcessHandle>> {
