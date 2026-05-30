@@ -1,7 +1,18 @@
 .DS_Store
 .meridian/worksites/
+
+# Rust build output
+/target
 target/
+
+# Editor swap files
 *.swp
 *.swo
 *~
+
+# Claude projects
 .claude/projects/
+
+# Yggdrasil worktrees + workflow temp files
+.yggdrasil-worktrees/
+.commit-msg.tmp
