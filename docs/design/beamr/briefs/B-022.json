@@ -1,0 +1,82 @@
+{
+  "id": "B-022",
+  "cluster": "beamr",
+  "title": "Wire CLI execute path to interpreter",
+  "depends_on": [
+    "B-021"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C171",
+    "C172",
+    "C174",
+    "C175"
+  ],
+  "stories": [
+    "S1",
+    "S8"
+  ],
+  "purpose": "The CLI currently loads a .beam file, resolves imports, and then returns ExecutionUnavailable. The interpreter exists and works. This brief wires the last mile: creating a Process, setting its code pointer to the resolved entry function, calling interpreter::run_with_registry(), and returning the result.",
+  "task": "Replace the Err(CliError::ExecutionUnavailable) return in execute_beam() with actual execution. Create a Process with a fresh heap, set its code pointer to the resolved CodePointer, populate X-registers with CLI-provided arguments, call interpreter::run_with_registry(), and handle the ExecutionResult.",
+  "boundaries": [
+    "This brief SHALL NOT implement multi-module loading (one .beam file per invocation)",
+    "This brief SHALL NOT implement a REPL or interactive mode",
+    "This brief SHALL NOT implement scheduler-based execution (single-process, single-threaded run loop)"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Wire execute_beam to interpreter",
+      "spec": "execute_beam() SHALL create a Process with Process::new(pid, DEFAULT_HEAP_SIZE), set its code position to the resolved CodePointer (module, label), and call interpreter::run_with_registry(). The function SHALL return Ok(()) on normal exit and Err(CliError::Exec(...)) on error.",
+      "acceptance": [
+        "cargo run -- tests/fixtures/proof.beam --entry proof:answer/0 prints the return value and exits 0",
+        "cargo run -- tests/fixtures/proof.beam --entry proof:add/2 -- 17 25 prints 42 and exits 0",
+        "A module with no matching export prints an error and exits 1",
+        "The ExecutionUnavailable variant is removed from CliError"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-cli/src/main.rs"
+        ]
+      },
+      "checklist": ["C171", "C172"],
+      "stories": ["S1", "S8"]
+    },
+    {
+      "id": "R2",
+      "title": "Print execution result",
+      "spec": "On normal exit, the CLI SHALL print the value in x(0) to stdout using the term display format. On error exit, the CLI SHALL print the exit reason to stderr. Exit code SHALL be 0 for normal termination and 1 for any error.",
+      "acceptance": [
+        "Normal exit prints the return value to stdout",
+        "Error exit prints the reason to stderr",
+        "Exit code 0 on normal, 1 on error",
+        "Output format matches erlang:display/1 style"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-cli/src/main.rs"
+        ]
+      },
+      "checklist": ["C174", "C175"],
+      "stories": ["S1"]
+    },
+    {
+      "id": "R3",
+      "title": "CLI argument passing",
+      "spec": "When the user provides arguments after --, the CLI SHALL parse them as terms and load them into X-registers before execution. Integer literals SHALL be parsed as small integers. Atom literals SHALL be interned and loaded as atom terms. Arity mismatch SHALL print an error and exit 1.",
+      "acceptance": [
+        "-- 17 25 loads x(0)=17, x(1)=25 for an arity-2 function",
+        "-- hello loads x(0)=atom(hello) for an arity-1 function",
+        "Arity mismatch prints a clear error message",
+        "No arguments works for arity-0 functions"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-cli/src/main.rs"
+        ]
+      },
+      "checklist": ["C172"],
+      "stories": ["S8"]
+    }
+  ]
+}

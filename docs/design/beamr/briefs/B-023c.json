@@ -1,0 +1,80 @@
+{
+  "id": "B-023c",
+  "cluster": "beamr",
+  "title": "Monitor management BIFs — monitor, demonitor, exit",
+  "depends_on": [
+    "B-023a"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C134",
+    "C135",
+    "C136",
+    "C138",
+    "C139",
+    "C140",
+    "C141",
+    "C143"
+  ],
+  "stories": [
+    "S2",
+    "S6"
+  ],
+  "purpose": "MonitorSet and LinkSet data structures exist but are not callable from bytecode. This brief adds monitor/2, demonitor/1, and exit/2 as BIFs.",
+  "task": "Add three BIFs to process_bifs.rs. Extend ProcessContext with monitor set access. Register in register_gate2_bifs().",
+  "boundaries": [
+    "This brief SHALL NOT implement erlang:exit/1 (self-exit — different semantics from exit/2)",
+    "This brief SHALL NOT implement monitor by name (only by PID)",
+    "This brief SHALL NOT implement demonitor with options ([flush, info])"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "erlang:monitor/2",
+      "spec": "erlang:monitor/2 SHALL accept (process, Pid), establish a unidirectional monitor, return a unique reference. Dead target immediately enqueues DOWN.",
+      "acceptance": [
+        "monitor(process, Pid) returns unique reference",
+        "Monitored process exit delivers DOWN",
+        "Monitoring dead process sends immediate DOWN with noproc",
+        "Multiple monitors get independent references"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/process_bifs.rs"]
+      },
+      "checklist": ["C140", "C143"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "erlang:demonitor/1",
+      "spec": "erlang:demonitor/1 SHALL remove the monitor by reference. Invalid reference is a no-op.",
+      "acceptance": [
+        "demonitor(Ref) removes the monitor",
+        "After demonitor, target exit does not send DOWN",
+        "Invalid reference is no-op returning true"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/process_bifs.rs"]
+      },
+      "checklist": ["C141"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R3",
+      "title": "erlang:exit/2",
+      "spec": "erlang:exit/2 SHALL send an exit signal to target. Trapping target receives {EXIT, Caller, Reason}. Non-trapping with non-normal reason terminates. kill terminates unconditionally and propagates as killed.",
+      "acceptance": [
+        "exit(Pid, normal) does not kill target",
+        "exit(Pid, reason) kills non-trapping target",
+        "exit(Pid, reason) delivers {EXIT, Caller, reason} to trapping target",
+        "exit(Pid, kill) kills regardless of trap_exit",
+        "kill propagates as killed to links"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/process_bifs.rs"]
+      },
+      "checklist": ["C134", "C135", "C136", "C138", "C139"],
+      "stories": ["S2"]
+    }
+  ]
+}

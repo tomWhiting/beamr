@@ -1,0 +1,128 @@
+{
+  "id": "B-024",
+  "cluster": "beamr",
+  "title": "Scheduler supervision integration — exit signal and DOWN propagation",
+  "depends_on": [
+    "B-018",
+    "B-019",
+    "B-023a",
+    "B-023b",
+    "B-023c"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C55",
+    "C106",
+    "C133",
+    "C134",
+    "C135",
+    "C136",
+    "C137",
+    "C138",
+    "C139",
+    "C140",
+    "C141",
+    "C142"
+  ],
+  "stories": [
+    "S2",
+    "S6",
+    "S13"
+  ],
+  "purpose": "The supervision data structures work correctly in isolation but the scheduler's cleanup_exited_process() does not call them. Process death silently discards links and monitors. This brief wires the scheduler to the supervision layer so process death propagates signals, completing the OTP supervision loop.",
+  "task": "Modify cleanup_exited_process() to call LinkSet::process_exited() and MonitorSet::process_exited(). Add LinkSet and MonitorSet to SharedState. Ensure woken processes move from wait set to run queue. Handle cascade iteratively.",
+  "boundaries": [
+    "This brief SHALL NOT implement supervisor behaviours (one_for_one, one_for_all, rest_for_one — those are Gleam library code per ADR-007)",
+    "This brief SHALL NOT implement application controllers or application start/stop",
+    "This brief SHALL NOT implement process registry cleanup on exit (erlang:unregister is out of scope)"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "SharedState holds LinkSet and MonitorSet",
+      "spec": "SharedState SHALL contain LinkSet and MonitorSet wrapped in Mutex. Scheduler::new() SHALL initialize both as empty.",
+      "acceptance": [
+        "SharedState contains link_set: Mutex<LinkSet> and monitor_set: Mutex<MonitorSet>",
+        "Scheduler::new() initializes both as empty",
+        "Existing scheduler tests continue to pass"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": ["C55"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "cleanup_exited_process propagates exit signals",
+      "spec": "When a process exits, cleanup_exited_process() SHALL take links, deliver exit signals, terminate non-trapping linked processes, enqueue EXIT messages for trapping processes, and wake waiting processes. Cascade SHALL be iterative via worklist pattern.",
+      "acceptance": [
+        "Linked process receives exit signal when partner dies",
+        "Process with trap_exit=true receives {EXIT, Pid, Reason} message",
+        "Process without trap_exit dies from non-normal linked exit",
+        "Normal exit does not kill linked processes",
+        "Kill signal terminates regardless of trap_exit",
+        "Killed process propagates killed not kill",
+        "Cascade: A links B links C, A dies -> B dies -> C dies",
+        "Waiting process woken by EXIT message moves to run queue"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": ["C134", "C135", "C136", "C137", "C138", "C139"],
+      "stories": ["S2", "S6"]
+    },
+    {
+      "id": "R3",
+      "title": "cleanup_exited_process delivers DOWN messages",
+      "spec": "When a process exits, cleanup_exited_process() SHALL query MonitorSet for watchers, construct {DOWN, Ref, process, Pid, Reason} on watcher heap, enqueue in mailbox, remove monitor, and wake waiting watchers.",
+      "acceptance": [
+        "Monitored process exit delivers DOWN to watcher",
+        "DOWN message contains correct Ref, Pid, and Reason",
+        "Watcher in wait set is woken by DOWN message",
+        "Multiple monitors deliver independent DOWN messages",
+        "Demonitored target death does not send DOWN"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": ["C140", "C106"],
+      "stories": ["S2"]
+    },
+    {
+      "id": "R4",
+      "title": "BIF integration with SharedState",
+      "spec": "Process BIFs from B-023 SHALL route through SharedState's LinkSet and MonitorSet. ProcessContext SHALL carry a reference to shared supervision state.",
+      "acceptance": [
+        "link/1 BIF adds to SharedState LinkSet",
+        "unlink/1 BIF removes from SharedState LinkSet",
+        "monitor/2 BIF adds to SharedState MonitorSet",
+        "demonitor/1 BIF removes from SharedState MonitorSet",
+        "spawn_link/3 atomically spawns and links via SharedState"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs", "crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": ["C133", "C141", "C142"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R5",
+      "title": "Integration tests",
+      "spec": "End-to-end tests SHALL verify the complete supervision loop on the scheduler: spawn, link/monitor, exit, verify signal/DOWN delivery.",
+      "acceptance": [
+        "Test: spawn + link + error exit -> linked process dies",
+        "Test: spawn + link + normal exit -> linked process survives",
+        "Test: spawn + link + trap_exit -> {EXIT, Pid, Reason} received",
+        "Test: spawn + link + kill -> bypasses trap_exit, propagates killed",
+        "Test: spawn + monitor + exit -> {DOWN, Ref, process, Pid, Reason} received",
+        "All tests run on the scheduler, not unit-level"
+      ],
+      "files": {
+        "create": ["crates/beamr/tests/supervision_integration.rs"]
+      },
+      "checklist": ["C55", "C134", "C140"],
+      "stories": ["S2", "S6", "S13"]
+    }
+  ]
+}

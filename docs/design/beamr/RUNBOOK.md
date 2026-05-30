@@ -70,6 +70,31 @@ bash $S $B/B-019.json "" b-019 $C $U "Bono" &
 bash $S $B/B-020.json "" b-020 $C $U "Bono" &
 ```
 
+## Wave 8 — Gate 2: OTP integration (depends on all Gate 1 briefs)
+
+```bash
+# B-022: CLI execute path — wire main.rs to interpreter::run() (independent)
+bash $S $B/B-022.json "" b-022 $C $U "Bono" &
+# B-023a: Process creation BIFs — self/0, spawn/3, spawn_link/3
+bash $S $B/B-023a.json "" b-023a $C $U "Bono" &
+```
+
+## Wave 9 — Depends on B-023a
+
+```bash
+# B-023b: Link management BIFs — link/1, unlink/1, process_flag/2
+bash $S $B/B-023b.json "" b-023b $C $U "Bono" &
+# B-023c: Monitor management BIFs — monitor/2, demonitor/1, exit/2
+bash $S $B/B-023c.json "" b-023c $C $U "Bono" &
+```
+
+## Wave 10 — Depends on B-023b + B-023c
+
+```bash
+# B-024: Scheduler supervision integration — exit signal + DOWN propagation
+bash $S $B/B-024.json "" b-024 $C $U "Bono" &
+```
+
 ## Between waves
 
 Each wave must land before the next can start. "Land" means:

@@ -1,0 +1,76 @@
+{
+  "id": "B-023b",
+  "cluster": "beamr",
+  "title": "Link management BIFs — link, unlink, process_flag",
+  "depends_on": [
+    "B-023a"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C133",
+    "C137",
+    "C138",
+    "C142",
+    "C144"
+  ],
+  "stories": [
+    "S6"
+  ],
+  "purpose": "Link and trap_exit data structures exist but are not callable from bytecode. This brief adds link/1, unlink/1, and process_flag/2 as BIFs.",
+  "task": "Add three BIFs to process_bifs.rs. Extend ProcessContext with process table and link state access. Register in register_gate2_bifs().",
+  "boundaries": [
+    "This brief SHALL NOT implement priority inheritance or priority changes via process_flag",
+    "This brief SHALL NOT implement process groups (erlang:group_leader/2)",
+    "This brief SHALL NOT implement erlang:process_info/1 or erlang:process_info/2"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "erlang:link/1",
+      "spec": "erlang:link/1 SHALL establish a bidirectional link. Nonexistent target sends noproc. Already-linked or self-link is a no-op.",
+      "acceptance": [
+        "link(Pid) adds to both link sets",
+        "link to nonexistent sends noproc exit signal",
+        "link to already-linked is no-op",
+        "link to self is no-op"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/process_bifs.rs"]
+      },
+      "checklist": ["C133", "C144"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R2",
+      "title": "erlang:unlink/1",
+      "spec": "erlang:unlink/1 SHALL remove the bidirectional link. No-op if no link exists.",
+      "acceptance": [
+        "unlink removes both directions",
+        "unlink of nonexistent is no-op returning true",
+        "After unlink, target exit does not affect caller"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/process_bifs.rs"]
+      },
+      "checklist": ["C142"],
+      "stories": ["S6"]
+    },
+    {
+      "id": "R3",
+      "title": "erlang:process_flag/2",
+      "spec": "erlang:process_flag/2 SHALL accept (trap_exit, Bool), set flag, return previous value. kill bypasses trap_exit.",
+      "acceptance": [
+        "process_flag(trap_exit, true) enables trapping, returns previous value",
+        "process_flag(trap_exit, false) disables trapping",
+        "With trap_exit, linked death delivers {EXIT, Pid, Reason}",
+        "kill terminates regardless",
+        "Unrecognized flag returns badarg"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/process_bifs.rs"]
+      },
+      "checklist": ["C137", "C138"],
+      "stories": ["S6"]
+    }
+  ]
+}

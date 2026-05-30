@@ -1,0 +1,83 @@
+{
+  "id": "B-023a",
+  "cluster": "beamr",
+  "title": "Process creation BIFs — self, spawn, spawn_link",
+  "depends_on": [
+    "B-010",
+    "B-018",
+    "B-021"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C51",
+    "C57",
+    "C133",
+    "C150",
+    "C154"
+  ],
+  "stories": [
+    "S2",
+    "S8"
+  ],
+  "purpose": "Running BEAM code cannot create new processes. This brief creates process_bifs.rs, extends ProcessContext with a spawn channel, and registers self/0, spawn/3, and spawn_link/3.",
+  "task": "Create crates/beamr/src/native/process_bifs.rs with three BIFs. Extend ProcessContext with a spawn facility. Register via register_gate2_bifs().",
+  "boundaries": [
+    "This brief SHALL NOT implement spawn_monitor/3 (covered by combining spawn + monitor in later briefs)",
+    "This brief SHALL NOT implement named process registration (erlang:register/2)",
+    "This brief SHALL NOT implement spawn with options (erlang:spawn_opt/4)"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "erlang:self/0",
+      "spec": "erlang:self/0 SHALL return the calling process PID as a Pid term. If pid is None, return Err(badarg).",
+      "acceptance": [
+        "self() returns the correct PID",
+        "Result is a valid Pid term",
+        "Missing PID returns badarg"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/process_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": ["C57"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R2",
+      "title": "erlang:spawn/3",
+      "spec": "erlang:spawn/3 SHALL accept (Module, Function, Args), create a new process via ProcessContext spawn channel, set code position, load Args into X-registers, return new PID.",
+      "acceptance": [
+        "spawn(Module, Function, []) returns a valid PID",
+        "spawn(Module, Function, [A, B]) creates process with x(0)=A, x(1)=B",
+        "Spawned process executes independently on scheduler",
+        "Unresolved Module:Function returns badarg"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/process_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": ["C51"],
+      "stories": ["S2", "S8"]
+    },
+    {
+      "id": "R3",
+      "title": "erlang:spawn_link/3 and BIF registration",
+      "spec": "erlang:spawn_link/3 SHALL behave like spawn/3 but atomically establish a bidirectional link. All three BIFs registered via register_gate2_bifs(). ProcessContext extended without breaking Gate 1.",
+      "acceptance": [
+        "spawn_link returns a valid PID with link established",
+        "Parent and child link sets contain each other",
+        "All 3 BIFs registered under erlang module",
+        "Import resolution resolves all three",
+        "ProcessContext extension does not break Gate 1 BIFs",
+        "No panics in production code"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/process_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs", "crates/beamr/src/native/bifs.rs"]
+      },
+      "checklist": ["C51", "C133", "C150", "C154"],
+      "stories": ["S2"]
+    }
+  ]
+}
