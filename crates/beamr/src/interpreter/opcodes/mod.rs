@@ -100,10 +100,10 @@ pub fn dispatch(
             guards::test_arity(process, module, fail, tuple, arity)
         }
         Instruction::SelectVal { value, fail, list } => {
-            crate::interpreter::pattern::select_val(process, module, value, fail, list)
+            guards::select_val(process, module, value, fail, list)
         }
         Instruction::SelectTupleArity { value, fail, list } => {
-            crate::interpreter::pattern::select_tuple_arity(process, module, value, fail, list)
+            guards::select_tuple_arity(process, module, value, fail, list)
         }
         Instruction::Jump { target } => guards::jump(module, target),
         Instruction::Bif { op, operands } => guards::bif(process, module, *op, operands),

@@ -5,6 +5,8 @@
 //! is_eq, etc.). This module supports the interpreter in executing
 //! those pattern match sequences, including guard evaluation.
 
+#![allow(dead_code)]
+
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::interpreter::opcodes::core;

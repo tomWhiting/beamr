@@ -1,4 +1,6 @@
-//! Guard, test, and branch opcode handlers.
+//! Guard, test, and branching BEAM opcode handlers.
+
+use std::cmp::Ordering;
 
 use crate::atom::Atom;
 use crate::error::ExecError;
@@ -8,10 +10,8 @@ use crate::loader::decode::{BifOp, ComparisonOp, TypeTestOp};
 use crate::module::{Module, ResolvedImportTarget};
 use crate::native::ProcessContext;
 use crate::process::{CodePosition, Process};
-use crate::term::Term;
-use crate::term::binary::Binary;
 use crate::term::boxed::{Closure, Cons, Float, Map, Reference, Tuple};
-use crate::term::compare;
+use crate::term::{Term, binary::Binary, compare};
 
 use super::core;
 
@@ -20,8 +20,7 @@ pub fn get_hd(
     source: &Operand,
     destination: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
-    let source = core::read_term(process, source)?;
-    let cons = Cons::new(source).ok_or(ExecError::Badarg)?;
+    let cons = Cons::new(core::read_term(process, source)?).ok_or(ExecError::Badarg)?;
     core::write_term(process, destination, cons.head())?;
     Ok(InstructionOutcome::Continue)
 }
@@ -31,21 +30,20 @@ pub fn get_tl(
     source: &Operand,
     destination: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
-    let source = core::read_term(process, source)?;
-    let cons = Cons::new(source).ok_or(ExecError::Badarg)?;
+    let cons = Cons::new(core::read_term(process, source)?).ok_or(ExecError::Badarg)?;
     core::write_term(process, destination, cons.tail())?;
     Ok(InstructionOutcome::Continue)
 }
 
 pub fn type_test(
-    process: &mut Process,
+    process: &Process,
     module: &Module,
     op: TypeTestOp,
     fail: &Operand,
     value: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
-    let value = core::read_term(process, value)?;
-    branch_if_false(module, fail, type_test_passes(op, value))
+    let (value, arity) = function_test_value_and_arity(process, op, value)?;
+    branch_if_false(module, fail, matches_type(op, value, arity)?)
 }
 
 pub fn comparison(
@@ -59,8 +57,8 @@ pub fn comparison(
     let left = core::read_term(process, left)?;
     let right = core::read_term(process, right)?;
     let passed = match op {
-        ComparisonOp::Lt => compare::cmp(left, right).is_lt(),
-        ComparisonOp::Ge => compare::cmp(left, right).is_ge(),
+        ComparisonOp::Lt => compare::cmp(left, right) == Ordering::Less,
+        ComparisonOp::Ge => compare::cmp(left, right) != Ordering::Less,
         ComparisonOp::Eq => compare::numeric_eq(left, right),
         ComparisonOp::Ne => !compare::numeric_eq(left, right),
         ComparisonOp::EqExact => compare::exact_eq(left, right),
@@ -77,18 +75,49 @@ pub fn test_arity(
     arity: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
     let tuple = core::read_term(process, tuple)?;
-    let arity = core::operand_usize(arity, "tuple arity")?;
-    let passed = Tuple::new(tuple).is_some_and(|tuple| tuple.arity() == arity);
+    let expected = core::operand_usize(arity, "tuple arity")?;
+    let passed = Tuple::new(tuple).is_some_and(|tuple| tuple.arity() == expected);
     branch_if_false(module, fail, passed)
 }
 
+pub fn select_val(
+    process: &Process,
+    module: &Module,
+    value: &Operand,
+    fail: &Operand,
+    list: &Operand,
+) -> Result<InstructionOutcome, ExecError> {
+    let value = core::read_term(process, value)?;
+    for pair in select_pairs(list, "select_val list")? {
+        let (candidate, label) = pair?;
+        if compare::exact_eq(value, core::read_term(process, candidate)?) {
+            return jump_label(module, label);
+        }
+    }
+    jump_label(module, fail)
+}
+
+pub fn select_tuple_arity(
+    process: &Process,
+    module: &Module,
+    value: &Operand,
+    fail: &Operand,
+    list: &Operand,
+) -> Result<InstructionOutcome, ExecError> {
+    let arity = Tuple::new(core::read_term(process, value)?).map(Tuple::arity);
+    if let Some(arity) = arity {
+        for pair in select_pairs(list, "select_tuple_arity list")? {
+            let (candidate, label) = pair?;
+            if core::operand_usize(candidate, "tuple arity")? == arity {
+                return jump_label(module, label);
+            }
+        }
+    }
+    jump_label(module, fail)
+}
+
 pub fn jump(module: &Module, target: &Operand) -> Result<InstructionOutcome, ExecError> {
-    let label = core::operand_label(target)?;
-    let instruction_pointer = core::label_ip(module, label)?;
-    Ok(InstructionOutcome::Jump(CodePosition {
-        module: module.name,
-        instruction_pointer,
-    }))
+    jump_label(module, target)
 }
 
 pub fn bif(
@@ -97,41 +126,63 @@ pub fn bif(
     op: BifOp,
     operands: &[Operand],
 ) -> Result<InstructionOutcome, ExecError> {
-    let spec = BifSpec::parse(op, operands)?;
-    let import_index = core::operand_usize(spec.import, "guard bif import index")?;
+    let parsed = parse_bif_operands(op, operands)?;
+    if let Some(heap_need) = parsed.heap_need {
+        core::test_heap(process, heap_need)?;
+    }
+
+    let import_index = core::operand_usize(parsed.import, "bif import index")?;
     let resolved = module
         .resolved_imports
         .get(import_index)
         .ok_or(ExecError::InvalidImport {
             index: import_index,
         })?;
-    if usize::from(resolved.arity) != spec.args.len() {
-        return Err(ExecError::InvalidOperand("guard bif arity mismatch"));
+    if resolved.arity != parsed.expected_arity {
+        return Err(ExecError::InvalidOperand("bif arity mismatch"));
     }
+
     let ResolvedImportTarget::Native(entry) = resolved.target else {
         return Err(ExecError::InvalidOperand("guard bif native import"));
     };
 
-    if let Some(heap_need) = spec.heap_need {
-        core::test_heap(process, heap_need)?;
-    }
-
-    let mut args = Vec::with_capacity(spec.args.len());
-    for arg in spec.args {
+    let mut args = Vec::with_capacity(parsed.args.len());
+    for arg in parsed.args {
         args.push(core::read_term(process, arg)?);
     }
 
     let mut context = ProcessContext::new();
     match (entry.function)(&args, &mut context) {
         Ok(result) => {
-            core::write_term(process, spec.destination, result)?;
+            core::write_term(process, parsed.destination, result)?;
             Ok(InstructionOutcome::Continue)
         }
-        Err(_) => jump(module, spec.fail),
+        Err(_) => jump_label(module, parsed.fail),
     }
 }
 
-pub(crate) fn branch_if_false(
+fn function_test_value_and_arity(
+    process: &Process,
+    op: TypeTestOp,
+    value: &Operand,
+) -> Result<(Term, Option<usize>), ExecError> {
+    if op == TypeTestOp::IsFunction2 {
+        let Operand::List(operands) = value else {
+            return Err(ExecError::InvalidOperand("is_function2 operands"));
+        };
+        let [function, arity] = operands.as_slice() else {
+            return Err(ExecError::InvalidOperand("is_function2 operands"));
+        };
+        Ok((
+            core::read_term(process, function)?,
+            Some(core::operand_usize(arity, "is_function2 arity")?),
+        ))
+    } else {
+        Ok((core::read_term(process, value)?, None))
+    }
+}
+
+fn branch_if_false(
     module: &Module,
     fail: &Operand,
     passed: bool,
@@ -139,12 +190,20 @@ pub(crate) fn branch_if_false(
     if passed {
         Ok(InstructionOutcome::Continue)
     } else {
-        jump(module, fail)
+        jump_label(module, fail)
     }
 }
 
-fn type_test_passes(op: TypeTestOp, value: Term) -> bool {
-    match op {
+fn jump_label(module: &Module, label: &Operand) -> Result<InstructionOutcome, ExecError> {
+    let label = core::operand_label(label)?;
+    Ok(InstructionOutcome::Jump(CodePosition {
+        module: module.name,
+        instruction_pointer: core::label_ip(module, label)?,
+    }))
+}
+
+fn matches_type(op: TypeTestOp, value: Term, arity: Option<usize>) -> Result<bool, ExecError> {
+    let matched = match op {
         TypeTestOp::IsInteger => value.is_small_int(),
         TypeTestOp::IsFloat => Float::new(value).is_some(),
         TypeTestOp::IsNumber => value.is_small_int() || Float::new(value).is_some(),
@@ -154,395 +213,89 @@ fn type_test_passes(op: TypeTestOp, value: Term) -> bool {
         TypeTestOp::IsPort => false,
         TypeTestOp::IsNil => value.is_nil(),
         TypeTestOp::IsBinary | TypeTestOp::IsBitstr => Binary::new(value).is_some(),
-        TypeTestOp::IsList => value.is_nil() || value.is_list(),
+        TypeTestOp::IsList => value.is_list() || value.is_nil(),
         TypeTestOp::IsNonemptyList => value.is_list(),
         TypeTestOp::IsTuple => Tuple::new(value).is_some(),
         TypeTestOp::IsFunction => Closure::new(value).is_some(),
         TypeTestOp::IsBoolean => matches!(value.as_atom(), Some(Atom::TRUE | Atom::FALSE)),
-        TypeTestOp::IsFunction2 => Closure::new(value).is_some(),
+        TypeTestOp::IsFunction2 => {
+            let Some(expected_arity) = arity else {
+                return Err(ExecError::InvalidOperand("is_function2 arity"));
+            };
+            Closure::new(value)
+                .is_some_and(|closure| usize::from(closure.arity()) == expected_arity)
+        }
         TypeTestOp::IsMap => Map::new(value).is_some(),
         TypeTestOp::IsTaggedTuple => false,
-    }
+    };
+    Ok(matched)
 }
 
-struct BifSpec<'a> {
+fn select_pairs<'a>(
+    list: &'a Operand,
+    context: &'static str,
+) -> Result<impl Iterator<Item = Result<(&'a Operand, &'a Operand), ExecError>>, ExecError> {
+    let Operand::List(items) = list else {
+        return Err(ExecError::InvalidOperand(context));
+    };
+    if items.len() % 2 != 0 {
+        return Err(ExecError::InvalidOperand(context));
+    }
+    Ok(items
+        .chunks_exact(2)
+        .map(|chunk| Ok((&chunk[0], &chunk[1]))))
+}
+
+struct ParsedBif<'a> {
     fail: &'a Operand,
     import: &'a Operand,
     args: &'a [Operand],
     destination: &'a Operand,
     heap_need: Option<&'a Operand>,
+    expected_arity: u8,
 }
 
-impl<'a> BifSpec<'a> {
-    fn parse(op: BifOp, operands: &'a [Operand]) -> Result<Self, ExecError> {
-        let arity = match op {
-            BifOp::Bif0 => 0,
-            BifOp::Bif1 | BifOp::GcBif1 => 1,
-            BifOp::Bif2 | BifOp::GcBif2 => 2,
-            BifOp::GcBif3 => 3,
-        };
-        if operands.len() == arity + 3 {
-            return Ok(Self {
+fn parse_bif_operands(op: BifOp, operands: &[Operand]) -> Result<ParsedBif<'_>, ExecError> {
+    let arity = match op {
+        BifOp::Bif0 => 0,
+        BifOp::Bif1 | BifOp::GcBif1 => 1,
+        BifOp::Bif2 | BifOp::GcBif2 => 2,
+        BifOp::GcBif3 => 3,
+    };
+    let non_gc_len = 3 + arity;
+    let gc_len = 4 + arity;
+
+    match op {
+        BifOp::Bif0 | BifOp::Bif1 | BifOp::Bif2 => {
+            if operands.len() != non_gc_len {
+                return Err(ExecError::InvalidOperand("bif operands"));
+            }
+            Ok(ParsedBif {
                 fail: &operands[0],
                 import: &operands[1],
                 args: &operands[2..2 + arity],
                 destination: &operands[2 + arity],
                 heap_need: None,
-            });
+                expected_arity: arity as u8,
+            })
         }
-        if matches!(op, BifOp::GcBif1 | BifOp::GcBif2 | BifOp::GcBif3)
-            && operands.len() == arity + 4
-        {
-            return Ok(Self {
+        BifOp::GcBif1 | BifOp::GcBif2 | BifOp::GcBif3 => {
+            if operands.len() != gc_len && operands.len() != non_gc_len {
+                return Err(ExecError::InvalidOperand("gc_bif operands"));
+            }
+            let has_heap_need = operands.len() == gc_len;
+            let offset = usize::from(has_heap_need);
+            Ok(ParsedBif {
                 fail: &operands[0],
-                import: &operands[1],
-                heap_need: Some(&operands[2]),
-                args: &operands[3..3 + arity],
-                destination: &operands[3 + arity],
-            });
+                import: &operands[1 + offset],
+                args: &operands[2 + offset..2 + offset + arity],
+                destination: &operands[2 + offset + arity],
+                heap_need: has_heap_need.then_some(&operands[1]),
+                expected_arity: arity as u8,
+            })
         }
-        Err(ExecError::InvalidOperand("guard bif operands"))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::loader::Instruction;
-    use crate::module::{ResolvedImport, ResolvedImportTarget};
-    use crate::native::{NativeEntry, bifs};
-    use crate::term::boxed::{write_closure, write_cons, write_float, write_tuple};
-    use std::collections::HashMap;
-
-    fn module(code: Vec<Instruction>) -> Module {
-        Module {
-            name: Atom::OK,
-            exports: HashMap::new(),
-            code,
-            literals: Vec::new(),
-            resolved_imports: Vec::new(),
-            lambdas: Vec::new(),
-            string_table: Vec::new(),
-            line_info: Vec::new(),
-        }
-    }
-
-    fn jump_ip(outcome: InstructionOutcome) -> usize {
-        let InstructionOutcome::Jump(position) = outcome else {
-            panic!("expected jump outcome, got {outcome:?}");
-        };
-        position.instruction_pointer
-    }
-
-    #[test]
-    fn get_hd_and_get_tl_extract_cons_parts_without_copying() {
-        let mut process = Process::new(1, 8);
-        let ptr = process.heap_mut().alloc(2).expect("cons allocation");
-        let cons = write_cons(
-            unsafe { std::slice::from_raw_parts_mut(ptr, 2) },
-            Term::small_int(1),
-            Term::small_int(2),
-        )
-        .expect("cons term");
-        process.set_x_reg(0, cons);
-
-        assert_eq!(
-            get_hd(&mut process, &Operand::X(0), &Operand::X(1)),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(process.x_reg(1), Term::small_int(1));
-        assert_eq!(
-            get_tl(&mut process, &Operand::X(0), &Operand::X(2)),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(process.x_reg(2), Term::small_int(2));
-
-        assert_eq!(
-            get_hd(&mut process, &Operand::Integer(0), &Operand::X(3)),
-            Err(ExecError::Badarg)
-        );
-    }
-
-    #[test]
-    fn type_tests_fall_through_or_jump_to_fail_label() {
-        let module = module(vec![
-            Instruction::Label { label: 10 },
-            Instruction::Return,
-            Instruction::Label { label: 20 },
-        ]);
-        let mut process = Process::new(1, 16);
-        let tuple_ptr = process.heap_mut().alloc(3).expect("tuple allocation");
-        let tuple = write_tuple(
-            unsafe { std::slice::from_raw_parts_mut(tuple_ptr, 3) },
-            &[Term::small_int(1), Term::small_int(2)],
-        )
-        .expect("tuple term");
-        process.set_x_reg(0, tuple);
-        let closure_ptr = process.heap_mut().alloc(5).expect("closure allocation");
-        let closure = write_closure(
-            unsafe { std::slice::from_raw_parts_mut(closure_ptr, 5) },
-            Atom::OK,
-            0,
-            2,
-            &[],
-        )
-        .expect("closure term");
-        process.set_x_reg(1, closure);
-
-        assert_eq!(
-            type_test(
-                &mut process,
-                &module,
-                TypeTestOp::IsInteger,
-                &Operand::Label(20),
-                &Operand::Integer(1),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(
-            jump_ip(
-                type_test(
-                    &mut process,
-                    &module,
-                    TypeTestOp::IsInteger,
-                    &Operand::Label(20),
-                    &Operand::Atom(Some(Atom::OK)),
-                )
-                .expect("type test jump")
-            ),
-            2
-        );
-        assert_eq!(
-            type_test(
-                &mut process,
-                &module,
-                TypeTestOp::IsAtom,
-                &Operand::Label(20),
-                &Operand::Atom(Some(Atom::OK)),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(
-            type_test(
-                &mut process,
-                &module,
-                TypeTestOp::IsTuple,
-                &Operand::Label(20),
-                &Operand::X(0),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(
-            type_test(
-                &mut process,
-                &module,
-                TypeTestOp::IsNil,
-                &Operand::Label(20),
-                &Operand::Atom(None),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(
-            type_test(
-                &mut process,
-                &module,
-                TypeTestOp::IsBoolean,
-                &Operand::Label(20),
-                &Operand::Atom(Some(Atom::TRUE)),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(
-            jump_ip(
-                type_test(
-                    &mut process,
-                    &module,
-                    TypeTestOp::IsBoolean,
-                    &Operand::Label(20),
-                    &Operand::Atom(Some(Atom::OK)),
-                )
-                .expect("type test jump")
-            ),
-            2
-        );
-        assert_eq!(
-            type_test(
-                &mut process,
-                &module,
-                TypeTestOp::IsFunction2,
-                &Operand::Label(20),
-                &Operand::X(1),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-    }
-
-    #[test]
-    fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
-        let module = module(vec![Instruction::Label { label: 1 }]);
-        let mut process = Process::new(1, 8);
-        let float_ptr = process.heap_mut().alloc(2).expect("float allocation");
-        let float_one = write_float(unsafe { std::slice::from_raw_parts_mut(float_ptr, 2) }, 1.0)
-            .expect("float term");
-        process.set_x_reg(0, float_one);
-
-        assert_eq!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::EqExact,
-                &Operand::Label(1),
-                &Operand::Integer(1),
-                &Operand::Integer(1),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert!(matches!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::EqExact,
-                &Operand::Label(1),
-                &Operand::Integer(1),
-                &Operand::Integer(2),
-            ),
-            Ok(InstructionOutcome::Jump(_))
-        ));
-        assert!(matches!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::EqExact,
-                &Operand::Label(1),
-                &Operand::Integer(1),
-                &Operand::X(0),
-            ),
-            Ok(InstructionOutcome::Jump(_))
-        ));
-        assert_eq!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::NeExact,
-                &Operand::Label(1),
-                &Operand::Integer(1),
-                &Operand::Integer(2),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert!(matches!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::NeExact,
-                &Operand::Label(1),
-                &Operand::Integer(1),
-                &Operand::Integer(1),
-            ),
-            Ok(InstructionOutcome::Jump(_))
-        ));
-        assert_eq!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::Lt,
-                &Operand::Label(1),
-                &Operand::Integer(1),
-                &Operand::Integer(2),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::Ge,
-                &Operand::Label(1),
-                &Operand::Integer(2),
-                &Operand::Integer(1),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(
-            comparison(
-                &process,
-                &module,
-                ComparisonOp::Lt,
-                &Operand::Label(1),
-                &Operand::Integer(1),
-                &Operand::Atom(Some(Atom::OK)),
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-    }
-
-    #[test]
-    fn guard_bif_success_stores_result_and_failure_branches() {
-        let import = ResolvedImport {
-            module: Atom::OK,
-            function: Atom::OK,
-            arity: 2,
-            target: ResolvedImportTarget::Native(NativeEntry {
-                function: bifs::add,
-                is_dirty: false,
-            }),
-        };
-        let mut module = module(vec![Instruction::Label { label: 7 }]);
-        module.resolved_imports.push(import);
-        let mut process = Process::new(1, 16);
-
-        assert_eq!(
-            bif(
-                &mut process,
-                &module,
-                BifOp::GcBif2,
-                &[
-                    Operand::Label(7),
-                    Operand::Unsigned(0),
-                    Operand::Integer(3),
-                    Operand::Integer(4),
-                    Operand::X(0),
-                ],
-            ),
-            Ok(InstructionOutcome::Continue)
-        );
-        assert_eq!(process.x_reg(0), Term::small_int(7));
-        assert_eq!(
-            bif(
-                &mut process,
-                &module,
-                BifOp::Bif2,
-                &[
-                    Operand::Label(7),
-                    Operand::Unsigned(0),
-                    Operand::Atom(Some(Atom::OK)),
-                    Operand::Integer(1),
-                    Operand::X(1),
-                ],
-            ),
-            Ok(InstructionOutcome::Jump(CodePosition {
-                module: Atom::OK,
-                instruction_pointer: 0,
-            }))
-        );
-    }
-
-    #[test]
-    fn jump_sets_target_without_modifying_registers() {
-        let module = module(vec![
-            Instruction::Label { label: 1 },
-            Instruction::Label { label: 2 },
-        ]);
-        let mut process = Process::new(1, 8);
-        process.set_x_reg(0, Term::small_int(42));
-
-        assert_eq!(
-            jump(&module, &Operand::Label(2)),
-            Ok(InstructionOutcome::Jump(CodePosition {
-                module: Atom::OK,
-                instruction_pointer: 1,
-            }))
-        );
-        assert_eq!(process.x_reg(0), Term::small_int(42));
-    }
-}
+mod tests;
