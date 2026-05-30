@@ -21,6 +21,22 @@ pub fn dispatch(
     instruction: &Instruction,
     next_ip: usize,
 ) -> Result<InstructionOutcome, ExecError> {
+    dispatch_with_receiver(process, module, instruction, next_ip, None)
+}
+
+/// Dispatch one already-fetched instruction with an optional send target process.
+///
+/// The single-process execution loop calls [`dispatch`] and therefore treats a
+/// missing send target as BEAM's silent drop. Scheduler integration can pass the
+/// resolved target process here until process ownership/run-queue infrastructure
+/// provides a richer execution context.
+pub fn dispatch_with_receiver(
+    process: &mut Process,
+    module: &Module,
+    instruction: &Instruction,
+    next_ip: usize,
+    receiver: Option<&mut Process>,
+) -> Result<InstructionOutcome, ExecError> {
     match instruction {
         Instruction::Label { label } => core::label(*label),
         Instruction::FuncInfo {
@@ -108,7 +124,7 @@ pub fn dispatch(
         }
         Instruction::Jump { target } => guards::jump(module, target),
         Instruction::Bif { op, operands } => guards::bif(process, module, *op, operands),
-        Instruction::Send => messaging::send(process, None),
+        Instruction::Send => messaging::send(process, receiver),
         Instruction::LoopRec { fail, destination } => {
             messaging::loop_rec(process, module, fail, destination)
         }
