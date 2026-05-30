@@ -7,7 +7,10 @@ use beamr::error::{ExecError, LoadError};
 use beamr::interpreter::{self, ExecutionResult};
 use beamr::loader::{Instruction, UnresolvedImportReport, load_module};
 use beamr::module::{Module, ModuleRegistry};
-use beamr::native::{BifRegistryImpl, NativeRegistrationError, bifs::register_gate1_bifs};
+use beamr::native::{
+    BifRegistryImpl, NativeRegistrationError, bifs::register_gate1_bifs,
+    process_bifs::register_gate2_bifs,
+};
 use beamr::process::heap::DEFAULT_HEAP_SIZE;
 use beamr::process::registry::ProcessTable;
 use beamr::process::{CodePosition, ExitReason, Process};
@@ -296,6 +299,7 @@ fn load_context(path: &Path) -> Result<LoadContext, CliError> {
     let atom_table = AtomTable::with_common_atoms();
     let mut bif_registry = BifRegistryImpl::new();
     register_gate1_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_gate2_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     let module_registry = ModuleRegistry::new();
     let (module, report) = load_module(&bytes, &atom_table, &module_registry, &bif_registry)
         .map_err(CliError::Load)?;
