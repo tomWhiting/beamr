@@ -361,7 +361,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
-            }
+        }
     }
 
     impl SpawnFacility for MockSpawnFacility {
