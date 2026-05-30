@@ -6,6 +6,7 @@
 //! BIFs (built-in, ship with the VM) and NIFs (registered by the host)
 //! use the same mechanism but have different ownership (per D6).
 pub mod bifs;
+pub mod gate3_bifs;
 mod context;
 pub mod links;
 pub mod process_bifs;
