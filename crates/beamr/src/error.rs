@@ -57,6 +57,13 @@ pub enum ExecError {
     Badarith,
     /// An argument or term type was invalid for the opcode.
     Badarg,
+    /// Attempted to call a term that is not a closure.
+    Badfun { term: crate::term::Term },
+    /// Attempted to call a closure with the wrong number of arguments.
+    Badarity {
+        fun: crate::term::Term,
+        args: Vec<crate::term::Term>,
+    },
     /// User code exited explicitly.
     UserExit,
     /// Decoded instruction opcode is not known to the VM.
@@ -94,6 +101,13 @@ impl fmt::Display for ExecError {
             ),
             Self::Badarith => formatter.write_str("arithmetic operation failed"),
             Self::Badarg => formatter.write_str("bad argument"),
+            Self::Badfun { term } => write!(formatter, "bad function term {term:?}"),
+            Self::Badarity { fun, args } => {
+                write!(
+                    formatter,
+                    "bad arity for function {fun:?} with args {args:?}"
+                )
+            }
             Self::UserExit => formatter.write_str("process exited explicitly"),
             Self::UnknownOpcode { opcode } => write!(formatter, "unknown opcode {opcode}"),
             Self::UnsupportedOpcode { name } => write!(formatter, "unsupported opcode {name}"),

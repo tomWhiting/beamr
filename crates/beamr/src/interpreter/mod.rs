@@ -7,8 +7,8 @@ pub mod opcodes;
 pub mod pattern;
 
 use crate::error::ExecError;
-use crate::module::Module;
-use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
+use crate::module::{Module, ModuleRegistry};
+use crate::process::{CodePosition, ExitReason, Process};
 
 /// Result of running a process until it yields, waits, exits, or faults.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -38,18 +38,26 @@ pub enum InstructionOutcome {
 
 /// Execute `process` against `module` until a scheduler boundary or exit.
 pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, ExecError> {
-    if matches!(
-        process.status(),
-        ProcessStatus::New | ProcessStatus::Yielded | ProcessStatus::Waiting
-    ) {
-        process
-            .transition_to(ProcessStatus::Running)
-            .map_err(|_| ExecError::Badarg)?;
-    }
+    run_loop(process, module, None)
+}
 
+/// Execute `process` with a registry so dynamic calls can cross module boundaries.
+pub fn run_with_registry(
+    process: &mut Process,
+    initial_module: &Module,
+    registry: &ModuleRegistry,
+) -> Result<ExecutionResult, ExecError> {
+    run_loop(process, initial_module, Some(registry))
+}
+
+fn run_loop(
+    process: &mut Process,
+    initial_module: &Module,
+    registry: Option<&ModuleRegistry>,
+) -> Result<ExecutionResult, ExecError> {
     if process.code_position().is_none() {
         process.set_code_position(Some(CodePosition {
-            module: module.name,
+            module: initial_module.name,
             instruction_pointer: 0,
         }));
     }
@@ -58,6 +66,11 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         let position = process
             .code_position()
             .ok_or(ExecError::InvalidOperand("code position"))?;
+        let module_guard = registry.and_then(|registry| registry.lookup(position.module));
+        let module = module_guard.as_deref().unwrap_or(initial_module);
+        if module.name != position.module {
+            return Err(ExecError::InvalidOperand("code position module"));
+        }
         let instruction = module
             .code
             .get(position.instruction_pointer)
@@ -67,7 +80,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
             .checked_add(1)
             .ok_or(ExecError::InvalidOperand("instruction pointer"))?;
 
-        match opcodes::dispatch(process, module, instruction, next_ip)? {
+        match opcodes::dispatch(process, module, registry, instruction, next_ip)? {
             InstructionOutcome::Continue => process.set_code_position(Some(CodePosition {
                 module: module.name,
                 instruction_pointer: next_ip,
@@ -76,11 +89,6 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
             InstructionOutcome::Yield => return Ok(ExecutionResult::Yielded),
             InstructionOutcome::Waiting => return Ok(ExecutionResult::Waiting),
             InstructionOutcome::Exit(reason) => {
-                if process.status() == ProcessStatus::Running {
-                    process
-                        .transition_to(ProcessStatus::Exited(reason))
-                        .map_err(|_| ExecError::Badarg)?;
-                }
                 process.set_code_position(None);
                 return Ok(ExecutionResult::Exited(reason));
             }

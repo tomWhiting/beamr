@@ -264,7 +264,7 @@ fn push_y_frame(
     Ok(InstructionOutcome::Continue)
 }
 
-fn deallocate_frame(process: &mut Process, words: &Operand) -> Result<(), ExecError> {
+pub(crate) fn deallocate_frame(process: &mut Process, words: &Operand) -> Result<(), ExecError> {
     let _words = operand_u16(words, "deallocate words")?;
     let _ = process.stack_mut().pop_frame().map_err(ExecError::from)?;
     Ok(())
@@ -284,7 +284,7 @@ fn jump_with_reduction(
     )
 }
 
-fn jump_position_with_reduction(
+pub(crate) fn jump_position_with_reduction(
     process: &mut Process,
     target: CodePosition,
 ) -> Result<InstructionOutcome, ExecError> {
