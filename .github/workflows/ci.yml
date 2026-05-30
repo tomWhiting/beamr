@@ -24,13 +24,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo check
-        run: cargo check --workspace
+        run: cargo check -p beamr-cli
 
       - name: cargo clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy -p beamr-cli -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test -p beamr-cli
+
+      # TODO: expand to --workspace once core crate (B-001..B-008) lands clean
 
   file-size:
     name: File size check

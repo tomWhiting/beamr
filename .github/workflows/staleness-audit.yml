@@ -44,9 +44,9 @@ jobs:
             fi
           done
 
-          # Check component tracker for items not progressing
+          # Check component tracker for items not progressing (exclude rows with Done/Merged/PR)
           if [ -f docs/governance/COMPONENT-TRACKER.md ]; then
-            stalled=$(grep -c '| -- | -- | B-' docs/governance/COMPONENT-TRACKER.md || true)
+            stalled=$(grep '| -- | -- | B-' docs/governance/COMPONENT-TRACKER.md | grep -cv 'Done\|Merged\|PR #' || true)
             total=$(grep -c '| B-' docs/governance/COMPONENT-TRACKER.md || true)
             if [ "$stalled" -gt 0 ]; then
               findings="${findings}- **${stalled}/${total}** components have no research or implementation started\n"
@@ -59,7 +59,7 @@ jobs:
           else
             echo "has_findings=true" >> "$GITHUB_OUTPUT"
             # Write findings to file for the issue body
-            printf "%s" "$findings" > /tmp/findings.txt
+            printf "%b" "$findings" > /tmp/findings.txt
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

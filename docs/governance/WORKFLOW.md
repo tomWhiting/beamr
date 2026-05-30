@@ -12,10 +12,10 @@ How beamr gets built. Every component follows this pipeline. No shortcuts.
 | Reverend Chaos | Enforcer | No | Briefs (rule compliance) |
 | A Swarm of Bees | Code reviewer #1 | No | Code (correctness, R# compliance) |
 | Dame Lisette Frami | Code reviewer #2 | No | Code (quality, conventions, safety) |
-| Norn | Builder | ALL execution | -- |
+| Norn | Builder | ALL execution | First-pass (self-review in workflow) |
 | bearup | Project owner | No | Final authority, escalation target |
 
-**Rule:** Team agents direct and coordinate. Norn executes ALL analysis, builds, and reviews. No agent writes code directly.
+**Rule:** Team agents direct and coordinate. Norn executes all analysis, builds, and first-pass self-review. Team reviewers (Swarm, Dame Lisette) perform independent gate reviews. No agent writes code directly.
 
 ## Pipeline
 
@@ -66,11 +66,22 @@ norn -p -q \
 **Executor:** Norn via onatopp-dev-norn workflow
 
 **How:**
+
+For exact dispatch commands, see [WORKFLOW-RUNBOOK.md](../WORKFLOW-RUNBOOK.md). The canonical form:
+
 ```bash
-just -f .meridian/workflows/onatopp-dev-norn/justfile run \
-  docs/design/beamr/briefs/B-NNN.json \
-  docs/design/beamr/design.json
+meridian workflow run onatopp-dev-norn \
+  --workspace "$WS" --as "$ME" \
+  --worktree --base main \
+  --input brief="$(cat docs/design/beamr/briefs/B-NNN.json)" \
+  --input checklist_content="$(cat docs/design/beamr/checklist.json)" \
+  --input stories_content="$(cat docs/design/beamr/stories.json)" \
+  --input notify="<member name>" \
+  --input run-name="beamr B-NNN" \
+  --text
 ```
+
+Do NOT pass `design_content` — beamr has no design.json (only DESIGN.md markdown). The workflow handles this correctly when omitted.
 
 This runs: scout (read-only exploration) → dev (implement all R#s) → commit → review (harden + verify) → commit.
 
@@ -81,7 +92,7 @@ This runs: scout (read-only exploration) → dev (implement all R#s) → commit 
 - `cargo clippy --workspace -- -D warnings` green
 - `cargo test` all pass
 - Every R# acceptance criterion met
-- No `.unwrap()` / `.panic!()` outside `#[cfg(test)]`
+- No `.unwrap()` / `panic!()` outside `#[cfg(test)]`
 - No file over 500 lines
 - Term = raw u64 (ADR-004), not Rust enum
 
@@ -159,10 +170,10 @@ GitHub Actions runs cargo check + clippy + test on every PR to main. See `.githu
 ### Staleness audit (every 6 hours)
 
 GitHub Actions checks for:
-- Components stuck in a stage for more than 48 hours
-- Open PRs with no reviewer response for more than 24 hours
+- Open PRs with no review decision
 - josh/dev more than 3 commits ahead of main without a PR
-- Architecture research docs that are empty or incomplete
+- Architecture research docs that are empty
+- Components with no research or implementation started
 
 Results posted as a GitHub issue with label `staleness-audit`.
 
