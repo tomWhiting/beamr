@@ -5,7 +5,11 @@
 #   ./scripts/norn-pr-review.sh <PR_NUMBER>
 #   ./scripts/norn-pr-review.sh --poll          # Check all open PRs, review unreviewed ones
 #
-# Requires: norn, gh, jq on PATH. GITHUB_TOKEN set or gh auth login done.
+# Requires: norn, gh, jq on PATH. gh auth login done (PAT must have comment rights on repo).
+#
+# Limitations:
+#   - Re-review after new commits: not automatic. Re-run manually or use --force.
+#     The marker check only prevents duplicate first reviews.
 
 set -euo pipefail
 
@@ -24,14 +28,19 @@ review_pr() {
 
     echo "=== Reviewing PR #${pr_num} ==="
 
-    # Fetch PR metadata
+    # Fetch PR metadata (separate declarations from assignments to preserve exit status)
     local pr_info
     pr_info=$(gh pr view "$pr_num" --json title,body,headRefName,baseRefName,changedFiles,additions,deletions)
-    local title=$(echo "$pr_info" | jq -r '.title')
-    local base=$(echo "$pr_info" | jq -r '.baseRefName')
-    local head=$(echo "$pr_info" | jq -r '.headRefName')
-    local additions=$(echo "$pr_info" | jq -r '.additions')
-    local deletions=$(echo "$pr_info" | jq -r '.deletions')
+    local title
+    title=$(echo "$pr_info" | jq -r '.title')
+    local base
+    base=$(echo "$pr_info" | jq -r '.baseRefName')
+    local head
+    head=$(echo "$pr_info" | jq -r '.headRefName')
+    local additions
+    additions=$(echo "$pr_info" | jq -r '.additions')
+    local deletions
+    deletions=$(echo "$pr_info" | jq -r '.deletions')
 
     echo "PR: $title ($head -> $base, +$additions -$deletions)"
 
@@ -75,20 +84,28 @@ Provide your review as structured findings. For each issue found:
 End with a summary verdict: APPROVE (no blocking issues), REQUEST_CHANGES (blocking issues found), or COMMENT (non-blocking suggestions only).
 PROMPT
 
-    # Run norn reviewer
+    # Run norn reviewer (stderr kept for diagnostics)
     echo "--- NORN REVIEW ---"
-    local start=$(date +%s)
+    local start
+    start=$(date +%s)
     local review_output
     review_output=$(norn -p -q \
         --profile "$PROFILE" \
         --max-turns 30 \
         --timeout 10m \
-        -- "$(cat "$REVIEW_DIR/pr-${pr_num}-prompt.md")" 2>/dev/null) || {
+        -- "$(cat "$REVIEW_DIR/pr-${pr_num}-prompt.md")" 2>&1) || {
         echo "ERROR: norn review failed (exit $?)"
+        echo "Output: $review_output"
         return 1
     }
     local elapsed=$(( $(date +%s) - start ))
     echo "Review completed in ${elapsed}s"
+
+    # Guard: don't post empty reviews
+    if [ -z "$review_output" ]; then
+        echo "WARNING: norn returned empty output, skipping comment"
+        return 1
+    fi
 
     # Save review output
     echo "$review_output" > "$review_file"
@@ -102,8 +119,12 @@ ${review_output}
 ---
 _Reviewed by norn (${elapsed}s) using profile: norn-reviewer_"
 
-    gh pr comment "$pr_num" --body "$comment_body"
-    echo "Posted review comment to PR #${pr_num}"
+    if gh pr comment "$pr_num" --body "$comment_body"; then
+        echo "Posted review comment to PR #${pr_num}"
+    else
+        echo "WARNING: Failed to post comment (check gh auth / repo permissions)"
+        echo "Review saved to: $review_file"
+    fi
 }
 
 has_norn_review() {
@@ -124,8 +145,10 @@ poll_prs() {
     fi
 
     while IFS= read -r line; do
-        local pr_num=$(echo "$line" | awk '{print $1}')
-        local pr_title=$(echo "$line" | cut -d' ' -f2-)
+        local pr_num
+        pr_num=$(echo "$line" | awk '{print $1}')
+        local pr_title
+        pr_title=$(echo "$line" | cut -d' ' -f2-)
 
         if has_norn_review "$pr_num"; then
             echo "PR #${pr_num} already reviewed, skipping: ${pr_title}"

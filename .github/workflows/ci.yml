@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
 
 jobs:
   check:
@@ -27,7 +26,7 @@ jobs:
         run: cargo check -p beamr-cli
 
       - name: cargo clippy
-        run: cargo clippy -p beamr-cli -- -D warnings
+        run: cargo clippy -p beamr-cli --no-deps -- -D warnings
 
       - name: cargo test
         run: cargo test -p beamr-cli

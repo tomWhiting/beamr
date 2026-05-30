@@ -179,12 +179,16 @@ Results posted as a GitHub issue with label `staleness-audit`.
 
 See `.github/workflows/staleness-audit.yml`.
 
-### PR review handler
+### Norn PR review (on-demand or scheduled)
 
-When Tom or bob push PRs, CI validates automatically. For deeper review:
-- Team reviewers get notified via the staleness audit
-- Codex-based automated review can be enabled via GitHub (bearup to configure)
-- Manual review follows Stage 4 protocol
+`scripts/norn-pr-review.sh` runs norn with the norn-reviewer profile against a PR diff and posts findings as a PR comment.
+
+```bash
+./scripts/norn-pr-review.sh 3        # review specific PR
+./scripts/norn-pr-review.sh --poll   # review all unreviewed open PRs
+```
+
+Can be scheduled via LaunchAgent (`scripts/com.beamr.norn-pr-review.plist`, every 30 min). Team reviewers (Swarm, Dame Lisette) perform gate review per Stage 4.
 
 ## Dispatch reference
 
