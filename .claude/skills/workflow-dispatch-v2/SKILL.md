@@ -24,10 +24,6 @@ When your own session has been linked into the workspace ACL, prefer dispatching
 
 Restart the v2 server after a rebuild or config change:
 
-```bash
-nohup meridian serve start --foreground --config ~/.meridian/v2-config.toml \
-  > /tmp/meridian-v2-$(date +%Y%m%d-%H%M).log 2>&1 </dev/null & disown
-```
 
 ## CLI Reference
 
