@@ -41,7 +41,7 @@ pub fn validate_module(
             &labels,
             &functions,
         )?;
-        update_frame_size(instruction, &mut current_frame_size)?;
+        update_frame_size(index, instruction, &mut current_frame_size)?;
     }
 
     Ok(())
@@ -199,6 +199,7 @@ fn validate_control_flow(
 }
 
 fn update_frame_size(
+    instruction_index: usize,
     instruction: &Instruction,
     current_frame_size: &mut Option<u32>,
 ) -> Result<(), LoadError> {
@@ -207,9 +208,12 @@ fn update_frame_size(
         | Instruction::AllocateHeap { stack_need, .. }
         | Instruction::AllocateZero { stack_need, .. } => {
             *current_frame_size = Some(operand_to_u32(stack_need).ok_or_else(|| {
-                LoadError::ValidationError(format!(
-                    "allocate stack frame operand {stack_need:?} is not an unsigned integer"
-                ))
+                validation_error(
+                    instruction_index,
+                    format!(
+                        "allocate stack frame operand {stack_need:?} is not an unsigned integer"
+                    ),
+                )
             })?);
         }
         Instruction::Deallocate { .. } => *current_frame_size = None,

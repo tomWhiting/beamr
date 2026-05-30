@@ -354,7 +354,13 @@ mod tests {
             &registry.lookup(module.name).expect("registered module"),
             &module
         ));
-        assert!(!report.is_empty());
+        let unresolved = report.imports();
+        assert!(!unresolved.is_empty());
+        assert!(unresolved.iter().any(|entry| {
+            atoms.resolve(entry.module) == Some("erlang")
+                && atoms.resolve(entry.function) == Some("get_module_info")
+                && entry.arity == 1
+        }));
     }
 
     #[test]
