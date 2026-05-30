@@ -11,6 +11,7 @@ mod context;
 pub mod links;
 pub mod process_bifs;
 pub mod spawn;
+pub mod stdlib_stubs;
 pub mod supervision;
 
 use std::collections::HashMap;
