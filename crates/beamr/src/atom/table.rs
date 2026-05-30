@@ -35,6 +35,11 @@ impl Atom {
     pub const DOWN: Self = Self(21);
     pub const PROCESS: Self = Self(22);
     pub const TRAP_EXIT: Self = Self(23);
+    pub const BADKEY: Self = Self(24);
+    pub const FLUSH: Self = Self(25);
+    pub const INFO: Self = Self(26);
+    pub const UTF8: Self = Self(27);
+    pub const LATIN1: Self = Self(28);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -70,6 +75,11 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("DOWN", Atom::DOWN),
     ("process", Atom::PROCESS),
     ("trap_exit", Atom::TRAP_EXIT),
+    ("badkey", Atom::BADKEY),
+    ("flush", Atom::FLUSH),
+    ("info", Atom::INFO),
+    ("utf8", Atom::UTF8),
+    ("latin1", Atom::LATIN1),
 ];
 
 /// Concurrent intern table for atom strings.
@@ -127,6 +137,16 @@ impl AtomTable {
                 atom
             }
         }
+    }
+
+    /// Look up an atom by name without interning it.
+    ///
+    /// Returns `Some(atom)` if the name has already been interned,
+    /// `None` otherwise. Used by `binary_to_existing_atom` which must
+    /// not create new atom table entries.
+    #[must_use]
+    pub fn lookup(&self, name: &str) -> Option<Atom> {
+        self.by_name.get(name).map(|entry| *entry)
     }
 
     /// Resolve an atom back to its original string.

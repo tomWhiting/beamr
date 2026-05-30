@@ -1,15 +1,25 @@
-//! Gate 3 erlang BIFs — element, send, make_ref, spawn/1, type queries.
+//! Gate 3 erlang BIFs — element, send, make_ref, spawn/1, type queries,
+//! type conversion, process registry, and demonitor/2.
 //!
 //! These BIFs are required by gleam_erlang and gleam_otp before OTP modules
 //! can execute. They follow the same registration pattern as Gate 1
 //! (arithmetic) and Gate 2 (process lifecycle).
+
+mod registry_bifs;
+mod type_conversion;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
 use crate::term::Term;
-use crate::term::boxed::Tuple;
+use crate::term::boxed::{Cons, Tuple};
+
+pub use registry_bifs::{bif_register, bif_unregister, bif_whereis};
+pub use type_conversion::{
+    bif_atom_to_binary, bif_binary_to_existing_atom, bif_binary_to_list, bif_list_to_binary,
+    bif_map_get,
+};
 
 type Gate3Bif = (&'static str, u8, NativeFn);
 
@@ -21,6 +31,18 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("is_process_alive", 1, bif_is_process_alive),
     ("spawn", 1, bif_spawn_1),
     ("spawn_link", 1, bif_spawn_link_1),
+    // Type conversion BIFs (R1)
+    ("atom_to_binary", 2, bif_atom_to_binary),
+    ("binary_to_existing_atom", 1, bif_binary_to_existing_atom),
+    ("binary_to_list", 1, bif_binary_to_list),
+    ("list_to_binary", 1, bif_list_to_binary),
+    ("map_get", 2, bif_map_get),
+    // Process registry BIFs (R2)
+    ("register", 2, bif_register),
+    ("unregister", 1, bif_unregister),
+    ("whereis", 1, bif_whereis),
+    // demonitor/2 (R3)
+    ("demonitor", 2, bif_demonitor_2),
 ];
 
 /// Global monotonic counter for make_ref/0.
@@ -192,6 +214,63 @@ fn spawn_from_fun(args: &[Term], context: &mut ProcessContext, link: bool) -> Re
     Term::try_pid(new_pid).ok_or_else(badarg)
 }
 
+/// erlang:demonitor/2 — remove a monitor with options.
+///
+/// Options is a list that may contain:
+/// - `flush` — removes the monitor and flushes any pending DOWN message
+/// - `info` — returns `true` if the monitor was active, `false` otherwise
+///
+/// An empty options list behaves like demonitor/1.
+pub fn bif_demonitor_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [ref_term, opts_term] = args else {
+        return Err(badarg());
+    };
+    let reference = ref_term.as_small_int().ok_or_else(badarg)?;
+    if reference < 0 {
+        return Err(badarg());
+    }
+
+    let mut opt_flush = false;
+    let mut opt_info = false;
+
+    let mut current = *opts_term;
+    loop {
+        if current.is_nil() {
+            break;
+        }
+        let cons = Cons::new(current).ok_or_else(badarg)?;
+        let opt = cons.head().as_atom().ok_or_else(badarg)?;
+        if opt == Atom::FLUSH {
+            opt_flush = true;
+        } else if opt == Atom::INFO {
+            opt_info = true;
+        } else {
+            return Err(badarg());
+        }
+        current = cons.tail();
+    }
+
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let facility = context.supervision_facility().ok_or_else(badarg)?;
+    let result = facility.demonitor(caller_pid, reference as u64);
+
+    // `flush` option: in a real implementation this would also flush
+    // any pending DOWN message from the mailbox. Since BIFs don't
+    // have mailbox access, the flush is a no-op for now (the monitor
+    // removal itself is the primary effect).
+    let _ = opt_flush;
+
+    if opt_info {
+        // Return true if monitor was active (demonitor succeeded),
+        // false if it was already gone.
+        Ok(bool_term(result.is_ok()))
+    } else {
+        // Without info, always return true (like demonitor/1).
+        result.map_err(|_| badarg())?;
+        Ok(bool_term(true))
+    }
+}
+
 fn bool_term(value: bool) -> Term {
     Term::atom(if value { Atom::TRUE } else { Atom::FALSE })
 }
@@ -203,3 +282,7 @@ fn badarg() -> Term {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "demonitor2_tests.rs"]
+mod demonitor2_tests;

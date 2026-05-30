@@ -10,6 +10,7 @@ pub mod gate3_bifs;
 mod context;
 pub mod links;
 pub mod process_bifs;
+pub mod registry;
 pub mod spawn;
 pub mod stdlib_stubs;
 pub mod supervision;
@@ -24,6 +25,7 @@ use crate::term::Term;
 
 pub use context::ProcessContext;
 pub use links::LinkFacility;
+pub use registry::RegistryFacility;
 pub use spawn::SpawnFacility;
 pub use supervision::SupervisionFacility;
 

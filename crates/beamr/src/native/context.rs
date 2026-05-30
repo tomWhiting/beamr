@@ -7,10 +7,12 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::atom::AtomTable;
 use crate::term::Term;
 use crate::timer::{TimerRef, TimerWheel};
 
 use super::links::LinkFacility;
+use super::registry::RegistryFacility;
 use super::spawn::SpawnFacility;
 use super::supervision::SupervisionFacility;
 
@@ -21,9 +23,11 @@ use super::supervision::SupervisionFacility;
 pub struct ProcessContext {
     pid: Option<u64>,
     timers: Option<Arc<Mutex<TimerWheel>>>,
+    atom_table: Option<Arc<AtomTable>>,
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
     link_facility: Option<Arc<dyn LinkFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
+    registry_facility: Option<Arc<dyn RegistryFacility>>,
 }
 
 impl fmt::Debug for ProcessContext {
@@ -31,6 +35,7 @@ impl fmt::Debug for ProcessContext {
         f.debug_struct("ProcessContext")
             .field("pid", &self.pid)
             .field("timers", &self.timers)
+            .field("atom_table", &self.atom_table.as_ref().map(|_| ".."))
             .field(
                 "spawn_facility",
                 &self.spawn_facility.as_ref().map(|_| ".."),
@@ -42,6 +47,10 @@ impl fmt::Debug for ProcessContext {
             .field(
                 "supervision_facility",
                 &self.supervision_facility.as_ref().map(|_| ".."),
+            )
+            .field(
+                "registry_facility",
+                &self.registry_facility.as_ref().map(|_| ".."),
             )
             .finish()
     }
@@ -60,9 +69,11 @@ impl ProcessContext {
         Self {
             pid: None,
             timers: None,
+            atom_table: None,
             spawn_facility: None,
             link_facility: None,
             supervision_facility: None,
+            registry_facility: None,
         }
     }
 
@@ -72,9 +83,11 @@ impl ProcessContext {
         Self {
             pid: Some(pid),
             timers: Some(timers),
+            atom_table: None,
             spawn_facility: None,
             link_facility: None,
             supervision_facility: None,
+            registry_facility: None,
         }
     }
 
@@ -120,6 +133,28 @@ impl ProcessContext {
     /// Set the supervision facility for monitor/demonitor/exit BIFs.
     pub fn set_supervision_facility(&mut self, facility: Option<Arc<dyn SupervisionFacility>>) {
         self.supervision_facility = facility;
+    }
+
+    /// Return the atom table, if one has been configured.
+    #[must_use]
+    pub fn atom_table(&self) -> Option<&AtomTable> {
+        self.atom_table.as_deref()
+    }
+
+    /// Set the atom table for type conversion BIFs.
+    pub fn set_atom_table(&mut self, table: Option<Arc<AtomTable>>) {
+        self.atom_table = table;
+    }
+
+    /// Return the registry facility, if one has been configured.
+    #[must_use]
+    pub fn registry_facility(&self) -> Option<&dyn RegistryFacility> {
+        self.registry_facility.as_deref()
+    }
+
+    /// Set the registry facility for process name registry BIFs.
+    pub fn set_registry_facility(&mut self, facility: Option<Arc<dyn RegistryFacility>>) {
+        self.registry_facility = facility;
     }
 
     /// Schedule a timer via the runtime timer wheel.

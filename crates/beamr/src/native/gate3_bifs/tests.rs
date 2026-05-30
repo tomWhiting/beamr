@@ -342,6 +342,18 @@ fn register_gate3_bifs_registers_all() {
         ("is_process_alive", 1),
         ("spawn", 1),
         ("spawn_link", 1),
+        // Type conversion BIFs (R1)
+        ("atom_to_binary", 2),
+        ("binary_to_existing_atom", 1),
+        ("binary_to_list", 1),
+        ("list_to_binary", 1),
+        ("map_get", 2),
+        // Process registry BIFs (R2)
+        ("register", 2),
+        ("unregister", 1),
+        ("whereis", 1),
+        // demonitor/2 (R3)
+        ("demonitor", 2),
     ] {
         assert!(
             reg.lookup(erlang, at.intern(name), arity).is_some(),
