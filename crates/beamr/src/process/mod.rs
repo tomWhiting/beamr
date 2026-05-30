@@ -36,13 +36,22 @@ pub struct CodePosition {
     pub instruction_pointer: usize,
 }
 
+/// A process register addressed by BEAM X/Y register operands.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Register {
+    /// X register index.
+    X(u8),
+    /// Y register index in the current stack frame.
+    Y(u16),
+}
+
 /// A try/catch handler installed by BEAM try-family opcodes.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ExceptionHandler {
     /// Label/IP to jump to when an exception is raised.
     pub catch_position: CodePosition,
-    /// Destination operand index supplied by the decoded try/catch instruction.
-    pub destination: u8,
+    /// Destination register supplied by the decoded try/catch instruction.
+    pub destination: Register,
 }
 
 /// Exception payload propagated through try handlers.

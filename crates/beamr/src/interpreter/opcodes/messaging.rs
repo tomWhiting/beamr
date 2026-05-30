@@ -8,6 +8,7 @@ use crate::loader::decode::compact::Operand;
 use crate::module::Module;
 use crate::process::{
     CodePosition, Exception, ExceptionHandler, ExitReason, Process, ProcessStatus, ReceiveTimeout,
+    Register,
 };
 use crate::term::Term;
 use crate::term::boxed::write_tuple;
@@ -84,9 +85,13 @@ pub fn wait_timeout(
 ) -> Result<InstructionOutcome, ExecError> {
     let continuation = label_position(module, fail)?;
     let milliseconds = timeout_milliseconds(process, timeout)?;
-    process.set_code_position(Some(continuation));
+    let timeout_position = continuation;
+    process.set_code_position(Some(CodePosition {
+        module: module.name,
+        instruction_pointer: next_instruction_pointer(continuation.instruction_pointer)?,
+    }));
     process.set_receive_timeout(Some(ReceiveTimeout {
-        timeout_position: continuation,
+        timeout_position,
         milliseconds,
     }));
     transition_to_waiting(process)?;
@@ -106,7 +111,7 @@ pub fn try_(
     destination: &Operand,
     label: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
-    let destination = register_index(destination)?;
+    let destination = register(destination)?;
     let catch_position = label_position(module, label)?;
     process.push_exception_handler(ExceptionHandler {
         catch_position,
@@ -116,18 +121,24 @@ pub fn try_(
 }
 
 pub fn try_end(process: &mut Process, source: &Operand) -> Result<InstructionOutcome, ExecError> {
-    let _ = register_index(source)?;
+    let _ = register(source)?;
     let _ = process.pop_exception_handler();
     process.set_current_exception(None);
     Ok(InstructionOutcome::Continue)
 }
 
 pub fn try_case(process: &mut Process, source: &Operand) -> Result<InstructionOutcome, ExecError> {
-    let base = register_index(source)?;
+    let base = x_register_index(source)?;
     if let Some(exception) = process.current_exception() {
+        let reason = base
+            .checked_add(1)
+            .ok_or(ExecError::InvalidOperand("try_case registers"))?;
+        let stacktrace = base
+            .checked_add(2)
+            .ok_or(ExecError::InvalidOperand("try_case registers"))?;
         process.set_x_reg(base, exception.class);
-        process.set_x_reg(base.saturating_add(1), exception.reason);
-        process.set_x_reg(base.saturating_add(2), exception.stacktrace);
+        process.set_x_reg(reason, exception.reason);
+        process.set_x_reg(stacktrace, exception.stacktrace);
     }
     Ok(InstructionOutcome::Continue)
 }
@@ -184,7 +195,7 @@ pub fn raise_exception(
 ) -> Result<InstructionOutcome, ExecError> {
     if let Some(handler) = process.pop_exception_handler() {
         process.set_current_exception(Some(exception));
-        process.set_x_reg(handler.destination, exception.reason);
+        write_register(process, handler.destination, exception.reason)?;
         Ok(InstructionOutcome::Jump(handler.catch_position))
     } else {
         process.set_current_exception(Some(exception));
@@ -213,6 +224,12 @@ fn label_position(module: &Module, label: &Operand) -> Result<CodePosition, Exec
     })
 }
 
+fn next_instruction_pointer(instruction_pointer: usize) -> Result<usize, ExecError> {
+    instruction_pointer
+        .checked_add(1)
+        .ok_or(ExecError::InvalidOperand("instruction pointer"))
+}
+
 fn transition_to_waiting(process: &mut Process) -> Result<(), ExecError> {
     if process.status() == ProcessStatus::New {
         process
@@ -235,13 +252,40 @@ fn timeout_milliseconds(process: &Process, operand: &Operand) -> Result<u64, Exe
     }
 }
 
-fn register_index(operand: &Operand) -> Result<u8, ExecError> {
+fn register(operand: &Operand) -> Result<Register, ExecError> {
     match operand {
-        Operand::X(index) | Operand::Y(index) => {
-            u8::try_from(*index).map_err(|_| ExecError::InvalidOperand("register"))
-        }
-        Operand::TypedRegister { register, .. } => register_index(register),
+        Operand::X(index) => u8::try_from(*index)
+            .map(Register::X)
+            .map_err(|_| ExecError::InvalidOperand("X register")),
+        Operand::Y(index) => u16::try_from(*index)
+            .map(Register::Y)
+            .map_err(|_| ExecError::InvalidOperand("Y register")),
+        Operand::TypedRegister { register, .. } => self::register(register),
         _ => Err(ExecError::InvalidOperand("register")),
+    }
+}
+
+fn x_register_index(operand: &Operand) -> Result<u8, ExecError> {
+    match register(operand)? {
+        Register::X(index) => Ok(index),
+        Register::Y(_) => Err(ExecError::InvalidOperand("X register")),
+    }
+}
+
+fn write_register(
+    process: &mut Process,
+    destination: Register,
+    value: Term,
+) -> Result<(), ExecError> {
+    match destination {
+        Register::X(index) => {
+            process.set_x_reg(index, value);
+            Ok(())
+        }
+        Register::Y(index) => process
+            .stack_mut()
+            .set_y_reg(index, value)
+            .map_err(ExecError::from),
     }
 }
 
@@ -261,6 +305,7 @@ fn send_error(error: crate::mailbox::SendError) -> ExecError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interpreter::{ExecutionResult, run};
     use crate::loader::Instruction;
     use crate::term::boxed::Tuple;
     use std::collections::HashMap;
@@ -303,6 +348,47 @@ mod tests {
 
         assert_eq!(send(&mut sender, None), Ok(InstructionOutcome::Continue));
         assert_eq!(sender.x_reg(0), Term::atom(Atom::OK));
+    }
+
+    #[test]
+    fn dispatch_send_delivers_to_resolved_process_and_receiver_selectively_receives() {
+        let send_code = module(vec![Instruction::Send]);
+        let receive_code = module(vec![
+            Instruction::LoopRec {
+                fail: Operand::Label(10),
+                destination: Operand::X(0),
+            },
+            Instruction::RemoveMessage,
+            Instruction::Return,
+            Instruction::Label { label: 10 },
+            Instruction::Wait {
+                fail: Operand::Label(10),
+            },
+        ]);
+        let mut sender = Process::new(0, 32);
+        let mut receiver = Process::new(1, 32);
+        let message = Term::atom(Atom::OK);
+        sender.set_x_reg(0, Term::pid(1));
+        sender.set_x_reg(1, message);
+
+        assert_eq!(
+            crate::interpreter::opcodes::dispatch_with_receiver(
+                &mut sender,
+                &send_code,
+                &Instruction::Send,
+                1,
+                Some(&mut receiver),
+            ),
+            Ok(InstructionOutcome::Continue)
+        );
+        assert_eq!(sender.x_reg(0), message);
+
+        assert_eq!(
+            run(&mut receiver, &receive_code),
+            Ok(ExecutionResult::Exited(ExitReason::Normal))
+        );
+        assert_eq!(receiver.x_reg(0), message);
+        assert!(receiver.mailbox().is_empty());
     }
 
     #[test]
@@ -385,6 +471,110 @@ mod tests {
             .expect("waiting can resume");
         assert_eq!(timeout(&mut process), Ok(InstructionOutcome::Continue));
         assert_eq!(process.receive_timeout(), None);
+    }
+
+    #[test]
+    fn run_wait_suspends_and_send_wakes_waiting_receiver() {
+        let wait_code = module(vec![
+            Instruction::Label { label: 10 },
+            Instruction::Wait {
+                fail: Operand::Label(10),
+            },
+        ]);
+        let mut sender = Process::new(0, 32);
+        let mut receiver = Process::new(1, 32);
+
+        assert_eq!(run(&mut receiver, &wait_code), Ok(ExecutionResult::Waiting));
+        assert_eq!(receiver.status(), ProcessStatus::Waiting);
+        sender.set_x_reg(0, Term::pid(1));
+        sender.set_x_reg(1, Term::atom(Atom::OK));
+
+        assert_eq!(
+            send(&mut sender, Some(&mut receiver)),
+            Ok(InstructionOutcome::Continue)
+        );
+        assert_eq!(receiver.status(), ProcessStatus::Running);
+        assert_eq!(
+            receiver.mailbox_mut().current_message(),
+            Some(Term::atom(Atom::OK))
+        );
+    }
+
+    #[test]
+    fn dispatch_wait_timeout_records_deadline_and_timeout_cleans_receive_state() {
+        let timeout_code = module(vec![
+            Instruction::WaitTimeout {
+                fail: Operand::Label(10),
+                timeout: Operand::Unsigned(100),
+            },
+            Instruction::Label { label: 10 },
+            Instruction::Timeout,
+            Instruction::Return,
+            Instruction::Label { label: 20 },
+            Instruction::Return,
+        ]);
+        let mut process = Process::new(1, 32);
+
+        assert_eq!(
+            run(&mut process, &timeout_code),
+            Ok(ExecutionResult::Waiting)
+        );
+        assert_eq!(process.status(), ProcessStatus::Waiting);
+        assert_eq!(
+            process.code_position(),
+            Some(CodePosition {
+                module: Atom::OK,
+                instruction_pointer: 2,
+            }),
+            "a message wakeup resumes at the normal continuation after the wait timeout label"
+        );
+        assert_eq!(
+            process.receive_timeout(),
+            Some(ReceiveTimeout {
+                timeout_position: CodePosition {
+                    module: Atom::OK,
+                    instruction_pointer: 1,
+                },
+                milliseconds: 100,
+            })
+        );
+
+        process
+            .transition_to(ProcessStatus::Running)
+            .expect("timeout expiry requeues process");
+        process.set_code_position(
+            process
+                .receive_timeout()
+                .map(|timeout| timeout.timeout_position),
+        );
+        assert_eq!(
+            run(&mut process, &timeout_code),
+            Ok(ExecutionResult::Exited(ExitReason::Normal))
+        );
+        assert_eq!(process.receive_timeout(), None);
+
+        let message_code = module(vec![
+            Instruction::WaitTimeout {
+                fail: Operand::Label(20),
+                timeout: Operand::Unsigned(100),
+            },
+            Instruction::Return,
+            Instruction::Label { label: 20 },
+            Instruction::Timeout,
+            Instruction::Return,
+        ]);
+        let mut process = Process::new(2, 32);
+        assert_eq!(
+            run(&mut process, &message_code),
+            Ok(ExecutionResult::Waiting)
+        );
+        process
+            .transition_to(ProcessStatus::Running)
+            .expect("message arrival requeues process");
+        assert_eq!(
+            run(&mut process, &message_code),
+            Ok(ExecutionResult::Exited(ExitReason::Normal))
+        );
     }
 
     #[test]

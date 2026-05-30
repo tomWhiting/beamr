@@ -4,8 +4,6 @@
 //! live in [`core`]; later opcode families can add sibling modules without
 //! changing the execution loop.
 
-pub mod binary;
-pub mod closures;
 pub mod core;
 pub mod guards;
 pub mod messaging;
@@ -13,16 +11,31 @@ pub mod messaging;
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::Instruction;
-use crate::module::{Module, ModuleRegistry};
+use crate::module::Module;
 use crate::process::Process;
 
 /// Dispatch one already-fetched instruction.
 pub fn dispatch(
     process: &mut Process,
     module: &Module,
-    registry: Option<&ModuleRegistry>,
     instruction: &Instruction,
     next_ip: usize,
+) -> Result<InstructionOutcome, ExecError> {
+    dispatch_with_receiver(process, module, instruction, next_ip, None)
+}
+
+/// Dispatch one already-fetched instruction with an optional send target process.
+///
+/// The single-process execution loop calls [`dispatch`] and therefore treats a
+/// missing send target as BEAM's silent drop. Scheduler integration can pass the
+/// resolved target process here until process ownership/run-queue infrastructure
+/// provides a richer execution context.
+pub fn dispatch_with_receiver(
+    process: &mut Process,
+    module: &Module,
+    instruction: &Instruction,
+    next_ip: usize,
+    receiver: Option<&mut Process>,
 ) -> Result<InstructionOutcome, ExecError> {
     match instruction {
         Instruction::Label { label } => core::label(*label),
@@ -111,18 +124,7 @@ pub fn dispatch(
         }
         Instruction::Jump { target } => guards::jump(module, target),
         Instruction::Bif { op, operands } => guards::bif(process, module, *op, operands),
-        Instruction::MapOp { op, operands } => closures::map_op(process, module, *op, operands),
-        Instruction::MakeFun { operands } => closures::make_fun(process, module, operands),
-        Instruction::CallFun { arity } => closures::call_fun(process, module, arity, next_ip),
-        Instruction::Apply { arity } => {
-            let registry = registry.ok_or(ExecError::InvalidOperand("apply registry"))?;
-            closures::apply(process, registry, arity, next_ip, module.name)
-        }
-        Instruction::ApplyLast { arity, deallocate } => {
-            let registry = registry.ok_or(ExecError::InvalidOperand("apply registry"))?;
-            closures::apply_last(process, registry, arity, deallocate, next_ip)
-        }
-        Instruction::Send => messaging::send(process, None),
+        Instruction::Send => messaging::send(process, receiver),
         Instruction::LoopRec { fail, destination } => {
             messaging::loop_rec(process, module, fail, destination)
         }
@@ -143,7 +145,6 @@ pub fn dispatch(
         Instruction::Badmatch { value } => messaging::badmatch(process, value),
         Instruction::CaseEnd { value } => messaging::case_end(process, value),
         Instruction::IfEnd => messaging::if_end(process),
-        Instruction::BinaryOp { op, operands } => binary::binary_op(process, module, *op, operands),
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),
         other => Err(ExecError::UnsupportedOpcode {
             name: instruction_name(other),
