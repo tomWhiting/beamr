@@ -1,0 +1,21 @@
+{
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "description": "2-3 sentences orienting the implementer."},
+        "enrichments": {"type": "array", "description": "One entry per R#.", "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "R# id from the brief."},
+                "files": {"type": "array", "items": {"type": "string"}, "description": "Key files relevant to this R# (path:line-range). 2-5 per R#."},
+                "context": {"type": "array", "items": {"type": "string"}, "description": "Key findings: conventions to match, type signatures, gotchas. 2-4 per R#."},
+                "approach": {"type": "string", "description": "How to implement this R#."},
+                "notes": {"type": "string", "description": "Edge cases, gotchas. Empty if none."}
+            },
+            "required": ["id", "files", "context", "approach", "notes"],
+            "additionalProperties": false
+        }},
+        "verification": {"type": "array", "items": {"type": "string"}, "description": "Concrete checks to run after implementation."}
+    },
+    "required": ["summary", "enrichments", "verification"],
+    "additionalProperties": false
+}
