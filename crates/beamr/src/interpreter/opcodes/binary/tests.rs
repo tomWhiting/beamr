@@ -92,7 +92,10 @@ fn interpreter_binary_builder_appends_integer_and_binary_segments() {
     let builder_state = BinaryBuilder::new(builder).expect("builder context");
     assert_eq!(builder_state.write_position_bits(), 24);
     let result = finalize_builder(&mut process, builder).expect("final binary");
-    assert_eq!(Binary::new(result).expect("binary").as_bytes(), &[65, 66, 67]);
+    assert_eq!(
+        Binary::new(result).expect("binary").as_bytes(),
+        &[65, 66, 67]
+    );
 }
 
 #[test]
@@ -199,8 +202,14 @@ fn interpreter_binary_match_extracts_fields_and_tail() {
 
     assert_eq!(process.x_reg(2).as_small_int(), Some(65));
     assert_eq!(process.x_reg(3).as_small_int(), Some(66));
-    assert_eq!(Binary::new(process.x_reg(4)).expect("rest").as_bytes(), &[67, 68]);
-    assert_eq!(Binary::new(process.x_reg(0)).expect("source").as_bytes(), &[65, 66, 67, 68]);
+    assert_eq!(
+        Binary::new(process.x_reg(4)).expect("rest").as_bytes(),
+        &[67, 68]
+    );
+    assert_eq!(
+        Binary::new(process.x_reg(0)).expect("source").as_bytes(),
+        &[65, 66, 67, 68]
+    );
     assert_eq!(
         binary_op(
             &mut process,

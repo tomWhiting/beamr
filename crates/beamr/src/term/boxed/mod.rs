@@ -26,6 +26,8 @@ pub enum BoxedTag {
     Map = 0x14,
     Reference = 0x15,
     Binary = 0x16,
+    BinaryBuilder = 0x17,
+    MatchContext = 0x18,
 }
 
 impl BoxedTag {
@@ -38,6 +40,8 @@ impl BoxedTag {
             bits if bits == Self::Map as u64 => Some(Self::Map),
             bits if bits == Self::Reference as u64 => Some(Self::Reference),
             bits if bits == Self::Binary as u64 => Some(Self::Binary),
+            bits if bits == Self::BinaryBuilder as u64 => Some(Self::BinaryBuilder),
+            bits if bits == Self::MatchContext as u64 => Some(Self::MatchContext),
             _ => None,
         }
     }
@@ -190,6 +194,8 @@ mod tests {
             BoxedTag::Map,
             BoxedTag::Reference,
             BoxedTag::Binary,
+            BoxedTag::BinaryBuilder,
+            BoxedTag::MatchContext,
         ];
 
         for (index, tag) in tags.iter().copied().enumerate() {

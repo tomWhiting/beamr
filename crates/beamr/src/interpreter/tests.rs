@@ -1,11 +1,13 @@
 use super::{ExecutionResult, run};
 use crate::atom::{Atom, AtomTable};
 use crate::error::ExecError;
+use crate::loader::decode::BinaryOp;
 use crate::loader::decode::compact::Operand;
 use crate::loader::{Instruction, Literal};
 use crate::module::{Module, ResolvedImport, ResolvedImportTarget};
 use crate::native::{NativeEntry, ProcessContext};
 use crate::process::{CodePosition, ExitReason, Process};
+use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Cons, Tuple};
 use crate::term::{Term, compare};
 use std::collections::HashMap;
@@ -21,6 +23,14 @@ fn module(name: Atom, code: Vec<Instruction>) -> Module {
         string_table: Vec::new(),
         line_info: Vec::new(),
     }
+}
+
+fn heap_binary(process: &mut Process, bytes: &[u8]) -> Term {
+    let words = 2 + packed_word_count(bytes.len());
+    let ptr = process.heap_mut().alloc(words).expect("test heap fits");
+    // SAFETY: test helper immediately initialises the fresh heap allocation.
+    let heap = unsafe { std::slice::from_raw_parts_mut(ptr, words) };
+    write_binary(heap, bytes).expect("test binary fits")
 }
 
 #[test]
@@ -486,4 +496,122 @@ fn proof_of_life_load_spawn_execute_exit_pipeline_fixture() {
         Ok(ExecutionResult::Exited(ExitReason::Normal))
     );
     assert_eq!(process.x_reg(0), Term::small_int(55));
+}
+
+#[test]
+fn interpreter_binary_opcodes_construct_and_match_binary_patterns() {
+    let construct_module = module(
+        Atom::OK,
+        vec![
+            Instruction::BinaryOp {
+                op: BinaryOp::BsCreateBin,
+                operands: vec![
+                    Operand::X(0),
+                    Operand::Unsigned(3),
+                    Operand::List(vec![
+                        Operand::Atom(None),
+                        Operand::Integer(65),
+                        Operand::Unsigned(8),
+                        Operand::Unsigned(1),
+                        Operand::Atom(None),
+                    ]),
+                    Operand::List(vec![
+                        Operand::Atom(None),
+                        Operand::Integer(66),
+                        Operand::Unsigned(8),
+                        Operand::Unsigned(1),
+                        Operand::Atom(None),
+                    ]),
+                    Operand::List(vec![
+                        Operand::Atom(None),
+                        Operand::Integer(67),
+                        Operand::Unsigned(8),
+                        Operand::Unsigned(1),
+                        Operand::Atom(None),
+                    ]),
+                ],
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(1, 64);
+
+    assert_eq!(
+        run(&mut process, &construct_module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(
+        Binary::new(process.x_reg(0))
+            .expect("constructed binary")
+            .as_bytes(),
+        &[65, 66, 67]
+    );
+
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::BinaryOp {
+                op: BinaryOp::BsStartMatch3,
+                operands: vec![Operand::Label(9), Operand::X(0), Operand::X(1)],
+            },
+            Instruction::BinaryOp {
+                op: BinaryOp::BsGetInteger2,
+                operands: vec![
+                    Operand::Label(9),
+                    Operand::X(1),
+                    Operand::Unsigned(8),
+                    Operand::Unsigned(1),
+                    Operand::Atom(None),
+                    Operand::X(2),
+                ],
+            },
+            Instruction::BinaryOp {
+                op: BinaryOp::BsGetInteger2,
+                operands: vec![
+                    Operand::Label(9),
+                    Operand::X(1),
+                    Operand::Unsigned(8),
+                    Operand::Unsigned(1),
+                    Operand::Atom(None),
+                    Operand::X(3),
+                ],
+            },
+            Instruction::BinaryOp {
+                op: BinaryOp::BsGetBinary2,
+                operands: vec![
+                    Operand::Label(9),
+                    Operand::X(1),
+                    Operand::Unsigned(8),
+                    Operand::Unsigned(1),
+                    Operand::Atom(None),
+                    Operand::X(4),
+                ],
+            },
+            Instruction::BinaryOp {
+                op: BinaryOp::BsTestTail2,
+                operands: vec![Operand::Label(9), Operand::X(1), Operand::Unsigned(0)],
+            },
+            Instruction::Return,
+            Instruction::Label { label: 9 },
+            Instruction::Move {
+                source: Operand::Integer(-1),
+                destination: Operand::X(2),
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(1, 96);
+    let source = heap_binary(&mut process, &[65, 66, 67]);
+    process.set_x_reg(0, source);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(2).as_small_int(), Some(65));
+    assert_eq!(process.x_reg(3).as_small_int(), Some(66));
+    assert_eq!(
+        Binary::new(process.x_reg(4)).expect("rest").as_bytes(),
+        &[67]
+    );
 }

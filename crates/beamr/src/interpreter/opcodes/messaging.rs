@@ -61,6 +61,7 @@ pub fn loop_rec_end(
 pub fn remove_message(process: &mut Process) -> Result<InstructionOutcome, ExecError> {
     let _ = process.mailbox_mut().remove_current_message();
     process.set_receive_timeout(None);
+    process.set_receive_timer_ref(None);
     Ok(InstructionOutcome::Continue)
 }
 
@@ -95,6 +96,7 @@ pub fn wait_timeout(
 pub fn timeout(process: &mut Process) -> Result<InstructionOutcome, ExecError> {
     process.mailbox_mut().reset_save_pointer();
     process.set_receive_timeout(None);
+    process.set_receive_timer_ref(None);
     Ok(InstructionOutcome::Continue)
 }
 

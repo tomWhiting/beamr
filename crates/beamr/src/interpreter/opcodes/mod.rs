@@ -4,6 +4,7 @@
 //! live in [`core`]; later opcode families can add sibling modules without
 //! changing the execution loop.
 
+pub mod binary;
 pub mod closures;
 pub mod core;
 pub mod guards;
@@ -142,6 +143,7 @@ pub fn dispatch(
         Instruction::Badmatch { value } => messaging::badmatch(process, value),
         Instruction::CaseEnd { value } => messaging::case_end(process, value),
         Instruction::IfEnd => messaging::if_end(process),
+        Instruction::BinaryOp { op, operands } => binary::binary_op(process, module, *op, operands),
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),
         other => Err(ExecError::UnsupportedOpcode {
             name: instruction_name(other),

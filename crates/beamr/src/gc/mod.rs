@@ -202,7 +202,12 @@ pub(crate) fn rewrite_copied_object(
                 rewrite_word(ptr, offset, work_queue, &mut copy_term)?;
             }
         }
-        BoxedTag::Float | BoxedTag::BigInt | BoxedTag::Reference | BoxedTag::Binary => {}
+        BoxedTag::MatchContext => rewrite_word(ptr, 3, work_queue, &mut copy_term)?,
+        BoxedTag::Float
+        | BoxedTag::BigInt
+        | BoxedTag::Reference
+        | BoxedTag::Binary
+        | BoxedTag::BinaryBuilder => {}
     }
 
     Ok(())

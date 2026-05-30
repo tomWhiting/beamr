@@ -6,9 +6,9 @@ use crate::loader::decode::compact::Operand;
 use crate::loader::decode::{BinaryOp, Literal};
 use crate::module::Module;
 use crate::process::{CodePosition, Process};
+use crate::term::Term;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{BoxedHeader, BoxedTag};
-use crate::term::Term;
 
 use super::core;
 
@@ -23,7 +23,9 @@ pub fn binary_op(
 ) -> Result<InstructionOutcome, ExecError> {
     match op {
         BinaryOp::BsInitWritable | BinaryOp::BsCreateBin => bs_init_or_create(process, operands),
-        BinaryOp::BsStartMatch3 | BinaryOp::BsStartMatch4 => bs_start_match(process, module, operands),
+        BinaryOp::BsStartMatch3 | BinaryOp::BsStartMatch4 => {
+            bs_start_match(process, module, operands)
+        }
         BinaryOp::BsGetInteger2 => bs_get_integer(process, module, operands),
         BinaryOp::BsGetBinary2 => bs_get_binary(process, module, operands),
         BinaryOp::BsMatchString => bs_match_string(process, module, operands),
@@ -92,12 +94,15 @@ fn bs_get_integer(
     module: &Module,
     operands: &[Operand],
 ) -> Result<InstructionOutcome, ExecError> {
-    let (fail, context, size, unit, flags, destination) = parse_get_operands(operands, "bs_get_integer2")?;
+    let (fail, context, size, unit, flags, destination) =
+        parse_get_operands(operands, "bs_get_integer2")?;
     let size_bits = segment_bits(size, unit)?;
     let endian = Endian::from_flags(flags);
     let context_term = core::read_term(process, context)?;
     let context = MatchContext::new(context_term).ok_or(ExecError::Badarg)?;
-    if size_bits % u8::BITS as usize != 0 || context.position_bits() % u8::BITS as usize != 0 {
+    if !size_bits.is_multiple_of(u8::BITS as usize)
+        || !context.position_bits().is_multiple_of(u8::BITS as usize)
+    {
         return Err(ExecError::Badarg);
     }
     if !context.has_bits(size_bits) {
@@ -117,11 +122,14 @@ fn bs_get_binary(
     module: &Module,
     operands: &[Operand],
 ) -> Result<InstructionOutcome, ExecError> {
-    let (fail, context, size, unit, _flags, destination) = parse_get_operands(operands, "bs_get_binary2")?;
+    let (fail, context, size, unit, _flags, destination) =
+        parse_get_operands(operands, "bs_get_binary2")?;
     let size_bits = segment_bits(size, unit)?;
     let context_term = core::read_term(process, context)?;
     let context = MatchContext::new(context_term).ok_or(ExecError::Badarg)?;
-    if size_bits % u8::BITS as usize != 0 || context.position_bits() % u8::BITS as usize != 0 {
+    if !size_bits.is_multiple_of(u8::BITS as usize)
+        || !context.position_bits().is_multiple_of(u8::BITS as usize)
+    {
         return Err(ExecError::Badarg);
     }
     if !context.has_bits(size_bits) {
@@ -154,13 +162,13 @@ fn bs_match_string(
         _ => return Err(ExecError::InvalidOperand("bs_match_string operands")),
     };
     let bit_len = core::operand_usize(bit_len, "bs_match_string bit length")?;
-    if bit_len % u8::BITS as usize != 0 {
+    if !bit_len.is_multiple_of(u8::BITS as usize) {
         return Err(ExecError::Badarg);
     }
     let expected = literal_bytes(module, literal, bit_len / u8::BITS as usize)?;
     let context_term = core::read_term(process, context)?;
     let context = MatchContext::new(context_term).ok_or(ExecError::Badarg)?;
-    if context.position_bits() % u8::BITS as usize != 0 || !context.has_bits(bit_len) {
+    if !context.position_bits().is_multiple_of(u8::BITS as usize) || !context.has_bits(bit_len) {
         return jump_label(module, fail);
     }
     let candidate = context.slice(bit_len).ok_or(ExecError::Badarg)?;
@@ -219,13 +227,13 @@ pub(crate) fn bs_put_integer(
     let value = value.as_small_int().ok_or(ExecError::Badarg)?;
     let size_bits = segment_bits(size, unit)?;
     let endian = Endian::from_flags(flags);
-    if size_bits == 0 || size_bits % u8::BITS as usize != 0 {
+    if size_bits == 0 || !size_bits.is_multiple_of(u8::BITS as usize) {
         return Err(ExecError::Badarg);
     }
     let byte_count = size_bits / u8::BITS as usize;
     let builder = BinaryBuilder::new(builder).ok_or(ExecError::Badarg)?;
     let start = builder.write_position_bits();
-    if start % u8::BITS as usize != 0 || !builder.can_append(size_bits) {
+    if !start.is_multiple_of(u8::BITS as usize) || !builder.can_append(size_bits) {
         return Err(ExecError::Badarg);
     }
     let bytes = encode_integer(value, byte_count, endian)?;
@@ -245,7 +253,7 @@ pub(crate) fn bs_put_binary(
     let size_bits = bytes.len() * u8::BITS as usize;
     let builder = BinaryBuilder::new(builder).ok_or(ExecError::Badarg)?;
     let start = builder.write_position_bits();
-    if start % u8::BITS as usize != 0 || !builder.can_append(size_bits) {
+    if !start.is_multiple_of(u8::BITS as usize) || !builder.can_append(size_bits) {
         return Err(ExecError::Badarg);
     }
     builder.write_bytes(start / u8::BITS as usize, bytes);
@@ -253,12 +261,12 @@ pub(crate) fn bs_put_binary(
     Ok(())
 }
 
-pub(crate) fn finalize_builder(
-    process: &mut Process,
-    builder: Term,
-) -> Result<Term, ExecError> {
+pub(crate) fn finalize_builder(process: &mut Process, builder: Term) -> Result<Term, ExecError> {
     let builder = BinaryBuilder::new(builder).ok_or(ExecError::Badarg)?;
-    if builder.write_position_bits() % u8::BITS as usize != 0 {
+    if !builder
+        .write_position_bits()
+        .is_multiple_of(u8::BITS as usize)
+    {
         return Err(ExecError::Badarg);
     }
     let byte_len = builder.write_position_bits() / u8::BITS as usize;
@@ -382,7 +390,9 @@ impl MatchContext {
     }
 
     fn slice(self, bits: usize) -> Option<&'static [u8]> {
-        if !bits.is_multiple_of(u8::BITS as usize) || !self.position_bits().is_multiple_of(u8::BITS as usize) {
+        if !bits.is_multiple_of(u8::BITS as usize)
+            || !self.position_bits().is_multiple_of(u8::BITS as usize)
+        {
             return None;
         }
         let start = self.position_bits() / u8::BITS as usize;
@@ -411,8 +421,17 @@ impl Endian {
 fn parse_get_operands<'a>(
     operands: &'a [Operand],
     context: &'static str,
-) -> Result<(&'a Operand, &'a Operand, &'a Operand, &'a Operand, &'a Operand, &'a Operand), ExecError>
-{
+) -> Result<
+    (
+        &'a Operand,
+        &'a Operand,
+        &'a Operand,
+        &'a Operand,
+        &'a Operand,
+        &'a Operand,
+    ),
+    ExecError,
+> {
     match operands {
         [fail, match_context, _live, size, unit, flags, destination] => {
             Ok((fail, match_context, size, unit, flags, destination))
