@@ -143,18 +143,19 @@ fn validate_beam_path(path: &str) -> Result<(), CliError> {
 }
 
 fn parse_entry(entry: &str) -> Result<EntryPoint, CliError> {
-    let (module, function_and_arity) = entry
-        .split_once(':')
-        .ok_or_else(|| CliError::InvalidEntry(entry.to_owned()))?;
+    let invalid_entry = || CliError::InvalidEntry(entry.to_owned());
+    let (module, function_and_arity) = entry.split_once(':').ok_or_else(invalid_entry)?;
     let (function, arity) = function_and_arity
         .split_once('/')
-        .ok_or_else(|| CliError::InvalidEntry(entry.to_owned()))?;
+        .ok_or_else(invalid_entry)?;
 
     if module.is_empty()
         || function.is_empty()
         || arity.is_empty()
+        || module.contains('/')
         || function_and_arity.contains(':')
         || arity.contains('/')
+        || !arity.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(CliError::InvalidEntry(entry.to_owned()));
     }
@@ -396,6 +397,8 @@ mod tests {
             "bad-entry",
             ":main/0",
             "hello:/0",
+            "hel/lo:main/0",
+            "hello:main/+1",
             "hello:main/",
             "hello:main/256",
             "hello:main/not-a-number",
