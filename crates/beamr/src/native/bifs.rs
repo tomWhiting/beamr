@@ -229,12 +229,16 @@ fn badarg() -> Term {
 #[cfg(test)]
 mod tests {
     use super::{
-        add, display, div, error, exact_equal, exact_not_equal, greater_equal, less_than, multiply,
-        register_gate1_bifs, rem, subtract,
+        add, cancel_timer, display, div, error, exact_equal, exact_not_equal, greater_equal,
+        less_than, multiply, register_gate1_bifs, rem, send_after, start_timer, subtract,
     };
     use crate::atom::{Atom, AtomTable};
     use crate::native::{BifRegistryImpl, ProcessContext};
     use crate::term::Term;
+    use crate::term::boxed::Tuple;
+    use crate::timer::TimerWheel;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     fn context() -> ProcessContext {
         ProcessContext::new()
@@ -418,6 +422,9 @@ mod tests {
             ("=/=", 2),
             ("error", 1),
             ("display", 1),
+            ("send_after", 3),
+            ("start_timer", 3),
+            ("cancel_timer", 1),
         ] {
             let function = atom_table.intern(name);
             assert!(
@@ -435,5 +442,46 @@ mod tests {
         register_gate1_bifs(&mut registry, &atom_table).expect("first registration");
 
         assert!(register_gate1_bifs(&mut registry, &atom_table).is_err());
+    }
+
+    #[test]
+    fn timer_bifs_schedule_start_and_cancel_round_trips() {
+        let timers = Arc::new(Mutex::new(TimerWheel::new()));
+        let mut context = ProcessContext::with_timer_services(7, Arc::clone(&timers));
+
+        let send_ref = send_after(
+            &[small_int(100), Term::pid(9), Term::atom(Atom::OK)],
+            &mut context,
+        )
+        .expect("send_after schedules");
+        assert!(send_ref.as_small_int().is_some());
+
+        let start_ref = start_timer(
+            &[small_int(100), Term::pid(9), Term::atom(Atom::OK)],
+            &mut context,
+        )
+        .expect("start_timer schedules");
+        assert!(start_ref.as_small_int().is_some());
+
+        let remaining = cancel_timer(&[send_ref], &mut context).expect("cancel pending timer");
+        assert!(remaining.as_small_int().is_some());
+        assert_eq!(
+            cancel_timer(&[send_ref], &mut context),
+            Ok(Term::atom(Atom::FALSE))
+        );
+
+        let expired = timers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .tick_at(std::time::Instant::now() + Duration::from_millis(101));
+        assert_eq!(expired.len(), 1);
+        assert_eq!(
+            expired[0].reference.id(),
+            start_ref.as_small_int().unwrap_or_default() as u64
+        );
+        let tuple = Tuple::new(expired[0].message).expect("timeout tuple");
+        assert_eq!(tuple.get(0), Some(Term::atom(Atom::TIMEOUT)));
+        assert_eq!(tuple.get(1), Some(start_ref));
+        assert_eq!(tuple.get(2), Some(Term::atom(Atom::OK)));
     }
 }

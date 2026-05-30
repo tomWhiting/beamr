@@ -1,5 +1,7 @@
 //! Foundational BEAM opcode handlers.
 
+use std::sync::{Arc, Mutex};
+
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::Literal;
@@ -9,6 +11,7 @@ use crate::native::ProcessContext;
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
+use crate::timer::TimerWheel;
 
 pub fn label(_label: u32) -> Result<InstructionOutcome, ExecError> {
     Ok(InstructionOutcome::Continue)
@@ -65,6 +68,7 @@ pub fn call_ext(
     import: &Operand,
     return_ip: usize,
     save_return: bool,
+    timers: Option<&Arc<Mutex<TimerWheel>>>,
 ) -> Result<InstructionOutcome, ExecError> {
     if save_return {
         process
@@ -72,7 +76,7 @@ pub fn call_ext(
             .push_frame(module.name, return_ip, 0)
             .map_err(ExecError::from)?;
     }
-    call_external_target(process, module, arity, import)
+    call_external_target(process, module, arity, import, timers)
 }
 
 pub fn call_last(
@@ -94,9 +98,10 @@ pub fn call_ext_last(
     arity: &Operand,
     import: &Operand,
     deallocate: &Operand,
+    timers: Option<&Arc<Mutex<TimerWheel>>>,
 ) -> Result<InstructionOutcome, ExecError> {
     deallocate_frame(process, deallocate)?;
-    call_external_target(process, module, arity, import)
+    call_external_target(process, module, arity, import, timers)
 }
 
 pub fn return_(process: &mut Process) -> Result<InstructionOutcome, ExecError> {
@@ -213,6 +218,7 @@ fn call_external_target(
     module: &Module,
     arity: &Operand,
     import: &Operand,
+    timers: Option<&Arc<Mutex<TimerWheel>>>,
 ) -> Result<InstructionOutcome, ExecError> {
     let arity = operand_u8(arity, "external call arity")?;
     let import_index = operand_usize(import, "import index")?;
@@ -239,7 +245,12 @@ fn call_external_target(
             for register in 0..arity {
                 args.push(process.x_reg(register));
             }
-            let mut context = ProcessContext::new();
+            let mut context = match timers {
+                Some(timers) => {
+                    ProcessContext::with_timer_services(process.pid(), Arc::clone(timers))
+                }
+                None => ProcessContext::new(),
+            };
             let result = (entry.function)(&args, &mut context).map_err(|_| ExecError::Badarg)?;
             process.set_x_reg(0, result);
             charge_reduction(process)?;

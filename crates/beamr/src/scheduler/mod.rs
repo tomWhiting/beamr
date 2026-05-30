@@ -8,6 +8,7 @@ pub mod dirty;
 pub mod run_queue;
 pub mod steal;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -18,6 +19,7 @@ use dashmap::DashMap;
 
 use crate::atom::Atom;
 use crate::error::ExecError;
+use crate::hook::{Hook, HookDecision, HookEvent};
 use crate::interpreter::{self, ExecutionResult};
 use crate::loader::Instruction;
 use crate::module::{Module, ModuleRegistry};
@@ -25,6 +27,7 @@ use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
 use crate::term::Term;
+use crate::timer::{TimerRef, TimerWheel};
 
 use run_queue::RunQueue;
 
@@ -46,9 +49,11 @@ struct SharedState {
     thread_count: usize,
     next_pid: AtomicU64,
     wait_set: Mutex<WaitSet>,
+    hook: Hook,
+    timers: Arc<Mutex<TimerWheel>>,
+    receive_timers: Mutex<HashMap<u64, u64>>,
     wake_condvar: Condvar,
     process_bodies: DashMap<u64, Mutex<Option<ScheduledProcess>>>,
-    exit_tombstones: DashMap<u64, ExitReason>,
     #[cfg(test)]
     idle_parks: AtomicUsize,
 }
@@ -99,9 +104,11 @@ impl Scheduler {
             thread_count,
             next_pid: AtomicU64::new(0),
             wait_set: Mutex::new(WaitSet::default()),
+            hook: Hook::new(),
+            timers: Arc::new(Mutex::new(TimerWheel::new())),
+            receive_timers: Mutex::new(HashMap::new()),
             wake_condvar: Condvar::new(),
             process_bodies: DashMap::new(),
-            exit_tombstones: DashMap::new(),
             #[cfg(test)]
             idle_parks: AtomicUsize::new(0),
         });
@@ -219,6 +226,23 @@ impl Scheduler {
         wake_process(&self.shared, pid);
     }
 
+    /// Access the per-VM reduction-boundary hook registration slot.
+    #[must_use]
+    pub fn hook(&self) -> Hook {
+        self.shared.hook.clone()
+    }
+
+    /// Explicitly resume a process suspended by the reduction-boundary hook.
+    pub fn resume_process(&self, pid: u64) -> bool {
+        resume_process(&self.shared, pid)
+    }
+
+    /// Access the scheduler-owned timer wheel.
+    #[must_use]
+    pub fn timers(&self) -> Arc<Mutex<TimerWheel>> {
+        Arc::clone(&self.shared.timers)
+    }
+
     /// Shut down all worker threads after their current time slice.
     pub fn shutdown(&self) {
         self.shared.shutdown.store(true, Ordering::Release);
@@ -256,6 +280,22 @@ impl Scheduler {
     }
 }
 
+fn reconcile_receive_timer(shared: &SharedState, process: &Process) {
+    let pid = process.pid();
+    let recorded = lock_or_recover(&shared.receive_timers).get(&pid).copied();
+    match (recorded, process.receive_timer_ref()) {
+        (Some(recorded), None) => {
+            let _remaining = lock_or_recover(&shared.timers).cancel(TimerRef::from_id(recorded));
+            lock_or_recover(&shared.receive_timers).remove(&pid);
+        }
+        (Some(recorded), Some(active)) if recorded != active => {
+            let _remaining = lock_or_recover(&shared.timers).cancel(TimerRef::from_id(recorded));
+            lock_or_recover(&shared.receive_timers).insert(pid, active);
+        }
+        _ => {}
+    }
+}
+
 impl Drop for Scheduler {
     fn drop(&mut self) {
         self.shutdown();
@@ -285,6 +325,7 @@ fn scheduler_loop(
         }
 
         drain_injected(shared, queue, inject);
+        drain_timers(shared);
         drain_woken(shared, queue, my_index);
 
         let pid = match queue.pop() {
@@ -341,7 +382,8 @@ fn build_process(request: SpawnRequest) -> Process {
 enum SliceOutcome {
     Requeue(Process),
     Wait(Process),
-    Exited(ExitReason),
+    Suspend(Process),
+    Exited,
 }
 
 fn run_process(shared: &SharedState, queue: &RunQueue, pid: u64, my_index: usize) {
@@ -364,8 +406,12 @@ fn run_process(shared: &SharedState, queue: &RunQueue, pid: u64, my_index: usize
             let mut wait_set = lock_or_recover(&shared.wait_set);
             wait_set.waiting.insert(pid, my_index);
         }
-        SliceOutcome::Exited(reason) => {
-            cleanup_exited_process(shared, pid, reason);
+        SliceOutcome::Suspend(process) => {
+            store_runnable_process(shared, process);
+        }
+        SliceOutcome::Exited => {
+            let _removed = shared.process_table.remove(pid);
+            let _removed_body = shared.process_bodies.remove(&pid);
         }
     }
 }
@@ -378,6 +424,7 @@ fn take_runnable_process(shared: &SharedState, pid: u64) -> Option<Process> {
 
 fn store_runnable_process(shared: &SharedState, process: Process) {
     let pid = process.pid();
+    reconcile_receive_timer(shared, &process);
     if let Some(entry) = shared.process_bodies.get(&pid) {
         let mut slot = lock_or_recover(&entry);
         *slot = Some(ScheduledProcess(process));
@@ -393,10 +440,10 @@ fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
         process.status(),
         ProcessStatus::New | ProcessStatus::Yielded | ProcessStatus::Waiting
     ) {
-        return SliceOutcome::Exited(exit_reason_from_status(process.status()));
+        return SliceOutcome::Exited;
     }
     if process.transition_to(ProcessStatus::Running).is_err() {
-        return SliceOutcome::Exited(exit_reason_from_status(process.status()));
+        return SliceOutcome::Exited;
     }
     process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
 
@@ -408,40 +455,76 @@ fn execute_slice(shared: &SharedState, process: &mut Process) -> SliceOutcome {
         return exit_process(process, ExitReason::Error);
     };
 
-    match interpreter::run(process, &module) {
+    match interpreter::run_with_timer_services(process, &module, Arc::clone(&shared.timers)) {
         Ok(ExecutionResult::Yielded) => {
             let _transitioned = process.transition_to(ProcessStatus::Yielded);
-            process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
-            SliceOutcome::Requeue(take_process(process))
+            match invoke_yield_hook(shared, process) {
+                HookDecision::Continue => {
+                    process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
+                    SliceOutcome::Requeue(take_process(process))
+                }
+                HookDecision::Suspend => suspend_process(process),
+            }
         }
         Ok(ExecutionResult::Waiting) => {
             let _transitioned = process.transition_to(ProcessStatus::Waiting);
-            SliceOutcome::Wait(take_process(process))
+            schedule_receive_timeout(shared, process);
+            match invoke_yield_hook(shared, process) {
+                HookDecision::Continue => SliceOutcome::Wait(take_process(process)),
+                HookDecision::Suspend => suspend_process(process),
+            }
         }
-        Ok(ExecutionResult::Exited(reason)) => exit_process(process, reason),
-        Err(_error) => exit_process(process, ExitReason::Error),
+        Ok(ExecutionResult::Exited(reason)) => {
+            reconcile_receive_timer(shared, process);
+            exit_process(process, reason)
+        }
+        Err(_error) => {
+            reconcile_receive_timer(shared, process);
+            exit_process(process, ExitReason::Error)
+        }
     }
 }
 
 fn exit_process(process: &mut Process, reason: ExitReason) -> SliceOutcome {
-    process.terminate(reason);
-    SliceOutcome::Exited(reason)
+    let _transitioned = process.transition_to(ProcessStatus::Exited(reason));
+    SliceOutcome::Exited
 }
 
-fn exit_reason_from_status(status: ProcessStatus) -> ExitReason {
-    match status {
-        ProcessStatus::Exited(reason) => reason,
-        _ => ExitReason::Error,
+fn invoke_yield_hook(shared: &SharedState, process: &Process) -> HookDecision {
+    if !shared.hook.is_registered() {
+        return HookDecision::Continue;
     }
+    let Some((module, function, arity)) = process.current_mfa() else {
+        return HookDecision::Continue;
+    };
+    shared.hook.invoke(HookEvent {
+        pid: process.pid(),
+        module,
+        function,
+        arity,
+        reductions_consumed: DEFAULT_REDUCTION_BUDGET.saturating_sub(process.reduction_counter()),
+    })
 }
 
-fn cleanup_exited_process(shared: &SharedState, pid: u64, reason: ExitReason) {
-    shared.exit_tombstones.insert(pid, reason);
-    let _removed = shared.process_table.remove(pid);
-    let _removed_body = shared.process_bodies.remove(&pid);
-    let mut wait_set = lock_or_recover(&shared.wait_set);
-    wait_set.waiting.remove(&pid);
-    wait_set.woken.retain(|(woken_pid, _)| *woken_pid != pid);
+fn suspend_process(process: &mut Process) -> SliceOutcome {
+    let _transitioned = process.transition_to(ProcessStatus::Suspended);
+    SliceOutcome::Suspend(take_process(process))
+}
+
+fn schedule_receive_timeout(shared: &SharedState, process: &mut Process) {
+    if process.receive_timer_ref().is_some() {
+        return;
+    }
+    let Some(timeout) = process.receive_timeout() else {
+        return;
+    };
+    let reference = lock_or_recover(&shared.timers).schedule(
+        std::time::Duration::from_millis(timeout.milliseconds),
+        process.pid(),
+        Term::NIL,
+    );
+    process.set_receive_timer_ref(Some(reference.id()));
+    lock_or_recover(&shared.receive_timers).insert(process.pid(), reference.id());
 }
 
 fn take_process(process: &mut Process) -> Process {
@@ -453,6 +536,72 @@ fn wake_process(shared: &SharedState, pid: u64) {
     if let Some(scheduler_index) = wait_set.waiting.remove(&pid) {
         wait_set.woken.push((pid, scheduler_index));
         shared.wake_condvar.notify_all();
+    }
+}
+
+fn resume_process(shared: &SharedState, pid: u64) -> bool {
+    let Some(entry) = shared.process_bodies.get(&pid) else {
+        return false;
+    };
+    let mut slot = lock_or_recover(&entry);
+    let Some(scheduled) = slot.as_mut() else {
+        return false;
+    };
+    if scheduled.0.status() != ProcessStatus::Suspended {
+        return false;
+    }
+    let next = if scheduled.0.receive_timeout().is_some() {
+        ProcessStatus::Waiting
+    } else {
+        ProcessStatus::Yielded
+    };
+    if scheduled.0.transition_to(next).is_err() {
+        return false;
+    }
+    drop(slot);
+    if next == ProcessStatus::Waiting {
+        let mut wait_set = lock_or_recover(&shared.wait_set);
+        wait_set.waiting.insert(pid, 0);
+    } else {
+        let mut wait_set = lock_or_recover(&shared.wait_set);
+        wait_set.woken.push((pid, 0));
+    }
+    shared.wake_condvar.notify_all();
+    true
+}
+
+fn drain_timers(shared: &SharedState) {
+    let expired = lock_or_recover(&shared.timers).tick();
+    for timer in expired {
+        let Some(entry) = shared.process_bodies.get(&timer.target_pid) else {
+            continue;
+        };
+        let mut slot = lock_or_recover(&entry);
+        let Some(scheduled) = slot.as_mut() else {
+            continue;
+        };
+        if scheduled.0.receive_timer_ref() == Some(timer.reference.id()) {
+            if let Some(timeout) = scheduled.0.receive_timeout() {
+                scheduled
+                    .0
+                    .set_code_position(Some(timeout.timeout_position));
+                scheduled.0.set_receive_timeout(None);
+                scheduled.0.set_receive_timer_ref(None);
+                lock_or_recover(&shared.receive_timers).remove(&timer.target_pid);
+                scheduled.0.mailbox_mut().reset_save_pointer();
+            }
+        } else {
+            let send_result = scheduled
+                .0
+                .mailbox()
+                .sender()
+                .send(timer.message, scheduled.0.heap_mut());
+            if send_result.is_err() {
+                continue;
+            }
+        }
+        drop(slot);
+        wake_process(shared, timer.target_pid);
     }
 }
 

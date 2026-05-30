@@ -286,7 +286,7 @@ impl Process {
                 | (ProcessStatus::Yielded, ProcessStatus::Suspended)
                 | (ProcessStatus::Waiting, ProcessStatus::Running)
                 | (ProcessStatus::Waiting, ProcessStatus::Suspended)
-                | (ProcessStatus::Suspended, ProcessStatus::Running)
+                | (ProcessStatus::Suspended, ProcessStatus::Yielded)
                 | (ProcessStatus::Suspended, ProcessStatus::Waiting)
         )
     }

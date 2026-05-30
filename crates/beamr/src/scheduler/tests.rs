@@ -1,11 +1,12 @@
 use std::collections::HashMap as StdHashMap;
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use super::*;
 use crate::atom::AtomTable;
+use crate::hook::HookDecision;
 use crate::loader::Instruction;
 use crate::loader::decode::compact::Operand;
 use crate::mailbox::Mailbox;
@@ -55,6 +56,127 @@ fn scheduler_creates_requested_thread_count_and_names() {
         ]
     );
 
+    scheduler.shutdown();
+}
+
+#[test]
+fn hook_records_reduction_yield_metadata_and_can_suspend_then_resume() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("hook_loop");
+    let function = atoms.intern("main");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = test_module(
+        module_name,
+        vec![
+            Instruction::FuncInfo {
+                module: Operand::Atom(Some(module_name)),
+                function: Operand::Atom(Some(function)),
+                arity: Operand::Unsigned(0),
+            },
+            Instruction::Label { label: 1 },
+            Instruction::CallOnly {
+                arity: Operand::Unsigned(0),
+                label: Operand::Label(1),
+            },
+        ],
+    );
+    let module = registry.insert(module);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events_by_hook = Arc::clone(&events);
+    let calls_by_hook = Arc::clone(&calls);
+    scheduler.hook().register(move |event| {
+        events_by_hook
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(event);
+        if calls_by_hook.fetch_add(1, Ordering::AcqRel) == 0 {
+            HookDecision::Suspend
+        } else {
+            HookDecision::Continue
+        }
+    });
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(2_000, || calls.load(Ordering::Acquire) == 1);
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        1,
+        "suspended process is held"
+    );
+    assert!(scheduler.resume_process(pid));
+    wait_until(2_000, || calls.load(Ordering::Acquire) > 1);
+
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    let first = events.first().copied().expect("hook event recorded");
+    assert_eq!(first.pid, pid);
+    assert_eq!(first.module, module_name);
+    assert_eq!(first.function, function);
+    assert_eq!(first.arity, 0);
+    assert_eq!(first.reductions_consumed, DEFAULT_REDUCTION_BUDGET);
+    drop(events);
+    scheduler.shutdown();
+}
+
+#[test]
+fn hook_fires_when_process_blocks_on_receive() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("hook_wait");
+    let function = atoms.intern("main");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = test_module(
+        module_name,
+        vec![
+            Instruction::FuncInfo {
+                module: Operand::Atom(Some(module_name)),
+                function: Operand::Atom(Some(function)),
+                arity: Operand::Unsigned(0),
+            },
+            Instruction::Label { label: 10 },
+            Instruction::Wait {
+                fail: Operand::Label(10),
+            },
+        ],
+    );
+    let module = registry.insert(module);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_by_hook = Arc::clone(&events);
+    scheduler.hook().register(move |event| {
+        events_by_hook
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(event);
+        HookDecision::Continue
+    });
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(2_000, || {
+        !events
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
+    });
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    assert_eq!(events[0].pid, pid);
+    assert_eq!(events[0].module, module_name);
+    assert_eq!(events[0].function, function);
+    assert_eq!(events[0].arity, 0);
+    drop(events);
     scheduler.shutdown();
 }
 

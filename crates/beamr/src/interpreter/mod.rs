@@ -6,9 +6,12 @@
 pub mod opcodes;
 pub mod pattern;
 
+use std::sync::{Arc, Mutex};
+
 use crate::error::ExecError;
 use crate::module::{Module, ModuleRegistry};
 use crate::process::{CodePosition, ExitReason, Process};
+use crate::timer::TimerWheel;
 
 /// Result of running a process until it yields, waits, exits, or faults.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -38,7 +41,7 @@ pub enum InstructionOutcome {
 
 /// Execute `process` against `module` until a scheduler boundary or exit.
 pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, ExecError> {
-    run_loop(process, module, None)
+    run_loop(process, module, None, None)
 }
 
 /// Execute `process` with a registry so dynamic calls can cross module boundaries.
@@ -47,13 +50,23 @@ pub fn run_with_registry(
     initial_module: &Module,
     registry: &ModuleRegistry,
 ) -> Result<ExecutionResult, ExecError> {
-    run_loop(process, initial_module, Some(registry))
+    run_loop(process, initial_module, Some(registry), None)
+}
+
+/// Execute `process` with timer services available to asynchronous timer BIFs.
+pub fn run_with_timer_services(
+    process: &mut Process,
+    initial_module: &Module,
+    timers: Arc<Mutex<TimerWheel>>,
+) -> Result<ExecutionResult, ExecError> {
+    run_loop(process, initial_module, None, Some(timers))
 }
 
 fn run_loop(
     process: &mut Process,
     initial_module: &Module,
     registry: Option<&ModuleRegistry>,
+    timers: Option<Arc<Mutex<TimerWheel>>>,
 ) -> Result<ExecutionResult, ExecError> {
     if process.code_position().is_none() {
         process.set_code_position(Some(CodePosition {
@@ -80,7 +93,13 @@ fn run_loop(
             .checked_add(1)
             .ok_or(ExecError::InvalidOperand("instruction pointer"))?;
 
-        match opcodes::dispatch(process, module, instruction, next_ip)? {
+        match opcodes::dispatch_with_timer_services(
+            process,
+            module,
+            instruction,
+            next_ip,
+            timers.as_ref(),
+        )? {
             InstructionOutcome::Continue => process.set_code_position(Some(CodePosition {
                 module: module.name,
                 instruction_pointer: next_ip,

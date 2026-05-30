@@ -7,3 +7,6 @@
 //! are Gleam library code (gleam_otp), not VM machinery (per D7).
 pub mod link;
 pub mod monitor;
+
+pub use link::{LinkSet, link, terminal_reason, unlink};
+pub use monitor::MonitorSet;

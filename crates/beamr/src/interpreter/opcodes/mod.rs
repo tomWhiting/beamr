@@ -8,11 +8,14 @@ pub mod core;
 pub mod guards;
 pub mod messaging;
 
+use std::sync::{Arc, Mutex};
+
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::Instruction;
 use crate::module::Module;
 use crate::process::Process;
+use crate::timer::TimerWheel;
 
 /// Dispatch one already-fetched instruction.
 pub fn dispatch(
@@ -22,6 +25,17 @@ pub fn dispatch(
     next_ip: usize,
 ) -> Result<InstructionOutcome, ExecError> {
     dispatch_with_receiver(process, module, instruction, next_ip, None)
+}
+
+/// Dispatch one instruction with optional timer services for native BIFs.
+pub fn dispatch_with_timer_services(
+    process: &mut Process,
+    module: &Module,
+    instruction: &Instruction,
+    next_ip: usize,
+    timers: Option<&Arc<Mutex<TimerWheel>>>,
+) -> Result<InstructionOutcome, ExecError> {
+    dispatch_inner(process, module, instruction, next_ip, None, timers)
 }
 
 /// Dispatch one already-fetched instruction with an optional send target process.
@@ -36,6 +50,17 @@ pub fn dispatch_with_receiver(
     instruction: &Instruction,
     next_ip: usize,
     receiver: Option<&mut Process>,
+) -> Result<InstructionOutcome, ExecError> {
+    dispatch_inner(process, module, instruction, next_ip, receiver, None)
+}
+
+fn dispatch_inner(
+    process: &mut Process,
+    module: &Module,
+    instruction: &Instruction,
+    next_ip: usize,
+    receiver: Option<&mut Process>,
+    timers: Option<&Arc<Mutex<TimerWheel>>>,
 ) -> Result<InstructionOutcome, ExecError> {
     match instruction {
         Instruction::Label { label } => core::label(*label),
@@ -55,10 +80,10 @@ pub fn dispatch_with_receiver(
             core::call(process, module, arity, label, next_ip, false)
         }
         Instruction::CallExt { arity, import } => {
-            core::call_ext(process, module, arity, import, next_ip, true)
+            core::call_ext(process, module, arity, import, next_ip, true, timers)
         }
         Instruction::CallExtOnly { arity, import } => {
-            core::call_ext(process, module, arity, import, next_ip, false)
+            core::call_ext(process, module, arity, import, next_ip, false, timers)
         }
         Instruction::CallLast {
             arity,
@@ -69,7 +94,7 @@ pub fn dispatch_with_receiver(
             arity,
             import,
             deallocate,
-        } => core::call_ext_last(process, module, arity, import, deallocate),
+        } => core::call_ext_last(process, module, arity, import, deallocate, timers),
         Instruction::Return => core::return_(process),
         Instruction::Allocate { stack_need, .. } => core::allocate(process, module, stack_need),
         Instruction::AllocateHeap {
