@@ -2,17 +2,33 @@
   "id": "B-010",
   "cluster": "beamr",
   "title": "Implement process struct, heap, stack, and lifecycle",
-  "depends_on": ["B-005", "B-006"],
+  "depends_on": [
+    "B-005",
+    "B-006"
+  ],
   "blocked_by": [],
-  "checklist": ["C49", "C50", "C51", "C52", "C53", "C54", "C55", "C56", "C57", "C58"],
-  "stories": ["S2", "S12", "S19"],
-  "purpose": "Processes are the unit of execution and isolation. Nothing runs without them — the scheduler needs something to schedule, the interpreter needs somewhere to store registers, and message passing needs independent address spaces. This brief delivers the Process struct (heap, stack, registers, status, reduction counter), the per-process heap allocator (bump allocator for young generation), the call stack (frames with return address, saved registers, Y-register slots), and the process lifecycle (new, running, waiting, exited). It does NOT deliver the scheduler or mailbox — those are separate briefs that build on top of this one.",
-  "task": "Implement the Process struct and related types in crates/beamr/src/process/. The Process owns a Heap (bump allocator over a Vec<u64>), a Stack (Vec<StackFrame> with Y-register storage), X-registers (fixed array of Term), a reduction counter, a status enum, a PID, and link/monitor sets (empty shells for now — supervision brief fills them). The Heap provides alloc(words) returning a pointer for boxed term construction. The Stack provides push_frame/pop_frame for call/return. Process::new(pid, heap_size) creates a fresh process. Process state transitions: New → Running → Yielded/Waiting/Exited.",
+  "checklist": [
+    "C49",
+    "C50",
+    "C51",
+    "C52",
+    "C53",
+    "C54",
+    "C55",
+    "C57"
+  ],
+  "stories": [
+    "S2",
+    "S12",
+    "S19"
+  ],
+  "purpose": "Processes are the unit of execution and isolation. Nothing runs without them \u2014 the scheduler needs something to schedule, the interpreter needs somewhere to store registers, and message passing needs independent address spaces. This brief delivers the Process struct (heap, stack, registers, status, reduction counter), the per-process heap allocator (bump allocator for young generation), the call stack (frames with return address, saved registers, Y-register slots), and the process lifecycle (new, running, waiting, exited). It does NOT deliver the scheduler or mailbox \u2014 those are separate briefs that build on top of this one.",
+  "task": "Implement the Process struct and related types in crates/beamr/src/process/. The Process owns a Heap (bump allocator over a Vec<u64>), a Stack (Vec<StackFrame> with Y-register storage), X-registers (fixed array of Term), a reduction counter, a status enum, a PID, and link/monitor sets (empty shells for now \u2014 supervision brief fills them). The Heap provides alloc(words) returning a pointer for boxed term construction. The Stack provides push_frame/pop_frame for call/return. Process::new(pid, heap_size) creates a fresh process. Process state transitions: New \u2192 Running \u2192 Yielded/Waiting/Exited.",
   "requirements": [
     {
       "id": "R1",
       "title": "Process struct definition",
-      "spec": "beamr::process SHALL define a Process struct containing: pid (u64), status (ProcessStatus enum), heap (Heap), stack (Stack), x_regs ([Term; 256] — X registers), y_regs accessible via current stack frame, reduction_counter (u32), current module + instruction pointer (code position), links (HashSet<u64> — PIDs), monitors (Vec<Monitor> — empty for now), trap_exit (bool). Process SHALL NOT be Send or Sync — it is owned by exactly one scheduler thread at a time.",
+      "spec": "beamr::process SHALL define a Process struct containing: pid (u64), status (ProcessStatus enum), heap (Heap), stack (Stack), x_regs ([Term; 256] \u2014 X registers), y_regs accessible via current stack frame, reduction_counter (u32), current module + instruction pointer (code position), links (HashSet<u64> \u2014 PIDs), monitors (Vec<Monitor> \u2014 empty for now), trap_exit (bool). Process SHALL NOT be Send or Sync \u2014 it is owned by exactly one scheduler thread at a time.",
       "acceptance": [
         "Process is a public struct in beamr::process",
         "Process::new(pid, heap_size) creates a process with the given PID and heap capacity",
@@ -22,33 +38,44 @@
         "Process.status() returns ProcessStatus::New for a fresh process"
       ],
       "files": {
-        "modify": ["crates/beamr/src/process/mod.rs"]
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
       },
-      "checklist": ["C49", "C50"],
-      "stories": ["S2"]
+      "checklist": [
+        "C49",
+        "C50"
+      ],
+      "stories": [
+        "S2"
+      ]
     },
     {
       "id": "R2",
       "title": "ProcessStatus enum and transitions",
-      "spec": "beamr::process SHALL define a ProcessStatus enum with variants: New, Running, Yielded, Waiting, Exited(ExitReason). Transitions SHALL be enforced: New→Running, Running→Yielded, Running→Waiting, Running→Exited, Yielded→Running, Waiting→Running. Invalid transitions SHALL return an error. ExitReason SHALL be an enum: Normal, Kill, Error (placeholder — will carry Term when terms land).",
+      "spec": "beamr::process SHALL define a ProcessStatus enum with variants: New, Running, Yielded, Waiting, Exited(ExitReason). Transitions SHALL be enforced: New\u2192Running, Running\u2192Yielded, Running\u2192Waiting, Running\u2192Exited, Yielded\u2192Running, Waiting\u2192Running. Invalid transitions SHALL return an error. ExitReason SHALL be an enum: Normal, Kill, Error (placeholder \u2014 will carry Term when terms land).",
       "acceptance": [
         "ProcessStatus has variants: New, Running, Yielded, Waiting, Exited(ExitReason)",
         "A fresh process starts as New",
-        "Transition New→Running succeeds",
-        "Transition New→Exited fails (must go through Running)",
-        "Transition Running→Yielded succeeds",
-        "Transition Exited→anything fails (terminal state)"
+        "Transition New\u2192Running succeeds",
+        "Transition New\u2192Exited fails (must go through Running)",
+        "Transition Running\u2192Yielded succeeds",
+        "Transition Exited\u2192anything fails (terminal state)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/process/mod.rs"]
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
       },
-      "checklist": ["C51"],
+      "checklist": [
+        "C52"
+      ],
       "stories": []
     },
     {
       "id": "R3",
-      "title": "Per-process heap — bump allocator",
-      "spec": "beamr::process::heap SHALL define a Heap struct backed by a Vec<u64>. Heap::alloc(words: usize) SHALL return a *mut u64 pointing to the allocated region, advancing the bump pointer. WHEN the heap is full THE SYSTEM SHALL return Err(HeapFull) — the caller (interpreter) triggers GC. The heap SHALL track: capacity, used words, and high-water mark. Heap::new(capacity) creates a heap with the given word capacity. The heap SHALL NOT grow automatically — GC is responsible for managing space.",
+      "title": "Per-process heap \u2014 bump allocator",
+      "spec": "beamr::process::heap SHALL define a Heap struct backed by a Vec<u64>. Heap::alloc(words: usize) SHALL return a *mut u64 pointing to the allocated region, advancing the bump pointer. WHEN the heap is full THE SYSTEM SHALL return Err(HeapFull) \u2014 the caller (interpreter) triggers GC. The heap SHALL track: capacity, used words, and high-water mark. Heap::new(capacity) creates a heap with the given word capacity. The heap SHALL NOT grow automatically \u2014 GC is responsible for managing space.",
       "acceptance": [
         "Heap::new(1024) creates a heap with capacity for 1024 words",
         "Heap::alloc(3) returns a valid pointer and advances used by 3",
@@ -58,10 +85,16 @@
         "Multiple alloc calls return non-overlapping regions"
       ],
       "files": {
-        "modify": ["crates/beamr/src/process/heap.rs"]
+        "modify": [
+          "crates/beamr/src/process/heap.rs"
+        ]
       },
-      "checklist": ["C52", "C53"],
-      "stories": ["S19"]
+      "checklist": [
+        "C50"
+      ],
+      "stories": [
+        "S19"
+      ]
     },
     {
       "id": "R4",
@@ -76,9 +109,13 @@
         "pop_frame on an empty stack returns Err (not panic)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/process/stack.rs"]
+        "modify": [
+          "crates/beamr/src/process/stack.rs"
+        ]
       },
-      "checklist": ["C54", "C55"],
+      "checklist": [
+        "C54"
+      ],
       "stories": []
     },
     {
@@ -92,9 +129,13 @@
         "Register operations do not allocate or panic"
       ],
       "files": {
-        "modify": ["crates/beamr/src/process/mod.rs"]
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
       },
-      "checklist": ["C56"],
+      "checklist": [
+        "C53"
+      ],
       "stories": []
     },
     {
@@ -109,15 +150,21 @@
         "decrement_reductions saturates at 0 (does not wrap)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/process/mod.rs"]
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
       },
-      "checklist": ["C57"],
-      "stories": ["S12"]
+      "checklist": [
+        "C49"
+      ],
+      "stories": [
+        "S12"
+      ]
     },
     {
       "id": "R7",
       "title": "Process table",
-      "spec": "beamr::process::registry SHALL define a ProcessTable that maps PID (u64) to process ownership handles. ProcessTable::spawn() assigns the next PID and returns it. ProcessTable::get(pid) returns a reference. The table SHALL support concurrent access from scheduler threads (it lives outside any single process). PID assignment SHALL be monotonically increasing and never reused within a single VM run.",
+      "spec": "beamr::process::registry SHALL define a ProcessTable that maps PID (u64) to process ownership handles. ProcessTable::spawn() assigns the next PID and returns it. ProcessTable::get(pid) returns a reference. The table SHALL support concurrent access from scheduler threads (it lives outside any single process). PID assignment SHALL be monotonically increasing and never reused within a single VM run. NOTE: C55 is split \u2014 this brief delivers heap deallocation and removal from process table on exit; exit signal propagation to linked processes is deferred to the supervision brief (B-020).",
       "acceptance": [
         "ProcessTable::new() creates an empty table",
         "spawn() returns sequential PIDs starting from 0",
@@ -126,9 +173,15 @@
         "PIDs are never reused (two spawns produce different PIDs)"
       ],
       "files": {
-        "modify": ["crates/beamr/src/process/registry.rs"]
+        "modify": [
+          "crates/beamr/src/process/registry.rs"
+        ]
       },
-      "checklist": ["C58"],
+      "checklist": [
+        "C51",
+        "C55",
+        "C57"
+      ],
       "stories": []
     },
     {
@@ -147,17 +200,26 @@
           "crates/beamr/src/process/registry.rs"
         ]
       },
-      "checklist": ["C49", "C50", "C51", "C52", "C53", "C54", "C55", "C56", "C57", "C58"],
+      "checklist": [
+        "C49",
+        "C50",
+        "C51",
+        "C52",
+        "C53",
+        "C54",
+        "C55",
+        "C57"
+      ],
       "stories": []
     }
   ],
   "boundaries": [
-    "SHALL NOT implement the scheduler or scheduling logic — the process yields, the scheduler decides what to do with it (scheduler brief scope)",
-    "SHALL NOT implement the mailbox — message storage and selective receive are a separate brief",
-    "SHALL NOT implement GC — the heap reports HeapFull, GC is triggered by the interpreter/scheduler",
-    "SHALL NOT implement process spawning from bytecode (spawn opcode) — that's interpreter + scheduler coordination",
-    "SHALL NOT implement link/monitor propagation logic — only the empty container sets on the Process struct",
-    "SHALL NOT implement process dictionary — out of scope per DESIGN.md non-goals"
+    "SHALL NOT implement the scheduler or scheduling logic \u2014 the process yields, the scheduler decides what to do with it (scheduler brief scope)",
+    "SHALL NOT implement the mailbox \u2014 message storage and selective receive are a separate brief",
+    "SHALL NOT implement GC \u2014 the heap reports HeapFull, GC is triggered by the interpreter/scheduler",
+    "SHALL NOT implement process spawning from bytecode (spawn opcode) \u2014 that's interpreter + scheduler coordination",
+    "SHALL NOT implement link/monitor propagation logic \u2014 only the empty container sets on the Process struct",
+    "SHALL NOT implement process dictionary \u2014 out of scope per DESIGN.md non-goals"
   ],
   "verification": [
     "cargo check --workspace passes",
