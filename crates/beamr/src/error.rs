@@ -55,8 +55,28 @@ pub enum ExecError {
     },
     /// An arithmetic operation failed.
     Badarith,
+    /// An argument or term type was invalid for the opcode.
+    Badarg,
     /// User code exited explicitly.
     UserExit,
+    /// Decoded instruction opcode is not known to the VM.
+    UnknownOpcode { opcode: u8 },
+    /// Decoded instruction is valid but belongs to a future implementation gate.
+    UnsupportedOpcode { name: &'static str },
+    /// Operand shape or value was invalid for the opcode.
+    InvalidOperand(&'static str),
+    /// A local label could not be resolved to an instruction pointer.
+    InvalidLabel { label: u32 },
+    /// Import table entry was missing.
+    InvalidImport { index: usize },
+    /// A heap check failed and GC must run before continuing.
+    GcNeeded { requested: usize, available: usize },
+    /// A boxed literal cannot be materialized by the no-allocation move opcode.
+    UnsupportedLiteral,
+    /// Stack operation failed.
+    Stack(crate::process::stack::StackError),
+    /// Heap allocation failed.
+    HeapFull { requested: usize, available: usize },
 }
 
 impl fmt::Display for ExecError {
@@ -73,12 +93,49 @@ impl fmt::Display for ExecError {
                 "undefined function {module:?}:{function:?}/{arity}"
             ),
             Self::Badarith => formatter.write_str("arithmetic operation failed"),
+            Self::Badarg => formatter.write_str("bad argument"),
             Self::UserExit => formatter.write_str("process exited explicitly"),
+            Self::UnknownOpcode { opcode } => write!(formatter, "unknown opcode {opcode}"),
+            Self::UnsupportedOpcode { name } => write!(formatter, "unsupported opcode {name}"),
+            Self::InvalidOperand(context) => write!(formatter, "invalid operand for {context}"),
+            Self::InvalidLabel { label } => write!(formatter, "invalid code label {label}"),
+            Self::InvalidImport { index } => write!(formatter, "invalid import index {index}"),
+            Self::GcNeeded {
+                requested,
+                available,
+            } => write!(
+                formatter,
+                "GC needed before allocating/checking {requested} heap words ({available} available)"
+            ),
+            Self::UnsupportedLiteral => formatter.write_str("unsupported boxed literal"),
+            Self::Stack(error) => write!(formatter, "stack error: {error}"),
+            Self::HeapFull {
+                requested,
+                available,
+            } => write!(
+                formatter,
+                "heap full: requested {requested} words with {available} available"
+            ),
         }
     }
 }
 
 impl Error for ExecError {}
+
+impl From<crate::process::stack::StackError> for ExecError {
+    fn from(error: crate::process::stack::StackError) -> Self {
+        Self::Stack(error)
+    }
+}
+
+impl From<crate::process::heap::HeapFull> for ExecError {
+    fn from(error: crate::process::heap::HeapFull) -> Self {
+        Self::HeapFull {
+            requested: error.requested(),
+            available: error.available(),
+        }
+    }
+}
 
 /// Top-level error type for beamr operations.
 #[derive(Debug, Clone, PartialEq, Eq)]

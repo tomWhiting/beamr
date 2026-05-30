@@ -116,6 +116,7 @@ pub struct Process {
     x_regs: [Term; 256],
     reduction_counter: u32,
     code_position: Option<CodePosition>,
+    current_mfa: Option<(Atom, Atom, u8)>,
     links: HashSet<u64>,
     monitors: Vec<Monitor>,
     trap_exit: bool,
@@ -137,6 +138,7 @@ impl Process {
             x_regs: [Term::NIL; 256],
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
             code_position: None,
+            current_mfa: None,
             links: HashSet::new(),
             monitors: Vec::new(),
             trap_exit: false,
@@ -263,6 +265,17 @@ impl Process {
     /// Set the current code position.
     pub const fn set_code_position(&mut self, code_position: Option<CodePosition>) {
         self.code_position = code_position;
+    }
+
+    /// Current module/function/arity metadata from the most recent func_info.
+    #[must_use]
+    pub const fn current_mfa(&self) -> Option<(Atom, Atom, u8)> {
+        self.current_mfa
+    }
+
+    /// Store module/function/arity metadata for later error reporting.
+    pub const fn set_current_mfa(&mut self, current_mfa: Option<(Atom, Atom, u8)>) {
+        self.current_mfa = current_mfa;
     }
 
     /// Linked process IDs. Link propagation is handled by a later brief.
