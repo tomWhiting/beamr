@@ -68,7 +68,7 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
 /// interned because runtime atoms are never freed in this design, which lets
 /// `resolve` return a borrowed `&str` without tying it to a map guard.
 pub struct AtomTable {
-    by_name: DashMap<&'static str, Atom>,
+    by_name: DashMap<String, Atom>,
     by_index: DashMap<u32, &'static str>,
     next_index: AtomicU32,
 }
@@ -90,7 +90,7 @@ impl AtomTable {
         let table = Self::new();
 
         for &(name, atom) in COMMON_ATOMS {
-            table.by_name.insert(name, atom);
+            table.by_name.insert(name.to_owned(), atom);
             table.by_index.insert(atom.index(), name);
         }
 
@@ -106,14 +106,13 @@ impl AtomTable {
             return atom;
         }
 
-        let leaked_name: &'static str = Box::leak(name.to_owned().into_boxed_str());
-
-        match self.by_name.entry(leaked_name) {
+        match self.by_name.entry(name.to_owned()) {
             Entry::Occupied(entry) => *entry.get(),
             Entry::Vacant(entry) => {
                 let index = self.next_index.fetch_add(1, Ordering::Relaxed);
                 let atom = Atom::new(index);
-                self.by_index.insert(index, leaked_name);
+                let stored_name: &'static str = Box::leak(entry.key().clone().into_boxed_str());
+                self.by_index.insert(index, stored_name);
                 entry.insert(atom);
                 atom
             }
