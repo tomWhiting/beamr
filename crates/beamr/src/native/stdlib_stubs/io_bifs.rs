@@ -48,7 +48,7 @@ pub fn bif_io_lib_format_2(args: &[Term], context: &mut ProcessContext) -> Resul
 }
 
 fn format_bytes(format: Term, arguments: Term, context: &ProcessContext) -> Result<Vec<u8>, Term> {
-    let format = binary_bytes(format)?;
+    let format = iodata_bytes(format)?;
     let arguments = list_terms(arguments)?;
     let mut out = Vec::with_capacity(format.len());
     let mut arg_index = 0usize;
@@ -91,10 +91,15 @@ fn next_arg(arguments: &[Term], index: &mut usize) -> Result<Term, Term> {
 }
 
 fn write_iodata(term: Term, context: &ProcessContext) -> Result<(), Term> {
-    let mut bytes = Vec::new();
-    collect_iodata(term, &mut bytes)?;
+    let bytes = iodata_bytes(term)?;
     context.io_sink().write(&bytes);
     Ok(())
+}
+
+fn iodata_bytes(term: Term) -> Result<Vec<u8>, Term> {
+    let mut bytes = Vec::new();
+    collect_iodata(term, &mut bytes)?;
+    Ok(bytes)
 }
 
 fn collect_iodata(term: Term, out: &mut Vec<u8>) -> Result<(), Term> {

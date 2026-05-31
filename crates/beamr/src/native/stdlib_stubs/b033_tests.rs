@@ -445,6 +445,20 @@ fn b039_io_and_init_bifs_cover_sink_formatter_and_stop() {
         .expect("io_lib format"),
         b"hello world",
     );
+    assert_binary(
+        io_bifs::bif_io_lib_format_2(
+            &[
+                list(&[
+                    Term::small_int(i64::from(b'~')),
+                    Term::small_int(i64::from(b's')),
+                ]),
+                list(&[binary(b"iodata-format")]),
+            ],
+            &mut ctx,
+        )
+        .expect("io_lib format accepts Erlang string format"),
+        b"iodata-format",
+    );
 
     let mut null_ctx = atom_context();
     assert_eq!(
