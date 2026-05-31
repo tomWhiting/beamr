@@ -170,16 +170,28 @@ fn map_to_value(map: Map, atom_table: &AtomTable) -> Result<Value, JsonTermError
         let key = map
             .key(index)
             .ok_or(JsonTermError::UnsupportedTerm("map"))?;
-        let key_value = term_to_value(key, atom_table)?;
-        let Value::String(key_name) = key_value else {
-            return Err(JsonTermError::NonStringMapKey(key_value));
-        };
+        let key_name = map_key_to_string(key, atom_table)?;
         let value = map
             .value(index)
             .ok_or(JsonTermError::UnsupportedTerm("map"))?;
         object.insert(key_name, term_to_value(value, atom_table)?);
     }
     Ok(Value::Object(object))
+}
+
+fn map_key_to_string(term: Term, atom_table: &AtomTable) -> Result<String, JsonTermError> {
+    if let Some(atom) = term.as_atom() {
+        return atom_table
+            .resolve(atom)
+            .map(str::to_owned)
+            .ok_or(JsonTermError::UnknownAtom(atom));
+    }
+
+    let key_value = term_to_value(term, atom_table)?;
+    let Value::String(key_name) = key_value else {
+        return Err(JsonTermError::NonStringMapKey(key_value));
+    };
+    Ok(key_name)
 }
 
 fn float_to_value(value: f64) -> Result<Value, JsonTermError> {
@@ -542,6 +554,26 @@ mod tests {
 
         assert_eq!(map.key(0), Some(key));
         assert_eq!(term_to_value(term, &table), Ok(json!({"key": "value"})));
+    }
+
+    #[test]
+    fn map_atom_keys_use_atom_names_even_for_json_special_atoms() {
+        let table = atom_table();
+        let keys = [Term::atom(Atom::TRUE), Term::atom(Atom::NIL)];
+        let values = [Term::small_int(1), Term::small_int(2)];
+        let mut map_heap = [0_u64; 6];
+        let map = write_map(&mut map_heap, &keys, &values).expect("map should fit");
+
+        assert_eq!(term_to_value(map, &table), Ok(json!({"true": 1, "nil": 2})));
+    }
+
+    #[test]
+    fn round_trip_preserves_object_keys_named_like_special_atoms() {
+        let (table, mut context) = context();
+        let value = json!({"true": "bool-name", "nil": "nil-name"});
+        let term = value_to_term(&value, &mut context).expect("object to term");
+
+        assert_eq!(term_to_value(term, &table), Ok(value));
     }
 
     #[test]
