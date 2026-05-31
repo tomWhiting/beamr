@@ -1,0 +1,111 @@
+{
+  "id": "B-037",
+  "status": "approved",
+  "created": "2026-05-31T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Core erlang BIFs — arithmetic, type conversion, bitwise, and math",
+  "depends_on": ["B-033"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "The sample workflow's dependency chain imports 32 functions from erlang, math, and rand that are not yet implemented. These cover type conversions, bitwise operations, math functions, and rounding. Without these, any Gleam workflow using number formatting, bitwise flags, or math operations fails at runtime.",
+  "task": "Implement 32 BIFs across the erlang, math, and rand modules as native Rust stubs.",
+  "boundaries": [
+    "SHALL NOT implement arbitrary-precision integer arithmetic (SmallInt range is sufficient)",
+    "SHALL NOT implement erlang:float_to_binary with full formatting options (basic to_string is sufficient)",
+    "SHALL return badarg for unsupported argument types rather than panicking"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "erlang type conversion BIFs (12 functions)",
+      "spec": "Register under erlang module: atom_to_binary/1, binary_to_float/1, binary_to_integer/1, binary_to_integer/2, float/1, integer_to_binary/1, integer_to_binary/2, integer_to_list/1, iolist_to_binary/1, list_to_bitstring/1, list_to_tuple/1, tuple_to_list/1.",
+      "acceptance": [
+        "atom_to_binary(ok) returns <<\"ok\">>",
+        "binary_to_integer(<<\"42\">>) returns 42",
+        "binary_to_integer(<<\"FF\">>, 16) returns 255",
+        "integer_to_binary(42) returns <<\"42\">>",
+        "list_to_tuple([1, 2, 3]) returns {1, 2, 3}",
+        "tuple_to_list({1, 2, 3}) returns [1, 2, 3]",
+        "Non-matching types return badarg",
+        "Tests cover each function"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/type_conversion_bifs.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "erlang bitwise BIFs (6 functions)",
+      "spec": "Register under erlang module: band/2, bnot/1, bor/2, bsl/2, bsr/2, bxor/2.",
+      "acceptance": [
+        "band(5, 3) returns 1",
+        "bor(5, 3) returns 7",
+        "bxor(5, 3) returns 6",
+        "bsl(1, 4) returns 16",
+        "bsr(16, 4) returns 1",
+        "bnot(0) returns -1",
+        "Non-integer arguments return badarg",
+        "Tests cover each function"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/bitwise_bifs.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "erlang additional BIFs (8 functions)",
+      "spec": "Register: round/1 (float to nearest integer), trunc/1 (truncate float), is_bitstring/1 (true for binaries), is_map_key/2 (check map key), map_size/1 (number of map entries), binary_part/3 (sub-binary extraction), bit_size/1 (bit length of binary), unary negation -/1.",
+      "acceptance": [
+        "round(3.7) returns 4",
+        "trunc(3.7) returns 3",
+        "is_map_key(key, #{key => val}) returns true",
+        "Tests cover each function"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/gate3_bifs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "math module BIFs (5 functions)",
+      "spec": "Register under math module: ceil/1, floor/1, exp/1, log/1, pow/2.",
+      "acceptance": [
+        "math:ceil(3.2) returns 4.0",
+        "math:floor(3.7) returns 3.0",
+        "math:pow(2.0, 10.0) returns 1024.0",
+        "math:log(1.0) returns 0.0",
+        "Tests cover each function"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/math_bifs.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "rand module BIF (1 function)",
+      "spec": "Register rand:uniform/0 — return a random float between 0.0 (inclusive) and 1.0 (exclusive). Use per-process ThreadRng (no shared state).",
+      "acceptance": [
+        "Returns a float in [0.0, 1.0)",
+        "Successive calls return different values",
+        "Test verifies range"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ]
+}

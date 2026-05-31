@@ -1,6 +1,118 @@
 {
   "id": "B-033",
-  "status": "drafted",
+  "status": "approved",
   "created": "2026-05-31T00:00:00Z",
-  "cluster": "beamr"
+  "cluster": "beamr",
+  "title": "Gleam stdlib native stubs — string, iolist, and gleam_stdlib BIFs",
+  "depends_on": ["B-032"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "Gleam's string operations delegate to two layers: gleam_stdlib (a NIF-like module compiled from Erlang/FFI) and Erlang's string module. The compiled gleam_stdlib.beam cannot load due to ETF tag 70 (IEEE 754 float literal), so these functions must be implemented as native Rust BIFs. Without them, any Gleam workflow using string concatenation, formatting, or result handling fails at runtime.",
+  "task": "Implement 25 missing BIFs across 4 modules as native Rust stubs, and fix the ETF tag 70 decoder gap that blocks loading gleam_stdlib.beam and gleam@list.beam.",
+  "boundaries": [
+    "SHALL NOT implement full Unicode grapheme segmentation (stub string_pop_grapheme with byte-level splitting)",
+    "SHALL NOT implement gleam_stdlib functions not imported by the sample_workflow dependency chain",
+    "SHALL fix ETF tag 70 decoding even though stubs bypass the need for loading gleam_stdlib.beam — future modules will need it"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ETF tag 70 — NEW_FLOAT_EXT decoder",
+      "spec": "Fix the ETF literal decoder to handle tag 70 (IEEE 754 double, 8 bytes big-endian). This tag is used by gleam_stdlib.beam and gleam@list.beam for float constants.",
+      "acceptance": [
+        "gleam_stdlib.beam and gleam@list.beam from test-workflows/sample/ load without ETF decode errors",
+        "Tag 70 decodes to the correct Float term value",
+        "Existing ETF tests still pass"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/loader/decode/chunks.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "erlang module BIFs (2 functions)",
+      "spec": "Register under erlang module: byte_size/1 (return byte length of a binary term, badarg for non-binaries) and iolist_size/1 (return byte size of an iolist, handle binaries directly, badarg for complex iolists).",
+      "acceptance": [
+        "byte_size(<<\"hello\">>) returns 5",
+        "iolist_size(<<\"hello\">>) returns 5",
+        "Non-binary arguments return badarg",
+        "Tests cover each function"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/gate3_bifs/mod.rs", "crates/beamr/src/native/gate3_bifs/tests.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "gleam_stdlib module BIFs (13 functions)",
+      "spec": "Register under gleam_stdlib module atom: string_replace/3, less_than/2, slice/3, crop_string/2, contains_string/2, string_starts_with/2, string_ends_with/2, string_pop_grapheme/1, utf_codepoint_list_to_string/1, inspect/1, string_remove_prefix/2, string_remove_suffix/2, iodata_append/2.",
+      "acceptance": [
+        "Each function handles binary string inputs correctly",
+        "Each function returns badarg for invalid inputs",
+        "iodata_append(<<\"hello \">>, <<\"world\">>) returns <<\"hello world\">>",
+        "contains_string(<<\"hello\">>, <<\"ell\">>) returns true atom",
+        "Tests cover each function with at least 2 cases"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Erlang string module BIFs (8 functions)",
+      "spec": "Register under string module atom: length/1, reverse/1, lowercase/1, uppercase/1, trim/2, split/3, equal/2, is_empty/1.",
+      "acceptance": [
+        "string:lowercase(<<\"HELLO\">>) returns <<\"hello\">>",
+        "string:trim(<<\" hi \">>, both) returns <<\"hi\">>",
+        "string:split(<<\"a-b-c\">>, <<\"-\">>, all) returns list of binaries",
+        "Tests cover each function"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/string_bifs.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "binary module BIF (1 function)",
+      "spec": "Register under binary module: part/3 — extract sub-binary by offset and length. binary:part(<<\"hello\">>, 1, 3) returns <<\"ell\">>.",
+      "acceptance": [
+        "Correct sub-binary extraction",
+        "Out-of-bounds returns badarg",
+        "Tests cover normal and edge cases"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "sample_workflow:run/1 end-to-end test",
+      "spec": "Integration test that loads all .beam files from test-workflows/sample/, registers meridian_ffi NIFs, spawns sample_workflow:run/1 with a file path, and verifies the return value is {ok, {sample_workflow, Content, CmdOutput, true}}.",
+      "acceptance": [
+        "Test reads a real file via the NIF",
+        "Test runs a real shell command via the NIF",
+        "Test writes output to /tmp",
+        "Test verifies the full workflow completes with ExitReason::Normal",
+        "Test verifies the return tuple structure"
+      ],
+      "files": {
+        "create": ["crates/beamr/tests/sample_workflow_e2e.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ]
 }

@@ -1,6 +1,102 @@
 {
   "id": "B-036",
-  "status": "drafted",
+  "status": "approved",
   "created": "2026-05-31T00:00:00Z",
-  "cluster": "beamr"
+  "cluster": "beamr-meridian",
+  "title": "beamr-meridian crate scaffold — MeridianRuntime, NIF wiring, run_workflow",
+  "depends_on": ["B-033", "B-035"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "The beamr-meridian crate is the integration layer between beamr (standalone BEAM VM) and Meridian (workflow executor). It creates a beamr runtime, registers workflow NIFs under meridian_ffi, loads compiled Gleam workflows, executes them, and converts the results for the Meridian orchestrator. This crate lives in the yggdrasil repo at crates/beamr-meridian/ with beamr as a git dependency.",
+  "task": "Scaffold the beamr-meridian crate with the MeridianRuntime struct, NIF registrations for all workflow operations, the run_workflow entry point, and a step runner bridge for dispatching AI agent steps.",
+  "boundaries": [
+    "SHALL NOT modify the beamr core crate",
+    "SHALL NOT implement the full StepRunner async bridge (B-037, blocked on Norn library parity fix)",
+    "SHALL implement synchronous NIFs (read_file, write_file, run_cmd, commit) and stub async NIFs (run_step_norn)",
+    "SHALL live in the yggdrasil repo, not the beamr repo"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Crate scaffold and MeridianRuntime struct",
+      "spec": "Create crates/beamr-meridian/ in the yggdrasil repo with Cargo.toml depending on beamr (git), libyggd, ygg-orchestrator, serde_json. MeridianRuntime struct owning: AtomTable, BifRegistryImpl, Arc<ModuleRegistry>, Scheduler. MeridianRuntime::new(config), load_workflow(beam_dir), shutdown().",
+      "acceptance": [
+        "MeridianRuntime::new() succeeds without panics",
+        "load_workflow loads .beam files and reports unresolved imports",
+        "shutdown cleanly stops all scheduler threads",
+        "Tests cover lifecycle: new → load → shutdown"
+      ],
+      "files": {
+        "create": ["crates/beamr-meridian/Cargo.toml", "crates/beamr-meridian/src/lib.rs", "crates/beamr-meridian/src/runtime.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "NIF registrations — synchronous workflow operations",
+      "spec": "Register under meridian_ffi module atom: read_file/1, write_file/2, read_json/1, write_json/2, parse_json/1, to_json/1, run_cmd/1, commit/1, render_template/2, set_context/2, edit_transcript/2. All take binary Term arguments and return {ok, Result} or {error, Reason} tuples.",
+      "acceptance": [
+        "read_file reads a real file and returns binary content",
+        "write_file creates/overwrites a file",
+        "run_cmd executes a shell command and returns stdout",
+        "parse_json converts JSON string to Term via Value→Term bridge",
+        "Tests cover each NIF independently"
+      ],
+      "files": {
+        "create": ["crates/beamr-meridian/src/nifs.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "run_workflow entry point",
+      "spec": "MeridianRuntime::run_workflow(module, function, inputs) -> Result<OrchestrationResult, Error>: Convert HashMap<String, Value> inputs to Term via value_to_term. Spawn Gleam function as BEAM process. Block on scheduler.run_until_exit(pid). Convert return Term to OrchestrationResult via term_to_value. Map ExitReason to OrchestrationStatus.",
+      "acceptance": [
+        "run_workflow with a trivial Gleam function returns Completed",
+        "run_workflow with a failing Gleam function returns Failed",
+        "Input HashMap values are accessible in the Gleam function",
+        "Return value is correctly converted to serde_json::Value",
+        "Tests cover success and failure paths"
+      ],
+      "files": {
+        "modify": ["crates/beamr-meridian/src/runtime.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Step runner bridge (stub)",
+      "spec": "The run_step_norn NIF accepts 4 string arguments (name, profile, instruction, schema), returns {ok, <<\"step stub\">>}. The real async bridge is B-037.",
+      "acceptance": [
+        "run_step_norn/4 accepts arguments without crashing",
+        "Returns a well-formed {ok, binary} tuple",
+        "The stub is clearly marked as temporary"
+      ],
+      "files": {
+        "modify": ["crates/beamr-meridian/src/nifs.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Integration test — Gleam workflow through MeridianRuntime",
+      "spec": "End-to-end test using sample_workflow: Create MeridianRuntime, load test-workflows/sample/ .beam files, run sample_workflow:run/1 with a file path, verify result contains file content, verify /tmp/gleam-workflow-output.txt was written.",
+      "acceptance": [
+        "Full workflow executes through MeridianRuntime",
+        "NIF calls produce correct side effects (file read, command execution, file write)",
+        "Return value structure matches WorkflowResult type",
+        "Test is reproducible (creates/cleans up temp files)"
+      ],
+      "files": {
+        "create": ["crates/beamr-meridian/tests/workflow_e2e.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ]
 }

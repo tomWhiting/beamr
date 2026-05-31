@@ -1,0 +1,76 @@
+{
+  "id": "B-038",
+  "status": "approved",
+  "created": "2026-05-31T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Collection BIFs — maps and lists operations",
+  "depends_on": ["B-033"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "The sample workflow's dependency chain uses Gleam's dict and list modules, which delegate to Erlang's maps and lists modules. 17 functions across these two modules are unresolved. Without them, any Gleam workflow that creates, queries, or transforms collections fails at runtime.",
+  "task": "Implement 17 BIFs across the maps and lists modules as native Rust stubs, including higher-order function calling convention for closure-accepting BIFs.",
+  "boundaries": [
+    "SHALL NOT implement maps:intersect_with/3 or maps:groups_from_list/2 (not in the sample workflow import chain)",
+    "SHALL NOT implement lists:sort/2 with custom comparators (stub with natural term ordering)",
+    "SHALL reuse existing Term comparison infrastructure for map key lookups"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "maps module BIFs (11 functions)",
+      "spec": "Register under maps module: put/3, find/2, keys/1, values/1, to_list/1, fold/3, filter/2, merge_with/3, update_with/4, with/2, without/2.",
+      "acceptance": [
+        "maps:put(k, v, #{}) returns #{k => v}",
+        "maps:find(k, #{k => v}) returns {ok, v}",
+        "maps:find(missing, #{k => v}) returns error",
+        "maps:keys(#{a => 1, b => 2}) returns [a, b]",
+        "maps:fold(Fun, 0, #{a => 1, b => 2}) accumulates correctly",
+        "maps:filter(Fun, Map) retains matching entries",
+        "Tests cover each function with at least 2 cases"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/maps_bifs.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "lists module BIFs (6 functions)",
+      "spec": "Register under lists module: append/1, append/2, join/2, map/2, reverse/2, seq/2.",
+      "acceptance": [
+        "lists:append([[1,2],[3,4]]) returns [1,2,3,4]",
+        "lists:append([1,2], [3,4]) returns [1,2,3,4]",
+        "lists:seq(1, 5) returns [1,2,3,4,5]",
+        "lists:reverse([1,2,3], [4,5]) returns [3,2,1,4,5]",
+        "lists:map(Fun, [1,2,3]) applies function correctly",
+        "Tests cover each function"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/lists_bifs.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Higher-order function calling convention",
+      "spec": "maps:fold/3, maps:filter/2, lists:map/2, and maps:merge_with/3 accept closures (fun terms). The BIF must invoke the closure through the interpreter's trampoline mechanism (same as B-033's approach for select/1). Verify the calling convention handles both local and imported closures.",
+      "acceptance": [
+        "maps:fold with a closure accumulates correctly",
+        "lists:map with a closure transforms each element",
+        "maps:filter with a closure retains matching entries",
+        "Closures that capture variables work correctly",
+        "Tests verify closure invocation"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/maps_bifs.rs", "crates/beamr/src/native/stdlib_stubs/lists_bifs.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ]
+}

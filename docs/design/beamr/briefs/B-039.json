@@ -1,0 +1,88 @@
+{
+  "id": "B-039",
+  "status": "approved",
+  "created": "2026-05-31T00:00:00Z",
+  "cluster": "beamr",
+  "title": "String, binary, and I/O BIFs — remaining sample workflow coverage",
+  "depends_on": ["B-033"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "The sample workflow imports string operations (find, next_grapheme, pad, replace, slice), binary encoding (hex, base64), and I/O functions (put_chars, format) that are not yet implemented. These are needed for Gleam's string processing, output formatting, and binary encoding pipelines.",
+  "task": "Implement 16 BIFs across the string, binary, base64, io, io_lib, and init modules.",
+  "boundaries": [
+    "SHALL NOT implement full Erlang format string parsing for io:format — support ~s, ~p, ~w, ~n only",
+    "SHALL NOT implement io:setopts beyond returning ok (stub)",
+    "SHALL route io:put_chars through a configurable output sink (trait/callback), not directly to stdout — default is no-op, beamr-cli sets stdout"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "string module BIFs (5 functions)",
+      "spec": "Register under string module: find/2, next_grapheme/1, pad/4, replace/4, slice/3.",
+      "acceptance": [
+        "string:find(\"hello world\", \"world\") returns \"world\"",
+        "string:find(\"hello\", \"xyz\") returns nomatch",
+        "string:pad(\"hi\", 5, trailing, \" \") returns \"hi   \"",
+        "string:replace(\"aaa\", \"a\", \"b\", all) returns \"bbb\"",
+        "Tests cover each function"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/string_bifs.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "binary and base64 BIFs (4 functions)",
+      "spec": "binary:decode_hex/1, binary:encode_hex/1, base64:decode/1, base64:encode/2.",
+      "acceptance": [
+        "binary:encode_hex(<<\"hello\">>) returns <<\"68656C6C6F\">>",
+        "binary:decode_hex(<<\"48454C4C4F\">>) returns <<\"HELLO\">>",
+        "base64:encode(<<\"hello\">>, standard) returns correct base64",
+        "base64:decode(<<\"aGVsbG8=\">>) returns <<\"hello\">>",
+        "Tests cover encode/decode round-trips"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/encoding_bifs.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "I/O BIFs with configurable output sink (5 functions)",
+      "spec": "Define IoSink trait with write(&self, bytes: &[u8]). Default NullSink (no-op), beamr-cli sets StdoutSink. Register io:put_chars/1, io:put_chars/2, io:format/3, io:setopts/2 (stub ok), io_lib:format/2.",
+      "acceptance": [
+        "io:put_chars(<<\"hello\">>) writes to configured sink",
+        "io_lib:format(\"~s ~s\", [\"hello\", \"world\"]) returns <<\"hello world\">>",
+        "Default NullSink produces no output",
+        "beamr-cli StdoutSink writes to stdout",
+        "Tests verify sink wiring"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/io_bifs.rs", "crates/beamr/src/io.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs", "crates/beamr/src/lib.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "init:stop/1",
+      "spec": "Register init:stop/1 — accepts exit code integer, sets shutdown flag, returns ok.",
+      "acceptance": [
+        "init:stop(0) returns ok",
+        "Does not panic",
+        "Test verifies return value"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ]
+}

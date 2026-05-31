@@ -49,6 +49,7 @@ use maps_bifs::{
     bif_maps_filter, bif_maps_find, bif_maps_fold, bif_maps_keys, bif_maps_merge_with,
     bif_maps_put, bif_maps_to_list, bif_maps_update_with, bif_maps_values, bif_maps_with,
     bif_maps_without,
+};
 use io_bifs::{
     bif_io_format_3, bif_io_lib_format_2, bif_io_put_chars_1, bif_io_put_chars_2, bif_io_setopts_2,
 };
@@ -360,6 +361,8 @@ pub fn bif_rand_uniform(args: &[Term], context: &mut ProcessContext) -> Result<T
     let value = rand::rng().random_range(0.0..1.0);
     let heap = Box::leak(Box::new([0u64; 2]));
     crate::term::boxed::write_float(heap, value).ok_or_else(badarg)
+}
+
 /// init:stop/1 — request runtime shutdown and return `ok`.
 pub fn bif_init_stop(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [exit_code] = args else {

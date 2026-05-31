@@ -1,6 +1,73 @@
 {
   "id": "B-035",
-  "status": "drafted",
+  "status": "approved",
   "created": "2026-05-31T00:00:00Z",
-  "cluster": "beamr"
+  "cluster": "beamr",
+  "title": "Term-to-Value bridge — bidirectional serde_json::Value conversion",
+  "depends_on": ["B-033"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "The Meridian workflow executor passes inputs as HashMap<String, serde_json::Value> and expects outputs as serde_json::Value. Gleam functions operate on BEAM terms. A bidirectional converter between Term and serde_json::Value is needed for the beamr-meridian integration layer. This module belongs in the beamr core crate because any host program embedding beamr will need JSON interop.",
+  "task": "Implement a term::json module with term_to_value(Term) -> serde_json::Value and value_to_term(Value, &mut ProcessContext) -> Term conversions.",
+  "boundaries": [
+    "SHALL NOT implement custom struct serialization (no derive macros)",
+    "SHALL NOT add serde as a required dependency of beamr — gate behind a json feature flag",
+    "SHALL handle all immediate and common boxed term types"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Term to serde_json::Value",
+      "spec": "Convert a BEAM Term to a serde_json::Value: SmallInt→Number, Atom(true/false)→Bool, Atom(nil/undefined)→Null, Atom(other)→String, Nil→Array(empty), Binary(UTF-8)→String, Binary(non-UTF-8)→String(base64), Tuple→Array, Cons→Array(flatten), Map→Object, Float→Number, Pid→String(<0.N.0>), BigInt→Number or String for overflow.",
+      "acceptance": [
+        "term_to_value(Term::small_int(42)) returns Value::Number(42)",
+        "term_to_value(Term::atom(Atom::TRUE)) returns Value::Bool(true)",
+        "term_to_value(binary_term(\"hello\")) returns Value::String(\"hello\")",
+        "term_to_value(tuple_term([ok, 42])) returns Value::Array([String(\"ok\"), Number(42)])",
+        "term_to_value(map_term({key: value})) returns Value::Object({\"key\": value})",
+        "Nested structures convert recursively",
+        "Tests cover each term type"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/term/json.rs"],
+        "modify": ["crates/beamr/src/term/mod.rs", "crates/beamr/Cargo.toml"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "serde_json::Value to Term",
+      "spec": "Convert a serde_json::Value to a BEAM Term: Null→NIL, Bool(true)→atom(TRUE), Bool(false)→atom(FALSE), Number(int)→small_int, Number(float)→Float(heap), String→Binary(heap), Array→Cons list, Object→Map(heap). Heap allocation uses ProcessContext::alloc_tuple, alloc_cons, and leaked-heap patterns for binaries.",
+      "acceptance": [
+        "value_to_term(Value::Number(42), ctx) returns Term::small_int(42)",
+        "value_to_term(Value::String(\"hello\"), ctx) returns a binary term",
+        "value_to_term(Value::Array([1, 2, 3]), ctx) returns a proper cons list",
+        "value_to_term(Value::Object({\"key\": \"value\"}), ctx) returns a map term",
+        "Round-trip: term_to_value(value_to_term(v)) preserves structure for all JSON types",
+        "Tests cover each type and round-trip"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/json.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "AtomTable integration for string-atom conversion",
+      "spec": "term_to_value needs the AtomTable to look up atom names. value_to_term needs it to intern atom strings. Add an AtomTable parameter (or make it available via ProcessContext).",
+      "acceptance": [
+        "term_to_value(atom_term, atom_table) produces the correct string",
+        "value_to_term(Value::String(\"ok\"), ctx) when result should be an atom — keys in objects become atoms",
+        "No panics for unknown atom IDs"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/json.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ]
 }
