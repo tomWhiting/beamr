@@ -24,7 +24,9 @@ impl fmt::Display for RegistryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AlreadyRegistered => f.write_str("name is already registered"),
-            Self::PidAlreadyRegistered => f.write_str("pid is already registered under another name"),
+            Self::PidAlreadyRegistered => {
+                f.write_str("pid is already registered under another name")
+            }
             Self::NotRegistered => f.write_str("name is not registered"),
         }
     }

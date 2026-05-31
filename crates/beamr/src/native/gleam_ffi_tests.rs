@@ -92,10 +92,7 @@ fn gleam_link_badarg_non_pid() {
 fn gleam_link_badarg_no_facility() {
     let mut ctx = ProcessContext::new();
     ctx.set_pid(Some(1));
-    assert_eq!(
-        bif_gleam_link(&[Term::pid(2)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_gleam_link(&[Term::pid(2)], &mut ctx), Err(badarg()));
 }
 
 // ---------------------------------------------------------------------------
@@ -166,19 +163,13 @@ fn sleep_zero_returns_immediately() {
 #[test]
 fn sleep_badarg_negative() {
     let mut ctx = ProcessContext::new();
-    assert_eq!(
-        bif_sleep(&[Term::small_int(-1)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_sleep(&[Term::small_int(-1)], &mut ctx), Err(badarg()));
 }
 
 #[test]
 fn sleep_badarg_non_integer() {
     let mut ctx = ProcessContext::new();
-    assert_eq!(
-        bif_sleep(&[Term::atom(Atom::OK)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_sleep(&[Term::atom(Atom::OK)], &mut ctx), Err(badarg()));
 }
 
 #[test]
@@ -366,8 +357,7 @@ fn pid_from_dynamic_returns_ok_for_pid() {
 #[test]
 fn pid_from_dynamic_returns_error_for_non_pid() {
     let mut ctx = ProcessContext::new();
-    let result =
-        bif_pid_from_dynamic(&[Term::small_int(42)], &mut ctx).expect("should succeed");
+    let result = bif_pid_from_dynamic(&[Term::small_int(42)], &mut ctx).expect("should succeed");
     let tuple = Tuple::new(result).expect("should be a tuple");
     assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
     assert_eq!(tuple.get(1), Some(GLEAM_NIL));
@@ -376,8 +366,7 @@ fn pid_from_dynamic_returns_error_for_non_pid() {
 #[test]
 fn pid_from_dynamic_returns_error_for_atom() {
     let mut ctx = ProcessContext::new();
-    let result =
-        bif_pid_from_dynamic(&[Term::atom(Atom::OK)], &mut ctx).expect("should succeed");
+    let result = bif_pid_from_dynamic(&[Term::atom(Atom::OK)], &mut ctx).expect("should succeed");
     let tuple = Tuple::new(result).expect("should be a tuple");
     assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
     assert_eq!(tuple.get(1), Some(GLEAM_NIL));
@@ -546,11 +535,7 @@ impl MockSupervisionFacility {
 }
 
 impl SupervisionFacility for MockSupervisionFacility {
-    fn monitor(
-        &self,
-        caller_pid: u64,
-        target_pid: u64,
-    ) -> Result<MonitorResult, SupervisionError> {
+    fn monitor(&self, caller_pid: u64, target_pid: u64) -> Result<MonitorResult, SupervisionError> {
         self.records
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -581,14 +566,13 @@ impl SupervisionFacility for MockSupervisionFacility {
         target_pid: u64,
         reason: ExitReason,
     ) -> Result<(), SupervisionError> {
-        self.records
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(SupervisionRecord::ExitSignal {
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(
+            SupervisionRecord::ExitSignal {
                 caller_pid,
                 target_pid,
                 reason,
-            });
+            },
+        );
         Ok(())
     }
 }

@@ -80,7 +80,9 @@ fn process_exits_normally_and_is_removed() {
     let exit_module = registry.insert(normal_exit_module(&atoms));
 
     let scheduler = Scheduler::new(
-        SchedulerConfig { thread_count: Some(1) },
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
         Arc::clone(&registry),
     )
     .unwrap_or_else(|e| panic!("scheduler starts: {e}"));
@@ -101,7 +103,9 @@ fn unlinked_process_survives_normal_exit() {
     let loop_module = registry.insert(infinite_loop_module(&atoms));
 
     let scheduler = Scheduler::new(
-        SchedulerConfig { thread_count: Some(1) },
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
         Arc::clone(&registry),
     )
     .unwrap_or_else(|e| panic!("scheduler starts: {e}"));
@@ -131,14 +135,19 @@ fn multiple_processes_exit_independently() {
     let exit_module = registry.insert(normal_exit_module(&atoms));
 
     let scheduler = Scheduler::new(
-        SchedulerConfig { thread_count: Some(2) },
+        SchedulerConfig {
+            thread_count: Some(2),
+        },
         Arc::clone(&registry),
     )
     .unwrap_or_else(|e| panic!("scheduler starts: {e}"));
 
-    let pids: Vec<_> = (0..10).map(|_| scheduler.spawn_process(&exit_module)).collect();
+    let pids: Vec<_> = (0..10)
+        .map(|_| scheduler.spawn_process(&exit_module))
+        .collect();
     wait_until(3000, || {
-        pids.iter().all(|pid| scheduler.process_table().get(*pid).is_none())
+        pids.iter()
+            .all(|pid| scheduler.process_table().get(*pid).is_none())
     });
 
     scheduler.shutdown();
@@ -150,7 +159,9 @@ fn multiple_processes_exit_independently() {
 fn scheduler_initializes_supervision_data_structures() {
     let registry = Arc::new(ModuleRegistry::new());
     let scheduler = Scheduler::new(
-        SchedulerConfig { thread_count: Some(1) },
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
         registry,
     )
     .unwrap_or_else(|e| panic!("scheduler starts: {e}"));
@@ -262,7 +273,9 @@ fn waiting_process_stays_alive_without_exit_signal() {
     let wait_mod = registry.insert(wait_module(&atoms));
 
     let scheduler = Scheduler::new(
-        SchedulerConfig { thread_count: Some(1) },
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
         Arc::clone(&registry),
     )
     .unwrap_or_else(|e| panic!("scheduler starts: {e}"));

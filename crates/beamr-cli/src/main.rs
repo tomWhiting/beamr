@@ -8,14 +8,15 @@ use beamr::error::{ExecError, LoadError};
 use beamr::loader::{UnresolvedImportReport, load_module};
 use beamr::module::ModuleRegistry;
 use beamr::native::{
-    BifRegistryImpl, NativeRegistrationError, bifs::register_gate1_bifs,
-    process_bifs::register_gate2_bifs,
+    BifRegistryImpl, NativeRegistrationError,
+    bifs::register_gate1_bifs,
     gate3_bifs::register_gate3_bifs,
-    stdlib_stubs::register_stdlib_stubs,
-    selector_ffi::register_selector_bifs,
     gleam_ffi::register_gleam_ffi_bifs,
     meridian_ffi::register_meridian_ffi,
-    otp_stubs::{register_otp_stubs, init_otp_atoms},
+    otp_stubs::{init_otp_atoms, register_otp_stubs},
+    process_bifs::register_gate2_bifs,
+    selector_ffi::register_selector_bifs,
+    stdlib_stubs::register_stdlib_stubs,
 };
 use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
@@ -287,7 +288,9 @@ fn run_module(
     let args = parse_runtime_args(runtime_args, &atom_table)?;
     let registry = Arc::new(module_registry);
     let scheduler = Scheduler::new(
-        SchedulerConfig { thread_count: Some(1) },
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
         Arc::clone(&registry),
     )
     .map_err(|msg| CliError::Exec(ExecError::InvalidOperand(Box::leak(msg.into_boxed_str()))))?;
@@ -322,7 +325,8 @@ fn load_context(path: &Path, dirs: &[PathBuf]) -> Result<LoadContext, CliError> 
     register_gate3_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_stdlib_stubs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_selector_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
-    register_gleam_ffi_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_gleam_ffi_bifs(&mut bif_registry, &atom_table)
+        .map_err(CliError::NativeRegistration)?;
     register_meridian_ffi(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     init_otp_atoms(&atom_table);
     register_otp_stubs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
@@ -717,12 +721,10 @@ mod tests {
         }));
     }
 
-
     #[test]
     fn parses_dir_flag_with_beam_file() {
         assert_eq!(
-            parse_args(["hello.beam", "--dir", "/tmp/beams"])
-                .expect("--dir with beam file parses"),
+            parse_args(["hello.beam", "--dir", "/tmp/beams"]).expect("--dir with beam file parses"),
             Command::Run {
                 path: "hello.beam".into(),
                 entry: None,

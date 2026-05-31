@@ -3,7 +3,7 @@
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, ProcessContext};
 use crate::term::Term;
-use crate::term::boxed::{write_cons, write_map, write_tuple, Cons, Map};
+use crate::term::boxed::{Cons, Map, write_cons, write_map, write_tuple};
 
 use super::collection_bifs::{
     bif_lists_reverse, bif_maps_from_list, bif_maps_map, bif_maps_merge, bif_maps_remove,
@@ -106,12 +106,7 @@ fn maps_merge_combines_two_maps() {
     let mut ctx = context();
 
     let mut heap1 = [0u64; 4];
-    let m1 = write_map(
-        &mut heap1,
-        &[Term::small_int(1)],
-        &[Term::atom(Atom::OK)],
-    )
-    .unwrap();
+    let m1 = write_map(&mut heap1, &[Term::small_int(1)], &[Term::atom(Atom::OK)]).unwrap();
 
     let mut heap2 = [0u64; 4];
     let m2 = write_map(
@@ -133,12 +128,7 @@ fn maps_merge_second_overrides_first_on_collision() {
     let mut ctx = context();
 
     let mut heap1 = [0u64; 4];
-    let m1 = write_map(
-        &mut heap1,
-        &[Term::small_int(1)],
-        &[Term::atom(Atom::OK)],
-    )
-    .unwrap();
+    let m1 = write_map(&mut heap1, &[Term::small_int(1)], &[Term::atom(Atom::OK)]).unwrap();
 
     let mut heap2 = [0u64; 4];
     let m2 = write_map(
@@ -216,12 +206,7 @@ fn maps_remove_returns_same_structure_if_key_not_present() {
     let mut ctx = context();
 
     let mut heap = [0u64; 4];
-    let m = write_map(
-        &mut heap,
-        &[Term::small_int(1)],
-        &[Term::atom(Atom::OK)],
-    )
-    .unwrap();
+    let m = write_map(&mut heap, &[Term::small_int(1)], &[Term::atom(Atom::OK)]).unwrap();
 
     let result = bif_maps_remove(&[Term::small_int(999), m], &mut ctx).unwrap();
     let map = Map::new(result).expect("should be a map");
@@ -234,12 +219,7 @@ fn maps_remove_from_single_entry_map_returns_empty() {
     let mut ctx = context();
 
     let mut heap = [0u64; 4];
-    let m = write_map(
-        &mut heap,
-        &[Term::small_int(1)],
-        &[Term::atom(Atom::OK)],
-    )
-    .unwrap();
+    let m = write_map(&mut heap, &[Term::small_int(1)], &[Term::atom(Atom::OK)]).unwrap();
 
     let result = bif_maps_remove(&[Term::small_int(1), m], &mut ctx).unwrap();
     let map = Map::new(result).expect("should be a map");
@@ -268,12 +248,7 @@ fn maps_map_stub_returns_badarg() {
     let mut ctx = context();
 
     let mut heap = [0u64; 4];
-    let m = write_map(
-        &mut heap,
-        &[Term::small_int(1)],
-        &[Term::atom(Atom::OK)],
-    )
-    .unwrap();
+    let m = write_map(&mut heap, &[Term::small_int(1)], &[Term::atom(Atom::OK)]).unwrap();
 
     // Even with valid-looking arguments, the stub returns badarg because
     // it cannot re-enter the interpreter to call the closure.

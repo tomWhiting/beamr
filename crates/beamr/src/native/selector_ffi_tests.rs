@@ -109,8 +109,7 @@ fn merge_with_empty_selectors() {
         &mut ctx,
     )
     .expect("insert");
-    let result =
-        bif_merge_selector(&[Term::NIL, sel], &mut ctx).expect("merge empty + non-empty");
+    let result = bif_merge_selector(&[Term::NIL, sel], &mut ctx).expect("merge empty + non-empty");
     let entries = list_to_vec(result).expect("list");
     assert_eq!(entries.len(), 1);
 }
@@ -152,10 +151,7 @@ fn message_matches_tag_integer() {
 fn select_rejects_wrong_arity() {
     let mut ctx = context();
     assert_eq!(bif_select(&[], &mut ctx), Err(badarg()));
-    assert_eq!(
-        bif_select(&[Term::NIL, Term::NIL], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_select(&[Term::NIL, Term::NIL], &mut ctx), Err(badarg()));
 }
 
 #[test]
@@ -221,12 +217,11 @@ fn select_with_facility_finds_matching_message() {
 
     // Set up a mailbox snapshot with a matching tuple message.
     let mut msg_heap = [0u64; 3];
-    let message =
-        write_tuple(&mut msg_heap, &[Term::atom(Atom::OK), Term::small_int(42)])
-            .expect("message tuple");
+    let message = write_tuple(&mut msg_heap, &[Term::atom(Atom::OK), Term::small_int(42)])
+        .expect("message tuple");
     let snapshot = Arc::new(MailboxSnapshot::new(vec![message]));
     ctx.set_select_facility(Some(
-        snapshot.clone() as Arc<dyn crate::native::SelectFacility>,
+        snapshot.clone() as Arc<dyn crate::native::SelectFacility>
     ));
 
     // Call select -- should find the matching message.
@@ -252,20 +247,17 @@ fn select_with_no_match_requests_suspend() {
 
     // Build a selector that looks for `error` tag.
     let handler = Term::small_int(99);
-    let selector = bif_insert_selector_handler(
-        &[Term::NIL, Term::atom(Atom::ERROR), handler],
-        &mut ctx,
-    )
-    .expect("insert");
+    let selector =
+        bif_insert_selector_handler(&[Term::NIL, Term::atom(Atom::ERROR), handler], &mut ctx)
+            .expect("insert");
 
     // Mailbox has only `ok`-tagged messages.
     let mut msg_heap = [0u64; 3];
-    let message =
-        write_tuple(&mut msg_heap, &[Term::atom(Atom::OK), Term::small_int(42)])
-            .expect("message tuple");
+    let message = write_tuple(&mut msg_heap, &[Term::atom(Atom::OK), Term::small_int(42)])
+        .expect("message tuple");
     let snapshot = Arc::new(MailboxSnapshot::new(vec![message]));
     ctx.set_select_facility(Some(
-        snapshot.clone() as Arc<dyn crate::native::SelectFacility>,
+        snapshot.clone() as Arc<dyn crate::native::SelectFacility>
     ));
 
     let _result = bif_select(&[selector], &mut ctx).expect("select returns ok");
@@ -286,20 +278,16 @@ fn select_with_timeout_zero_returns_error_nil_on_no_match() {
     let mut ctx = context();
 
     let handler = Term::small_int(99);
-    let selector = bif_insert_selector_handler(
-        &[Term::NIL, Term::atom(Atom::ERROR), handler],
-        &mut ctx,
-    )
-    .expect("insert");
+    let selector =
+        bif_insert_selector_handler(&[Term::NIL, Term::atom(Atom::ERROR), handler], &mut ctx)
+            .expect("insert");
 
     // Mailbox has no matching messages.
     let mut msg_heap = [0u64; 3];
     let message =
         write_tuple(&mut msg_heap, &[Term::atom(Atom::OK), Term::small_int(1)]).expect("tuple");
     let snapshot = Arc::new(MailboxSnapshot::new(vec![message]));
-    ctx.set_select_facility(Some(
-        snapshot as Arc<dyn crate::native::SelectFacility>,
-    ));
+    ctx.set_select_facility(Some(snapshot as Arc<dyn crate::native::SelectFacility>));
 
     let result = bif_select_with_timeout(&[selector, Term::small_int(0)], &mut ctx)
         .expect("select with timeout 0");
@@ -324,24 +312,18 @@ fn select_first_matching_handler_wins() {
     // Build a selector with two handlers for the same tag.
     let handler1 = Term::small_int(1);
     let handler2 = Term::small_int(2);
-    let selector = bif_insert_selector_handler(
-        &[Term::NIL, Term::atom(Atom::OK), handler1],
-        &mut ctx,
-    )
-    .expect("insert 1");
-    let selector = bif_insert_selector_handler(
-        &[selector, Term::atom(Atom::OK), handler2],
-        &mut ctx,
-    )
-    .expect("insert 2");
+    let selector =
+        bif_insert_selector_handler(&[Term::NIL, Term::atom(Atom::OK), handler1], &mut ctx)
+            .expect("insert 1");
+    let selector =
+        bif_insert_selector_handler(&[selector, Term::atom(Atom::OK), handler2], &mut ctx)
+            .expect("insert 2");
 
     let mut msg_heap = [0u64; 3];
     let message =
         write_tuple(&mut msg_heap, &[Term::atom(Atom::OK), Term::small_int(42)]).expect("tuple");
     let snapshot = Arc::new(MailboxSnapshot::new(vec![message]));
-    ctx.set_select_facility(Some(
-        snapshot as Arc<dyn crate::native::SelectFacility>,
-    ));
+    ctx.set_select_facility(Some(snapshot as Arc<dyn crate::native::SelectFacility>));
 
     let _result = bif_select(&[selector], &mut ctx).expect("select");
     let trampoline = ctx.take_trampoline().expect("trampoline");
@@ -357,11 +339,9 @@ fn map_selector_wraps_handlers() {
     let handler = Term::small_int(42);
     let map_fun = Term::small_int(99);
 
-    let selector = bif_insert_selector_handler(
-        &[Term::NIL, Term::atom(Atom::OK), handler],
-        &mut ctx,
-    )
-    .expect("insert");
+    let selector =
+        bif_insert_selector_handler(&[Term::NIL, Term::atom(Atom::OK), handler], &mut ctx)
+            .expect("insert");
 
     let mapped =
         bif_map_selector(&[selector, map_fun], &mut ctx).expect("map_selector should succeed");
@@ -372,8 +352,8 @@ fn map_selector_wraps_handlers() {
     assert_eq!(entry.get(0), Some(Term::atom(Atom::OK)));
 
     // The handler should now be a {mapped, MapFun, OriginalHandler} tuple.
-    let wrapped = Tuple::new(entry.get(1).expect("wrapped handler"))
-        .expect("wrapped should be a tuple");
+    let wrapped =
+        Tuple::new(entry.get(1).expect("wrapped handler")).expect("wrapped should be a tuple");
     assert_eq!(wrapped.arity(), 3);
     assert_eq!(wrapped.get(1), Some(map_fun));
     assert_eq!(wrapped.get(2), Some(handler));

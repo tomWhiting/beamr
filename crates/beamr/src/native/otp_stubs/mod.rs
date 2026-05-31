@@ -15,9 +15,8 @@ use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessC
 use crate::term::Term;
 
 use erlang_stubs::{
-    bif_code_priv_dir, bif_connect_node, bif_ensure_all_started, bif_io_get_line,
-    bif_os_getenv_0, bif_os_getenv_1, bif_os_putenv, bif_os_type, bif_os_unsetenv,
-    bif_string_split,
+    bif_code_priv_dir, bif_connect_node, bif_ensure_all_started, bif_io_get_line, bif_os_getenv_0,
+    bif_os_getenv_1, bif_os_putenv, bif_os_type, bif_os_unsetenv, bif_string_split,
 };
 use gleam_stubs::{
     bif_dynamic_classify, bif_dynamic_int, bif_dynamic_string, bif_intensity_tracker_add_event,
@@ -29,7 +28,12 @@ type OtpBif = (&'static str, &'static str, u8, NativeFn);
 
 const OTP_STUBS: &[OtpBif] = &[
     // gleam_otp_external
-    ("gleam_otp_external", "application_stopped", 0, bif_application_stopped),
+    (
+        "gleam_otp_external",
+        "application_stopped",
+        0,
+        bif_application_stopped,
+    ),
     // supervisor
     ("supervisor", "start_link", 2, bif_supervisor_start_link),
     // gleam@dynamic
@@ -46,10 +50,25 @@ const OTP_STUBS: &[OtpBif] = &[
     ("gleam@result", "map_error", 2, bif_result_map_error),
     ("gleam@result", "then", 2, bif_result_then),
     // gleam@otp@intensity_tracker
-    ("gleam@otp@intensity_tracker", "new", 2, bif_intensity_tracker_new),
-    ("gleam@otp@intensity_tracker", "add_event", 1, bif_intensity_tracker_add_event),
+    (
+        "gleam@otp@intensity_tracker",
+        "new",
+        2,
+        bif_intensity_tracker_new,
+    ),
+    (
+        "gleam@otp@intensity_tracker",
+        "add_event",
+        1,
+        bif_intensity_tracker_add_event,
+    ),
     // application
-    ("application", "ensure_all_started", 1, bif_ensure_all_started),
+    (
+        "application",
+        "ensure_all_started",
+        1,
+        bif_ensure_all_started,
+    ),
     // os
     ("os", "getenv", 0, bif_os_getenv_0),
     ("os", "getenv", 1, bif_os_getenv_1),
@@ -91,10 +110,7 @@ pub fn init_otp_atoms(atom_table: &AtomTable) {
 // ── gleam_otp_external ────────────────────────────────────────────────────
 
 /// `gleam_otp_external:application_stopped/0` -- returns the atom `ok`.
-pub fn bif_application_stopped(
-    args: &[Term],
-    _context: &mut ProcessContext,
-) -> Result<Term, Term> {
+pub fn bif_application_stopped(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
     if !args.is_empty() {
         return Err(badarg());
     }

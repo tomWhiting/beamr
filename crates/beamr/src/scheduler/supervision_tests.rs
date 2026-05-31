@@ -2,8 +2,8 @@
 //! DOWN message delivery, and cascade deaths work correctly through the
 //! scheduler's cleanup_exited_process path.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
 use dashmap::DashMap;
 
@@ -20,10 +20,9 @@ fn insert_process(shared: &SharedState, pid: u64) -> u64 {
     process
         .transition_to(ProcessStatus::Running)
         .unwrap_or_else(|error| panic!("process {pid} starts: {error}"));
-    shared.process_bodies.insert(
-        pid,
-        std::sync::Mutex::new(Some(ScheduledProcess(process))),
-    );
+    shared
+        .process_bodies
+        .insert(pid, std::sync::Mutex::new(Some(ScheduledProcess(process))));
     pid
 }
 
@@ -128,7 +127,10 @@ fn linked_process_dies_on_error_exit() {
     cleanup_exited_process(&shared, a, ExitReason::Error);
 
     assert!(!is_alive(&shared, a), "process A should be removed");
-    assert!(!is_alive(&shared, b), "linked process B should die from error exit");
+    assert!(
+        !is_alive(&shared, b),
+        "linked process B should die from error exit"
+    );
 }
 
 #[test]
@@ -141,7 +143,10 @@ fn linked_process_survives_normal_exit() {
     cleanup_exited_process(&shared, a, ExitReason::Normal);
 
     assert!(!is_alive(&shared, a), "process A should be removed");
-    assert!(is_alive(&shared, b), "linked process B should survive normal exit");
+    assert!(
+        is_alive(&shared, b),
+        "linked process B should survive normal exit"
+    );
 }
 
 #[test]
@@ -177,7 +182,10 @@ fn kill_propagates_killed_and_non_trapping_processes_die() {
     cleanup_exited_process(&shared, a, ExitReason::Kill);
 
     assert!(!is_alive(&shared, a), "process A removed");
-    assert!(!is_alive(&shared, b), "B dies from killed signal (not trapping)");
+    assert!(
+        !is_alive(&shared, b),
+        "B dies from killed signal (not trapping)"
+    );
     assert!(!is_alive(&shared, c), "cascade kills C too");
 
     assert_eq!(
@@ -203,13 +211,20 @@ fn killed_signal_is_trappable_by_linked_process() {
     cleanup_exited_process(&shared, a, ExitReason::Kill);
 
     assert!(!is_alive(&shared, a), "A removed");
-    assert!(is_alive(&shared, b), "B traps exits and survives killed signal");
+    assert!(
+        is_alive(&shared, b),
+        "B traps exits and survives killed signal"
+    );
 
-    let msg = read_mailbox_tuple(&shared, b)
-        .unwrap_or_else(|| panic!("B should receive EXIT message"));
+    let msg =
+        read_mailbox_tuple(&shared, b).unwrap_or_else(|| panic!("B should receive EXIT message"));
     assert_eq!(msg[0], Term::atom(Atom::EXIT));
     assert_eq!(msg[1].as_pid(), Some(1));
-    assert_eq!(msg[2], Term::atom(Atom::KILLED), "reason is killed, not kill");
+    assert_eq!(
+        msg[2],
+        Term::atom(Atom::KILLED),
+        "reason is killed, not kill"
+    );
 }
 
 #[test]
@@ -231,7 +246,11 @@ fn monitor_delivers_down_message_on_exit() {
     let ref_term = boxed::Reference::new(msg[1])
         .unwrap_or_else(|| panic!("second element should be a boxed reference"));
     assert_eq!(ref_term.id(), reference, "reference matches");
-    assert_eq!(msg[2], Term::atom(Atom::PROCESS), "third element is 'process'");
+    assert_eq!(
+        msg[2],
+        Term::atom(Atom::PROCESS),
+        "third element is 'process'"
+    );
     assert_eq!(msg[3].as_pid(), Some(2), "fourth element is dead PID");
     assert_eq!(msg[4], Term::atom(Atom::ERROR), "fifth element is reason");
 }
@@ -270,10 +289,9 @@ fn monitor_and_link_both_fire_on_exit() {
     assert!(!is_alive(&shared, linked), "linked process dies");
     assert!(is_alive(&shared, watcher), "watcher stays alive");
 
-    let msg = read_mailbox_tuple(&shared, watcher)
-        .unwrap_or_else(|| panic!("watcher receives DOWN"));
+    let msg =
+        read_mailbox_tuple(&shared, watcher).unwrap_or_else(|| panic!("watcher receives DOWN"));
     assert_eq!(msg[0], Term::atom(Atom::DOWN));
-    let ref_term = boxed::Reference::new(msg[1])
-        .unwrap_or_else(|| panic!("reference in DOWN"));
+    let ref_term = boxed::Reference::new(msg[1]).unwrap_or_else(|| panic!("reference in DOWN"));
     assert_eq!(ref_term.id(), reference);
 }

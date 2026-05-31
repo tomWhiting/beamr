@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use crate::atom::Atom;
+use crate::native::ProcessContext;
 use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
-use crate::native::ProcessContext;
 use crate::process::ExitReason;
 use crate::term::Term;
 use crate::term::boxed::write_cons;
@@ -175,11 +175,7 @@ impl MockSupervisionFacility {
 }
 
 impl SupervisionFacility for MockSupervisionFacility {
-    fn monitor(
-        &self,
-        caller_pid: u64,
-        target_pid: u64,
-    ) -> Result<MonitorResult, SupervisionError> {
+    fn monitor(&self, caller_pid: u64, target_pid: u64) -> Result<MonitorResult, SupervisionError> {
         if !self.target_alive {
             return Err(SupervisionError::NoProc);
         }
@@ -213,14 +209,13 @@ impl SupervisionFacility for MockSupervisionFacility {
         target_pid: u64,
         reason: ExitReason,
     ) -> Result<(), SupervisionError> {
-        self.records
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(SupervisionRecord::ExitSignal {
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(
+            SupervisionRecord::ExitSignal {
                 caller_pid,
                 target_pid,
                 reason,
-            });
+            },
+        );
         Ok(())
     }
 }

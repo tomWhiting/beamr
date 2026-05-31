@@ -6,7 +6,7 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::boxed::{write_cons, write_map, Cons, Map, Tuple};
+use crate::term::boxed::{Cons, Map, Tuple, write_cons, write_map};
 
 /// maps:from_list/1 — builds a map from a list of `{Key, Value}` 2-tuples.
 ///

@@ -6,8 +6,8 @@ use crate::native::supervision::{
 };
 use crate::native::{BifRegistryImpl, ProcessContext};
 use crate::process::ExitReason;
-use crate::term::boxed::{write_closure, write_tuple};
 use crate::term::Term;
+use crate::term::boxed::{write_closure, write_tuple};
 use std::sync::{Arc, Mutex};
 
 fn context() -> ProcessContext {
@@ -23,7 +23,11 @@ fn badarg() -> Term {
 #[test]
 fn element_returns_first_element() {
     let mut ctx = context();
-    let elements = [Term::small_int(10), Term::small_int(20), Term::small_int(30)];
+    let elements = [
+        Term::small_int(10),
+        Term::small_int(20),
+        Term::small_int(30),
+    ];
     let mut heap = [0u64; 4];
     let tuple = write_tuple(&mut heap, &elements).expect("tuple");
     assert_eq!(
@@ -35,7 +39,11 @@ fn element_returns_first_element() {
 #[test]
 fn element_returns_last_element() {
     let mut ctx = context();
-    let elements = [Term::small_int(10), Term::small_int(20), Term::small_int(30)];
+    let elements = [
+        Term::small_int(10),
+        Term::small_int(20),
+        Term::small_int(30),
+    ];
     let mut heap = [0u64; 4];
     let tuple = write_tuple(&mut heap, &elements).expect("tuple");
     assert_eq!(
@@ -100,10 +108,7 @@ fn element_badarg_non_integer_index() {
 #[test]
 fn element_badarg_wrong_arity() {
     let mut ctx = context();
-    assert_eq!(
-        bif_element(&[Term::small_int(1)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_element(&[Term::small_int(1)], &mut ctx), Err(badarg()));
 }
 
 // ---- erlang:send/2 ----
@@ -112,10 +117,7 @@ fn element_badarg_wrong_arity() {
 fn send_returns_message() {
     let mut ctx = context();
     let message = Term::atom(Atom::OK);
-    assert_eq!(
-        bif_send(&[Term::pid(1), message], &mut ctx),
-        Ok(message)
-    );
+    assert_eq!(bif_send(&[Term::pid(1), message], &mut ctx), Ok(message));
 }
 
 #[test]
@@ -190,10 +192,7 @@ fn make_ref_returns_unique_values() {
 #[test]
 fn make_ref_badarg_wrong_arity() {
     let mut ctx = context();
-    assert_eq!(
-        bif_make_ref(&[Term::small_int(1)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_make_ref(&[Term::small_int(1)], &mut ctx), Err(badarg()));
 }
 
 // ---- erlang:is_process_alive/1 ----
@@ -285,10 +284,7 @@ fn spawn_1_badarg_with_captures() {
 #[test]
 fn spawn_1_badarg_non_closure() {
     let (_, mut ctx) = spawn_ctx(42, 1);
-    assert_eq!(
-        bif_spawn_1(&[Term::small_int(42)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_spawn_1(&[Term::small_int(42)], &mut ctx), Err(badarg()));
 }
 
 #[test]
@@ -493,11 +489,7 @@ impl MockSupervisionFacility {
 }
 
 impl SupervisionFacility for MockSupervisionFacility {
-    fn monitor(
-        &self,
-        caller_pid: u64,
-        target_pid: u64,
-    ) -> Result<MonitorResult, SupervisionError> {
+    fn monitor(&self, caller_pid: u64, target_pid: u64) -> Result<MonitorResult, SupervisionError> {
         if !self.target_alive {
             return Err(SupervisionError::NoProc);
         }
@@ -531,14 +523,13 @@ impl SupervisionFacility for MockSupervisionFacility {
         target_pid: u64,
         reason: ExitReason,
     ) -> Result<(), SupervisionError> {
-        self.records
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(SupervisionRecord::ExitSignal {
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(
+            SupervisionRecord::ExitSignal {
                 caller_pid,
                 target_pid,
                 reason,
-            });
+            },
+        );
         Ok(())
     }
 }

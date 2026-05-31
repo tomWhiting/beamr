@@ -88,7 +88,9 @@ pub fn bif_unlink(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
         return Ok(Term::atom(Atom::TRUE));
     }
     let facility = context.link_facility().ok_or_else(badarg)?;
-    facility.unlink(caller_pid, target_pid).map_err(|_| badarg())?;
+    facility
+        .unlink(caller_pid, target_pid)
+        .map_err(|_| badarg())?;
     Ok(Term::atom(Atom::TRUE))
 }
 

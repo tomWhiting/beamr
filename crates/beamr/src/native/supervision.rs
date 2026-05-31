@@ -62,15 +62,9 @@ pub trait SupervisionFacility: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SupervisionRecord {
     /// A monitor was established.
-    Monitor {
-        caller_pid: u64,
-        target_pid: u64,
-    },
+    Monitor { caller_pid: u64, target_pid: u64 },
     /// A monitor was removed.
-    Demonitor {
-        caller_pid: u64,
-        reference: u64,
-    },
+    Demonitor { caller_pid: u64, reference: u64 },
     /// An exit signal was sent.
     ExitSignal {
         caller_pid: u64,

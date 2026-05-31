@@ -139,7 +139,9 @@ impl Scheduler {
                 .name(thread_name.clone())
                 .spawn(move || {
                     let queue = RunQueue::new();
-                    if tx.send(queue.stealer()).is_err() { return; }
+                    if tx.send(queue.stealer()).is_err() {
+                        return;
+                    }
                     barrier_for_thread.wait();
                     let stealers = {
                         let guard = lock_or_recover(&ready_for_thread);
@@ -152,21 +154,35 @@ impl Scheduler {
         }
         let mut stealers = Vec::with_capacity(thread_count);
         for rx in stealer_receivers {
-            let stealer = rx.recv()
+            let stealer = rx
+                .recv()
                 .map_err(|error| format!("failed to receive scheduler stealer: {error}"))?;
             stealers.push(stealer);
         }
-        { let mut guard = lock_or_recover(&stealers_ready); *guard = Some(stealers); }
+        {
+            let mut guard = lock_or_recover(&stealers_ready);
+            *guard = Some(stealers);
+        }
         barrier.wait();
-        Ok(Self { shared, threads: Mutex::new(threads), inject_queues, worker_names })
+        Ok(Self {
+            shared,
+            threads: Mutex::new(threads),
+            inject_queues,
+            worker_names,
+        })
     }
 
     /// Spawn a process at an exported module/function/arity entrypoint.
     pub fn spawn(
-        &self, entry_module: Atom, entry_function: Atom, args: Vec<Term>,
+        &self,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<Term>,
     ) -> Result<u64, ExecError> {
         let arity = u8::try_from(args.len()).map_err(|_| ExecError::Badarg)?;
-        let entry = self.shared.module_registry
+        let entry = self
+            .shared
+            .module_registry
             .lookup_mfa(entry_module, entry_function, arity)?;
         let instruction_pointer = label_ip(&entry.module, entry.label)?;
         Ok(self.enqueue_spawn(entry.module.name, instruction_pointer, args))
@@ -182,7 +198,12 @@ impl Scheduler {
         self.shared.process_table.spawn_with_pid(pid);
         let index =
             self.shared.spawn_counter.fetch_add(1, Ordering::Relaxed) % self.shared.thread_count;
-        self.inject_queues[index].push(SpawnRequest { pid, module, instruction_pointer, args });
+        self.inject_queues[index].push(SpawnRequest {
+            pid,
+            module,
+            instruction_pointer,
+            args,
+        });
         self.shared.wake_condvar.notify_all();
         pid
     }
@@ -194,7 +215,9 @@ impl Scheduler {
     }
 
     /// Wake a process that is in the Waiting state after message arrival.
-    pub fn wake_process(&self, pid: u64) { wake_process(&self.shared, pid); }
+    pub fn wake_process(&self, pid: u64) {
+        wake_process(&self.shared, pid);
+    }
 
     /// Resume a suspended process, returning true if the process was found in
     /// the wait set and re-enqueued.
@@ -208,7 +231,9 @@ impl Scheduler {
         self.shared.wake_condvar.notify_all();
         let mut threads = lock_or_recover(&self.threads);
         for handle in threads.drain(..) {
-            if let Err(payload) = handle.join() { std::panic::resume_unwind(payload); }
+            if let Err(payload) = handle.join() {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 
@@ -218,7 +243,9 @@ impl Scheduler {
         loop {
             if let Some(entry) = self.shared.exit_tombstones.get(&pid) {
                 let reason = *entry;
-                let result = self.shared.exit_results
+                let result = self
+                    .shared
+                    .exit_results
                     .remove(&pid)
                     .map(|(_, term)| term)
                     .unwrap_or(Term::NIL);
@@ -232,43 +259,66 @@ impl Scheduler {
 
     /// Access the live process table.
     #[must_use]
-    pub fn process_table(&self) -> &ProcessTable { &self.shared.process_table }
+    pub fn process_table(&self) -> &ProcessTable {
+        &self.shared.process_table
+    }
     /// Number of scheduler worker threads.
     #[must_use]
-    pub fn thread_count(&self) -> usize { self.shared.thread_count }
+    pub fn thread_count(&self) -> usize {
+        self.shared.thread_count
+    }
     /// Names assigned to scheduler worker threads.
     #[must_use]
-    pub fn worker_names(&self) -> &[String] { &self.worker_names }
+    pub fn worker_names(&self) -> &[String] {
+        &self.worker_names
+    }
     /// Access the reduction-boundary hook registration slot.
     #[must_use]
-    pub fn hook(&self) -> &Hook { &self.shared.hook }
+    pub fn hook(&self) -> &Hook {
+        &self.shared.hook
+    }
     /// Access the shared timer wheel for BIF integration.
     #[must_use]
-    pub fn timers(&self) -> &Arc<Mutex<TimerWheel>> { &self.shared.timers }
+    pub fn timers(&self) -> &Arc<Mutex<TimerWheel>> {
+        &self.shared.timers
+    }
 
     #[cfg(test)]
-    fn idle_park_count(&self) -> usize { self.shared.idle_parks.load(Ordering::Acquire) }
+    fn idle_park_count(&self) -> usize {
+        self.shared.idle_parks.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for Scheduler {
-    fn drop(&mut self) { self.shutdown(); }
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 fn configured_thread_count(override_count: Option<usize>) -> usize {
-    override_count.filter(|count| *count > 0).unwrap_or_else(|| {
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-    })
+    override_count
+        .filter(|count| *count > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        })
 }
 
 fn scheduler_loop(
-    shared: &Arc<SharedState>, queue: &RunQueue, my_index: usize,
-    stealers: &[Stealer<u64>], inject: &SegQueue<SpawnRequest>,
+    shared: &Arc<SharedState>,
+    queue: &RunQueue,
+    my_index: usize,
+    stealers: &[Stealer<u64>],
+    inject: &SegQueue<SpawnRequest>,
 ) {
     let mut last_victim = my_index;
     loop {
-        if shared.shutdown.load(Ordering::Acquire) { return; }
+        if shared.shutdown.load(Ordering::Acquire) {
+            return;
+        }
         drain_injected(shared, queue, inject);
-        if my_index == 0 { timer_integration::tick_timers(shared); }
+        if my_index == 0 {
+            timer_integration::tick_timers(shared);
+        }
         drain_woken(shared, queue, my_index);
         let pid = match queue.pop() {
             Some(pid) => pid,
@@ -279,9 +329,15 @@ fn scheduler_loop(
                 match result {
                     steal::StealResult::Stolen { .. } => match queue.pop() {
                         Some(pid) => pid,
-                        None => { park_thread(shared); continue; }
+                        None => {
+                            park_thread(shared);
+                            continue;
+                        }
                     },
-                    steal::StealResult::Empty => { park_thread(shared); continue; }
+                    steal::StealResult::Empty => {
+                        park_thread(shared);
+                        continue;
+                    }
                 }
             }
         };
@@ -293,7 +349,9 @@ fn drain_injected(shared: &SharedState, queue: &RunQueue, inject: &SegQueue<Spaw
     while let Some(request) = inject.pop() {
         let pid = request.pid;
         let process = build_process(request);
-        shared.process_bodies.insert(pid, Mutex::new(Some(ScheduledProcess(process))));
+        shared
+            .process_bodies
+            .insert(pid, Mutex::new(Some(ScheduledProcess(process))));
         queue.push(pid);
     }
 }
@@ -301,10 +359,13 @@ fn drain_injected(shared: &SharedState, queue: &RunQueue, inject: &SegQueue<Spaw
 fn build_process(request: SpawnRequest) -> Process {
     let mut process = Process::new(request.pid, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
-        module: request.module, instruction_pointer: request.instruction_pointer,
+        module: request.module,
+        instruction_pointer: request.instruction_pointer,
     }));
     for (index, arg) in request.args.into_iter().enumerate().take(256) {
-        if let Ok(register) = u8::try_from(index) { process.set_x_reg(register, arg); }
+        if let Ok(register) = u8::try_from(index) {
+            process.set_x_reg(register, arg);
+        }
     }
     process
 }
@@ -317,8 +378,12 @@ enum SliceOutcome {
 }
 
 fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64, my_index: usize) {
-    if shared.process_table.get(pid).is_none() { return; }
-    let Some(mut process) = take_runnable_process(shared, pid) else { return; };
+    if shared.process_table.get(pid).is_none() {
+        return;
+    }
+    let Some(mut process) = take_runnable_process(shared, pid) else {
+        return;
+    };
     let outcome = execute_slice(shared, &mut process);
     match outcome {
         SliceOutcome::Requeue(process) => {
@@ -355,15 +420,19 @@ fn store_runnable_process(shared: &SharedState, process: Process) {
         let mut slot = lock_or_recover(&entry);
         *slot = Some(ScheduledProcess(process));
     } else {
-        shared.process_bodies.insert(pid, Mutex::new(Some(ScheduledProcess(process))));
+        shared
+            .process_bodies
+            .insert(pid, Mutex::new(Some(ScheduledProcess(process))));
     }
 }
 
 fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutcome {
     if !matches!(
         process.status(),
-        ProcessStatus::New | ProcessStatus::Yielded
-            | ProcessStatus::Waiting | ProcessStatus::Suspended
+        ProcessStatus::New
+            | ProcessStatus::Yielded
+            | ProcessStatus::Waiting
+            | ProcessStatus::Suspended
     ) {
         return SliceOutcome::Exited(exit_reason_from_status(process.status()), process.x_reg(0));
     }
@@ -379,12 +448,13 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
         return exit_process(process, ExitReason::Error);
     };
     let services = supervision_integration::build_native_services(shared);
-    let result = interpreter::run_with_native_services(
-        process, &module, &shared.module_registry, &services,
-    );
+    let result =
+        interpreter::run_with_native_services(process, &module, &shared.module_registry, &services);
     let reductions = DEFAULT_REDUCTION_BUDGET.saturating_sub(process.reduction_counter());
-    if matches!(result, Ok(ExecutionResult::Yielded) | Ok(ExecutionResult::Waiting))
-        && timer_integration::invoke_hook(shared, process, reductions) == HookDecision::Suspend
+    if matches!(
+        result,
+        Ok(ExecutionResult::Yielded) | Ok(ExecutionResult::Waiting)
+    ) && timer_integration::invoke_hook(shared, process, reductions) == HookDecision::Suspend
     {
         let _t = process.transition_to(ProcessStatus::Suspended);
         return SliceOutcome::Suspended(take_process(process));
@@ -445,38 +515,53 @@ fn drain_woken(shared: &SharedState, queue: &RunQueue, my_index: usize) {
         let mut wait_set = lock_or_recover(&shared.wait_set);
         let mut mine = Vec::new();
         wait_set.woken.retain(|(pid, sched_idx)| {
-            if *sched_idx == my_index { mine.push(*pid); false } else { true }
+            if *sched_idx == my_index {
+                mine.push(*pid);
+                false
+            } else {
+                true
+            }
         });
         mine
     };
     for pid in woken {
-        if shared.process_table.get(pid).is_some() { queue.push(pid); }
+        if shared.process_table.get(pid).is_some() {
+            queue.push(pid);
+        }
     }
 }
 
 fn park_thread(shared: &SharedState) {
     #[cfg(test)]
     shared.idle_parks.fetch_add(1, Ordering::Relaxed);
-    if shared.shutdown.load(Ordering::Acquire) { return; }
+    if shared.shutdown.load(Ordering::Acquire) {
+        return;
+    }
     let guard = lock_or_recover(&shared.wait_set);
     let timeout = std::time::Duration::from_millis(5);
     match shared.wake_condvar.wait_timeout(guard, timeout) {
         Ok(_) => {}
-        Err(error) => { let _recovered = error.into_inner(); }
+        Err(error) => {
+            let _recovered = error.into_inner();
+        }
     }
 }
 
 fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
-    module.code.iter()
+    module
+        .code
+        .iter()
         .position(|instr| matches!(instr, Instruction::Label { label: seen } if *seen == label))
         .ok_or(ExecError::InvalidLabel { label })
 }
 
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod supervision_tests;
+#[cfg(test)]
+mod tests;

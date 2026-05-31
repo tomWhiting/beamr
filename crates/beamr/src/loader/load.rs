@@ -217,18 +217,16 @@ fn resolve_imports(
             .lookup(import.module, import.function, import.arity)
             .map(ResolvedImportTarget::Native)
             .or_else(|| {
-                module_registry
-                    .lookup(import.module)
-                    .and_then(|module| {
-                        module
-                            .exports
-                            .get(&(import.function, import.arity))
-                            .copied()
-                            .map(|label| ResolvedImportTarget::Code {
-                                module: import.module,
-                                label,
-                            })
-                    })
+                module_registry.lookup(import.module).and_then(|module| {
+                    module
+                        .exports
+                        .get(&(import.function, import.arity))
+                        .copied()
+                        .map(|label| ResolvedImportTarget::Code {
+                            module: import.module,
+                            label,
+                        })
+                })
             });
 
         match target {

@@ -11,6 +11,7 @@
 use beamr::atom::AtomTable;
 use beamr::loader::load_module;
 use beamr::module::ModuleRegistry;
+use beamr::native::BifRegistryImpl;
 use beamr::native::bifs::register_gate1_bifs;
 use beamr::native::gate3_bifs::register_gate3_bifs;
 use beamr::native::gleam_ffi::register_gleam_ffi_bifs;
@@ -18,7 +19,6 @@ use beamr::native::otp_stubs::{init_otp_atoms, register_otp_stubs};
 use beamr::native::process_bifs::register_gate2_bifs;
 use beamr::native::selector_ffi::register_selector_bifs;
 use beamr::native::stdlib_stubs::register_stdlib_stubs;
-use beamr::native::BifRegistryImpl;
 
 /// Set up the full BIF registry matching what the CLI creates.
 fn full_bif_registry(atom_table: &AtomTable) -> BifRegistryImpl {
@@ -46,12 +46,11 @@ fn load_beam(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string_lossy().to_string());
 
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|err| panic!("failed to read {filename}: {err}"));
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|err| panic!("failed to read {filename}: {err}"));
 
-    let (_module, unresolved) =
-        load_module(&bytes, atom_table, module_registry, bif_registry)
-            .unwrap_or_else(|err| panic!("failed to load {filename}: {err}"));
+    let (_module, unresolved) = load_module(&bytes, atom_table, module_registry, bif_registry)
+        .unwrap_or_else(|err| panic!("failed to load {filename}: {err}"));
 
     let count = unresolved.imports().len();
     let details = if count > 0 {
@@ -59,12 +58,8 @@ fn load_beam(
             .imports()
             .into_iter()
             .map(|imp| {
-                let module_name = atom_table
-                    .resolve(imp.module)
-                    .unwrap_or("?");
-                let function_name = atom_table
-                    .resolve(imp.function)
-                    .unwrap_or("?");
+                let module_name = atom_table.resolve(imp.module).unwrap_or("?");
+                let function_name = atom_table.resolve(imp.function).unwrap_or("?");
                 format!("  {module_name}:{function_name}/{}", imp.arity)
             })
             .collect();
@@ -88,8 +83,7 @@ fn all_otp_modules_have_zero_unresolved_imports() {
     let bif_registry = full_bif_registry(&atom_table);
     let module_registry = ModuleRegistry::new();
 
-    let fixtures_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
 
     // Load order: stdlib first, then erlang layer, then OTP layer.
     // This ensures cross-module imports resolve correctly.
@@ -146,8 +140,8 @@ fn all_otp_modules_load_without_decode_errors() {
 
     for filename in &expected_files {
         let path = fixtures_dir.join(filename);
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|err| panic!("failed to read {filename}: {err}"));
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|err| panic!("failed to read {filename}: {err}"));
 
         // Loading should not panic or return an error.
         let result = load_module(&bytes, &atom_table, &module_registry, &bif_registry);
@@ -167,8 +161,7 @@ fn module_registry_contains_all_otp_modules_after_loading() {
     let bif_registry = full_bif_registry(&atom_table);
     let module_registry = ModuleRegistry::new();
 
-    let fixtures_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
 
     // Load all modules.
     let load_order = [

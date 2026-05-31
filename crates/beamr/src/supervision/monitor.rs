@@ -155,7 +155,10 @@ impl MonitorSet {
         target_pid: u64,
     ) {
         self.monitors.insert(reference, monitor);
-        self.by_target.entry(target_pid).or_default().push(reference);
+        self.by_target
+            .entry(target_pid)
+            .or_default()
+            .push(reference);
     }
 
     /// Remove a monitor entry by reference. Used by the scheduler's supervision

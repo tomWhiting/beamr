@@ -67,9 +67,9 @@ pub fn handle_trampoline(
     // Load free variables after the arguments.
     let free_count = closure.num_free();
     for index in 0..free_count {
-        let value = closure
-            .free_var(index)
-            .ok_or(ExecError::InvalidOperand("trampoline closure free variable"))?;
+        let value = closure.free_var(index).ok_or(ExecError::InvalidOperand(
+            "trampoline closure free variable",
+        ))?;
         let register = u8::try_from(usize::from(arity) + index)
             .map_err(|_| ExecError::InvalidOperand("trampoline X register"))?;
         process.set_x_reg(register, value);

@@ -8,7 +8,7 @@
 //! provide the foundation for gleam_otp's actor message loop.
 
 use crate::atom::{Atom, AtomTable};
-use crate::native::{BifRegistryImpl, NativeRegistrationError, NativeFn, ProcessContext};
+use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
 use crate::term::Term;
 use crate::term::boxed::{Cons, Tuple};
 
@@ -189,10 +189,7 @@ pub fn bif_select(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
 ///
 /// Same as select/1 but accepts a timeout in milliseconds. If no matching
 /// message arrives within the timeout, returns `{error, nil}`.
-pub fn bif_select_with_timeout(
-    args: &[Term],
-    context: &mut ProcessContext,
-) -> Result<Term, Term> {
+pub fn bif_select_with_timeout(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [selector, timeout] = args else {
         return Err(badarg());
     };

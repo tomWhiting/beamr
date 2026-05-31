@@ -33,9 +33,11 @@ fn atom_to_binary_converts_ok_to_binary() {
 #[test]
 fn atom_to_binary_latin1_encoding_works() {
     let mut ctx = ctx_with_atoms();
-    let result =
-        bif_atom_to_binary(&[Term::atom(Atom::ERROR), Term::atom(Atom::LATIN1)], &mut ctx)
-            .unwrap();
+    let result = bif_atom_to_binary(
+        &[Term::atom(Atom::ERROR), Term::atom(Atom::LATIN1)],
+        &mut ctx,
+    )
+    .unwrap();
     let binary = crate::term::binary::Binary::new(result).expect("should be binary");
     assert_eq!(binary.as_bytes(), b"error");
 }
@@ -92,10 +94,7 @@ fn binary_to_existing_atom_badarg_unknown() {
     let mut ctx = ctx_with_atoms();
     let mut heap = [0u64; 5];
     let bin = write_binary(&mut heap, b"nonexistent_atom_xyz").expect("binary");
-    assert_eq!(
-        bif_binary_to_existing_atom(&[bin], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_binary_to_existing_atom(&[bin], &mut ctx), Err(badarg()));
 }
 
 #[test]
@@ -112,10 +111,7 @@ fn binary_to_existing_atom_badarg_no_atom_table() {
     let mut ctx = ProcessContext::new();
     let mut heap = [0u64; 3];
     let bin = write_binary(&mut heap, b"ok").expect("binary");
-    assert_eq!(
-        bif_binary_to_existing_atom(&[bin], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_binary_to_existing_atom(&[bin], &mut ctx), Err(badarg()));
 }
 
 // ---- erlang:binary_to_list/1 ----
@@ -247,8 +243,5 @@ fn map_get_badarg_non_map() {
 #[test]
 fn map_get_badarg_wrong_arity() {
     let mut ctx = ProcessContext::new();
-    assert_eq!(
-        bif_map_get(&[Term::small_int(1)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_map_get(&[Term::small_int(1)], &mut ctx), Err(badarg()));
 }

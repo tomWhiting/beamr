@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::atom::Atom;
-use crate::native::registry::{RegistryError, RegistryFacility};
 use crate::native::ProcessContext;
+use crate::native::registry::{RegistryError, RegistryFacility};
 use crate::term::Term;
 
 use super::*;
@@ -72,7 +72,10 @@ fn register_badarg_no_facility() {
 #[test]
 fn register_badarg_wrong_arity() {
     let (_, mut ctx) = reg_ctx(1);
-    assert_eq!(bif_register(&[Term::atom(Atom::OK)], &mut ctx), Err(badarg()));
+    assert_eq!(
+        bif_register(&[Term::atom(Atom::OK)], &mut ctx),
+        Err(badarg())
+    );
 }
 
 // ---- erlang:unregister/1 ----
@@ -139,10 +142,7 @@ fn whereis_returns_undefined_when_not_registered() {
 #[test]
 fn whereis_badarg_non_atom() {
     let (_, mut ctx) = reg_ctx(1);
-    assert_eq!(
-        bif_whereis(&[Term::small_int(1)], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_whereis(&[Term::small_int(1)], &mut ctx), Err(badarg()));
 }
 
 #[test]
@@ -188,7 +188,9 @@ impl RegistryFacility for MockRegistryFacility {
     fn unregister(&self, name: Atom) -> Result<(), RegistryError> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let mut pids = self.pids.lock().unwrap_or_else(|e| e.into_inner());
-        let pid = entries.remove(&name.index()).ok_or(RegistryError::NotRegistered)?;
+        let pid = entries
+            .remove(&name.index())
+            .ok_or(RegistryError::NotRegistered)?;
         pids.remove(&pid);
         Ok(())
     }

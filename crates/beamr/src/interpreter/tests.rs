@@ -207,18 +207,20 @@ fn bad_tuple_access_and_heap_exhaustion_report_errors() {
 
     let heap_check = module(
         Atom::OK,
-        vec![Instruction::TestHeap {
-            heap_need: Operand::Unsigned(10),
-            live: Operand::Unsigned(0),
-        }],
+        vec![
+            Instruction::TestHeap {
+                heap_need: Operand::Unsigned(10),
+                live: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ],
     );
+    let mut process = Process::new(1, 8);
     assert_eq!(
-        run(&mut Process::new(1, 8), &heap_check),
-        Err(ExecError::GcNeeded {
-            requested: 10,
-            available: 8,
-        })
+        run(&mut process, &heap_check),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
     );
+    assert!(process.heap().available() >= 10);
 }
 
 fn add_one(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {

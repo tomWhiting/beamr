@@ -154,14 +154,26 @@ fn spawn_link_badarg_without_pid() {
 #[test]
 fn link_establishes_bidirectional_link() {
     let (f, mut ctx) = link_ctx(1);
-    assert_eq!(bif_link(&[Term::pid(2)], &mut ctx), Ok(Term::atom(Atom::TRUE)));
-    assert_eq!(f.records(), vec![LinkRecord::Link { caller_pid: 1, target_pid: 2 }]);
+    assert_eq!(
+        bif_link(&[Term::pid(2)], &mut ctx),
+        Ok(Term::atom(Atom::TRUE))
+    );
+    assert_eq!(
+        f.records(),
+        vec![LinkRecord::Link {
+            caller_pid: 1,
+            target_pid: 2
+        }]
+    );
 }
 
 #[test]
 fn link_self_is_noop() {
     let (f, mut ctx) = link_ctx(1);
-    assert_eq!(bif_link(&[Term::pid(1)], &mut ctx), Ok(Term::atom(Atom::TRUE)));
+    assert_eq!(
+        bif_link(&[Term::pid(1)], &mut ctx),
+        Ok(Term::atom(Atom::TRUE))
+    );
     assert!(f.records().is_empty());
 }
 
@@ -171,7 +183,10 @@ fn link_noproc_for_dead_target() {
     let mut ctx = ProcessContext::new();
     ctx.set_pid(Some(1));
     ctx.set_link_facility(Some(f));
-    assert_eq!(bif_link(&[Term::pid(2)], &mut ctx), Err(Term::atom(Atom::NOPROC)));
+    assert_eq!(
+        bif_link(&[Term::pid(2)], &mut ctx),
+        Err(Term::atom(Atom::NOPROC))
+    );
 }
 
 #[test]
@@ -191,14 +206,26 @@ fn link_badarg_non_pid_arg() {
 #[test]
 fn unlink_removes_link() {
     let (f, mut ctx) = link_ctx(1);
-    assert_eq!(bif_unlink(&[Term::pid(2)], &mut ctx), Ok(Term::atom(Atom::TRUE)));
-    assert_eq!(f.records(), vec![LinkRecord::Unlink { caller_pid: 1, target_pid: 2 }]);
+    assert_eq!(
+        bif_unlink(&[Term::pid(2)], &mut ctx),
+        Ok(Term::atom(Atom::TRUE))
+    );
+    assert_eq!(
+        f.records(),
+        vec![LinkRecord::Unlink {
+            caller_pid: 1,
+            target_pid: 2
+        }]
+    );
 }
 
 #[test]
 fn unlink_self_is_noop() {
     let (f, mut ctx) = link_ctx(1);
-    assert_eq!(bif_unlink(&[Term::pid(1)], &mut ctx), Ok(Term::atom(Atom::TRUE)));
+    assert_eq!(
+        bif_unlink(&[Term::pid(1)], &mut ctx),
+        Ok(Term::atom(Atom::TRUE))
+    );
     assert!(f.records().is_empty());
 }
 
@@ -208,7 +235,10 @@ fn unlink_self_is_noop() {
 fn process_flag_trap_exit_returns_old_value() {
     let (_, mut ctx) = link_ctx(1);
     assert_eq!(
-        bif_process_flag(&[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::TRUE)], &mut ctx),
+        bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::TRUE)],
+            &mut ctx
+        ),
         Ok(Term::atom(Atom::FALSE)),
     );
 }
@@ -226,7 +256,10 @@ fn process_flag_badarg_unknown_flag() {
 fn process_flag_badarg_non_bool_value() {
     let (_, mut ctx) = link_ctx(1);
     assert_eq!(
-        bif_process_flag(&[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::OK)], &mut ctx),
+        bif_process_flag(
+            &[Term::atom(Atom::TRAP_EXIT), Term::atom(Atom::OK)],
+            &mut ctx
+        ),
         Err(badarg()),
     );
 }
@@ -605,11 +638,7 @@ impl MockSupervisionFacility {
 }
 
 impl SupervisionFacility for MockSupervisionFacility {
-    fn monitor(
-        &self,
-        caller_pid: u64,
-        target_pid: u64,
-    ) -> Result<MonitorResult, SupervisionError> {
+    fn monitor(&self, caller_pid: u64, target_pid: u64) -> Result<MonitorResult, SupervisionError> {
         self.records
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -640,14 +669,13 @@ impl SupervisionFacility for MockSupervisionFacility {
         target_pid: u64,
         reason: ExitReason,
     ) -> Result<(), SupervisionError> {
-        self.records
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(SupervisionRecord::ExitSignal {
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(
+            SupervisionRecord::ExitSignal {
                 caller_pid,
                 target_pid,
                 reason,
-            });
+            },
+        );
         Ok(())
     }
 }

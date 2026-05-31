@@ -26,10 +26,7 @@ fn none_atom_index() -> u32 {
 // ── gleam@dynamic ─────────────────────────────────────────────────────────
 
 /// `gleam@dynamic:classify/1` -- returns a binary describing the term type.
-pub fn bif_dynamic_classify(
-    args: &[Term],
-    context: &mut ProcessContext,
-) -> Result<Term, Term> {
+pub fn bif_dynamic_classify(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [term] = args else {
         return Err(badarg());
     };
@@ -44,9 +41,8 @@ pub fn bif_dynamic_classify(
     } else {
         "Other"
     };
-    make_leaked_binary(description.as_bytes()).or_else(|_| {
-        context.alloc_tuple(&[Term::atom(Atom::OK), Term::atom(Atom::NIL)])
-    })
+    make_leaked_binary(description.as_bytes())
+        .or_else(|_| context.alloc_tuple(&[Term::atom(Atom::OK), Term::atom(Atom::NIL)]))
 }
 
 /// `gleam@dynamic:int/1` -- returns `{ok, Value}` for integers, `{error, []}` otherwise.

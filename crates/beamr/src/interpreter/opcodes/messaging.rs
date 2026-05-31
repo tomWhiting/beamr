@@ -189,7 +189,6 @@ pub fn case_end(process: &mut Process, value: &Operand) -> Result<InstructionOut
 }
 
 pub fn if_end(process: &mut Process) -> Result<InstructionOutcome, ExecError> {
-
     let reason = two_tuple(process, Term::atom(Atom::IF_CLAUSE), Term::NIL)?;
     raise_exception(process, Exception::error(reason, Term::NIL))
 }

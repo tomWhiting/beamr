@@ -121,10 +121,7 @@ fn logger_warning_returns_ok_for_atom_format() {
 fn logger_warning_rejects_wrong_arity() {
     let mut ctx = context();
     assert_eq!(bif_logger_warning(&[], &mut ctx), Err(badarg()));
-    assert_eq!(
-        bif_logger_warning(&[Term::NIL], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_logger_warning(&[Term::NIL], &mut ctx), Err(badarg()));
 }
 
 // ---- unicode:characters_to_binary/1 ----
@@ -182,10 +179,7 @@ fn characters_to_binary_rejects_list_with_invalid_code_point() {
     // List containing an atom (not a valid code point).
     let mut cell = [0u64; 2];
     let list = write_cons(&mut cell, Term::atom(Atom::OK), Term::NIL).unwrap();
-    assert_eq!(
-        bif_characters_to_binary(&[list], &mut ctx),
-        Err(badarg())
-    );
+    assert_eq!(bif_characters_to_binary(&[list], &mut ctx), Err(badarg()));
 }
 
 // ---- unicode:characters_to_list/1 ----

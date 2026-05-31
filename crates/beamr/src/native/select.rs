@@ -44,10 +44,7 @@ impl MailboxSnapshot {
     /// Returns the index of the removed message, if any.
     #[must_use]
     pub fn removed_index(&self) -> Option<usize> {
-        *self
-            .removed_index
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *self.removed_index.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -61,10 +58,7 @@ impl SelectFacility for MailboxSnapshot {
     }
 
     fn remove_message(&self, index: usize) {
-        *self
-            .removed_index
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(index);
+        *self.removed_index.lock().unwrap_or_else(|e| e.into_inner()) = Some(index);
     }
 }
 
@@ -76,11 +70,7 @@ mod tests {
 
     #[test]
     fn snapshot_provides_message_count_and_peek() {
-        let messages = vec![
-            Term::small_int(1),
-            Term::small_int(2),
-            Term::small_int(3),
-        ];
+        let messages = vec![Term::small_int(1), Term::small_int(2), Term::small_int(3)];
         let snapshot = MailboxSnapshot::new(messages);
 
         assert_eq!(snapshot.message_count(), 3);

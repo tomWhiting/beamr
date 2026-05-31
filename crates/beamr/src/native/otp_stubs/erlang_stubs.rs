@@ -24,10 +24,7 @@ pub fn init_erlang_atoms(atom_table: &AtomTable) {
 }
 
 /// `application:ensure_all_started/1` -- stub returning `{ok, []}`.
-pub fn bif_ensure_all_started(
-    args: &[Term],
-    context: &mut ProcessContext,
-) -> Result<Term, Term> {
+pub fn bif_ensure_all_started(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [_app] = args else {
         return Err(badarg());
     };
@@ -72,7 +69,10 @@ pub fn bif_os_type(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
         return Err(badarg());
     }
     let unix = UNIX_ATOM.get().copied().unwrap_or_else(|| Atom::new(9998));
-    let darwin = DARWIN_ATOM.get().copied().unwrap_or_else(|| Atom::new(9997));
+    let darwin = DARWIN_ATOM
+        .get()
+        .copied()
+        .unwrap_or_else(|| Atom::new(9997));
     context.alloc_tuple(&[Term::atom(unix), Term::atom(darwin)])
 }
 

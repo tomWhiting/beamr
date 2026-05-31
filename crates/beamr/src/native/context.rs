@@ -67,10 +67,7 @@ impl fmt::Debug for ProcessContext {
                 "spawn_facility",
                 &self.spawn_facility.as_ref().map(|_| ".."),
             )
-            .field(
-                "link_facility",
-                &self.link_facility.as_ref().map(|_| ".."),
-            )
+            .field("link_facility", &self.link_facility.as_ref().map(|_| ".."))
             .field(
                 "supervision_facility",
                 &self.supervision_facility.as_ref().map(|_| ".."),

@@ -27,7 +27,12 @@ type StubBif = (&'static str, &'static str, u8, NativeFn);
 const STDLIB_STUBS: &[StubBif] = &[
     ("logger", "warning", 2, bif_logger_warning),
     ("unicode", "characters_to_list", 1, bif_characters_to_list),
-    ("unicode", "characters_to_binary", 1, bif_characters_to_binary),
+    (
+        "unicode",
+        "characters_to_binary",
+        1,
+        bif_characters_to_binary,
+    ),
     ("sys", "debug_options", 1, bif_debug_options),
     ("gleam_stdlib", "identity", 1, bif_identity),
     // Non-higher-order collection BIFs (B-028a):
@@ -137,10 +142,7 @@ pub fn bif_characters_to_binary(
 ///
 /// Accepts a binary and returns a list of integer code points. Since BIFs
 /// lack heap access, cons cells are allocated via leaked boxes.
-pub fn bif_characters_to_list(
-    args: &[Term],
-    _context: &mut ProcessContext,
-) -> Result<Term, Term> {
+pub fn bif_characters_to_list(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };

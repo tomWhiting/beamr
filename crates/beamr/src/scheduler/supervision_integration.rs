@@ -16,8 +16,7 @@ use crate::supervision::monitor;
 use crate::term::Term;
 
 use super::{
-    ScheduledProcess, SharedState, cleanup_exited_process, label_ip, lock_or_recover,
-    wake_process,
+    ScheduledProcess, SharedState, cleanup_exited_process, label_ip, lock_or_recover, wake_process,
 };
 
 /// Propagate exit signals through links and deliver DOWN messages through
@@ -88,8 +87,8 @@ fn process_exit_signal(
     // Remove the reverse link.
     target.remove_link(source_pid);
 
-    let should_die = reason == ExitReason::Kill
-        || (reason != ExitReason::Normal && !target.trap_exit());
+    let should_die =
+        reason == ExitReason::Kill || (reason != ExitReason::Normal && !target.trap_exit());
 
     if should_die {
         // Kill signal bypasses trap_exit and propagates as 'killed'.
@@ -192,7 +191,9 @@ fn deliver_single_down(
 }
 
 /// Build the `NativeServices` bundle for a scheduler time slice.
-pub(super) fn build_native_services(shared: &Arc<SharedState>) -> crate::interpreter::NativeServices {
+pub(super) fn build_native_services(
+    shared: &Arc<SharedState>,
+) -> crate::interpreter::NativeServices {
     let spawn: Arc<dyn SpawnFacility> = Arc::new(SchedulerSpawnFacility {
         shared: Arc::clone(shared),
     });
@@ -425,11 +426,7 @@ pub(super) struct SchedulerSupervisionFacility {
 }
 
 impl SupervisionFacility for SchedulerSupervisionFacility {
-    fn monitor(
-        &self,
-        caller_pid: u64,
-        target_pid: u64,
-    ) -> Result<MonitorResult, SupervisionError> {
+    fn monitor(&self, caller_pid: u64, target_pid: u64) -> Result<MonitorResult, SupervisionError> {
         let mut ms = lock_or_recover(&self.shared.monitor_set);
 
         // Check if target is already dead.

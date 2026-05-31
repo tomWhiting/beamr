@@ -6,17 +6,17 @@
 //! BIFs (built-in, ship with the VM) and NIFs (registered by the host)
 //! use the same mechanism but have different ownership (per D6).
 pub mod bifs;
-pub mod gate3_bifs;
 mod context;
+pub mod gate3_bifs;
 pub mod gleam_ffi;
 pub mod links;
+pub mod meridian_ffi;
+pub mod otp_stubs;
 pub mod process_bifs;
 pub mod registry;
 pub mod select;
 pub mod selector_ffi;
 pub mod spawn;
-pub mod meridian_ffi;
-pub mod otp_stubs;
 pub mod stdlib_stubs;
 pub mod supervision;
 

@@ -12,6 +12,8 @@
 use beamr::atom::{Atom, AtomTable};
 use beamr::loader::load_module;
 use beamr::module::ModuleRegistry;
+use beamr::native::BifRegistryImpl;
+use beamr::native::ProcessContext;
 use beamr::native::bifs::register_gate1_bifs;
 use beamr::native::gate3_bifs::register_gate3_bifs;
 use beamr::native::gleam_ffi::register_gleam_ffi_bifs;
@@ -19,8 +21,6 @@ use beamr::native::otp_stubs::{init_otp_atoms, register_otp_stubs};
 use beamr::native::process_bifs::register_gate2_bifs;
 use beamr::native::selector_ffi::register_selector_bifs;
 use beamr::native::stdlib_stubs::register_stdlib_stubs;
-use beamr::native::BifRegistryImpl;
-use beamr::native::ProcessContext;
 use beamr::term::Term;
 use beamr::term::boxed::Cons;
 
@@ -44,8 +44,7 @@ fn load_all_otp_modules(
     bif_registry: &BifRegistryImpl,
     module_registry: &ModuleRegistry,
 ) {
-    let fixtures_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
 
     let load_order = [
         "stdlib/lists.beam",
@@ -60,9 +59,8 @@ fn load_all_otp_modules(
         let path = fixtures_dir.join(relative_path);
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|err| panic!("failed to read {relative_path}: {err}"));
-        let (_module, unresolved) =
-            load_module(&bytes, atom_table, module_registry, bif_registry)
-                .unwrap_or_else(|err| panic!("failed to load {relative_path}: {err}"));
+        let (_module, unresolved) = load_module(&bytes, atom_table, module_registry, bif_registry)
+            .unwrap_or_else(|err| panic!("failed to load {relative_path}: {err}"));
         assert!(
             unresolved.is_empty(),
             "{relative_path} has unresolved imports: {unresolved}"
@@ -207,14 +205,11 @@ fn erlang_length_counts_list() {
 
     // Build [1, 2, 3] and check length = 3
     let cell3 = Box::leak(Box::new([0u64; 2]));
-    let list = beamr::term::boxed::write_cons(cell3, Term::small_int(3), Term::NIL)
-        .expect("cons");
+    let list = beamr::term::boxed::write_cons(cell3, Term::small_int(3), Term::NIL).expect("cons");
     let cell2 = Box::leak(Box::new([0u64; 2]));
-    let list = beamr::term::boxed::write_cons(cell2, Term::small_int(2), list)
-        .expect("cons");
+    let list = beamr::term::boxed::write_cons(cell2, Term::small_int(2), list).expect("cons");
     let cell1 = Box::leak(Box::new([0u64; 2]));
-    let list = beamr::term::boxed::write_cons(cell1, Term::small_int(1), list)
-        .expect("cons");
+    let list = beamr::term::boxed::write_cons(cell1, Term::small_int(1), list).expect("cons");
 
     let result = (entry.function)(&[list], &mut context);
     assert_eq!(result, Ok(Term::small_int(3)));
@@ -236,25 +231,21 @@ fn erlang_list_append_concatenates() {
 
     // [] ++ [3] = [3]
     let cell = Box::leak(Box::new([0u64; 2]));
-    let list_b = beamr::term::boxed::write_cons(cell, Term::small_int(3), Term::NIL)
-        .expect("cons");
+    let list_b = beamr::term::boxed::write_cons(cell, Term::small_int(3), Term::NIL).expect("cons");
 
-    let result = (entry.function)(&[Term::NIL, list_b], &mut context)
-        .expect("append should succeed");
+    let result =
+        (entry.function)(&[Term::NIL, list_b], &mut context).expect("append should succeed");
     let cons = Cons::new(result).expect("result is a list");
     assert_eq!(cons.head(), Term::small_int(3));
     assert!(cons.tail().is_nil());
 
     // [1, 2] ++ [3]
     let c2 = Box::leak(Box::new([0u64; 2]));
-    let list_a = beamr::term::boxed::write_cons(c2, Term::small_int(2), Term::NIL)
-        .expect("cons");
+    let list_a = beamr::term::boxed::write_cons(c2, Term::small_int(2), Term::NIL).expect("cons");
     let c1 = Box::leak(Box::new([0u64; 2]));
-    let list_a = beamr::term::boxed::write_cons(c1, Term::small_int(1), list_a)
-        .expect("cons");
+    let list_a = beamr::term::boxed::write_cons(c1, Term::small_int(1), list_a).expect("cons");
 
-    let result = (entry.function)(&[list_a, list_b], &mut context)
-        .expect("append should succeed");
+    let result = (entry.function)(&[list_a, list_b], &mut context).expect("append should succeed");
 
     // Verify [1, 2, 3]
     let cons1 = Cons::new(result).expect("list");
@@ -331,8 +322,7 @@ fn erlang_pid_to_list_formats_correctly() {
     let mut context = ProcessContext::new();
     let pid_term = Term::pid(7);
 
-    let result = (entry.function)(&[pid_term], &mut context)
-        .expect("pid_to_list should succeed");
+    let result = (entry.function)(&[pid_term], &mut context).expect("pid_to_list should succeed");
 
     // The result should be a list of integers representing "<0.7.0>".
     let expected = "<0.7.0>";

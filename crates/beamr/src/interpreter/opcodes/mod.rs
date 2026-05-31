@@ -48,9 +48,18 @@ pub fn dispatch_with_timer_services(
     timers: Option<&Arc<Mutex<TimerWheel>>>,
     registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_common(process, module, instruction, next_ip, DispatchCtx {
-        receiver: None, timers, registry, services: None,
-    })
+    dispatch_common(
+        process,
+        module,
+        instruction,
+        next_ip,
+        DispatchCtx {
+            receiver: None,
+            timers,
+            registry,
+            services: None,
+        },
+    )
 }
 
 /// Dispatch one instruction with full native services for BIFs.
@@ -62,9 +71,18 @@ pub fn dispatch_with_services(
     services: &NativeServices,
     registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_common(process, module, instruction, next_ip, DispatchCtx {
-        receiver: None, timers: services.timers.as_ref(), registry, services: Some(services),
-    })
+    dispatch_common(
+        process,
+        module,
+        instruction,
+        next_ip,
+        DispatchCtx {
+            receiver: None,
+            timers: services.timers.as_ref(),
+            registry,
+            services: Some(services),
+        },
+    )
 }
 
 /// Dispatch one already-fetched instruction with an optional send target process.
@@ -81,9 +99,18 @@ pub fn dispatch_with_receiver(
     receiver: Option<&mut Process>,
     registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    dispatch_common(process, module, instruction, next_ip, DispatchCtx {
-        receiver, timers: None, registry, services: None,
-    })
+    dispatch_common(
+        process,
+        module,
+        instruction,
+        next_ip,
+        DispatchCtx {
+            receiver,
+            timers: None,
+            registry,
+            services: None,
+        },
+    )
 }
 
 fn dispatch_common(
@@ -111,11 +138,19 @@ fn dispatch_common(
             core::call(process, module, arity, label, next_ip, false)
         }
         Instruction::CallExt { arity, import } => {
-            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services, registry: ctx.registry };
+            let ext = core::ExtCallContext {
+                timers: ctx.timers,
+                services: ctx.services,
+                registry: ctx.registry,
+            };
             core::call_ext(process, module, arity, import, next_ip, true, &ext)
         }
         Instruction::CallExtOnly { arity, import } => {
-            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services, registry: ctx.registry };
+            let ext = core::ExtCallContext {
+                timers: ctx.timers,
+                services: ctx.services,
+                registry: ctx.registry,
+            };
             core::call_ext(process, module, arity, import, next_ip, false, &ext)
         }
         Instruction::CallLast {
@@ -128,7 +163,11 @@ fn dispatch_common(
             import,
             deallocate,
         } => {
-            let ext = core::ExtCallContext { timers: ctx.timers, services: ctx.services, registry: ctx.registry };
+            let ext = core::ExtCallContext {
+                timers: ctx.timers,
+                services: ctx.services,
+                registry: ctx.registry,
+            };
             core::call_ext_last(process, module, arity, import, deallocate, &ext)
         }
         Instruction::Return => core::return_(process),
@@ -136,13 +175,13 @@ fn dispatch_common(
         Instruction::AllocateHeap {
             stack_need,
             heap_need,
-            ..
-        } => core::allocate_heap(process, module, stack_need, heap_need),
+            live,
+        } => core::allocate_heap(process, module, stack_need, heap_need, live),
         Instruction::AllocateZero { stack_need, .. } => {
             core::allocate_zero(process, module, stack_need)
         }
         Instruction::Deallocate { words } => core::deallocate(process, words),
-        Instruction::TestHeap { heap_need, .. } => core::test_heap(process, heap_need),
+        Instruction::TestHeap { heap_need, live } => core::test_heap(process, heap_need, live),
         Instruction::PutList {
             head,
             tail,
@@ -212,12 +251,15 @@ fn dispatch_common(
         Instruction::MakeFun { operands } => closures::make_fun(process, module, operands),
         Instruction::CallFun { arity } => closures::call_fun(process, module, arity, next_ip),
         Instruction::Apply { arity } => {
-            let registry = ctx.registry.ok_or(ExecError::InvalidOperand("apply: registry required"))?;
+            let registry = ctx
+                .registry
+                .ok_or(ExecError::InvalidOperand("apply: registry required"))?;
             closures::apply(process, registry, arity, next_ip, module.name)
         }
         Instruction::ApplyLast { arity, deallocate } => {
-            let registry =
-                ctx.registry.ok_or(ExecError::InvalidOperand("apply_last: registry required"))?;
+            let registry = ctx
+                .registry
+                .ok_or(ExecError::InvalidOperand("apply_last: registry required"))?;
             closures::apply_last(process, registry, arity, deallocate, next_ip)
         }
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),

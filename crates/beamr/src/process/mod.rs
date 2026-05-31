@@ -4,6 +4,7 @@
 //! link/monitor sets, and status. Processes share no memory. Spawning costs
 //! microseconds. A process that crashes takes only itself down — the rest of the
 //! system is unaffected.
+pub mod gc;
 pub mod heap;
 pub mod registry;
 pub mod stack;
@@ -325,22 +326,41 @@ impl Process {
         &mut self.mailbox
     }
 
-    /// Snapshot every GC root owned by this process: all X registers, all
-    /// Y-register slots in all stack frames, and all mailbox terms.
-    pub(crate) fn roots(&self) -> Vec<Term> {
+    /// Snapshot every GC root owned by this process, treating all X registers as live.
+    pub(crate) fn roots(&mut self) -> Vec<Term> {
+        self.roots_with_live_x(256)
+    }
+
+    /// Snapshot every live GC root owned by this process.
+    pub(crate) fn roots_with_live_x(&mut self, live_x: usize) -> Vec<Term> {
+        self.mailbox.drain_arrival();
+        let live_x = live_x.min(self.x_regs.len());
+        let exception_roots = self
+            .current_exception
+            .into_iter()
+            .flat_map(|exception| [exception.reason, exception.stacktrace]);
         self.x_regs
             .iter()
+            .take(live_x)
             .chain(self.stack.y_regs())
             .chain(self.mailbox.scan_iter())
             .copied()
+            .chain(exception_roots)
             .collect()
     }
 
     /// Replace every GC root with the next term yielded by `roots`, in the same
     /// order as [`Process::roots`]. Extra yielded terms are ignored.
     pub(crate) fn replace_roots(&mut self, roots: &[Term]) {
+        self.replace_roots_with_live_x(256, roots);
+    }
+
+    /// Replace every live GC root with the next term yielded by `roots`, in the
+    /// same order as [`Process::roots_with_live_x`]. Extra yielded terms are ignored.
+    pub(crate) fn replace_roots_with_live_x(&mut self, live_x: usize, roots: &[Term]) {
         let mut index = 0;
-        for root in &mut self.x_regs {
+        let live_x = live_x.min(self.x_regs.len());
+        for root in self.x_regs.iter_mut().take(live_x) {
             if let Some(value) = roots.get(index).copied() {
                 *root = value;
             }
@@ -357,6 +377,15 @@ impl Process {
                 *root = value;
             }
             index += 1;
+        }
+        if let Some(exception) = &mut self.current_exception {
+            if let Some(value) = roots.get(index).copied() {
+                exception.reason = value;
+            }
+            index += 1;
+            if let Some(value) = roots.get(index).copied() {
+                exception.stacktrace = value;
+            }
         }
     }
 

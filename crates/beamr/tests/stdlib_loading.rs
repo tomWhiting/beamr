@@ -7,12 +7,12 @@
 use beamr::atom::AtomTable;
 use beamr::loader::{load_beam_chunks, load_module};
 use beamr::module::ModuleRegistry;
+use beamr::native::BifRegistryImpl;
 use beamr::native::bifs::register_gate1_bifs;
 use beamr::native::gate3_bifs::register_gate3_bifs;
 use beamr::native::process_bifs::register_gate2_bifs;
-use beamr::native::stdlib_stubs::register_stdlib_stubs;
 use beamr::native::selector_ffi::register_selector_bifs;
-use beamr::native::BifRegistryImpl;
+use beamr::native::stdlib_stubs::register_stdlib_stubs;
 
 /// Helper: set up the full BIF registry matching what the CLI creates.
 fn full_bif_registry(atom_table: &AtomTable) -> BifRegistryImpl {
@@ -72,9 +72,8 @@ fn stdlib_lists_loads_into_module_registry() {
     let module_registry = ModuleRegistry::new();
     let bytes = include_bytes!("fixtures/stdlib/lists.beam");
 
-    let (module, unresolved) =
-        load_module(bytes, &atom_table, &module_registry, &bif_registry)
-            .expect("lists.beam should load");
+    let (module, unresolved) = load_module(bytes, &atom_table, &module_registry, &bif_registry)
+        .expect("lists.beam should load");
 
     // The module should be registered under the `lists` atom.
     let lists_atom = atom_table.intern("lists");
@@ -102,9 +101,8 @@ fn calling_module_resolves_lists_map_via_loaded_module() {
 
     // Load the stdlib lists module first.
     let lists_bytes = include_bytes!("fixtures/stdlib/lists.beam");
-    let (_lists_module, _) =
-        load_module(lists_bytes, &atom_table, &module_registry, &bif_registry)
-            .expect("lists.beam should load");
+    let (_lists_module, _) = load_module(lists_bytes, &atom_table, &module_registry, &bif_registry)
+        .expect("lists.beam should load");
 
     // Verify lookup_mfa finds the exported function.
     let lists_atom = atom_table.intern("lists");

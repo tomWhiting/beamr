@@ -11,6 +11,9 @@ use std::fmt;
 /// Default per-process heap capacity, in machine words.
 pub const DEFAULT_HEAP_SIZE: usize = 233;
 
+/// Default maximum young-generation heap capacity, in machine words (1 MiB).
+pub const DEFAULT_MAX_HEAP_WORDS: usize = 131_072;
+
 const DEFAULT_OLD_HEAP_SIZE: usize = DEFAULT_HEAP_SIZE;
 
 /// Error returned when a heap allocation cannot be satisfied.
@@ -124,6 +127,7 @@ pub struct Heap {
     old: HeapRegion,
     initial_capacity: usize,
     previous_capacity: usize,
+    max_capacity: usize,
 }
 
 impl Heap {
@@ -140,7 +144,16 @@ impl Heap {
             old: HeapRegion::new(DEFAULT_OLD_HEAP_SIZE.max(capacity)),
             initial_capacity: capacity,
             previous_capacity,
+            max_capacity: DEFAULT_MAX_HEAP_WORDS.max(capacity),
         }
+    }
+
+    /// Create a heap with an explicit maximum young-generation capacity.
+    #[must_use]
+    pub fn with_max_heap_size(capacity: usize, max_capacity: usize) -> Self {
+        let mut heap = Self::new(capacity);
+        heap.max_capacity = max_capacity.max(heap.young_capacity());
+        heap
     }
 
     /// Allocate `words` contiguous machine words from the young generation.
@@ -187,6 +200,17 @@ impl Heap {
     #[must_use]
     pub fn capacity(&self) -> usize {
         self.young.capacity()
+    }
+
+    /// Configured maximum young-generation word capacity for GC-triggered growth.
+    #[must_use]
+    pub const fn max_capacity(&self) -> usize {
+        self.max_capacity
+    }
+
+    /// Set the maximum young-generation word capacity for future checked growth.
+    pub fn set_max_capacity(&mut self, max_capacity: usize) {
+        self.max_capacity = max_capacity.max(self.young_capacity());
     }
 
     /// Total capacity across young and old generations.
@@ -262,11 +286,29 @@ impl Heap {
 
     /// Grow young generation to the next Fibonacci-like capacity.
     pub fn grow_to_next_capacity(&mut self) {
+        let next = self.next_capacity();
+        self.grow_young_to(next);
+    }
+
+    /// Grow young generation to the next Fibonacci-like capacity if within max.
+    pub fn grow_to_next_capacity_with_max(&mut self) -> Result<(), HeapFull> {
+        let next = self.next_capacity();
+        if next > self.max_capacity {
+            return Err(HeapFull::new(next, self.available()));
+        }
+        self.grow_young_to(next);
+        Ok(())
+    }
+
+    fn next_capacity(&self) -> usize {
         let current = self.young_capacity();
-        let next = current
+        current
             .saturating_add(self.previous_capacity)
-            .max(current + 1);
-        self.previous_capacity = current;
+            .max(current.saturating_add(1))
+    }
+
+    fn grow_young_to(&mut self, next: usize) {
+        self.previous_capacity = self.young_capacity();
         self.young = HeapRegion::new(next);
     }
 

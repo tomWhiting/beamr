@@ -91,7 +91,12 @@ pub(crate) type ForwardingMap = HashMap<usize, Term>;
 
 /// Collect only the target process's nursery into old space.
 pub fn collect_minor(process: &mut Process) -> Result<GcStats, GcError> {
-    minor::collect(process)
+    collect_minor_with_live(process, 256)
+}
+
+/// Collect only the target process's nursery using a live X-register prefix.
+pub fn collect_minor_with_live(process: &mut Process, live_x: usize) -> Result<GcStats, GcError> {
+    minor::collect(process, live_x)
 }
 
 /// Fully compact the target process heap into fresh old space.
@@ -111,7 +116,18 @@ pub fn alloc(process: &mut Process, words: usize) -> Result<*mut u64, GcError> {
         Err(_heap_full) => {}
     }
 
-    match collect_minor(process) {
+    ensure_space(process, words, 256)?;
+
+    process.heap_mut().alloc(words).map_err(GcError::from)
+}
+
+/// Ensure `words` nursery words are available, collecting and growing if needed.
+pub fn ensure_space(process: &mut Process, words: usize, live_x: usize) -> Result<(), GcError> {
+    if process.heap().available() >= words {
+        return Ok(());
+    }
+
+    match collect_minor_with_live(process, live_x) {
         Ok(_stats) => {}
         Err(GcError::HeapFull(_)) => {
             collect_major(process)?;
@@ -119,12 +135,14 @@ pub fn alloc(process: &mut Process, words: usize) -> Result<*mut u64, GcError> {
         Err(error) => return Err(error),
     }
 
-    process.heap_mut().grow_to_next_capacity();
-    while process.heap().available() < words {
-        process.heap_mut().grow_to_next_capacity();
+    if process.heap().available() >= words {
+        return Ok(());
     }
 
-    process.heap_mut().alloc(words).map_err(GcError::from)
+    while process.heap().available() < words {
+        process.heap_mut().grow_to_next_capacity_with_max()?;
+    }
+    Ok(())
 }
 
 pub(crate) fn new_stats(process: &Process) -> GcStats {
@@ -361,14 +379,36 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn gc_triggered_allocation_grows_from_233_to_377() {
+    fn gc_triggered_allocation_reclaims_empty_nursery_without_growth() {
         let mut process = Process::new(1, 233);
         let _ptr = process.heap_mut().alloc(233).expect("fill nursery");
 
-        let ptr = alloc(&mut process, 1).expect("GC allocation should grow then allocate");
+        let ptr = alloc(&mut process, 1).expect("GC allocation should collect then allocate");
 
         assert!(process.heap().young_contains(ptr));
+        assert_eq!(process.heap().capacity(), 233);
+        assert_eq!(process.heap().young_used(), 1);
+    }
+
+    #[test]
+    fn ensure_space_grows_with_fibonacci_policy_when_needed() {
+        let mut process = Process::new(1, 233);
+
+        ensure_space(&mut process, 300, 0).expect("growth below max succeeds");
+
         assert_eq!(process.heap().capacity(), 377);
+        assert!(process.heap().available() >= 300);
+    }
+
+    #[test]
+    fn ensure_space_reports_heap_full_when_growth_exceeds_max() {
+        let mut process = Process::new(1, 8);
+        process.heap_mut().set_max_capacity(8);
+
+        let error = ensure_space(&mut process, 9, 0).expect_err("growth above max fails");
+
+        assert!(matches!(error, GcError::HeapFull(_)));
+        assert_eq!(process.heap().capacity(), 8);
     }
 
     #[test]

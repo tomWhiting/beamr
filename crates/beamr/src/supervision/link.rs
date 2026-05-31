@@ -162,11 +162,7 @@ fn should_die_from_signal(target: &Process, reason: ExitReason) -> bool {
 /// Used by the scheduler's supervision integration to deliver exit signals
 /// to processes that have `trap_exit` enabled. Falls back to terminating
 /// the process with `Error` if heap allocation fails.
-pub fn enqueue_exit_message_pub(
-    target: &mut Process,
-    source_pid: u64,
-    reason: ExitReason,
-) {
+pub fn enqueue_exit_message_pub(target: &mut Process, source_pid: u64, reason: ExitReason) {
     if enqueue_exit_message(target, source_pid, reason).is_err() {
         target.terminate(ExitReason::Error);
     }
