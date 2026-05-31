@@ -3,23 +3,23 @@
   "status": "approved",
   "created": "2026-05-31T00:00:00Z",
   "cluster": "beamr",
-  "title": "Gleam stdlib I/O and URI wrappers + sample workflow e2e unlock",
+  "title": "Gleam stdlib I/O + URI wrappers and sample workflow e2e",
   "depends_on": ["B-040a"],
   "blocked_by": [],
   "checklist": ["C150"],
   "stories": [],
-  "purpose": "Complete the gleam_stdlib wrapper coverage with I/O, utility, and URI functions. Un-ignore the sample_workflow_e2e test to prove end-to-end Gleam workflow execution through beamr.",
-  "task": "Implement 13 remaining gleam_stdlib and uri_string BIFs, then un-ignore and verify the sample workflow e2e test.",
+  "purpose": "Implement remaining 13 gleam_stdlib BIFs (I/O, utility, URI), plus uri_string stubs, and un-ignore sample_workflow_e2e test to prove end-to-end Gleam workflow execution.",
+  "task": "Implement 13 gleam_stdlib BIFs, 2 uri_string stubs, and verify sample workflow e2e.",
   "boundaries": [
-    "SHALL NOT implement full RFC 3986 URI parsing — stub uri_string:parse/1 with approximate splitting",
-    "SHALL route print/println through the IoSink trait from B-039",
-    "SHALL mark uri_string stubs as approximations"
+    "SHALL NOT implement full RFC 3986 URI parsing — stub with approximate splitting",
+    "SHALL stub uri_string functions as approximations",
+    "SHALL mark approximate stubs with inline notes for future replacement"
   ],
   "requirements": [
     {
       "id": "R1",
       "title": "gleam_stdlib I/O and utility wrappers (7 functions)",
-      "spec": "Register under gleam_stdlib: is_null/1, list/5, map_get/2, print/1, print_error/1, println/1, println_error/1.",
+      "spec": "Register: is_null/1, list/5, map_get/2, print/1, print_error/1, println/1, println_error/1.",
       "acceptance": [
         "is_null(nil) returns true",
         "is_null(42) returns false",
@@ -29,8 +29,7 @@
         "Tests cover each function"
       ],
       "files": {
-        "create": ["crates/beamr/src/native/stdlib_stubs/gleam_stdlib_io.rs"],
-        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+        "modify": ["crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi2.rs", "crates/beamr/src/native/stdlib_stubs/mod.rs"]
       },
       "checklist": ["C150"],
       "stories": []
@@ -38,7 +37,7 @@
     {
       "id": "R2",
       "title": "URI wrappers + uri_string stubs (6 functions)",
-      "spec": "Register gleam_stdlib: parse_query/1, percent_decode/1, percent_encode/1, uri_parse/1. Register uri_string: parse/1, dissect_query/1. URI stubs are approximate.",
+      "spec": "Register gleam_stdlib: parse_query/1, percent_decode/1, percent_encode/1, uri_parse/1. Register uri_string: parse/1, dissect_query/1. Approximate stubs.",
       "acceptance": [
         "percent_encode(<<\"hello world\">>) returns <<\"hello%20world\">>",
         "percent_decode(<<\"hello%20world\">>) returns <<\"hello world\">>",
@@ -55,10 +54,9 @@
     {
       "id": "R3",
       "title": "sample_workflow e2e test — un-ignore and verify",
-      "spec": "Remove #[ignore] from sample_workflow_run_completes_end_to_end. Verify the test passes with all stdlib BIFs implemented.",
+      "spec": "Remove #[ignore] from sample_workflow_run_completes_end_to_end. Verify end-to-end.",
       "acceptance": [
         "Test loads all .beam files from test-workflows/sample/",
-        "All modules load with zero or warn-only unresolved imports",
         "sample_workflow:run/1 completes with ExitReason::Normal",
         "Return value is a well-formed tuple",
         "Test passes without #[ignore]"

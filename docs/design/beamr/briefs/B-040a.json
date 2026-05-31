@@ -3,17 +3,16 @@
   "status": "approved",
   "created": "2026-05-31T00:00:00Z",
   "cluster": "beamr",
-  "title": "Gleam stdlib wrappers — data conversion and encoding",
+  "title": "Gleam stdlib wrappers — data conversion and encoding BIFs",
   "depends_on": ["B-037", "B-038", "B-039"],
   "blocked_by": [],
   "checklist": ["C150"],
   "stories": [],
-  "purpose": "The gleam_stdlib module contains Erlang FFI wrapper functions that Gleam's standard library delegates to. This brief covers 18 data conversion and encoding wrappers: type classification, parsing, dict/list construction, and base16/base64/bit_array operations.",
-  "task": "Implement 18 gleam_stdlib BIFs for data conversion and encoding.",
+  "purpose": "Implement 18 gleam_stdlib BIFs covering data conversion (classify_dynamic, dict, float, int, parse) and binary encoding (base16, base64, bit_array operations).",
+  "task": "Implement 18 gleam_stdlib BIFs for data conversion and encoding operations.",
   "boundaries": [
-    "SHALL NOT implement gleam_stdlib I/O or URI functions (those are B-040b)",
-    "SHALL NOT implement full RFC 3986 URI parsing",
-    "SHALL handle all immediate and common boxed term types in classify_dynamic"
+    "SHALL NOT implement I/O, URI, or print functions (those are B-040b)",
+    "SHALL NOT modify the sample_workflow_e2e test (that is B-040b)"
   ],
   "requirements": [
     {
@@ -26,6 +25,7 @@
         "dict([{a, 1}, {b, 2}]) returns #{a => 1, b => 2}",
         "parse_int(<<\"42\">>) returns {ok, 42}",
         "parse_int(<<\"abc\">>) returns {error, nil}",
+        "float_to_string(3.14) returns <<\"3.14\">>",
         "Tests cover each function"
       ],
       "files": {
