@@ -11,20 +11,20 @@ use crate::{
         ForwardingMap, GcError, GcStats, finish_stats, new_stats, object_size,
         rewrite_copied_object, term_from_ptr_like,
     },
-    process::Process,
+    process::{Process, gc::root_set},
     term::Term,
 };
 
-pub(crate) fn collect(process: &mut Process) -> Result<GcStats, GcError> {
+pub(crate) fn collect(process: &mut Process, live_x: usize) -> Result<GcStats, GcError> {
     let mut stats = new_stats(process);
     let mut forwarding = ForwardingMap::new();
     let mut work_queue = VecDeque::new();
 
-    let mut roots = process.roots();
-    for root in &mut roots {
+    let mut roots = root_set(process, live_x);
+    for root in roots.iter_mut() {
         *root = copy_young_term(process, *root, &mut forwarding, &mut work_queue, &mut stats)?;
     }
-    process.replace_roots(&roots);
+    roots.replace_process_roots(process);
 
     while let Some(term) = work_queue.pop_front() {
         rewrite_copied_object(term, &mut work_queue, |field, queue| {

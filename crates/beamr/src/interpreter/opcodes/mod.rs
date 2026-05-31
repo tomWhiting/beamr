@@ -175,13 +175,13 @@ fn dispatch_common(
         Instruction::AllocateHeap {
             stack_need,
             heap_need,
-            ..
-        } => core::allocate_heap(process, module, stack_need, heap_need),
+            live,
+        } => core::allocate_heap(process, module, stack_need, heap_need, live),
         Instruction::AllocateZero { stack_need, .. } => {
             core::allocate_zero(process, module, stack_need)
         }
         Instruction::Deallocate { words } => core::deallocate(process, words),
-        Instruction::TestHeap { heap_need, .. } => core::test_heap(process, heap_need),
+        Instruction::TestHeap { heap_need, live } => core::test_heap(process, heap_need, live),
         Instruction::PutList {
             head,
             tail,

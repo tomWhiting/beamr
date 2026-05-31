@@ -128,7 +128,8 @@ pub fn bif(
 ) -> Result<InstructionOutcome, ExecError> {
     let parsed = parse_bif_operands(op, operands)?;
     if let Some(heap_need) = parsed.heap_need {
-        core::test_heap(process, heap_need)?;
+        let live = Operand::Unsigned(parsed.expected_arity.into());
+        core::test_heap(process, heap_need, &live)?;
     }
 
     let import_index = core::operand_usize(parsed.import, "bif import index")?;

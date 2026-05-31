@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::error::ExecError;
+use crate::gc::{GcError, ensure_space};
 use crate::interpreter::InstructionOutcome;
 use crate::interpreter::NativeServices;
 use crate::loader::Literal;
@@ -132,8 +133,9 @@ pub fn allocate_heap(
     module: &Module,
     stack_need: &Operand,
     heap_need: &Operand,
+    live: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
-    test_heap(process, heap_need)?;
+    test_heap(process, heap_need, live)?;
     push_y_frame(process, module, stack_need)
 }
 
@@ -153,16 +155,19 @@ pub fn deallocate(process: &mut Process, words: &Operand) -> Result<InstructionO
 pub fn test_heap(
     process: &mut Process,
     heap_need: &Operand,
+    live: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
     let needed = operand_usize(heap_need, "heap words")?;
-    let available = process.heap().available();
-    if available < needed {
-        return Err(ExecError::GcNeeded {
-            requested: needed,
-            available,
-        });
-    }
+    let live = operand_usize(live, "live x registers")?;
+    ensure_space(process, needed, live).map_err(gc_error_to_exec)?;
     Ok(InstructionOutcome::Continue)
+}
+
+fn gc_error_to_exec(error: GcError) -> ExecError {
+    match error {
+        GcError::HeapFull(error) => ExecError::from(error),
+        GcError::InvalidObjectHeader(_) => ExecError::Badarg,
+    }
 }
 
 pub fn put_list(
