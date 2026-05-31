@@ -17,8 +17,10 @@ pub mod io_bifs;
 pub mod lists_bifs;
 pub mod maps_bifs;
 pub mod math_bifs;
+pub mod sample_support_bifs;
 pub mod string_bifs;
 pub mod type_conversion_bifs;
+pub mod uri_bifs;
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
@@ -44,12 +46,14 @@ use gleam_stdlib_ffi::{
 use gleam_stdlib_ffi2::{
     bif_base16_decode as bif_gleam_base16_decode, bif_base16_encode as bif_gleam_base16_encode,
     bif_base64_decode as bif_gleam_base64_decode, bif_base64_encode as bif_gleam_base64_encode,
-    bif_bit_array_concat as bif_gleam_bit_array_concat,
+    bif_bit_array as bif_gleam_bit_array, bif_bit_array_concat as bif_gleam_bit_array_concat,
     bif_bit_array_pad_to_bytes as bif_gleam_bit_array_pad_to_bytes,
     bif_bit_array_slice as bif_gleam_bit_array_slice,
     bif_bit_array_to_int_and_size as bif_gleam_bit_array_to_int_and_size, bif_classify_dynamic,
     bif_dict, bif_float as bif_gleam_float, bif_float_to_string, bif_index, bif_int,
-    bif_int_from_base_string, bif_parse_float, bif_parse_int, bif_wrap_list,
+    bif_int_from_base_string, bif_is_null, bif_list as bif_gleam_list, bif_map_get,
+    bif_parse_float, bif_parse_int, bif_print, bif_print_error, bif_println, bif_println_error,
+    bif_wrap_list,
 };
 use io_bifs::{
     bif_io_format_3, bif_io_lib_format_2, bif_io_put_chars_1, bif_io_put_chars_2, bif_io_setopts_2,
@@ -64,6 +68,10 @@ use maps_bifs::{
     bif_maps_without,
 };
 use math_bifs::{bif_ceil, bif_exp, bif_floor, bif_log, bif_pow};
+use sample_support_bifs::{
+    bif_gleam_list_map, bif_gleam_result_try, bif_gleam_string_repeat, bif_gleam_string_replace,
+    bif_gleam_string_tree_split, bif_gleeunit_main,
+};
 use string_bifs::{
     bif_equal as bif_string_equal, bif_find as bif_string_find,
     bif_is_empty as bif_string_is_empty, bif_length as bif_string_length,
@@ -77,6 +85,10 @@ use type_conversion_bifs::{
     bif_atom_to_binary, bif_binary_to_float, bif_binary_to_integer, bif_binary_to_integer_radix,
     bif_float, bif_integer_to_binary, bif_integer_to_binary_radix, bif_integer_to_list,
     bif_iolist_to_binary, bif_list_to_bitstring, bif_list_to_tuple, bif_tuple_to_list,
+};
+use uri_bifs::{
+    bif_parse_query, bif_percent_decode, bif_percent_encode, bif_uri_parse,
+    bif_uri_string_dissect_query, bif_uri_string_parse,
 };
 
 /// A stub BIF entry: (module_name, function_name, arity, implementation).
@@ -141,11 +153,23 @@ const STDLIB_STUBS: &[StubBif] = &[
     ),
     ("gleam_stdlib", "parse_float", 1, bif_parse_float),
     ("gleam_stdlib", "parse_int", 1, bif_parse_int),
+    ("gleam_stdlib", "is_null", 1, bif_is_null),
+    ("gleam_stdlib", "list", 5, bif_gleam_list),
+    ("gleam_stdlib", "map_get", 2, bif_map_get),
+    ("gleam_stdlib", "print", 1, bif_print),
+    ("gleam_stdlib", "print_error", 1, bif_print_error),
+    ("gleam_stdlib", "println", 1, bif_println),
+    ("gleam_stdlib", "println_error", 1, bif_println_error),
     ("gleam_stdlib", "wrap_list", 1, bif_wrap_list),
+    ("gleam_stdlib", "parse_query", 1, bif_parse_query),
+    ("gleam_stdlib", "percent_decode", 1, bif_percent_decode),
+    ("gleam_stdlib", "percent_encode", 1, bif_percent_encode),
+    ("gleam_stdlib", "uri_parse", 1, bif_uri_parse),
     ("gleam_stdlib", "base16_decode", 1, bif_gleam_base16_decode),
     ("gleam_stdlib", "base16_encode", 1, bif_gleam_base16_encode),
     ("gleam_stdlib", "base64_decode", 1, bif_gleam_base64_decode),
     ("gleam_stdlib", "base64_encode", 2, bif_gleam_base64_encode),
+    ("gleam_stdlib", "bit_array", 1, bif_gleam_bit_array),
     (
         "gleam_stdlib",
         "bit_array_concat",
@@ -208,6 +232,13 @@ const STDLIB_STUBS: &[StubBif] = &[
         bif_string_remove_suffix,
     ),
     ("gleam_stdlib", "iodata_append", 2, bif_iodata_append),
+    ("uri_string", "parse", 1, bif_uri_string_parse),
+    (
+        "uri_string",
+        "dissect_query",
+        1,
+        bif_uri_string_dissect_query,
+    ),
     ("string", "length", 1, bif_string_length),
     ("string", "reverse", 1, bif_string_reverse),
     ("string", "lowercase", 1, bif_string_lowercase),
@@ -258,6 +289,12 @@ const STDLIB_STUBS: &[StubBif] = &[
     ("lists", "reverse", 2, bif_lists_reverse_2),
     ("lists", "seq", 2, bif_lists_seq),
     ("timer", "sleep", 1, bif_timer_sleep),
+    ("gleam@list", "map", 2, bif_gleam_list_map),
+    ("gleam@string", "repeat", 2, bif_gleam_string_repeat),
+    ("gleam@string", "replace", 3, bif_gleam_string_replace),
+    ("gleam@string_tree", "split", 2, bif_gleam_string_tree_split),
+    ("gleam@result", "try", 2, bif_gleam_result_try),
+    ("gleeunit", "main", 0, bif_gleeunit_main),
 ];
 
 /// Registers all stdlib stub BIFs under their OTP module names.
@@ -483,3 +520,5 @@ mod rand_bifs_tests;
 mod tests;
 #[cfg(test)]
 mod type_conversion_bifs_tests;
+#[cfg(test)]
+mod uri_bifs_tests;

@@ -103,6 +103,23 @@ pub fn call_fun(
     core::jump_position_with_reduction(process, target)
 }
 
+pub fn call_fun2(
+    process: &mut Process,
+    function: &Operand,
+    arity: &Operand,
+    destination: &Operand,
+) -> Result<InstructionOutcome, ExecError> {
+    let fun = core::read_term(process, function)?;
+    let arity = operand_u8(arity, "call_fun2 arity")?;
+    let closure = Closure::new(fun).ok_or(ExecError::Badfun { term: fun })?;
+    if closure.arity() != arity {
+        let args = collect_args(process, arity);
+        return Err(ExecError::Badarity { fun, args });
+    }
+    core::write_term(process, destination, fun)?;
+    Ok(InstructionOutcome::Continue)
+}
+
 pub fn apply(
     process: &mut Process,
     registry: &ModuleRegistry,

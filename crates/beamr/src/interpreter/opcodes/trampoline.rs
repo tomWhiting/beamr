@@ -131,6 +131,7 @@ pub fn handle_native_continuation(
     let step = match continuation {
         NativeContinuation::Maps(state) => resume_maps_continuation(state, closure_result),
         NativeContinuation::ListsMap(state) => resume_lists_map(state, closure_result),
+        NativeContinuation::GleamResultTry => Ok(ContinuationStep::Done(closure_result)),
     }
     .map_err(|_| ExecError::Badarg)?;
 

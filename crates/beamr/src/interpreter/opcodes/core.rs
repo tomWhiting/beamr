@@ -441,10 +441,61 @@ fn literal_term(literal: &Literal) -> Result<Term, ExecError> {
             let heap = Box::leak(Box::new([0u64; 2]));
             crate::term::boxed::write_float(heap, *value).ok_or(ExecError::Badarg)
         }
+        Literal::BigInteger(limbs) => {
+            let limbs = limbs_to_u64(limbs)?;
+            let heap = Box::leak(vec![0u64; 3 + limbs.len()].into_boxed_slice());
+            crate::term::boxed::write_bigint(heap, false, &limbs).ok_or(ExecError::Badarg)
+        }
         Literal::Atom(atom) => Ok(Term::atom(*atom)),
+        Literal::Binary(bytes) | Literal::String(bytes) => {
+            let data_words = crate::term::binary::packed_word_count(bytes.len());
+            let heap = Box::leak(vec![0u64; 2 + data_words].into_boxed_slice());
+            crate::term::binary::write_binary(heap, bytes).ok_or(ExecError::Badarg)
+        }
         Literal::Nil => Ok(Term::NIL),
-        _ => Err(ExecError::UnsupportedLiteral),
+        Literal::Tuple(elements) => {
+            let mut terms = Vec::with_capacity(elements.len());
+            for element in elements {
+                terms.push(literal_term(element)?);
+            }
+            let heap = Box::leak(vec![0u64; 1 + terms.len()].into_boxed_slice());
+            crate::term::boxed::write_tuple(heap, &terms).ok_or(ExecError::Badarg)
+        }
+        Literal::List(elements, tail) => {
+            let mut result = literal_term(tail)?;
+            for element in elements.iter().rev() {
+                let head = literal_term(element)?;
+                let heap = Box::leak(Box::new([0u64; 2]));
+                result =
+                    crate::term::boxed::write_cons(heap, head, result).ok_or(ExecError::Badarg)?;
+            }
+            Ok(result)
+        }
+        Literal::Map(entries) => {
+            let mut pairs = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                pairs.push((literal_term(key)?, literal_term(value)?));
+            }
+            pairs.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let keys: Vec<_> = pairs.iter().map(|(key, _)| *key).collect();
+            let values: Vec<_> = pairs.iter().map(|(_, value)| *value).collect();
+            let heap = Box::leak(vec![0u64; 2 + keys.len() + values.len()].into_boxed_slice());
+            crate::term::boxed::write_map(heap, &keys, &values).ok_or(ExecError::Badarg)
+        }
     }
+}
+
+fn limbs_to_u64(bytes: &[u8]) -> Result<Vec<u64>, ExecError> {
+    if !bytes.len().is_multiple_of(8) {
+        return Err(ExecError::UnsupportedLiteral);
+    }
+    let mut limbs = Vec::with_capacity(bytes.len() / 8);
+    for chunk in bytes.chunks_exact(8) {
+        let mut limb = [0u8; 8];
+        limb.copy_from_slice(chunk);
+        limbs.push(u64::from_le_bytes(limb));
+    }
+    Ok(limbs)
 }
 
 fn operand_atom(operand: &Operand) -> Result<crate::atom::Atom, ExecError> {

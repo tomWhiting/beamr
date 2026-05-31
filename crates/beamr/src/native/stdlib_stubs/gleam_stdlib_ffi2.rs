@@ -118,6 +118,85 @@ pub fn bif_parse_int(args: &[Term], context: &mut ProcessContext) -> Result<Term
     result_tuple(parse_int_with_base(*string, 10))
 }
 
+pub fn bif_is_null(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let [value] = args else {
+        return Err(badarg());
+    };
+    Ok(Term::atom(if value.is_nil() {
+        Atom::TRUE
+    } else {
+        Atom::FALSE
+    }))
+}
+
+pub fn bif_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let [_decoder, _type_name, _path, value, _decode_errors] = args else {
+        return Err(badarg());
+    };
+    // Approximate gleam@dynamic@decode support: accept already-list values and
+    // return them unchanged until closure re-entry is available for full decode.
+    if value.is_nil() || Cons::new(*value).is_some() {
+        Ok(*value)
+    } else {
+        Err(badarg())
+    }
+}
+
+pub fn bif_map_get(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [map_term, key] = args else {
+        return Err(badarg());
+    };
+    let map = Map::new(*map_term).ok_or_else(badarg)?;
+    match map.get(*key) {
+        Some(value) => context.alloc_tuple(&[Term::atom(Atom::OK), value]),
+        None => context.alloc_tuple(&[Term::atom(Atom::ERROR), Term::NIL]),
+    }
+}
+
+pub fn bif_print(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    write_print_args(args, context, false)
+}
+
+pub fn bif_print_error(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    // There is currently one configured IoSink, so stderr-flavoured Gleam
+    // wrappers intentionally write to the same sink as stdout wrappers.
+    write_print_args(args, context, false)
+}
+
+pub fn bif_println(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    write_print_args(args, context, true)
+}
+
+pub fn bif_println_error(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    // There is currently one configured IoSink, so stderr-flavoured Gleam
+    // wrappers intentionally write to the same sink as stdout wrappers.
+    write_print_args(args, context, true)
+}
+
+fn write_print_args(
+    args: &[Term],
+    context: &mut ProcessContext,
+    newline: bool,
+) -> Result<Term, Term> {
+    let [value] = args else {
+        return Err(badarg());
+    };
+    let mut bytes = print_bytes(*value, context);
+    if newline {
+        bytes.push(b'\n');
+    }
+    context.io_sink().write(&bytes);
+    Ok(Term::atom(Atom::OK))
+}
+
+fn print_bytes(value: Term, context: &ProcessContext) -> Vec<u8> {
+    Binary::new(value)
+        .map(|binary| binary.as_bytes().to_vec())
+        .unwrap_or_else(|| render_term(value, context).into_bytes())
+}
+
 pub fn bif_wrap_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [value] = args else {
         return Err(badarg());
@@ -135,6 +214,15 @@ pub fn bif_base16_decode(args: &[Term], context: &mut ProcessContext) -> Result<
 
 pub fn bif_base16_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     bif_binary_encode_hex(args, context)
+}
+
+pub fn bif_bit_array(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let [value] = args else {
+        return Err(badarg());
+    };
+    Binary::new(*value).ok_or_else(badarg)?;
+    Ok(*value)
 }
 
 pub fn bif_base64_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -284,6 +372,38 @@ fn parse_float_binary(binary: Term) -> Result<f64, Term> {
     } else {
         Err(badarg())
     }
+}
+
+fn render_term(term: Term, context: &ProcessContext) -> String {
+    if let Some(integer) = term.as_small_int() {
+        return integer.to_string();
+    }
+    if let Some(atom) = term.as_atom() {
+        return context
+            .atom_table()
+            .and_then(|table| table.resolve(atom))
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("Atom({atom:?})"));
+    }
+    if term.is_nil() {
+        return "[]".to_owned();
+    }
+    if let Some(binary) = Binary::new(term) {
+        return match std::str::from_utf8(binary.as_bytes()) {
+            Ok(text) => text.to_owned(),
+            Err(_) => format!("<<{} bytes>>", binary.len()),
+        };
+    }
+    if let Some(tuple) = Tuple::new(term) {
+        let mut elements = Vec::with_capacity(tuple.arity());
+        for index in 0..tuple.arity() {
+            if let Some(element) = tuple.get(index) {
+                elements.push(render_term(element, context));
+            }
+        }
+        return format!("{{{}}}", elements.join(", "));
+    }
+    format!("{term:?}")
 }
 
 fn result_tuple(result: Result<Term, Term>) -> Result<Term, Term> {

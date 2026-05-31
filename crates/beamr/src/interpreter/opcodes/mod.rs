@@ -255,6 +255,11 @@ fn dispatch_common(
         Instruction::CallFun { arity } => {
             closures::call_fun(process, module, arity, next_ip, ctx.registry)
         }
+        Instruction::CallFun2 {
+            function,
+            arity,
+            destination,
+        } => closures::call_fun2(process, function, arity, destination),
         Instruction::Apply { arity } => {
             let registry = ctx
                 .registry

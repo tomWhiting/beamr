@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, ProcessContext, stdlib_stubs::register_stdlib_stubs};
@@ -78,6 +79,82 @@ fn classify_dynamic_returns_type_atoms() {
         bif_classify_dynamic(&[binary(b"hello")], &mut context),
         Ok(atom(&context, "binary"))
     );
+}
+
+#[test]
+fn is_null_distinguishes_nil_from_other_terms() {
+    let mut context = context();
+
+    assert_eq!(
+        bif_is_null(&[Term::NIL], &mut context),
+        Ok(Term::atom(Atom::TRUE))
+    );
+    assert_eq!(
+        bif_is_null(&[Term::small_int(42)], &mut context),
+        Ok(Term::atom(Atom::FALSE))
+    );
+}
+
+#[test]
+fn list_stub_accepts_existing_lists() {
+    let mut context = context();
+    let values = list(&[Term::small_int(1), Term::small_int(2)]);
+
+    assert_eq!(
+        bif_list(
+            &[Term::NIL, binary(b"List"), Term::NIL, values, Term::NIL],
+            &mut context
+        ),
+        Ok(values)
+    );
+}
+
+#[test]
+fn map_get_returns_gleam_result_tuples() {
+    let mut context = context();
+    let a = atom(&context, "a");
+    let b = atom(&context, "b");
+    let map = bif_dict(&[list(&[tuple(&[a, Term::small_int(1)])])], &mut context).expect("map");
+
+    assert_ok_tuple(
+        bif_map_get(&[map, a], &mut context).expect("ok tuple"),
+        Term::small_int(1),
+    );
+    assert_error_nil_tuple(bif_map_get(&[map, b], &mut context).expect("error tuple"));
+}
+
+#[derive(Default)]
+struct RecordingSink(Mutex<Vec<u8>>);
+
+impl crate::io::IoSink for RecordingSink {
+    fn write(&self, bytes: &[u8]) {
+        self.0.lock().expect("sink lock").extend_from_slice(bytes);
+    }
+}
+
+#[test]
+fn print_wrappers_write_to_configured_sink() {
+    let sink = Arc::new(RecordingSink::default());
+    let mut context = context();
+    context.set_io_sink(sink.clone());
+
+    assert_eq!(
+        bif_print(&[binary(b"a")], &mut context),
+        Ok(Term::atom(Atom::OK))
+    );
+    assert_eq!(
+        bif_print_error(&[binary(b"b")], &mut context),
+        Ok(Term::atom(Atom::OK))
+    );
+    assert_eq!(
+        bif_println(&[binary(b"c")], &mut context),
+        Ok(Term::atom(Atom::OK))
+    );
+    assert_eq!(
+        bif_println_error(&[binary(b"d")], &mut context),
+        Ok(Term::atom(Atom::OK))
+    );
+    assert_eq!(&*sink.0.lock().expect("sink lock"), b"abc\nd\n");
 }
 
 #[test]
@@ -198,6 +275,9 @@ fn base16_and_base64_wrappers_encode_and_decode() {
 fn bit_array_wrappers_operate_on_byte_aligned_binaries() {
     let mut context = context();
 
+    let bit_array = bif_bit_array(&[binary(b"bits")], &mut context).expect("binary");
+    assert_binary(bit_array, b"bits");
+
     let concatenated =
         bif_bit_array_concat(&[list(&[binary(b"a"), binary(b"b")])], &mut context).expect("binary");
     assert_binary(concatenated, b"ab");
@@ -228,6 +308,13 @@ fn register_stdlib_stubs_includes_gleam_stdlib_ffi2_bifs() {
     let expected = [
         ("classify_dynamic", 1),
         ("dict", 1),
+        ("is_null", 1),
+        ("list", 5),
+        ("map_get", 2),
+        ("print", 1),
+        ("print_error", 1),
+        ("println", 1),
+        ("println_error", 1),
         ("float", 1),
         ("float_to_string", 1),
         ("index", 2),
@@ -240,6 +327,7 @@ fn register_stdlib_stubs_includes_gleam_stdlib_ffi2_bifs() {
         ("base16_encode", 1),
         ("base64_decode", 1),
         ("base64_encode", 2),
+        ("bit_array", 1),
         ("bit_array_concat", 1),
         ("bit_array_pad_to_bytes", 1),
         ("bit_array_slice", 3),

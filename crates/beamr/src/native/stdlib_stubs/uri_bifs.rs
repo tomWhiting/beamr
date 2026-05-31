@@ -1,0 +1,171 @@
+//! Approximate URI-related native stubs for Gleam stdlib and `uri_string`.
+
+use crate::atom::{Atom, AtomTable};
+use crate::native::ProcessContext;
+use crate::term::Term;
+use crate::term::binary::{Binary, packed_word_count, write_binary};
+use crate::term::boxed::write_map;
+
+pub fn bif_percent_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let [input] = args else {
+        return Err(badarg());
+    };
+    let mut out = Vec::new();
+    for byte in binary_bytes(*input)? {
+        if is_unreserved(*byte) {
+            out.push(*byte);
+        } else {
+            out.push(b'%');
+            out.push(hex_digit(*byte >> 4));
+            out.push(hex_digit(*byte & 0x0f));
+        }
+    }
+    make_binary(&out)
+}
+
+pub fn bif_percent_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let [input] = args else {
+        return Err(badarg());
+    };
+    let bytes = binary_bytes(*input)?;
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            out.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        let high = bytes.get(index + 1).and_then(|byte| hex_value(*byte));
+        let low = bytes.get(index + 2).and_then(|byte| hex_value(*byte));
+        let (Some(high), Some(low)) = (high, low) else {
+            return Err(badarg());
+        };
+        out.push((high << 4) | low);
+        index += 3;
+    }
+    make_binary(&out)
+}
+
+pub fn bif_uri_parse(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [input] = args else {
+        return Err(badarg());
+    };
+    parse_uri_map(*input, context)
+}
+
+pub fn bif_uri_string_parse(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    bif_uri_parse(args, context)
+}
+
+pub fn bif_parse_query(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [input] = args else {
+        return Err(badarg());
+    };
+    parse_query_map(*input, context)
+}
+
+pub fn bif_uri_string_dissect_query(
+    args: &[Term],
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    bif_parse_query(args, context)
+}
+
+fn parse_uri_map(input: Term, context: &mut ProcessContext) -> Result<Term, Term> {
+    let text = binary_text(input)?;
+    // Approximate RFC 3986 support for sample workflows: split only the common
+    // scheme://host/path?query shape. Full URI parsing is intentionally deferred.
+    let (scheme, after_scheme) = text.split_once("://").unwrap_or(("", text));
+    let (authority_and_path, query) = after_scheme.split_once('?').unwrap_or((after_scheme, ""));
+    let (host, path) = authority_and_path
+        .split_once('/')
+        .map(|(host, rest)| (host, format!("/{rest}")))
+        .unwrap_or((authority_and_path, String::new()));
+
+    let entries = [
+        (atom(context, "scheme")?, make_binary(scheme.as_bytes())?),
+        (atom(context, "host")?, make_binary(host.as_bytes())?),
+        (atom(context, "path")?, make_binary(path.as_bytes())?),
+        (atom(context, "query")?, make_binary(query.as_bytes())?),
+    ];
+    make_sorted_map(&entries)
+}
+
+fn parse_query_map(input: Term, context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let text = binary_text(input)?;
+    // Approximate query support: split `a=b&c=d` into a deterministic flatmap
+    // of binary keys to binary values; duplicate keys keep the last value.
+    let mut entries: Vec<(Term, Term)> = Vec::new();
+    for pair in text.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = make_binary(key.as_bytes())?;
+        let value = make_binary(value.as_bytes())?;
+        if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| *entry_key == key) {
+            *existing = value;
+        } else {
+            entries.push((key, value));
+        }
+    }
+    make_sorted_map(&entries)
+}
+
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+}
+
+fn hex_digit(value: u8) -> u8 {
+    match value {
+        0..=9 => b'0' + value,
+        10..=15 => b'A' + (value - 10),
+        _ => b'0',
+    }
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn atom(context: &mut ProcessContext, name: &str) -> Result<Term, Term> {
+    if let Some(table) = context.atom_table() {
+        return Ok(Term::atom(table.intern(name)));
+    }
+    let table = AtomTable::with_common_atoms();
+    Ok(Term::atom(table.intern(name)))
+}
+
+fn make_sorted_map(entries: &[(Term, Term)]) -> Result<Term, Term> {
+    let mut sorted = entries.to_vec();
+    sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let keys: Vec<_> = sorted.iter().map(|(key, _)| *key).collect();
+    let values: Vec<_> = sorted.iter().map(|(_, value)| *value).collect();
+    let heap = Box::leak(vec![0u64; 2 + keys.len() + values.len()].into_boxed_slice());
+    write_map(heap, &keys, &values).ok_or_else(badarg)
+}
+
+fn binary_text(binary: Term) -> Result<&'static str, Term> {
+    std::str::from_utf8(binary_bytes(binary)?).map_err(|_| badarg())
+}
+
+fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
+    Binary::new(term)
+        .map(|binary| binary.as_bytes())
+        .ok_or_else(badarg)
+}
+
+fn make_binary(bytes: &[u8]) -> Result<Term, Term> {
+    let heap = Box::leak(vec![0u64; 2 + packed_word_count(bytes.len())].into_boxed_slice());
+    write_binary(heap, bytes).ok_or_else(badarg)
+}
+
+fn badarg() -> Term {
+    Term::atom(Atom::BADARG)
+}

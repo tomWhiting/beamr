@@ -46,6 +46,8 @@ pub enum NativeContinuation {
     Maps(MapsHofState),
     /// Continuation for lists:map/2.
     ListsMap(ListsMapState),
+    /// Continuation for Gleam result.try/2 compatibility.
+    GleamResultTry,
 }
 
 /// Suspend request from a BIF that wants the process to wait.
