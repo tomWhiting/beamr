@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn float_write_then_read_round_trip() {
-        for value in [3.14, 0.0, -1.5] {
+        for value in [3.125, 0.0, -1.5] {
             let mut heap = [0_u64; 2];
             let term = write_float(&mut heap, value).expect("float should fit");
             let float = Float::new(term).expect("float accessor");

@@ -28,7 +28,7 @@ use std::fmt;
 use crate::atom::Atom;
 use crate::term::Term;
 
-pub use context::{ProcessContext, SuspendRequest, TrampolineRequest};
+pub use context::{NativeContinuation, ProcessContext, SuspendRequest, TrampolineRequest};
 pub use links::LinkFacility;
 pub use registry::RegistryFacility;
 pub use select::SelectFacility;

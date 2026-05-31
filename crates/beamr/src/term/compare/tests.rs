@@ -103,7 +103,7 @@ fn beam_ordering_compares_within_types() {
         write_tuple(&mut tuple_b_heap, &[Term::small_int(1), Term::small_int(3)]).unwrap();
 
     assert!(Term::small_int(1) < Term::small_int(2));
-    assert!(!(Term::small_int(2) < Term::small_int(1)));
+    assert!(Term::small_int(2) >= Term::small_int(1));
     assert!(tuple_a < tuple_b);
     assert!(tuple_one < tuple_two);
 }

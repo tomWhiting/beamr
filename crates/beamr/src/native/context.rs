@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::atom::AtomTable;
+use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
 use crate::term::Term;
 use crate::timer::{TimerRef, TimerWheel};
 
@@ -33,6 +34,17 @@ pub struct TrampolineRequest {
     pub fun: Term,
     /// Arguments to pass to the closure.
     pub args: Vec<Term>,
+    /// Optional native continuation to resume after the closure returns.
+    pub continuation: Option<NativeContinuation>,
+}
+
+/// Native continuation state for collection BIFs that call closures repeatedly.
+#[derive(Clone, Debug)]
+pub enum NativeContinuation {
+    /// Continuation for maps higher-order BIFs.
+    Maps(MapsHofState),
+    /// Continuation for lists:map/2.
+    ListsMap(ListsMapState),
 }
 
 /// Suspend request from a BIF that wants the process to wait.
@@ -264,7 +276,25 @@ impl ProcessContext {
     /// present, it sets up the closure call and uses the closure's return
     /// value as the BIF's return value.
     pub fn set_trampoline(&mut self, fun: Term, args: Vec<Term>) {
-        self.trampoline = Some(TrampolineRequest { fun, args });
+        self.trampoline = Some(TrampolineRequest {
+            fun,
+            args,
+            continuation: None,
+        });
+    }
+
+    /// Store a trampoline request with native continuation state.
+    pub fn set_continuation_trampoline(
+        &mut self,
+        fun: Term,
+        args: Vec<Term>,
+        continuation: NativeContinuation,
+    ) {
+        self.trampoline = Some(TrampolineRequest {
+            fun,
+            args,
+            continuation: Some(continuation),
+        });
     }
 
     /// Take the trampoline request, clearing it from the context.

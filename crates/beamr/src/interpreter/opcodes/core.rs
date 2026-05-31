@@ -311,7 +311,12 @@ fn call_external_target(
 
             // Check for trampoline request from the BIF.
             if let Some(trampoline_req) = context.take_trampoline() {
-                return trampoline::handle_trampoline(process, module, trampoline_req);
+                return trampoline::handle_trampoline(
+                    process,
+                    module,
+                    ctx.registry,
+                    trampoline_req,
+                );
             }
 
             process.set_x_reg(0, result);

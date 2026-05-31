@@ -10,7 +10,10 @@ use std::sync::Arc;
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::module::Module;
+use crate::native::NativeContinuation;
 use crate::native::select::MailboxSnapshot;
+use crate::native::stdlib_stubs::lists_bifs::resume_lists_map;
+use crate::native::stdlib_stubs::maps_bifs::{ContinuationStep, resume_maps_continuation};
 use crate::process::{CodePosition, Process, ProcessStatus, ReceiveTimeout};
 use crate::term::Term;
 use crate::term::boxed::Closure;
@@ -50,6 +53,7 @@ pub fn apply_mailbox_removal(process: &mut Process, snapshot: &MailboxSnapshot) 
 pub fn handle_trampoline(
     process: &mut Process,
     module: &Module,
+    registry: Option<&crate::module::ModuleRegistry>,
     trampoline: crate::native::TrampolineRequest,
 ) -> Result<InstructionOutcome, ExecError> {
     let closure = Closure::new(trampoline.fun).ok_or(ExecError::Badfun {
@@ -78,7 +82,10 @@ pub fn handle_trampoline(
     // Look up the lambda entry point.
     let function_index = usize::try_from(closure.function_index())
         .map_err(|_| ExecError::InvalidOperand("trampoline closure function index"))?;
-    let lambda = module
+    let target_module_atom = closure.module().unwrap_or(module.name);
+    let target_module = registry.and_then(|registry| registry.lookup(target_module_atom));
+    let target_module = target_module.as_deref().unwrap_or(module);
+    let lambda = target_module
         .lambdas
         .get(function_index)
         .ok_or(ExecError::InvalidOperand(
@@ -89,14 +96,17 @@ pub fn handle_trampoline(
     let return_ip = process
         .code_position()
         .map_or(0, |pos| pos.instruction_pointer);
-    process
-        .stack_mut()
-        .push_frame(module.name, return_ip, 0)
-        .map_err(ExecError::from)?;
+    if trampoline.continuation.is_none() || !process.has_native_continuation() {
+        process
+            .stack_mut()
+            .push_frame(module.name, return_ip, 0)
+            .map_err(ExecError::from)?;
+    }
+    process.set_native_continuation(trampoline.continuation);
 
     let target = CodePosition {
-        module: closure.module().unwrap_or(module.name),
-        instruction_pointer: label_ip(module, lambda.label)?,
+        module: target_module_atom,
+        instruction_pointer: label_ip(target_module, lambda.label)?,
     };
 
     charge_reduction(process)?;
@@ -106,6 +116,47 @@ pub fn handle_trampoline(
     } else {
         InstructionOutcome::Jump(target)
     })
+}
+
+/// Resume a native higher-order BIF continuation after a closure returns in x(0).
+pub fn handle_native_continuation(
+    process: &mut Process,
+    module: &Module,
+    registry: Option<&crate::module::ModuleRegistry>,
+) -> Result<InstructionOutcome, ExecError> {
+    let continuation = process
+        .take_native_continuation()
+        .ok_or(ExecError::InvalidOperand("native continuation"))?;
+    let closure_result = process.x_reg(0);
+    let step = match continuation {
+        NativeContinuation::Maps(state) => resume_maps_continuation(state, closure_result),
+        NativeContinuation::ListsMap(state) => resume_lists_map(state, closure_result),
+    }
+    .map_err(|_| ExecError::Badarg)?;
+
+    match step {
+        ContinuationStep::Done(result) => {
+            process.set_x_reg(0, result);
+            Ok(InstructionOutcome::NativeContinuation)
+        }
+        ContinuationStep::Call {
+            fun,
+            args,
+            continuation,
+        } => {
+            process.set_native_continuation(Some(continuation.clone()));
+            handle_trampoline(
+                process,
+                module,
+                registry,
+                crate::native::TrampolineRequest {
+                    fun,
+                    args,
+                    continuation: Some(continuation),
+                },
+            )
+        }
+    }
 }
 
 /// Handle a suspend request by transitioning the process to Waiting state.

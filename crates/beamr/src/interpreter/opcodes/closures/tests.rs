@@ -89,8 +89,8 @@ fn call_fun_restores_captured_variables_and_jumps_to_lambda_label() {
     process.set_x_reg(0, Term::small_int(11));
     process.set_x_reg(1, fun);
 
-    let outcome =
-        call_fun(&mut process, &module, &Operand::Unsigned(1), 99).expect("call_fun succeeds");
+    let outcome = call_fun(&mut process, &module, &Operand::Unsigned(1), 99, None)
+        .expect("call_fun succeeds");
 
     assert_eq!(jump_ip(outcome), 1);
     assert_eq!(process.x_reg(1), Term::small_int(7));
@@ -109,7 +109,7 @@ fn call_fun_reports_badfun_and_badarity() {
     let mut process = Process::new(1, 16);
     process.set_x_reg(1, Term::small_int(42));
     assert_eq!(
-        call_fun(&mut process, &module, &Operand::Unsigned(1), 1),
+        call_fun(&mut process, &module, &Operand::Unsigned(1), 1, None),
         Err(ExecError::Badfun {
             term: Term::small_int(42)
         })
@@ -121,7 +121,7 @@ fn call_fun_reports_badfun_and_badarity() {
     process.set_x_reg(0, Term::small_int(10));
     process.set_x_reg(1, fun);
     assert_eq!(
-        call_fun(&mut process, &module, &Operand::Unsigned(1), 1),
+        call_fun(&mut process, &module, &Operand::Unsigned(1), 1, None),
         Err(ExecError::Badarity {
             fun,
             args: vec![Term::small_int(10)],

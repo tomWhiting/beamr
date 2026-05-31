@@ -53,6 +53,7 @@ pub fn call_fun(
     module: &Module,
     arity: &Operand,
     return_ip: usize,
+    registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
     let arity = operand_u8(arity, "call_fun arity")?;
     let fun_term = process.x_reg(arity);
@@ -84,7 +85,10 @@ pub fn call_fun(
 
     let function_index = usize::try_from(closure.function_index())
         .map_err(|_| ExecError::InvalidOperand("closure function index"))?;
-    let lambda = module
+    let target_module_atom = closure.module().unwrap_or(module.name);
+    let target_module = registry.and_then(|registry| registry.lookup(target_module_atom));
+    let target_module = target_module.as_deref().unwrap_or(module);
+    let lambda = target_module
         .lambdas
         .get(function_index)
         .ok_or(ExecError::InvalidOperand("closure function index"))?;
@@ -93,8 +97,8 @@ pub fn call_fun(
         .push_frame(module.name, return_ip, 0)
         .map_err(ExecError::from)?;
     let target = CodePosition {
-        module: closure.module().unwrap_or(module.name),
-        instruction_pointer: core::label_ip(module, lambda.label)?,
+        module: target_module_atom,
+        instruction_pointer: core::label_ip(target_module, lambda.label)?,
     };
     core::jump_position_with_reduction(process, target)
 }

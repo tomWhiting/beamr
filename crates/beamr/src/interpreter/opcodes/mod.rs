@@ -120,6 +120,9 @@ fn dispatch_common(
     next_ip: usize,
     ctx: DispatchCtx<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
+    if process.has_native_continuation() {
+        return trampoline::handle_native_continuation(process, module, ctx.registry);
+    }
     match instruction {
         Instruction::Label { label } => core::label(*label),
         Instruction::FuncInfo {
@@ -249,7 +252,9 @@ fn dispatch_common(
         Instruction::BinaryOp { op, operands } => binary::binary_op(process, module, *op, operands),
         Instruction::MapOp { op, operands } => closures::map_op(process, module, *op, operands),
         Instruction::MakeFun { operands } => closures::make_fun(process, module, operands),
-        Instruction::CallFun { arity } => closures::call_fun(process, module, arity, next_ip),
+        Instruction::CallFun { arity } => {
+            closures::call_fun(process, module, arity, next_ip, ctx.registry)
+        }
         Instruction::Apply { arity } => {
             let registry = ctx
                 .registry

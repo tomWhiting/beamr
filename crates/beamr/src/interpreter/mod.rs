@@ -46,6 +46,8 @@ pub enum InstructionOutcome {
     Continue,
     /// Jump to a non-sequential code position.
     Jump(CodePosition),
+    /// Run a native continuation using the current value in x(0).
+    NativeContinuation,
     /// Yield after preserving the next code position in the process.
     Yield,
     /// Block waiting for a message.
@@ -149,6 +151,7 @@ fn run_loop(
                 module: module.name,
                 instruction_pointer: next_ip,
             })),
+            InstructionOutcome::NativeContinuation => {}
             InstructionOutcome::Jump(target) => process.set_code_position(Some(target)),
             InstructionOutcome::Yield => return Ok(ExecutionResult::Yielded),
             InstructionOutcome::Waiting => return Ok(ExecutionResult::Waiting),

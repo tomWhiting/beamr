@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use crate::atom::Atom;
 use crate::mailbox::Mailbox;
+use crate::native::NativeContinuation;
 use crate::process::heap::Heap;
 use crate::process::stack::Stack;
 use crate::term::Term;
@@ -214,6 +215,7 @@ pub struct Process {
     receive_timeout: Option<ReceiveTimeout>,
     receive_timer_ref: Option<u64>,
     x_regs: [Term; 256],
+    native_continuation: Option<NativeContinuation>,
     reduction_counter: u32,
     code_position: Option<CodePosition>,
     current_mfa: Option<(Atom, Atom, u8)>,
@@ -240,6 +242,7 @@ impl Process {
             receive_timeout: None,
             receive_timer_ref: None,
             x_regs: [Term::NIL; 256],
+            native_continuation: None,
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
             code_position: None,
             current_mfa: None,
@@ -459,6 +462,22 @@ impl Process {
     /// Mutable access to all X registers.
     pub fn x_regs_mut(&mut self) -> &mut [Term; 256] {
         &mut self.x_regs
+    }
+
+    /// Store native continuation state for closure-return re-entry.
+    pub fn set_native_continuation(&mut self, continuation: Option<NativeContinuation>) {
+        self.native_continuation = continuation;
+    }
+
+    /// Take native continuation state after a closure returns.
+    pub fn take_native_continuation(&mut self) -> Option<NativeContinuation> {
+        self.native_continuation.take()
+    }
+
+    /// Check whether a native continuation is pending.
+    #[must_use]
+    pub fn has_native_continuation(&self) -> bool {
+        self.native_continuation.is_some()
     }
 
     /// Current reduction budget remainder.
