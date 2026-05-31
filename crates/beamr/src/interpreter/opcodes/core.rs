@@ -299,7 +299,17 @@ fn call_external_target(
                     .map(|s| s as Arc<dyn crate::native::SelectFacility>),
             );
 
-            let result = (entry.function)(&args, &mut context).map_err(|_| ExecError::Badarg)?;
+            let result = match (entry.function)(&args, &mut context) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let exception = crate::process::Exception {
+                        class: Term::atom(crate::atom::Atom::ERROR),
+                        reason,
+                        stacktrace: Term::NIL,
+                    };
+                    return super::messaging::raise_exception(process, exception);
+                }
+            };
             let shutdown_requested = context.take_shutdown_request();
 
             // Handle mailbox removal if the select facility recorded one.

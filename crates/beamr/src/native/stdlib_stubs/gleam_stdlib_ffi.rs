@@ -190,12 +190,30 @@ pub fn bif_iodata_append(args: &[Term], context: &mut ProcessContext) -> Result<
     let [left, right] = args else {
         return Err(badarg());
     };
-    let left = binary_bytes(*left)?;
-    let right = binary_bytes(*right)?;
-    let mut out = Vec::with_capacity(left.len() + right.len());
-    out.extend_from_slice(left);
-    out.extend_from_slice(right);
+    let mut out = Vec::new();
+    collect_iodata(*left, &mut out)?;
+    collect_iodata(*right, &mut out)?;
     make_binary(&out)
+}
+
+fn collect_iodata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
+    if term.is_nil() {
+        return Ok(());
+    }
+    if let Some(byte) = term.as_small_int() {
+        let byte = u8::try_from(byte).map_err(|_| badarg())?;
+        bytes.push(byte);
+        return Ok(());
+    }
+    if let Some(binary) = Binary::new(term) {
+        bytes.extend_from_slice(binary.as_bytes());
+        return Ok(());
+    }
+    if let Some(cons) = Cons::new(term) {
+        collect_iodata(cons.head(), bytes)?;
+        return collect_iodata(cons.tail(), bytes);
+    }
+    Err(badarg())
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {

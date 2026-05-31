@@ -192,7 +192,7 @@ fn gleam_stdlib_each_stub_has_success_and_badarg_coverage() {
         b"hello world",
     );
     assert_eq!(
-        gleam_stdlib_ffi::bif_iodata_append(&[binary(b"hello"), Term::small_int(1)], &mut ctx),
+        gleam_stdlib_ffi::bif_iodata_append(&[binary(b"hello"), Term::small_int(256)], &mut ctx),
         Err(badarg())
     );
 }

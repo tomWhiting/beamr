@@ -295,6 +295,8 @@ const STDLIB_STUBS: &[StubBif] = &[
     ("gleam@string_tree", "split", 2, bif_gleam_string_tree_split),
     ("gleam@result", "try", 2, bif_gleam_result_try),
     ("gleeunit", "main", 0, bif_gleeunit_main),
+    ("erlang", "fun_info", 2, bif_fun_info),
+    ("io_lib_format", "fwrite_g", 1, bif_fwrite_g),
 ];
 
 /// Registers all stdlib stub BIFs under their OTP module names.
@@ -482,6 +484,43 @@ pub fn bif_identity(args: &[Term], _context: &mut ProcessContext) -> Result<Term
     };
 
     Ok(*value)
+}
+
+/// erlang:fun_info/2 — return metadata about a closure.
+pub fn bif_fun_info(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [fun, item] = args else {
+        return Err(badarg());
+    };
+    let item_atom = item.as_atom().ok_or_else(badarg)?;
+    let at = context.atom_table().ok_or_else(badarg)?;
+    let item_name = at.resolve(item_atom).unwrap_or("");
+    let value = match item_name {
+        "arity" => {
+            let arity = crate::term::boxed::Closure::new(*fun)
+                .map_or(0, |c| i64::from(c.arity()));
+            Term::small_int(arity)
+        }
+        "module" | "name" | "type" => make_leaked_binary(item_name.as_bytes()),
+        "env" => Term::NIL,
+        _ => Term::atom(Atom::UNDEFINED),
+    };
+    let heap: &mut [u64] = Box::leak(vec![0u64; 3].into_boxed_slice());
+    crate::term::boxed::write_tuple(heap, &[*item, value]).ok_or_else(badarg)
+}
+
+/// io_lib_format:fwrite_g/1 — format a float to its shortest representation.
+pub fn bif_fwrite_g(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [float_term] = args else {
+        return Err(badarg());
+    };
+    let f = if let Some(v) = float_term.as_small_int() {
+        v as f64
+    } else if let Some(fl) = crate::term::boxed::Float::new(*float_term) {
+        fl.value()
+    } else {
+        return Err(badarg());
+    };
+    Ok(make_leaked_binary(format!("{f}").as_bytes()))
 }
 
 /// Creates an empty binary term using a leaked heap allocation.

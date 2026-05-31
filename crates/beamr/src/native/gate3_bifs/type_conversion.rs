@@ -79,11 +79,35 @@ pub fn bif_list_to_binary(args: &[Term], _context: &mut ProcessContext) -> Resul
     let [list_term] = args else {
         return Err(badarg());
     };
+    if !list_term.is_nil() && Cons::new(*list_term).is_none() && Binary::new(*list_term).is_none() {
+        return Err(badarg());
+    }
 
-    let bytes = list_to_bytes(*list_term)?;
+    let mut bytes = Vec::new();
+    collect_iodata(*list_term, &mut bytes)?;
     let word_count = 2 + crate::term::binary::packed_word_count(bytes.len());
     let heap = Box::leak(vec![0u64; word_count].into_boxed_slice());
     write_binary(heap, &bytes).ok_or_else(badarg)
+}
+
+fn collect_iodata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
+    if term.is_nil() {
+        return Ok(());
+    }
+    if let Some(byte) = term.as_small_int() {
+        let byte = u8::try_from(byte).map_err(|_| badarg())?;
+        bytes.push(byte);
+        return Ok(());
+    }
+    if let Some(binary) = Binary::new(term) {
+        bytes.extend_from_slice(binary.as_bytes());
+        return Ok(());
+    }
+    if let Some(cons) = Cons::new(term) {
+        collect_iodata(cons.head(), bytes)?;
+        return collect_iodata(cons.tail(), bytes);
+    }
+    Err(badarg())
 }
 
 /// erlang:map_get/2 — returns the value for `key` in `map`, or raises
@@ -103,23 +127,7 @@ fn badkey(key: Term) -> Term {
         .unwrap_or_else(|| Term::atom(Atom::BADKEY))
 }
 
-/// Walks a proper list collecting byte values (0-255).
-fn list_to_bytes(term: Term) -> Result<Vec<u8>, Term> {
-    let mut bytes = Vec::new();
-    let mut current = term;
-    loop {
-        if current.is_nil() {
-            return Ok(bytes);
-        }
-        let cons = Cons::new(current).ok_or_else(badarg)?;
-        let value = cons.head().as_small_int().ok_or_else(badarg)?;
-        if !(0..=255).contains(&value) {
-            return Err(badarg());
-        }
-        bytes.push(value as u8);
-        current = cons.tail();
-    }
-}
+
 
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)

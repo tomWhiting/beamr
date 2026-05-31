@@ -57,6 +57,7 @@ struct SharedState {
     process_bodies: DashMap<u64, Mutex<Option<ScheduledProcess>>>,
     exit_tombstones: DashMap<u64, ExitReason>,
     exit_results: DashMap<u64, Term>,
+    async_results: DashMap<u64, Term>,
     link_set: Mutex<LinkSet>,
     monitor_set: Mutex<MonitorSet>,
     hook: Hook,
@@ -113,6 +114,7 @@ impl Scheduler {
             process_bodies: DashMap::new(),
             exit_tombstones: DashMap::new(),
             exit_results: DashMap::new(),
+            async_results: DashMap::new(),
             link_set: Mutex::new(LinkSet::new()),
             monitor_set: Mutex::new(MonitorSet::new()),
             hook: Hook::new(),
@@ -258,6 +260,16 @@ impl Scheduler {
             let timeout = std::time::Duration::from_millis(10);
             let _ = self.shared.wake_condvar.wait_timeout(guard, timeout);
         }
+    }
+
+    /// Wake a suspended process with a result term.
+    ///
+    /// The process will resume execution with `result` in x(0) and the
+    /// instruction pointer advanced past the suspending CallExt. This does
+    /// NOT replay the suspending instruction.
+    pub fn wake_with_result(&self, pid: u64, result: Term) {
+        self.shared.async_results.insert(pid, result);
+        wake_process(&self.shared, pid);
     }
 
     /// Access the live process table.
@@ -447,6 +459,16 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
     if process.transition_to(ProcessStatus::Running).is_err() {
         return SliceOutcome::Exited(exit_reason_from_status(process.status()), process.x_reg(0));
     }
+    if let Some((_, result_term)) = shared.async_results.remove(&process.pid()) {
+        process.set_x_reg(0, result_term);
+        if let Some(pos) = process.code_position() {
+            process.set_code_position(Some(CodePosition {
+                module: pos.module,
+                instruction_pointer: pos.instruction_pointer.saturating_add(1),
+            }));
+        }
+    }
+
     process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
     let module_atom = match process.code_position() {
         Some(position) => position.module,
