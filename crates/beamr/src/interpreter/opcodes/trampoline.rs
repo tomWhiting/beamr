@@ -137,7 +137,7 @@ pub fn handle_native_continuation(
     match step {
         ContinuationStep::Done(result) => {
             process.set_x_reg(0, result);
-            Ok(InstructionOutcome::NativeContinuation)
+            Ok(InstructionOutcome::Continue)
         }
         ContinuationStep::Call {
             fun,

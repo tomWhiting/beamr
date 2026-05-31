@@ -322,6 +322,8 @@ fn badarg() -> Term {
 #[cfg(test)]
 mod b033_tests;
 #[cfg(test)]
+mod b038_tests;
+#[cfg(test)]
 mod collection_bifs_tests;
 #[cfg(test)]
 mod tests;
