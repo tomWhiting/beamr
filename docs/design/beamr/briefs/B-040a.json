@@ -1,0 +1,56 @@
+{
+  "id": "B-040a",
+  "status": "approved",
+  "created": "2026-05-31T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Gleam stdlib wrappers — data conversion and encoding",
+  "depends_on": ["B-037", "B-038", "B-039"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "The gleam_stdlib module contains Erlang FFI wrapper functions that Gleam's standard library delegates to. This brief covers 18 data conversion and encoding wrappers: type classification, parsing, dict/list construction, and base16/base64/bit_array operations.",
+  "task": "Implement 18 gleam_stdlib BIFs for data conversion and encoding.",
+  "boundaries": [
+    "SHALL NOT implement gleam_stdlib I/O or URI functions (those are B-040b)",
+    "SHALL NOT implement full RFC 3986 URI parsing",
+    "SHALL handle all immediate and common boxed term types in classify_dynamic"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "gleam_stdlib data conversion wrappers (10 functions)",
+      "spec": "Register under gleam_stdlib: classify_dynamic/1, dict/1, float/1, float_to_string/1, index/2, int/1, int_from_base_string/2, parse_float/1, parse_int/1, wrap_list/1.",
+      "acceptance": [
+        "classify_dynamic(42) returns int",
+        "classify_dynamic(<<\"hello\">>) returns binary",
+        "dict([{a, 1}, {b, 2}]) returns #{a => 1, b => 2}",
+        "parse_int(<<\"42\">>) returns {ok, 42}",
+        "parse_int(<<\"abc\">>) returns {error, nil}",
+        "Tests cover each function"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi2.rs"],
+        "modify": ["crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "gleam_stdlib encoding and binary wrappers (8 functions)",
+      "spec": "Register under gleam_stdlib: base16_decode/1, base16_encode/1, base64_decode/1, base64_encode/2, bit_array_concat/1, bit_array_pad_to_bytes/1, bit_array_slice/3, bit_array_to_int_and_size/1.",
+      "acceptance": [
+        "base16_encode(<<\"hi\">>) returns <<\"6869\">>",
+        "base64_encode(<<\"hi\">>, standard) returns correct base64",
+        "bit_array_concat([<<\"a\">>, <<\"b\">>]) returns <<\"ab\">>",
+        "bit_array_slice(<<\"hello\">>, 1, 3) returns <<\"ell\">>",
+        "Tests cover each function"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi2.rs", "crates/beamr/src/native/stdlib_stubs/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ]
+}
