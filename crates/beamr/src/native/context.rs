@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::atom::AtomTable;
-use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
 use crate::io::{IoSink, NullSink};
+use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
 use crate::term::Term;
 use crate::timer::{TimerRef, TimerWheel};
 

@@ -12,10 +12,11 @@ pub mod bitwise_bifs;
 pub mod collection_bifs;
 pub mod encoding_bifs;
 pub mod gleam_stdlib_ffi;
-pub mod math_bifs;
+pub mod gleam_stdlib_ffi2;
+pub mod io_bifs;
 pub mod lists_bifs;
 pub mod maps_bifs;
-pub mod io_bifs;
+pub mod math_bifs;
 pub mod string_bifs;
 pub mod type_conversion_bifs;
 
@@ -40,7 +41,19 @@ use gleam_stdlib_ffi::{
     bif_string_remove_suffix, bif_string_replace, bif_string_starts_with,
     bif_utf_codepoint_list_to_string,
 };
-use math_bifs::{bif_ceil, bif_exp, bif_floor, bif_log, bif_pow};
+use gleam_stdlib_ffi2::{
+    bif_base16_decode as bif_gleam_base16_decode, bif_base16_encode as bif_gleam_base16_encode,
+    bif_base64_decode as bif_gleam_base64_decode, bif_base64_encode as bif_gleam_base64_encode,
+    bif_bit_array_concat as bif_gleam_bit_array_concat,
+    bif_bit_array_pad_to_bytes as bif_gleam_bit_array_pad_to_bytes,
+    bif_bit_array_slice as bif_gleam_bit_array_slice,
+    bif_bit_array_to_int_and_size as bif_gleam_bit_array_to_int_and_size, bif_classify_dynamic,
+    bif_dict, bif_float as bif_gleam_float, bif_float_to_string, bif_index, bif_int,
+    bif_int_from_base_string, bif_parse_float, bif_parse_int, bif_wrap_list,
+};
+use io_bifs::{
+    bif_io_format_3, bif_io_lib_format_2, bif_io_put_chars_1, bif_io_put_chars_2, bif_io_setopts_2,
+};
 use lists_bifs::{
     bif_lists_append_1, bif_lists_append_2, bif_lists_join, bif_lists_map, bif_lists_reverse_2,
     bif_lists_seq,
@@ -50,9 +63,7 @@ use maps_bifs::{
     bif_maps_put, bif_maps_to_list, bif_maps_update_with, bif_maps_values, bif_maps_with,
     bif_maps_without,
 };
-use io_bifs::{
-    bif_io_format_3, bif_io_lib_format_2, bif_io_put_chars_1, bif_io_put_chars_2, bif_io_setopts_2,
-};
+use math_bifs::{bif_ceil, bif_exp, bif_floor, bif_log, bif_pow};
 use string_bifs::{
     bif_equal as bif_string_equal, bif_find as bif_string_find,
     bif_is_empty as bif_string_is_empty, bif_length as bif_string_length,
@@ -116,6 +127,49 @@ const STDLIB_STUBS: &[StubBif] = &[
     ),
     ("sys", "debug_options", 1, bif_debug_options),
     ("gleam_stdlib", "identity", 1, bif_identity),
+    ("gleam_stdlib", "classify_dynamic", 1, bif_classify_dynamic),
+    ("gleam_stdlib", "dict", 1, bif_dict),
+    ("gleam_stdlib", "float", 1, bif_gleam_float),
+    ("gleam_stdlib", "float_to_string", 1, bif_float_to_string),
+    ("gleam_stdlib", "index", 2, bif_index),
+    ("gleam_stdlib", "int", 1, bif_int),
+    (
+        "gleam_stdlib",
+        "int_from_base_string",
+        2,
+        bif_int_from_base_string,
+    ),
+    ("gleam_stdlib", "parse_float", 1, bif_parse_float),
+    ("gleam_stdlib", "parse_int", 1, bif_parse_int),
+    ("gleam_stdlib", "wrap_list", 1, bif_wrap_list),
+    ("gleam_stdlib", "base16_decode", 1, bif_gleam_base16_decode),
+    ("gleam_stdlib", "base16_encode", 1, bif_gleam_base16_encode),
+    ("gleam_stdlib", "base64_decode", 1, bif_gleam_base64_decode),
+    ("gleam_stdlib", "base64_encode", 2, bif_gleam_base64_encode),
+    (
+        "gleam_stdlib",
+        "bit_array_concat",
+        1,
+        bif_gleam_bit_array_concat,
+    ),
+    (
+        "gleam_stdlib",
+        "bit_array_pad_to_bytes",
+        1,
+        bif_gleam_bit_array_pad_to_bytes,
+    ),
+    (
+        "gleam_stdlib",
+        "bit_array_slice",
+        3,
+        bif_gleam_bit_array_slice,
+    ),
+    (
+        "gleam_stdlib",
+        "bit_array_to_int_and_size",
+        1,
+        bif_gleam_bit_array_to_int_and_size,
+    ),
     ("gleam_stdlib", "string_replace", 3, bif_string_replace),
     ("gleam_stdlib", "less_than", 2, bif_less_than),
     ("gleam_stdlib", "slice", 3, bif_slice),
@@ -414,10 +468,13 @@ fn badarg() -> Term {
 #[cfg(test)]
 mod b033_tests;
 #[cfg(test)]
-mod bitwise_bifs_tests;
 mod b038_tests;
 #[cfg(test)]
+mod bitwise_bifs_tests;
+#[cfg(test)]
 mod collection_bifs_tests;
+#[cfg(test)]
+mod gleam_stdlib_ffi2_tests;
 #[cfg(test)]
 mod math_bifs_tests;
 #[cfg(test)]
