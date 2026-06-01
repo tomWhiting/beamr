@@ -277,6 +277,18 @@ impl Scheduler {
     pub fn process_table(&self) -> &ProcessTable {
         &self.shared.process_table
     }
+
+    /// Terminate a process externally, writing an exit tombstone so that
+    /// `run_until_exit` returns with the given reason.
+    ///
+    /// This is the host-side kill mechanism for timeout and cancellation.
+    /// If the process has already exited, this is a no-op.
+    pub fn terminate_process(&self, pid: u64, reason: ExitReason) {
+        if self.shared.exit_tombstones.contains_key(&pid) {
+            return;
+        }
+        cleanup_exited_process(&self.shared, pid, reason);
+    }
     /// Number of scheduler worker threads.
     #[must_use]
     pub fn thread_count(&self) -> usize {
