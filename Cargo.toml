@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/beamr",
-    "crates/beamr-cli",
-]
+members = ["crates/beamr", "crates/beamr-cli"]
 
 [workspace.package]
 license = "Apache-2.0"
-repository = "https://github.com/ablative/beamr"
-authors = ["Ablative <dev@ablative.io>"]
+repository = "https://github.com/tomWhiting/beamr"
+authors = [
+    "Tom Whiting <tom@ablative.com.au>",
+    "Josh Bearup <josh@beardown.com>",
+]
