@@ -3,6 +3,7 @@ name = "beamr-cli"
 version = "0.1.0"
 edition = "2024"
 description = "Thin runner for beamr — load a .beam file and execute it"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
