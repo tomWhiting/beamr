@@ -244,7 +244,7 @@ pub fn decode_literal_chunk(
                 "ETF literal missing version byte".into(),
             ));
         }
-        let literal = decode_external_term(&mut term_cursor, atom_table)?;
+        let literal = decode_external_term(&mut term_cursor, atom_table, 0)?;
         term_cursor.expect_empty("literal ETF")?;
         literals.push(literal);
     }
@@ -252,10 +252,27 @@ pub fn decode_literal_chunk(
     Ok(literals)
 }
 
+/// Hard ceiling on ETF literal nesting depth. Legitimate Gleam/Erlang literals
+/// are shallow; this mirrors the operand decoder's `MAX_OPERAND_NEST_DEPTH` guard
+/// in `compact.rs` and turns an adversarial deeply-nested literal into a clean
+/// `DecodeError` instead of a native stack overflow.
+const MAX_ETF_DEPTH: usize = 256;
+
+/// Cap on the *initial* capacity reserved for an ETF container. A wire-supplied
+/// element count is never trusted as an allocation size; the vector grows on
+/// demand past this cap as genuine elements are decoded.
+const ETF_PREALLOC_CAP: usize = 1024;
+
 fn decode_external_term(
     cursor: &mut Cursor<'_>,
     atom_table: &AtomTable,
+    depth: usize,
 ) -> Result<Literal, LoadError> {
+    if depth > MAX_ETF_DEPTH {
+        return Err(LoadError::DecodeError(
+            "ETF literal nesting exceeds limit".into(),
+        ));
+    }
     let tag = cursor.read_u8()?;
     match tag {
         70 => {
@@ -278,11 +295,11 @@ fn decode_external_term(
         }
         104 => {
             let arity = usize::from(cursor.read_u8()?);
-            decode_tuple(cursor, arity, atom_table)
+            decode_tuple(cursor, arity, atom_table, depth)
         }
         105 => {
             let arity = cursor.read_u32()? as usize;
-            decode_tuple(cursor, arity, atom_table)
+            decode_tuple(cursor, arity, atom_table, depth)
         }
         106 => Ok(Literal::Nil),
         107 => {
@@ -291,11 +308,18 @@ fn decode_external_term(
         }
         108 => {
             let len = cursor.read_u32()? as usize;
-            let mut elements = Vec::with_capacity(len);
-            for _ in 0..len {
-                elements.push(decode_external_term(cursor, atom_table)?);
+            // Every element costs >= 1 byte, so a count past the remaining input is
+            // provably impossible — reject before allocating.
+            if len > cursor.remaining().len() {
+                return Err(LoadError::DecodeError(
+                    "ETF list length exceeds remaining input".into(),
+                ));
             }
-            let tail = decode_external_term(cursor, atom_table)?;
+            let mut elements = Vec::with_capacity(len.min(ETF_PREALLOC_CAP));
+            for _ in 0..len {
+                elements.push(decode_external_term(cursor, atom_table, depth + 1)?);
+            }
+            let tail = decode_external_term(cursor, atom_table, depth + 1)?;
             Ok(Literal::List(elements, Box::new(tail)))
         }
         109 => {
@@ -307,17 +331,24 @@ fn decode_external_term(
             // EXPORT_EXT: fun Module:Function/Arity encoded as
             // tag(113) + Module(atom_ext) + Function(atom_ext) + Arity(small_integer_ext).
             // Decoded as a 3-tuple {Module, Function, Arity}.
-            let module = decode_external_term(cursor, atom_table)?;
-            let function = decode_external_term(cursor, atom_table)?;
-            let arity = decode_external_term(cursor, atom_table)?;
+            let module = decode_external_term(cursor, atom_table, depth + 1)?;
+            let function = decode_external_term(cursor, atom_table, depth + 1)?;
+            let arity = decode_external_term(cursor, atom_table, depth + 1)?;
             Ok(Literal::Tuple(vec![module, function, arity]))
         }
         116 => {
             let len = cursor.read_u32()? as usize;
-            let mut pairs = Vec::with_capacity(len);
+            // Each pair costs >= 2 bytes (key + value), so a count past half the
+            // remaining input is impossible — reject before allocating.
+            if len > cursor.remaining().len() / 2 {
+                return Err(LoadError::DecodeError(
+                    "ETF map size exceeds remaining input".into(),
+                ));
+            }
+            let mut pairs = Vec::with_capacity(len.min(ETF_PREALLOC_CAP));
             for _ in 0..len {
-                let key = decode_external_term(cursor, atom_table)?;
-                let value = decode_external_term(cursor, atom_table)?;
+                let key = decode_external_term(cursor, atom_table, depth + 1)?;
+                let value = decode_external_term(cursor, atom_table, depth + 1)?;
                 pairs.push((key, value));
             }
             Ok(Literal::Map(pairs))
@@ -338,10 +369,18 @@ fn decode_tuple(
     cursor: &mut Cursor<'_>,
     arity: usize,
     atom_table: &AtomTable,
+    depth: usize,
 ) -> Result<Literal, LoadError> {
-    let mut elements = Vec::with_capacity(arity);
+    // Each element costs >= 1 byte; an arity past the remaining input is
+    // impossible (tag 105 reads an untrusted u32 arity) — reject before allocating.
+    if arity > cursor.remaining().len() {
+        return Err(LoadError::DecodeError(
+            "ETF tuple arity exceeds remaining input".into(),
+        ));
+    }
+    let mut elements = Vec::with_capacity(arity.min(ETF_PREALLOC_CAP));
     for _ in 0..arity {
-        elements.push(decode_external_term(cursor, atom_table)?);
+        elements.push(decode_external_term(cursor, atom_table, depth + 1)?);
     }
     Ok(Literal::Tuple(elements))
 }
@@ -499,5 +538,58 @@ mod tests {
         bytes.extend_from_slice(&1.5f64.to_bits().to_be_bytes()[..7]);
 
         assert!(decode_literal_chunk(&bytes, &atom_table).is_err());
+    }
+
+    /// Wrap a single ETF term as a one-entry literal chunk payload.
+    fn literal_chunk_with(term: &[u8]) -> Vec<u8> {
+        let mut payload = vec![131];
+        payload.extend_from_slice(term);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // uncompressed-size header
+        bytes.extend_from_slice(&1u32.to_be_bytes()); // literal count
+        bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    // F1: a deeply nested (well-formed) list must hit the depth ceiling and return
+    // a DecodeError rather than overflow the native stack.
+    #[test]
+    fn decode_literal_chunk_rejects_overdeep_nesting() {
+        let atom_table = AtomTable::with_common_atoms();
+        // Innermost leaf: SMALL_INTEGER_EXT 0.
+        let mut term = vec![97u8, 0];
+        // Wrap in single-element LIST_EXTs past the depth ceiling.
+        for _ in 0..(MAX_ETF_DEPTH + 16) {
+            let mut outer = vec![108u8]; // LIST_EXT
+            outer.extend_from_slice(&1u32.to_be_bytes()); // one element
+            outer.extend_from_slice(&term); // the element
+            outer.push(106); // NIL_EXT tail
+            term = outer;
+        }
+        let bytes = literal_chunk_with(&term);
+        let err = decode_literal_chunk(&bytes, &atom_table)
+            .expect_err("over-deep nesting must be rejected");
+        assert!(
+            matches!(&err, LoadError::DecodeError(m) if m.contains("nesting")),
+            "expected a nesting-limit DecodeError, got {err:?}"
+        );
+    }
+
+    // F2: a list header declaring a count far past the remaining input must be
+    // rejected before any allocation, not drive a multi-GB Vec::with_capacity.
+    #[test]
+    fn decode_literal_chunk_rejects_oversized_list_count() {
+        let atom_table = AtomTable::with_common_atoms();
+        let mut term = vec![108u8]; // LIST_EXT
+        term.extend_from_slice(&u32::MAX.to_be_bytes()); // absurd element count
+        // no element bytes follow
+        let bytes = literal_chunk_with(&term);
+        let err = decode_literal_chunk(&bytes, &atom_table)
+            .expect_err("oversized list count must be rejected");
+        assert!(
+            matches!(&err, LoadError::DecodeError(m) if m.contains("remaining input")),
+            "expected a remaining-input DecodeError, got {err:?}"
+        );
     }
 }
