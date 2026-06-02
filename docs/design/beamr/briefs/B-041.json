@@ -1,0 +1,119 @@
+{
+  "id": "B-041",
+  "status": "approved",
+  "created": "2026-06-02T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Dual-version module registry with purge detection",
+  "depends_on": ["B-032"],
+  "blocked_by": [],
+  "checklist": ["C145", "C146", "C147", "C148", "C149"],
+  "stories": [],
+  "purpose": "The module registry is currently single-version: loading a new version of an existing module silently drops the old one. For hot code loading, the BEAM keeps two versions of each module — the current version (used for new fully-qualified calls) and the old version (still executing in processes that started before the reload). The old version is purged only when no process references it. Without dual-version support, any module reload during workflow execution will corrupt running processes.",
+  "task": "Replace the single-version ModuleRegistry with a dual-version registry that retains both current and old module versions, provides version-aware lookup, and supports safe purge of old code when no processes reference it. Also build a label-to-IP index on Module to replace the linear scan in label_ip.",
+  "boundaries": [
+    "SHALL NOT implement process version pinning (that is B-042)",
+    "SHALL NOT implement import re-resolution (that is B-043)",
+    "SHALL NOT implement the on_load opcode (that is B-045)",
+    "SHALL implement a label-to-IP index on Module to replace the linear scan in label_ip as a prerequisite optimisation for hot code loading performance"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ModuleVersions struct",
+      "spec": "WHEN a module is stored in the registry, THE SYSTEM SHALL wrap it in a ModuleVersions struct that holds both the current and optionally the old module version.",
+      "acceptance": [
+        "ModuleVersions struct with fields: current: Arc<Module>, old: Option<Arc<Module>>",
+        "ModuleRegistry internal storage changes from DashMap<Atom, Arc<Module>> to DashMap<Atom, ModuleVersions>",
+        "All existing registry methods (lookup, lookup_mfa, insert, insert_arc) continue to work, returning the current version by default",
+        "All 620 existing tests pass without modification"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/module.rs"]
+      },
+      "checklist": ["C145"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Version-aware insert with old-version retention",
+      "spec": "WHEN inserting a new module version, THE SYSTEM SHALL promote the existing current to old and install the new version as current. IF an old version already exists, THE SYSTEM SHALL drop the previous old version.",
+      "acceptance": [
+        "insert(module) promotes current to old, inserts new as current",
+        "If an old version already exists when a new version is inserted, the previous old version's Arc is dropped",
+        "lookup(name) always returns the current version",
+        "New method: lookup_old(name) returns the old version if it exists",
+        "New method: module_version_count(name) returns 0 (not loaded), 1 (current only), or 2 (current + old)",
+        "Test: load module A v1, verify lookup returns v1. Load module A v2, verify lookup returns v2, lookup_old returns v1. Load module A v3, verify lookup returns v3, lookup_old returns v2 (v1 dropped)."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/module.rs"]
+      },
+      "checklist": ["C147"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Purge mechanism",
+      "spec": "WHEN purge_old is called for a module, THE SYSTEM SHALL remove the old version if its Arc::strong_count is 1 (only the registry holds it). IF processes still hold references, THE SYSTEM SHALL return PurgeError::StillReferenced.",
+      "acceptance": [
+        "New method: purge_old(name) removes the old version if its strong_count is 1",
+        "PurgeError::StillReferenced { module: Atom, ref_count: usize } returned when processes still hold references",
+        "PurgeError::NoOldVersion { module: Atom } returned when there is no old version to purge",
+        "Test: load v1, load v2 (v1 becomes old). Clone Arc of old version (simulating a process holding it). Attempt purge — fails with StillReferenced. Drop the clone. Purge succeeds.",
+        "After successful purge, lookup_old(name) returns None and module_version_count(name) returns 1",
+        "Purge calls must be serialized (single code-server thread) to avoid TOCTOU race on strong_count"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/module.rs"]
+      },
+      "checklist": ["C145"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Module generation counter",
+      "spec": "WHEN a module is loaded, THE SYSTEM SHALL assign it a monotonically increasing generation counter so that different versions of the same module can be distinguished.",
+      "acceptance": [
+        "Module gains a generation: u64 field",
+        "ModuleRegistry maintains a per-module generation counter; each insert increments it",
+        "Module::generation() accessor returns the generation",
+        "Two Arc<Module> instances for the same module name can be distinguished by generation",
+        "CodePointer gains a generation: u64 field alongside its existing module and label"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/module.rs"]
+      },
+      "checklist": ["C146"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Label-to-IP index",
+      "spec": "WHEN a module is loaded, THE SYSTEM SHALL build a HashMap<u32, usize> mapping label numbers to instruction indices. THE SYSTEM SHALL use this index for all label-to-IP resolution instead of linear scan.",
+      "acceptance": [
+        "Module gains a label_index: HashMap<u32, usize> field, populated during loading",
+        "label_ip(module, label) becomes an O(1) HashMap lookup instead of O(n) linear scan",
+        "Remove the duplicate label_ip implementation in scheduler/mod.rs — use a single implementation, either in core.rs or as a method on Module",
+        "All existing tests pass",
+        "Test: load a module, verify label_index contains correct mappings for all Label instructions in code"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/module.rs",
+          "crates/beamr/src/loader/load.rs",
+          "crates/beamr/src/interpreter/opcodes/core.rs",
+          "crates/beamr/src/scheduler/mod.rs"
+        ]
+      },
+      "checklist": ["C148"],
+      "stories": []
+    }
+  ],
+  "verification": [
+    "cargo test --workspace passes with all 620+ tests",
+    "ModuleRegistry stores and retrieves current and old versions correctly",
+    "Purge succeeds when no references exist and fails when references exist",
+    "label_ip uses HashMap lookup, linear scan implementation removed",
+    "Module generation counters increment correctly across reloads"
+  ]
+}

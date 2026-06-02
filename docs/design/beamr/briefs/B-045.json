@@ -1,0 +1,137 @@
+{
+  "id": "B-045",
+  "status": "approved",
+  "created": "2026-06-02T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Code server API, on_load handler, and hot code loading integration",
+  "depends_on": ["B-041", "B-042", "B-043", "B-044"],
+  "blocked_by": [],
+  "checklist": ["C145", "C146", "C147", "C148", "C150"],
+  "stories": ["S8", "S9"],
+  "purpose": "This brief ties together the dual-version registry (B-041), process pinning (B-042), dynamic imports (B-043), and closure versioning (B-044) into a cohesive hot code loading API. It provides the public-facing interface for loading new module versions at runtime, implements the on_load instruction, and adds the BIFs that code uses to query and manage code loading.",
+  "task": "Implement the full hot code loading lifecycle: load → on_load → commit/rollback → purge. Expose the API through both the Rust scheduler interface (for embedding) and as BIFs (for in-VM use). Add integration tests exercising the full lifecycle with real compiled modules.",
+  "boundaries": [
+    "SHALL implement the full hot code loading lifecycle: load, on_load, commit/rollback, purge",
+    "SHALL expose the API through both the Rust scheduler interface and as BIFs",
+    "SHALL NOT implement code paths or code archives (.ez files) — modules are loaded from raw bytes",
+    "SHALL add integration tests that exercise the full hot-load, execute, purge lifecycle with real compiled modules"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Scheduler hot_load_module API",
+      "spec": "WHEN Scheduler::hot_load_module(bytes) is called, THE SYSTEM SHALL load the module, promote current to old, and install new as current. IF an old version already exists and has not been purged, THE SYSTEM SHALL return LoadError::OldCodeStillRunning.",
+      "acceptance": [
+        "Scheduler::hot_load_module(bytes: &[u8]) returns Result<HotLoadResult, LoadError>",
+        "HotLoadResult struct: { module_name: Atom, generation: u64, had_old_version: bool, on_load_required: bool }",
+        "If the module has never been loaded before, it is simply inserted (no old version)",
+        "If the module was already loaded, current becomes old, new becomes current",
+        "If an old version already exists (two-deep) and purge has not happened, return LoadError::OldCodeStillRunning",
+        "The module's BIF imports are resolved against the current BIF registry",
+        "The module's code imports use the Deferred variant from B-043 for any unresolved dependencies",
+        "Test: hot_load_module with a fresh module, then with a replacement, then attempt a third load without purging"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs",
+          "crates/beamr/src/loader/mod.rs"
+        ]
+      },
+      "checklist": ["C145", "C147"],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R2",
+      "title": "on_load opcode handler",
+      "spec": "WHEN a module with an on_load attribute is hot-loaded, THE SYSTEM SHALL spawn a temporary process to execute the on_load function. IF on_load returns normally, THE SYSTEM SHALL commit the module load. IF on_load fails, THE SYSTEM SHALL roll back and retain the previous version.",
+      "acceptance": [
+        "on_load instruction in the opcode dispatch returns InstructionOutcome::OnLoadComplete (new variant)",
+        "hot_load_module detects an on_load instruction in the new module's code and spawns a temporary process to execute it",
+        "If on_load returns ExitReason::Normal, the module load is committed — new version becomes current",
+        "If on_load fails (any other exit reason), the module load is rolled back — new version is discarded, previous version remains",
+        "HotLoadResult indicates whether on_load was required and whether it succeeded",
+        "Test: load a module with on_load that returns ok. Verify module is installed. Load a module with on_load that crashes. Verify old version is retained."
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs",
+          "crates/beamr/src/scheduler/mod.rs"
+        ]
+      },
+      "checklist": ["C146"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Purge API",
+      "spec": "WHEN Scheduler::purge_module(name) is called, THE SYSTEM SHALL attempt a safe purge. WHEN Scheduler::force_purge_module(name) is called, THE SYSTEM SHALL kill all processes running old code, then purge.",
+      "acceptance": [
+        "Scheduler::purge_module(name) attempts safe purge (fails if processes still reference old code)",
+        "Scheduler::force_purge_module(name) kills all processes running old code, then purges",
+        "PurgeResult struct: { module_name: Atom, processes_killed: usize }",
+        "Force purge iterates the process table, checks each process's current_module and stack frame pinned_modules, terminates any process referencing the old version",
+        "After purge, the old version's Arc<Module> is removed from the registry",
+        "Test: load v1, spawn a process running v1. Load v2. Safe purge fails (process running old code). Force purge succeeds, process is killed, old version is freed."
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs",
+          "crates/beamr/src/module.rs"
+        ]
+      },
+      "checklist": ["C145"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Code management BIFs",
+      "spec": "THE SYSTEM SHALL implement BIFs for in-VM code management matching the subset of erlang module functions relevant to hot code loading.",
+      "acceptance": [
+        "erlang:load_module/2 — load raw bytes as a new module version. Returns {module, Name} on success.",
+        "erlang:purge_module/1 — safe purge of old code. Returns true on success.",
+        "erlang:delete_module/1 — remove a module from the registry entirely. Returns true.",
+        "erlang:check_old_code/1 — returns true if old code exists for the module, false otherwise.",
+        "erlang:check_process_code/2 — returns true if the process is running old code for the given module.",
+        "All BIFs registered in the BIF registry via existing registration pattern",
+        "Test: from BEAM code, call load_module to hot-load a new version, verify check_old_code returns true, purge the old code, verify check_old_code returns false."
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/code_management_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R5",
+      "title": "Integration test — full hot code loading lifecycle",
+      "spec": "THE SYSTEM SHALL include an end-to-end test exercising the complete hot code loading flow: load v1, start processes, hot-load v2, verify running processes continue on v1, new processes use v2, purge old code after processes exit.",
+      "acceptance": [
+        "Integration test in crates/beamr/tests/hot_code_loading.rs",
+        "Test scenario: load counter v1 with version/0 returning 1, spawn P1 calling version/0 (returns 1), hot-load counter v2 with version/0 returning 2, P1 continues seeing v1, spawn P2 calling version/0 (returns 2), check_old_code returns true, after P1 exits purge succeeds, check_old_code returns false",
+        "Test uses real compiled .beam files placed in test fixtures",
+        "Test covers: version transition at external call boundary, closure version binding, stack frame return across versions"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/tests/hot_code_loading.rs",
+          "crates/beamr/tests/fixtures/hot_code/counter_v1.beam",
+          "crates/beamr/tests/fixtures/hot_code/counter_v2.beam",
+          "crates/beamr/tests/fixtures/hot_code/counter_v1.gleam",
+          "crates/beamr/tests/fixtures/hot_code/counter_v2.gleam",
+          "crates/beamr/tests/fixtures/hot_code/closure_test_v1.beam",
+          "crates/beamr/tests/fixtures/hot_code/closure_test_v2.beam"
+        ]
+      },
+      "checklist": ["C145", "C146", "C148"],
+      "stories": ["S8"]
+    }
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests plus new hot_code_loading integration tests",
+    "Full lifecycle: load v1 → spawn process → hot-load v2 → running process stays on v1 → new process uses v2 → purge after exit",
+    "on_load commit/rollback works correctly",
+    "Code management BIFs callable from BEAM code",
+    "Force purge kills processes running old code and frees the old version"
+  ]
+}

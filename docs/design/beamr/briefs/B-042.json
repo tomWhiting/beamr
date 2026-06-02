@@ -1,0 +1,115 @@
+{
+  "id": "B-042",
+  "status": "approved",
+  "created": "2026-06-02T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Process version pinning and safe version transitions",
+  "depends_on": ["B-041"],
+  "blocked_by": [],
+  "checklist": ["C49", "C54", "C63", "C64", "C65", "C66", "C145", "C146"],
+  "stories": [],
+  "purpose": "When a module is hot-loaded, running processes must continue executing the version they started with until they make a fully-qualified external call (BEAM semantics). Currently, the interpreter re-resolves the module from the registry on every instruction cycle, meaning a process that yields mid-function will silently switch to the new version on resume — with an instruction pointer that indexes into the old code layout. This causes undefined behaviour. Process version pinning ensures a process is bound to a specific module version and only transitions at well-defined safe points.",
+  "task": "Pin processes to a specific module version during execution via per-stack-frame Arc<Module> references. Version transitions happen only at fully-qualified external call boundaries (outgoing calls), not at yield/resume points, intra-module calls, or returns.",
+  "boundaries": [
+    "SHALL NOT implement closure version pinning (that is B-044)",
+    "SHALL NOT implement import re-resolution (that is B-043)",
+    "SHALL handle stack frame return addresses alongside code position pinning",
+    "SHALL ensure that intra-module calls (call, call_only, call_last) stay on the pinned version"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Per-stack-frame module version pinning",
+      "spec": "WHEN a stack frame is pushed for a cross-module call, THE SYSTEM SHALL store an Arc<Module> of the caller's module version in the frame so that the process can resume in the correct version on return.",
+      "acceptance": [
+        "StackFrame gains a pinned_module: Arc<Module> field alongside existing return_module: Atom and return_ip: usize",
+        "push_frame takes an additional module: Arc<Module> parameter — the module version the caller is executing",
+        "pop_frame returns a ReturnPoint that includes the Arc<Module> so the interpreter can resume in the correct version",
+        "ReturnPoint gains a module_version: Arc<Module> field",
+        "The Arc keeps the old module version alive even after it is replaced in the registry or purged",
+        "Test: push frames for modules A v1, B v1, C v1. Reload A to v2 and B to v2. Pop C's frame — returns to B v1. Pop B's frame — returns to A v1 (not v2). Both old versions stayed alive via Arc."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/process/stack.rs"]
+      },
+      "checklist": ["C54"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Process current-module pin",
+      "spec": "WHILE a process is executing, THE SYSTEM SHALL track the module version currently being executed via an Arc<Module> field on Process, updated on module transitions and used by the interpreter to avoid per-instruction registry lookups.",
+      "acceptance": [
+        "Process gains a current_module: Option<Arc<Module>> field",
+        "current_module is set at process spawn, at fully-qualified external call entry, and on return from external calls (restored from stack frame)",
+        "current_module is cleared on process exit",
+        "Accessor: Process::current_module() returns Option<&Arc<Module>>",
+        "Mutator: Process::set_current_module(module: Arc<Module>)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/process/mod.rs"]
+      },
+      "checklist": ["C49"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Interpreter uses pinned module",
+      "spec": "WHILE executing instructions, THE SYSTEM SHALL use the process's current_module instead of re-resolving from the registry on every iteration. THE SYSTEM SHALL only perform a registry lookup when the code_position module differs from the pinned module's name.",
+      "acceptance": [
+        "run_loop checks process.current_module() before falling back to registry.lookup()",
+        "If process.current_module() matches the current code_position.module, use the pinned version directly — no registry lookup",
+        "If code_position.module differs from the current module's name, resolve from registry and update the pin",
+        "Intra-module calls (call, call_only, call_last) never trigger a registry re-lookup — they use the pinned version",
+        "Test: load module A v1 with function foo that calls bar internally. Start process running foo. Mid-execution (between foo and bar), load module A v2. Process continues executing v1 for both foo and bar."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/mod.rs"]
+      },
+      "checklist": ["C63"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "External calls trigger version transition — outgoing only",
+      "spec": "WHEN a process makes a fully-qualified external call (call_ext, call_ext_only, call_ext_last), THE SYSTEM SHALL save the current module version in the stack frame, then look up the current version of the target from the registry. WHEN returning from an external call, THE SYSTEM SHALL restore current_module from the stack frame's pinned_module, resuming in the saved version, NOT the current registry version.",
+      "acceptance": [
+        "call_external_target saves the current module version in the stack frame (R1), then looks up the current version of the target from the registry",
+        "The process's current_module is updated to the target module's current version",
+        "On return from an external call, the process restores current_module from the stack frame's pinned_module — resuming in the SAME version it was executing before the call, NOT the current version from the registry",
+        "CRITICAL: R4 must be implemented atomically with R1. Without per-stack-frame Arc, returning to a reloaded module causes silent corruption.",
+        "The classic upgrade pattern works: process calls A:loop/0 (fully-qualified self-call) — picks up the current version. Process calls loop/0 (local call) — stays on current version.",
+        "Test: process in module A v1 calls module B. While in B, module A is reloaded to v2. When B returns, the process resumes in A v1 (not v2). The process then calls A:loop/0 (fully-qualified self-call) — NOW it picks up A v2."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+      },
+      "checklist": ["C64", "C65", "C66"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Scheduler slice entry respects pinning",
+      "spec": "WHEN the scheduler resumes a process for a new time slice, THE SYSTEM SHALL check the process's current_module before performing a registry lookup. IF the process has a pinned module matching code_position.module, THE SYSTEM SHALL pass the pinned module to the interpreter.",
+      "acceptance": [
+        "execute_slice checks process.current_module() before doing a registry lookup",
+        "If the process has a current module matching code_position.module, pass the pinned module to the interpreter",
+        "If no pin exists (fresh process), resolve from registry and set the pin",
+        "A process that yields mid-execution and is re-scheduled continues with its pinned version, not whatever is currently in the registry",
+        "Test: start a process with a large reduction budget. Mid-execution, reload the module. The process continues on the pinned version until it yields and re-enters execute_slice. Verify the IP is still valid for the pinned version."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": ["C145", "C146"],
+      "stories": []
+    }
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests",
+    "Process executing module A v1 continues on v1 after A is reloaded to v2",
+    "Returning from a cross-module call resumes in the saved version, not the current registry version",
+    "Fully-qualified self-call picks up the current version (classic BEAM upgrade pattern)",
+    "Multi-module call stack (A → B → C) preserves per-frame version through returns"
+  ]
+}

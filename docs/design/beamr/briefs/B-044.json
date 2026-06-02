@@ -1,0 +1,119 @@
+{
+  "id": "B-044",
+  "status": "approved",
+  "created": "2026-06-02T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Closure version binding for hot code loading",
+  "depends_on": ["B-041", "B-042"],
+  "blocked_by": [],
+  "checklist": ["C43", "C120", "C121", "C150"],
+  "stories": [],
+  "purpose": "Closures (funs) are heap-allocated objects that capture a module name, a lambda index into the module's lambdas table, free variables, and arity. Under hot code loading, if the module is reloaded with a different lambda table, the closure's function_index becomes stale — it references the wrong lambda or goes out of bounds. Unlike call_ext targets (which can be resolved dynamically by MFA), closures encode a positional index that has no meaning outside its original module version.",
+  "task": "Implement unique fun identifiers for closures so that closures created in one module version can be correctly resolved against a different version of the same module. Update the closure heap layout, GC traversal, and dispatch logic.",
+  "boundaries": [
+    "SHALL NOT change the heap layout of closures unless necessary (adding generation and unique_id fields is acceptable)",
+    "SHALL handle closures created in old module versions that are called after the module is reloaded",
+    "SHALL ensure closures work correctly in the trampoline pattern (higher-order BIFs like lists:map that call closures via re-entry)"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Unique fun identifier",
+      "spec": "WHEN a module is loaded, THE SYSTEM SHALL compute a unique identifier for each lambda entry from a hash of (module_name, function_name, arity, num_free) so that closures can be matched against the correct lambda regardless of table position.",
+      "acceptance": [
+        "LambdaEntry gains a unique_id: u64 field, computed from a hash of (module_name, function_name, arity, num_free) at load time",
+        "Module.lambdas entries include the unique_id",
+        "The unique_id is deterministic for the same source function across recompilations (same function name + arity = same unique_id)",
+        "New method: Module::find_lambda_by_id(unique_id: u64) scans lambdas for matching unique_id",
+        "Test: create two versions of a module with the same functions in different order. Verify find_lambda_by_id returns the correct lambda in both versions.",
+        "Note: if a module has two closures with the same generated name, arity, and num_free (unlikely in Gleam but possible in Erlang), they would collide. This is a documented limitation for the Gleam use case."
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/loader/decode/chunks.rs",
+          "crates/beamr/src/loader/load.rs",
+          "crates/beamr/src/module.rs"
+        ]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Closure heap layout gains generation and unique_id",
+      "spec": "WHEN a closure is created, THE SYSTEM SHALL store the module generation and lambda unique_id in the closure's heap representation so that version mismatches can be detected and resolved at call time.",
+      "acceptance": [
+        "Closure heap layout becomes: [header] [module_atom] [function_index] [arity] [num_free] [generation] [unique_id] [free_var_0] ... [free_var_n]",
+        "write_closure takes additional generation: u64 and unique_id: u64 parameters",
+        "Closure accessor gains: generation() and unique_id() methods",
+        "Header tag or word count updated to accommodate the two extra words",
+        "All existing closure tests updated for new layout",
+        "make_fun2/make_fun3 opcode handlers pass the correct generation (from the currently executing module) and unique_id (from the lambda entry)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/boxed/mod.rs",
+          "crates/beamr/src/term/boxed/accessors.rs",
+          "crates/beamr/src/interpreter/opcodes/closures.rs"
+        ]
+      },
+      "checklist": ["C43"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Version-aware closure dispatch",
+      "spec": "WHEN calling a closure whose generation does not match the current module's generation, THE SYSTEM SHALL resolve the lambda by unique_id instead of by positional index.",
+      "acceptance": [
+        "call_fun checks if closure.generation() matches the target module's generation",
+        "If generations match: use closure.function_index() directly (fast path, O(1))",
+        "If generations differ: use module.find_lambda_by_id(closure.unique_id()) to find the lambda in the current version",
+        "If the lambda is not found in the current version (function was removed): check the registry's old version. If found there, execute against the old version. If not found anywhere, raise badfun error.",
+        "Test: create closure in module A v1. Reload module A to v2 (same functions, different order). Call closure — resolves via unique_id. Reload module A to v3 (function removed). Call closure — raises badfun."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/closures.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Trampoline compatibility",
+      "spec": "WHEN a closure is called via the trampoline pattern (TrampolineRequest::CallClosure), THE SYSTEM SHALL use the same version-aware dispatch as R3.",
+      "acceptance": [
+        "Audit TrampolineRequest::CallClosure handling in trampoline.rs",
+        "Ensure the trampoline passes the closure through the same version-aware dispatch as R3",
+        "Test: create a closure in module A v1. Pass it to lists:map (trampoline path). Mid-map, reload module A to v2. The closure continues executing against the version it was created with (v1 generation + unique_id resolution)."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/trampoline.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "GC traversal updated for new closure layout",
+      "spec": "WHEN the garbage collector traces a closure, THE SYSTEM SHALL use the updated free variable offset that accounts for the new generation and unique_id words.",
+      "acceptance": [
+        "rewrite_copied_object in gc/mod.rs correctly identifies the new free variable start offset for closures",
+        "Generation and unique_id words are copied verbatim (they are not heap pointers, no tracing needed)",
+        "Free variables at the new offset are still correctly traced and rewritten during collection",
+        "Test: create a closure with free variables. Trigger GC. Verify closure is intact with correct generation, unique_id, and free variables after collection."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/gc/mod.rs"]
+      },
+      "checklist": ["C120", "C121"],
+      "stories": []
+    }
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests (closure tests updated for new layout)",
+    "Closures created in module v1 resolve correctly after module is reloaded to v2 with different lambda order",
+    "GC correctly traces closures with the new heap layout",
+    "Trampoline path handles version-aware closure dispatch",
+    "Closure calling a removed function raises badfun"
+  ]
+}

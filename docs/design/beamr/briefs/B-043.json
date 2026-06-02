@@ -1,0 +1,96 @@
+{
+  "id": "B-043",
+  "status": "approved",
+  "created": "2026-06-02T00:00:00Z",
+  "cluster": "beamr",
+  "title": "Dynamic import resolution for cross-module calls",
+  "depends_on": ["B-041"],
+  "blocked_by": [],
+  "checklist": ["C148", "C149", "C150"],
+  "stories": [],
+  "purpose": "Import resolution is currently frozen at module load time: resolve_imports captures the target module's export label as a u32 and stores it in the calling module's resolved_imports table. Under hot code loading, if a target module is reloaded with different export label positions, the cached labels in all calling modules become stale. A call to module_b:foo/0 would jump to whatever code is now at the old label position — a different function, mid-function instruction, or out of bounds.",
+  "task": "Make cross-module call resolution fully dynamic: resolve the function by (module, function, arity) at call time, not by cached label. Also add deferred imports for out-of-order module loading.",
+  "boundaries": [
+    "SHALL NOT change intra-module call resolution (calls within the same module use labels, which are always consistent within a single version)",
+    "SHALL NOT implement on_load (that is B-045)",
+    "SHALL maintain backward compatibility — modules loaded without hot code loading still work identically"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Export lookup method on Module",
+      "spec": "WHEN a cross-module call needs to resolve a function, THE SYSTEM SHALL provide a direct method on Module that resolves a (function, arity) pair to an instruction pointer via the label index from B-041 R5.",
+      "acceptance": [
+        "Module::export_ip(function: Atom, arity: u8) returns Result<usize, ExecError> via exports HashMap + label_index lookup",
+        "Returns ExecError::Undef if the function is not exported",
+        "Returns ExecError::InvalidLabel if the label exists in exports but not in the label index",
+        "Test: load a module with known exports, verify export_ip returns correct IPs"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/module.rs"]
+      },
+      "checklist": ["C148"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Dynamic cross-module call dispatch",
+      "spec": "WHEN call_external_target resolves a ResolvedImportTarget::Code target, THE SYSTEM SHALL resolve the call by (module, function, arity) at call time using the target module's export_ip method, instead of using the cached label from resolved_imports.",
+      "acceptance": [
+        "For Code targets: use the target module's export_ip(function, arity) where function and arity come from the ResolvedImport entry",
+        "The ResolvedImport already stores module, function, arity — these are used for the dynamic lookup",
+        "The cached label field in ResolvedImportTarget::Code is retained for backward compatibility but no longer used for dispatch",
+        "BIF targets (ResolvedImportTarget::Native) are unchanged — they are version-independent",
+        "Test: load module B v1 with foo/0 at label 5. Load module A that imports B:foo/0. Call B:foo/0 from A — works. Reload module B v2 with foo/0 at label 12 (different position). Call B:foo/0 from A again — resolves correctly to the new position via dynamic lookup."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+      },
+      "checklist": ["C148", "C149"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Unresolved import fallback — deferred resolution",
+      "spec": "WHEN a module is loaded and its target dependency is not yet in the registry, THE SYSTEM SHALL mark the import as Deferred with the full MFA. WHEN the deferred import is called at runtime, THE SYSTEM SHALL attempt a full registry lookup and export resolution.",
+      "acceptance": [
+        "Add new variant: ResolvedImportTarget::Deferred { module: Atom, function: Atom, arity: u8 } for imports where the target module was not in the registry at load time",
+        "At call time, call_external_target handles Deferred by doing a full registry lookup + export resolution. If found, the call proceeds normally. If not found, raise undef error.",
+        "UnresolvedImportReport distinguishes between truly unresolvable imports (unknown BIFs) and deferred imports (module not loaded yet)",
+        "Test: load module A that imports B:foo/0, where B is not loaded yet. Import is deferred. Then load module B. Call B:foo/0 from A — succeeds via deferred resolution."
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/module.rs",
+          "crates/beamr/src/loader/load.rs",
+          "crates/beamr/src/interpreter/opcodes/core.rs",
+          "crates/beamr/src/loader/mod.rs"
+        ]
+      },
+      "checklist": ["C149"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Apply instruction dynamic resolution audit",
+      "spec": "WHEN apply or apply_last opcodes resolve a call dynamically from terms on the stack, THE SYSTEM SHALL use full MFA resolution at call time. IF any cached data is used, THE SYSTEM SHALL migrate to dynamic resolution.",
+      "acceptance": [
+        "Audit apply and apply_last in the opcode dispatch — confirm they use registry.lookup_mfa() or equivalent dynamic resolution",
+        "If they use any cached data, migrate to dynamic resolution",
+        "Test: module A calls apply(module_b, foo, []). Reload module B. Next apply call picks up the new version."
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+      },
+      "checklist": ["C148"],
+      "stories": []
+    }
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests",
+    "Cross-module calls resolve by MFA at call time, not by cached label",
+    "Reloading a module with different export labels does not break callers",
+    "Deferred imports resolve at call time when the target module is loaded later",
+    "apply/apply_last use dynamic resolution"
+  ]
+}
