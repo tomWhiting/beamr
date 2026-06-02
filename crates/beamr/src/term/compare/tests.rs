@@ -263,6 +263,19 @@ fn exact_equality_covers_boxed_numeric_reference_fun_map_and_binary_terms() {
 }
 
 #[test]
+fn closure_comparison_includes_generation_and_unique_id_metadata() {
+    let mut closure_a_heap = [0_u64; 7];
+    let mut closure_b_heap = [0_u64; 7];
+    let mut closure_c_heap = [0_u64; 7];
+    let closure_a = write_closure(&mut closure_a_heap, Atom::OK, 1, 0, 1, 10, &[]).unwrap();
+    let closure_b = write_closure(&mut closure_b_heap, Atom::OK, 1, 0, 2, 10, &[]).unwrap();
+    let closure_c = write_closure(&mut closure_c_heap, Atom::OK, 1, 0, 1, 11, &[]).unwrap();
+
+    assert_ne!(cmp(closure_a, closure_b), Ordering::Equal);
+    assert_ne!(cmp(closure_a, closure_c), Ordering::Equal);
+}
+
+#[test]
 fn numeric_ordering_compares_bigints_by_value() {
     let mut positive_small_heap = [0_u64; 4];
     let mut positive_large_heap = [0_u64; 5];

@@ -132,6 +132,21 @@ pub struct Closure {
 impl Closure {
     pub fn new(term: Term) -> Option<Self> {
         let ptr = header_ptr(term, BoxedTag::Closure)?;
+        // SAFETY: `header_ptr` returned a boxed closure header pointer.
+        let header = unsafe { *ptr };
+        let size = BoxedHeader::size(header);
+        if size < 6 {
+            return None;
+        }
+
+        // SAFETY: closure payloads of size at least six contain the num_free
+        // word at offset four. Reject inconsistent sizes before exposing the
+        // accessor so metadata/free-var reads stay within the boxed object.
+        let num_free = unsafe { *ptr.add(4) } as usize;
+        if size != 6 + num_free {
+            return None;
+        }
+
         Some(Self { ptr })
     }
 

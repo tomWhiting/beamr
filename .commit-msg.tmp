@@ -1,1 +1,1 @@
-feat(beamr): bind closures to lambda unique ids
+Harden closure version binding dispatch and metadata handling

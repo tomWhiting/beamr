@@ -127,11 +127,14 @@ pub(crate) fn resolve_closure_target(
     let label = if closure.generation() == current.generation() {
         let function_index = usize::try_from(closure.function_index())
             .map_err(|_| ExecError::InvalidOperand("closure function index"))?;
-        current
+        let lambda = current
             .lambdas
             .get(function_index)
-            .ok_or(ExecError::Badfun { term: fun_term })?
-            .label
+            .ok_or(ExecError::Badfun { term: fun_term })?;
+        if lambda.unique_id != closure.unique_id() {
+            return Err(ExecError::Badfun { term: fun_term });
+        }
+        lambda.label
     } else if let Some(lambda) = current.find_lambda_by_id(closure.unique_id()) {
         lambda.label
     } else {

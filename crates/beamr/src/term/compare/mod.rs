@@ -476,6 +476,14 @@ fn compare_closures_with(
                 Ordering::Equal => {}
                 order => return order,
             }
+            match left.generation().cmp(&right.generation()) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            match left.unique_id().cmp(&right.unique_id()) {
+                Ordering::Equal => {}
+                order => return order,
+            }
             match left.num_free().cmp(&right.num_free()) {
                 Ordering::Equal => {}
                 order => return order,

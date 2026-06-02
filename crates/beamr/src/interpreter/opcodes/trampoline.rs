@@ -61,6 +61,12 @@ pub fn handle_trampoline(
         term: trampoline.fun,
     })?;
     let arity = closure.arity();
+    if trampoline.args.len() != usize::from(arity) {
+        return Err(ExecError::Badarity {
+            fun: trampoline.fun,
+            args: trampoline.args,
+        });
+    }
 
     // Load arguments into x registers.
     for (index, arg) in trampoline.args.iter().enumerate() {
@@ -296,6 +302,33 @@ mod tests {
 
         let timeout = process.receive_timeout().expect("timeout set");
         assert_eq!(timeout.milliseconds, 5000);
+    }
+
+    #[test]
+    fn handle_trampoline_rejects_arity_mismatch() {
+        let module_atom = Atom::OK;
+        let module = module(module_atom, vec![Instruction::Label { label: 10 }]);
+        let mut closure_words = [0_u64; 7];
+        let fun =
+            write_closure(&mut closure_words, module_atom, 0, 2, 1, 0x55, &[]).expect("closure");
+        let mut process = Process::new(1, 32);
+
+        assert_eq!(
+            handle_trampoline(
+                &mut process,
+                &module,
+                None,
+                crate::native::TrampolineRequest {
+                    fun,
+                    args: vec![Term::small_int(42)],
+                    continuation: None,
+                },
+            ),
+            Err(ExecError::Badarity {
+                fun,
+                args: vec![Term::small_int(42)],
+            })
+        );
     }
 
     #[test]
