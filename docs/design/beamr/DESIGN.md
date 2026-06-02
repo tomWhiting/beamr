@@ -255,6 +255,37 @@ concurrently without mutex contention. This is the hot path for message
 passing — every send touches it — and lock-free is the only choice that
 doesn't create a serialisation bottleneck under concurrent sends.
 
+**D12 — Dual-version module registry with Arc-based purge detection.**
+The registry holds at most two versions of each module: current and old.
+Loading a new version promotes current to old and installs the new as
+current. Purge safety is checked via `Arc::strong_count` — if only the
+registry holds a reference to the old version, no process is executing
+it and it can be safely dropped. This uses Rust's reference counting as
+the liveness check instead of building a separate process-scanning
+mechanism. A third version cannot be loaded until the old is purged.
+
+**D13 — Process version pinning at external call boundaries.** A running
+process holds an `Arc<Module>` pinning it to the module version it
+entered. Intra-module calls (call, call_only, call_last) never
+re-resolve from the registry — they use the pinned version. Version
+transitions happen only on outgoing fully-qualified external calls
+(call_ext), where the process picks up the current version of the target
+module. Each stack frame stores its own `Arc<Module>` so that returns
+resume in the saved version, not the current registry version. This
+matches BEAM semantics: the classic upgrade pattern `?MODULE:loop(State)`
+is an outgoing fully-qualified self-call that picks up the new version.
+
+**D14 — Closure version binding via deterministic unique ID.** Closures
+store the module generation and a deterministic `unique_id` (hash of
+module name, function name, arity, num_free) computed at load time. At
+call time, if the closure's generation matches the current module, the
+lambda index is used directly (fast path). If generations differ, the
+closure resolves its lambda by unique_id scan against the current
+version's lambda table. If the function was removed, the old version is
+checked. This changes the closure heap layout (two extra words for
+generation and unique_id), which requires corresponding updates to the
+GC walker and the trampoline dispatch path.
+
 ## Goals
 
 1. Load and execute a `.beam` file produced by `gleam build` — pure
@@ -286,12 +317,13 @@ doesn't create a serialisation bottleneck under concurrent sends.
 7. The reduction-boundary hook fires on every process yield and can
    be used by an external registrant to inspect and intervene.
 
-## Non-Goals
+8. Hot-load a new module version while processes run the old version —
+   new fully-qualified calls use the new version, intra-module calls
+   stay on the pinned version, closures resolve across versions via
+   unique ID, and the old version is purged after the last reference
+   exits.
 
-- **Hot code loading.** Valuable but not needed for the initial runtime.
-  The module registry supports a single version per module. Hot loading
-  (two-version registry, fully-qualified-call version switching, old
-  code purging) is future work.
+## Non-Goals
 
 - **Distribution protocol.** Beamr is single-node. No Erlang distribution,
   no inter-node communication, no epmd. Cross-instance communication
