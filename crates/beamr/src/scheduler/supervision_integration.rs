@@ -246,6 +246,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
         let mut child = super::build_process(super::SpawnRequest {
             pid: child_pid,
             module: entry.module.name,
+            module_version: Arc::clone(&entry.module),
             instruction_pointer: ip,
             args,
         });
@@ -312,6 +313,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
         let mut child = super::build_process(super::SpawnRequest {
             pid: child_pid,
             module: loaded.name,
+            module_version: Arc::clone(&loaded),
             instruction_pointer: ip,
             args: Vec::new(),
         });
