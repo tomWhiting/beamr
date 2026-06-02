@@ -115,6 +115,8 @@ fn make_shared_state() -> Arc<SharedState> {
         hook: crate::hook::Hook::new(),
         timers: Arc::new(std::sync::Mutex::new(crate::timer::TimerWheel::new())),
         output_sink: std::sync::Mutex::new(Arc::new(crate::io::NullSink)),
+        atom_table: Arc::new(crate::atom::AtomTable::new()),
+        bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         idle_parks: AtomicUsize::new(0),
     })
 }

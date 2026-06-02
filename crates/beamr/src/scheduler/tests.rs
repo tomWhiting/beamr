@@ -317,6 +317,8 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         hook: Hook::new(),
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
+        atom_table: Arc::new(crate::atom::AtomTable::new()),
+        bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         idle_parks: AtomicUsize::new(0),
     });
     let mut process = Process::new(1, DEFAULT_HEAP_SIZE);
