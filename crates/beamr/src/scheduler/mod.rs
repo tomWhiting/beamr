@@ -525,6 +525,9 @@ fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64, my_index: 
         return;
     };
     let outcome = execute_slice(shared, &mut process);
+    if shared.exit_tombstones.contains_key(&pid) {
+        return;
+    }
     match outcome {
         SliceOutcome::Requeue(process) => {
             store_runnable_process(shared, process);
@@ -596,6 +599,14 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
     };
     let module = if let Some(current) = process.current_module()
         && current.name == module_atom
+        && current
+            .code
+            .get(
+                process
+                    .code_position()
+                    .map_or(usize::MAX, |pos| pos.instruction_pointer),
+            )
+            .is_some()
     {
         Arc::clone(current)
     } else {
@@ -691,10 +702,16 @@ fn find_on_load_ip(module: &Module) -> Option<usize> {
 }
 
 fn run_on_load(shared: &Arc<SharedState>, module: &Module, ip: usize) -> ExitReason {
+    let Some(entry_ip) = ip
+        .checked_add(1)
+        .filter(|entry_ip| *entry_ip < module.code.len())
+    else {
+        return ExitReason::Error;
+    };
     let mut process = Process::new(u64::MAX, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
         module: module.name,
-        instruction_pointer: ip,
+        instruction_pointer: entry_ip,
     }));
     process.set_current_module(Arc::new(module.clone()));
     loop {

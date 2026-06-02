@@ -1,1 +1,1 @@
-feat(beamr): add hot code loading lifecycle APIs and BIFs
+Harden hot code loading on_load and BIF naming

@@ -101,6 +101,41 @@ fn new_processes_use_new_version_and_purge_after_old_process_exits() {
 }
 
 #[test]
+fn on_load_success_commits_and_failure_rolls_back() {
+    let atoms = Arc::new(AtomTable::with_common_atoms());
+    let module = atoms.intern("hot_on_load");
+    let version = atoms.intern("version");
+    let (scheduler, _registry) = scheduler(Arc::clone(&atoms));
+
+    let loaded = scheduler
+        .hot_load_module(&fixture("on_load_ok.beam"))
+        .expect("successful on_load commits");
+    assert_eq!(loaded.module_name, module);
+    assert!(loaded.on_load_required);
+    assert!(loaded.on_load_succeeded);
+    let p1 = scheduler
+        .spawn(module, version, Vec::new())
+        .expect("spawn committed on_load module");
+    let (reason1, result1) = scheduler.run_until_exit(p1);
+    assert_eq!(reason1, ExitReason::Normal);
+    assert_eq!(result1, Term::small_int(1));
+
+    let failed = scheduler
+        .hot_load_module(&fixture("on_load_crash.beam"))
+        .expect("failed on_load reports rollback result");
+    assert!(failed.on_load_required);
+    assert!(!failed.on_load_succeeded);
+    assert!(!scheduler.check_old_code(module));
+    let p2 = scheduler
+        .spawn(module, version, Vec::new())
+        .expect("spawn retained previous module");
+    let (reason2, result2) = scheduler.run_until_exit(p2);
+    assert_eq!(reason2, ExitReason::Normal);
+    assert_eq!(result2, Term::small_int(1));
+    scheduler.shutdown();
+}
+
+#[test]
 fn closure_fixtures_hot_load_and_versions_are_tracked() {
     let atoms = Arc::new(AtomTable::with_common_atoms());
     let module = atoms.intern("closure_test");

@@ -46,7 +46,7 @@ pub fn register_gate1_bifs(
         registry.register(erlang, function, arity, native_function)?;
     }
 
-    crate::native::code_management::register_code_management_bifs(registry, atom_table)?;
+    crate::native::code_management_bifs::register_code_management_bifs(registry, atom_table)?;
 
     Ok(())
 }

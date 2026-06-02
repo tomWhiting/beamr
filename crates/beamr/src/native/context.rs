@@ -13,7 +13,7 @@ use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofS
 use crate::term::Term;
 use crate::timer::{TimerRef, TimerWheel};
 
-use super::code_management::CodeManagementFacility;
+use super::code_management_bifs::CodeManagementFacility;
 use super::links::LinkFacility;
 use super::registry::RegistryFacility;
 use super::select::SelectFacility;

@@ -6,7 +6,7 @@
 //! BIFs (built-in, ship with the VM) and NIFs (registered by the host)
 //! use the same mechanism but have different ownership (per D6).
 pub mod bifs;
-pub mod code_management;
+pub mod code_management_bifs;
 mod context;
 pub mod gate3_bifs;
 pub mod gleam_ffi;
@@ -29,7 +29,7 @@ use std::fmt;
 use crate::atom::Atom;
 use crate::term::Term;
 
-pub use code_management::CodeManagementFacility;
+pub use code_management_bifs::CodeManagementFacility;
 pub use context::{NativeContinuation, ProcessContext, SuspendRequest, TrampolineRequest};
 pub use links::LinkFacility;
 pub use registry::RegistryFacility;

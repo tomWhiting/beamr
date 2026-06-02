@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::ExecError;
 use crate::io::IoSink;
 use crate::module::{Module, ModuleRegistry};
-use crate::native::code_management::CodeManagementFacility;
+use crate::native::code_management_bifs::CodeManagementFacility;
 use crate::native::links::LinkFacility;
 use crate::native::spawn::SpawnFacility;
 use crate::native::supervision::SupervisionFacility;
