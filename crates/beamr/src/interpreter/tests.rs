@@ -332,6 +332,85 @@ fn call_ext_caller(
 }
 
 #[test]
+fn call_ext_unresolved_target_returns_undef_without_index_drift() {
+    let atoms = AtomTable::new();
+    let caller_atom = atoms.intern("caller");
+    let first_target = atoms.intern("first_target");
+    let second_target = atoms.intern("second_target");
+    let missing_atom = atoms.intern("missing");
+    let foo_atom = atoms.intern("foo");
+    let registry = ModuleRegistry::new();
+    registry.insert(exported_value_module(second_target, foo_atom, 7, 0, 9));
+
+    let mut caller = module(
+        caller_atom,
+        vec![
+            Instruction::CallExt {
+                arity: Operand::Unsigned(0),
+                import: Operand::Unsigned(1),
+            },
+            Instruction::Return,
+        ],
+    );
+    caller.resolved_imports.push(ResolvedImport {
+        module: first_target,
+        function: missing_atom,
+        arity: 0,
+        target: ResolvedImportTarget::Unresolved {
+            module: first_target,
+            function: missing_atom,
+            arity: 0,
+        },
+    });
+    caller.resolved_imports.push(ResolvedImport {
+        module: second_target,
+        function: foo_atom,
+        arity: 0,
+        target: ResolvedImportTarget::Code {
+            module: second_target,
+            label: 7,
+        },
+    });
+    let caller = registry.insert(caller);
+    let mut process = Process::new(1, 32);
+
+    assert_eq!(
+        run_with_registry(&mut process, &caller, &registry),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(9));
+}
+
+#[test]
+fn call_ext_unresolved_target_returns_undef() {
+    let atoms = AtomTable::new();
+    let caller_atom = atoms.intern("caller");
+    let target_atom = atoms.intern("target");
+    let missing_atom = atoms.intern("missing");
+    let registry = ModuleRegistry::new();
+    let caller = registry.insert(call_ext_caller(
+        caller_atom,
+        target_atom,
+        missing_atom,
+        ResolvedImportTarget::Unresolved {
+            module: target_atom,
+            function: missing_atom,
+            arity: 0,
+        },
+    ));
+    let mut process = Process::new(1, 32);
+
+    assert!(matches!(
+        run_with_registry(&mut process, &caller, &registry),
+        Err(ExecError::Undef {
+            module,
+            function,
+            arity: 0,
+        }) if module == target_atom && function == missing_atom
+    ));
+}
+
+#[test]
 fn call_ext_code_target_uses_latest_export_ip_after_reload() {
     let atoms = AtomTable::new();
     let caller_atom = atoms.intern("caller");

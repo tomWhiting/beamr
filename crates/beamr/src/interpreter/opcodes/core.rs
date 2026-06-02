@@ -244,9 +244,10 @@ fn call_external_target(
     }
     match resolved.target {
         ResolvedImportTarget::Code {
-            module: target_module,
+            module: _,
             label: _,
         } => {
+            let target_module = resolved.module;
             let target_mod =
                 ctx.registry
                     .and_then(|r| r.lookup(target_module))
@@ -294,6 +295,15 @@ fn call_external_target(
             };
             jump_position_with_reduction(process, target)
         }
+        ResolvedImportTarget::Unresolved {
+            module,
+            function,
+            arity,
+        } => Err(ExecError::Undef {
+            module,
+            function,
+            arity,
+        }),
         ResolvedImportTarget::Native(entry) => {
             let mut args = Vec::with_capacity(usize::from(arity));
             for register in 0..arity {

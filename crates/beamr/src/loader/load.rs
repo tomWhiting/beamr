@@ -339,7 +339,16 @@ fn resolve_imports(
                     import.function,
                     import.arity,
                 ));
-                resolved.push(None);
+                resolved.push(Some(ResolvedImport {
+                    module: import.module,
+                    function: import.function,
+                    arity: import.arity,
+                    target: ResolvedImportTarget::Unresolved {
+                        module: import.module,
+                        function: import.function,
+                        arity: import.arity,
+                    },
+                }));
             }
         }
     }
@@ -579,7 +588,14 @@ mod tests {
 
         let (resolved, report) = super::resolve_imports(&parsed, &registry, &EmptyBifs);
 
-        assert!(resolved.first().and_then(|entry| entry.as_ref()).is_none());
+        assert!(matches!(
+            resolved
+                .first()
+                .and_then(|entry| entry.as_ref())
+                .map(|entry| entry.target),
+            Some(ResolvedImportTarget::Unresolved { module, function: unresolved_function, arity: 0 })
+                if module == callee && unresolved_function == function
+        ));
         assert_eq!(
             report.imports(),
             vec![UnresolvedImportEntry::new(callee, function, 0)]

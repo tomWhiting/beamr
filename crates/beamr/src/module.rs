@@ -39,6 +39,18 @@ pub enum ResolvedImportTarget {
         /// Target arity.
         arity: u8,
     },
+    /// An import whose module was loaded but did not export the requested MFA.
+    ///
+    /// Keeping a placeholder preserves BEAM import-table indexing so later
+    /// imports remain reachable even when an earlier import is unresolved.
+    Unresolved {
+        /// Target module atom.
+        module: Atom,
+        /// Target function atom.
+        function: Atom,
+        /// Target arity.
+        arity: u8,
+    },
 }
 
 /// One import table entry and the callable target it resolved to.
