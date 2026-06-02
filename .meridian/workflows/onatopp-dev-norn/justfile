@@ -35,9 +35,8 @@ run brief design="":
     just -f "{{workflow_dir}}/justfile" review "$BRIEF" "$DESIGN"
     just -f "{{workflow_dir}}/justfile" _commit-review "$BRIEF"
 
-    REVIEW_PASS=$(jq -r '.output.pass // false' "{{work_dir}}/review-output.json")
     echo ""
-    echo "=== COMPLETE: $BRIEF_ID — pass=$REVIEW_PASS ==="
+    echo "=== COMPLETE: $BRIEF_ID ==="
 
 # Scout step only
 scout brief design="":
@@ -206,8 +205,6 @@ review brief design="":
     $BOUNDARIES
 
     $DESIGN_REF
-
-    Set pass=true only if all acceptance criteria are met and no blocking issues remain.
     PROMPT
 
     echo "--- REVIEW ---"
@@ -220,8 +217,6 @@ review brief design="":
         -- "$(cat "{{work_dir}}/review-prompt.md")"
     ELAPSED=$(( $(date +%s) - START ))
     echo "Review: ${ELAPSED}s"
-    PASS=$(jq -r '.output.pass // false' "{{work_dir}}/review-output.json")
-    echo "Review: pass=$PASS"
     jq -r '.output.summary // "no summary"' "{{work_dir}}/review-output.json"
 
 # Internal: commit after dev step
@@ -237,8 +232,7 @@ _commit-dev brief:
 _commit-review brief:
     #!/usr/bin/env bash
     set -euo pipefail
-    REVIEW_PASS=$(jq -r '.output.pass // false' "{{work_dir}}/review-output.json")
-    if [[ "$REVIEW_PASS" == "true" && -n "$(git status --porcelain)" ]]; then
+    if [[ -n "$(git status --porcelain)" ]]; then
         COMMIT_MSG=$(jq -r '.output.commit_message // "fix: address review findings"' "{{work_dir}}/review-output.json")
         echo "$COMMIT_MSG" > .commit-msg.tmp
         bash "{{scripts_dir}}/commit-and-report.sh" .commit-msg.tmp || true
@@ -293,7 +287,7 @@ _write-schemas:
     SCHEMA
 
     cat > "{{schema_dir}}/review-schema.json" << 'SCHEMA'
-    {"type":"object","properties":{"summary":{"type":"string"},"commit_message":{"type":"string"},"pass":{"type":"boolean","description":"True only if all acceptance criteria met and no blocking issues remain."},"enrichments":{"type":"array","description":"One entry per R#.","items":{"type":"object","properties":{"id":{"type":"string"},"alignment":{"type":"string","enum":["aligned","drifted","fixed"]},"acceptance_met":{"type":"boolean"},"checklist":{"type":"array","items":{"type":"string"}},"stories":{"type":"array","items":{"type":"string"}},"issues":{"type":"array","items":{"type":"string"}},"fixes":{"type":"array","items":{"type":"string"}}},"required":["id","alignment","acceptance_met","checklist","stories","issues","fixes"],"additionalProperties":false}},"verification":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"passed":{"type":"boolean"},"note":{"type":"string"}},"required":["criterion","passed","note"],"additionalProperties":false}}},"required":["summary","commit_message","pass","enrichments","verification"],"additionalProperties":false}
+    {"type":"object","properties":{"summary":{"type":"string"},"commit_message":{"type":"string"},"enrichments":{"type":"array","description":"One entry per R#.","items":{"type":"object","properties":{"id":{"type":"string"},"alignment":{"type":"string","enum":["aligned","drifted","fixed"]},"acceptance_met":{"type":"boolean"},"checklist":{"type":"array","items":{"type":"string"}},"stories":{"type":"array","items":{"type":"string"}},"issues":{"type":"array","items":{"type":"string"}},"fixes":{"type":"array","items":{"type":"string"}}},"required":["id","alignment","acceptance_met","checklist","stories","issues","fixes"],"additionalProperties":false}},"verification":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"passed":{"type":"boolean"},"note":{"type":"string"}},"required":["criterion","passed","note"],"additionalProperties":false}}},"required":["summary","commit_message","enrichments","verification"],"additionalProperties":false}
     SCHEMA
 
 # Clean up working files

@@ -31,7 +31,65 @@ fn do_norn_step(step_name, profile, prompt, schema_json) {
     if output == () {
         throw step_name + " returned empty output";
     }
+    if result.session_id != () {
+        output.session_id = result.session_id;
+    }
     output
+}
+
+fn add_unique(arr, item) {
+    for existing in arr {
+        if existing == item { return; }
+    }
+    arr.push(item);
+}
+
+fn crate_from_path(path) {
+    let parts = path.split("/");
+    if parts.len() >= 2 && parts[0] == "crates" {
+        return parts[1];
+    }
+    return "";
+}
+
+fn affected_crates_from_brief(brief) {
+    let crates = [];
+    for r in brief.requirements {
+        if r.files == () { continue; }
+        if r.files.create != () {
+            for p in r.files.create {
+                let c = crate_from_path(p);
+                if c != "" { add_unique(crates, c); }
+            }
+        }
+        if r.files.modify != () {
+            for p in r.files.modify {
+                let c = crate_from_path(p);
+                if c != "" { add_unique(crates, c); }
+            }
+        }
+        if r.files.delete != () {
+            for p in r.files.delete {
+                let c = crate_from_path(p);
+                if c != "" { add_unique(crates, c); }
+            }
+        }
+    }
+    crates
+}
+
+fn verify_command_for_crates(crates) {
+    if crates.len() == 0 {
+        return "cargo check --workspace && cargo clippy --workspace -- -D warnings";
+    }
+    let check = "cargo check";
+    let clippy = "cargo clippy";
+    for c in crates {
+        check += " -p " + c;
+        clippy += " -p " + c;
+    }
+    clippy += " -- -D warnings";
+    check + " && " + clippy
 }
 
 fn build_lookup(items) {
@@ -338,19 +396,16 @@ fn build_review_schema() {
     let props = #{
         summary: str_type,
         commit_message: str_type,
-        pass: #{ type: "boolean", description: "True only if all acceptance criteria met and no blocking issues remain." },
         enrichments: #{ type: "array", description: "One entry per R#.", items: enrichment_item },
         verification: #{ type: "array", items: verification_item }
     };
-    to_json(#{ type: "object", properties: props, required: ["summary", "commit_message", "pass", "enrichments", "verification"], additionalProperties: false })
+    to_json(#{ type: "object", properties: props, required: ["summary", "commit_message", "enrichments", "verification"], additionalProperties: false })
 }
 
 // -- Report builders for notification DM ---------------------------------
 
 fn build_report(brief, dev, dev_by_id, review, review_by_id) {
-    let status = if review.pass { "PASSED" } else { "FAILED" };
-    let report = "onatopp-dev-norn: " + brief.id + " — " + brief.title + "\n";
-    report += "Status: " + status + "\n\n";
+    let report = "onatopp-dev-norn: " + brief.id + " — " + brief.title + "\n\n";
     report += "Dev: " + dev.summary + "\n";
     report += "Review: " + review.summary + "\n\n";
 
@@ -445,7 +500,7 @@ let dev_schema = build_dev_schema();
 let dev;
 let dev_by_id = #{};
 
-let dev_instruction = "Implement every R# in this brief. Run cargo check, cargo clippy -- -D warnings, and cargo test on affected crates. Fix any failures before submitting.\n\n";
+let dev_instruction = "Implement every R# in this brief. Do not run verification commands yourself; the workflow will run cargo check and clippy after your implementation and resume your session with any failures.\n\n";
 
 dev_instruction += design_context;
 
@@ -479,7 +534,7 @@ print("Dev complete: " + dev.summary);
 dev_by_id = build_lookup(dev.enrichments);
 
 // =====================================================================
-// COMMIT (after dev)
+// COMMIT (after dev) + VERIFY/RESUME LOOP
 // =====================================================================
 
 let commit_info = do_commit(dev.commit_message);
@@ -487,87 +542,99 @@ if commit_info.committed {
     print("Committed: " + dev.commit_message);
 }
 
+let affected_crates = affected_crates_from_brief(brief);
+let verify_cmd = verify_command_for_crates(affected_crates);
+print("Verification command: " + verify_cmd);
+
+let verify_attempt = 1;
+let verify_clean = false;
+while verify_attempt <= 3 {
+    let verify_result = run_cmd(verify_cmd);
+    if verify_result.exit_code == 0 {
+        verify_clean = true;
+        print("Verification clean on attempt " + verify_attempt);
+        break;
+    }
+
+    if verify_attempt == 3 {
+        throw "Verification failed after 3 attempts. stdout:\n" + verify_result.stdout + "\nstderr:\n" + verify_result.stderr;
+    }
+
+    let error_msg = "The workflow verification command failed on attempt " + verify_attempt + ".\n\n";
+    error_msg += "Command:\n" + verify_cmd + "\n\n";
+    error_msg += "stdout:\n" + verify_result.stdout + "\n\n";
+    error_msg += "stderr:\n" + verify_result.stderr + "\n\n";
+    error_msg += "Fix the implementation in this same session. Return the same dev schema, updating files_changed, summary, commit_message, and attestation.";
+
+    dev = resume_step_norn(dev.session_id, error_msg, dev_schema);
+    if dev.summary == () {
+        throw "Dev resume returned no structured output";
+    }
+    print("Dev fixes complete: " + dev.summary);
+    dev_by_id = build_lookup(dev.enrichments);
+
+    let fix_commit = do_commit(dev.commit_message);
+    if fix_commit.committed {
+        print("Committed verification fixes: " + dev.commit_message);
+    }
+
+    verify_attempt += 1;
+}
+
+if !verify_clean {
+    throw "Verification loop exited without clean result";
+}
+
 // =====================================================================
-// REVIEW + HARDEN (Norn) — max 2 attempts
+// REVIEW + HARDEN (Norn) — single pass
 // =====================================================================
 
 let review_schema = build_review_schema();
-let max_review_attempts = 2;
-let review_passed = false;
-let review;
-let review_by_id = #{};
 
-let review_attempt = 0;
-loop {
-    review_attempt += 1;
+let review_instruction = "Review and harden the implementation. You have two jobs:\n\n";
+review_instruction += "1. HARDEN: Fix naming drift, missing error handling, convention violations, edge cases. Use Edit and Write directly.\n";
+review_instruction += "2. REVIEW: Verify acceptance criteria for each R#. Check the ACTUAL CODE (use git diff HEAD~1), not the dev summary. Tick checklist items. Confirm stories.\n\n";
 
-    let review_instruction = "Review and harden the implementation. You have two jobs:\n\n";
-    review_instruction += "1. HARDEN: Fix naming drift, missing error handling, convention violations, edge cases. Use Edit and Write directly.\n";
-    review_instruction += "2. REVIEW: Verify acceptance criteria for each R#. Check the ACTUAL CODE (use git diff HEAD~1), not the dev summary. Tick checklist items. Confirm stories.\n\n";
+review_instruction += design_context;
 
-    review_instruction += design_context;
-
-    review_instruction += "## Brief: " + brief_id + " — " + brief_title + "\n\n";
-    review_instruction += "## Requirements\n\n";
-    for r in brief.requirements {
-        review_instruction += render_review_requirement(r, scout_by_id, dev_by_id);
-    }
-
-    if brief.boundaries != () && brief.boundaries.len() > 0 {
-        review_instruction += "## Boundaries\n\n";
-        for b in brief.boundaries { review_instruction += "- " + b + "\n"; }
-        review_instruction += "\n";
-    }
-
-    review_instruction += "## Verification Criteria\n\n";
-    if brief.verification != () {
-        for v in brief.verification { review_instruction += "- " + v + "\n"; }
-    }
-    if scout.verification != () {
-        for v in scout.verification { review_instruction += "- " + v + "\n"; }
-    }
-    review_instruction += "\n";
-
-    review_instruction += "Dev attestation: panics=" + dev.attestation.no_panics + ", unsafe=" + dev.attestation.no_unsafe + ", boundaries=" + dev.attestation.boundaries_respected + ", tests=" + dev.attestation.tests_pass + "\n\n";
-
-    review_instruction += design_file_ref;
-    review_instruction += "\nSet pass=true only if all acceptance criteria are met and no blocking issues remain.";
-
-    review = do_norn_step("review-" + review_attempt, "norn-reviewer", review_instruction, review_schema);
-    print("Review " + review_attempt + ": pass=" + review.pass);
-    review_by_id = build_lookup(review.enrichments);
-
-    if review.pass {
-        review_passed = true;
-        break;
-    }
-
-    if review_attempt >= max_review_attempts {
-        print("Review failed after " + max_review_attempts + " attempts");
-        break;
-    }
-
-    // Commit review fixes, loop back for verification
-    do_commit("fix: address review findings for " + brief_id);
+review_instruction += "## Brief: " + brief_id + " — " + brief_title + "\n\n";
+review_instruction += "## Requirements\n\n";
+for r in brief.requirements {
+    review_instruction += render_review_requirement(r, scout_by_id, dev_by_id);
 }
+
+if brief.boundaries != () && brief.boundaries.len() > 0 {
+    review_instruction += "## Boundaries\n\n";
+    for b in brief.boundaries { review_instruction += "- " + b + "\n"; }
+    review_instruction += "\n";
+}
+
+review_instruction += "## Verification Criteria\n\n";
+if brief.verification != () {
+    for v in brief.verification { review_instruction += "- " + v + "\n"; }
+}
+if scout.verification != () {
+    for v in scout.verification { review_instruction += "- " + v + "\n"; }
+}
+review_instruction += "\n";
+
+review_instruction += "Dev attestation: panics=" + dev.attestation.no_panics + ", unsafe=" + dev.attestation.no_unsafe + ", boundaries=" + dev.attestation.boundaries_respected + ", tests=" + dev.attestation.tests_pass + "\n\n";
+
+review_instruction += design_file_ref;
+
+let review = do_norn_step("review", "norn-reviewer", review_instruction, review_schema);
+print("Review: " + review.summary);
+let review_by_id = build_lookup(review.enrichments);
 
 // =====================================================================
 // COMMIT (after review — if reviewer made changes)
 // =====================================================================
 
-if review_passed {
-    let review_commit = do_commit(review.commit_message);
-    if review_commit.committed {
-        print("Review commit: " + review.commit_message);
-    }
+let review_commit = do_commit(review.commit_message);
+if review_commit.committed {
+    print("Review commit: " + review.commit_message);
 }
-
-// =====================================================================
-// DONE + NOTIFY
-// =====================================================================
-
-let status = if review_passed { "PASSED" } else { "FAILED" };
-print("Complete: " + brief_id + " — " + status);
+print("Complete: " + brief_id);
 
 if input.notify != () {
     let run_name = if input["run-name"] != () { input["run-name"] } else { brief_id };

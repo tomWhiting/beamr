@@ -76,7 +76,7 @@ if [[ -n "$DESIGN" && -f "$DESIGN" ]]; then
     fi
     DESIGN_CONTEXT+=$(jq -r '
         if .constraints and (.constraints | length) > 0 then
-            "**Constraints:**\n" + ([.constraints[] | "- \(.id): \(.description)"] | join("\n")) + "\n\n"
+            "**Constraints:**\n" + ([.constraints[] | "- \(.id): \(.text // .description // "")"] | join("\n")) + "\n\n"
         else "" end
     ' "$DESIGN")
     DESIGN_CONTEXT+=$(jq -r '
@@ -196,7 +196,6 @@ cat > "$OUTDIR/review-schema.json" << 'SCHEMA'
     "properties": {
         "summary": {"type": "string"},
         "commit_message": {"type": "string"},
-        "pass": {"type": "boolean", "description": "True only if all acceptance criteria met and no blocking issues remain."},
         "enrichments": {"type": "array", "description": "One entry per R#.", "items": {
             "type": "object",
             "properties": {
@@ -217,7 +216,7 @@ cat > "$OUTDIR/review-schema.json" << 'SCHEMA'
             "required": ["criterion", "passed", "note"], "additionalProperties": false
         }}
     },
-    "required": ["summary", "commit_message", "pass", "enrichments", "verification"],
+    "required": ["summary", "commit_message", "enrichments", "verification"],
     "additionalProperties": false
 }
 SCHEMA
@@ -236,8 +235,6 @@ For each R#, find:
 - Any gotchas or edge cases the brief might not have considered
 
 The implementing agent has the same tools you do — focus on saving them time, not cataloguing every file. Be concise.
-
-$(echo -e "$DESIGN_CONTEXT")
 
 ## Brief: $BRIEF_ID — $BRIEF_TITLE
 
@@ -280,8 +277,6 @@ SCOUT_VERIFICATION=$(jq -r '.output.verification // []' "$OUTDIR/scout-output.js
 cat > "$OUTDIR/dev-prompt.md" << PROMPT
 Implement every R# in this brief. Run cargo check, cargo clippy -- -D warnings, and cargo test on affected crates. Fix any failures before submitting.
 
-$(echo -e "$DESIGN_CONTEXT")
-
 ## Brief: $BRIEF_ID — $BRIEF_TITLE
 
 $BRIEF_TASK
@@ -299,8 +294,6 @@ $(echo "$SCOUT_ENRICHMENTS" | jq -r '.[] | "### \(.id)\nFiles: \(.files | join("
 $(echo "$SCOUT_VERIFICATION" | jq -r '.[] | "- \(.)"')
 
 $BOUNDARIES
-
-$DESIGN_FILE_REF
 
 For each R#, report: status, files changed, how satisfied, any deviation. For each C# and S# assigned to the R#, report whether delivered. Attest: no panics/unwraps in library code, no unsafe, boundaries respected, tests pass.
 PROMPT
@@ -341,8 +334,6 @@ Review and harden the implementation. You have two jobs:
 1. HARDEN: Fix naming drift, missing error handling, convention violations, edge cases. Use Edit and Write directly.
 2. REVIEW: Verify acceptance criteria for each R#. Check the ACTUAL CODE (use git diff HEAD~1), not the dev summary. Tick checklist items. Confirm stories.
 
-$(echo -e "$DESIGN_CONTEXT")
-
 ## Brief: $BRIEF_ID — $BRIEF_TITLE
 
 ## Requirements
@@ -359,49 +350,30 @@ $(echo "$SCOUT_VERIFICATION" | jq -r '.[] | "- \(.)"')
 
 Dev attestation: $DEV_ATTESTATION
 
-$DESIGN_FILE_REF
-
-Set pass=true only if all acceptance criteria are met and no blocking issues remain.
 PROMPT
 
-# Review loop — max 2 attempts (same as workflow.rhai max_review_attempts=2)
-MAX_REVIEW_ATTEMPTS=2
-REVIEW_ATTEMPT=0
-REVIEW_PASS="false"
-REVIEW_ELAPSED=0
+echo ""
+echo "--- REVIEW ---"
+REVIEW_START=$(date +%s)
+norn -p --no-session \
+    --profile norn-reviewer \
+    -s "$OUTDIR/review-schema.json" \
+    -f json \
+    -o "$OUTDIR/review-output.json" \
+    -- "$(cat "$OUTDIR/review-prompt.md")"
+REVIEW_END=$(date +%s)
+REVIEW_ELAPSED=$((REVIEW_END - REVIEW_START))
+echo "Review: ${REVIEW_ELAPSED}s"
 
-while [[ "$REVIEW_ATTEMPT" -lt "$MAX_REVIEW_ATTEMPTS" && "$REVIEW_PASS" != "true" ]]; do
-    REVIEW_ATTEMPT=$((REVIEW_ATTEMPT + 1))
+REVIEW_SUMMARY=$(jq -r '.output.summary // "no summary"' "$OUTDIR/review-output.json")
+echo "Review: $REVIEW_SUMMARY"
 
-    echo ""
-    echo "--- REVIEW (attempt $REVIEW_ATTEMPT) ---"
-    REVIEW_START=$(date +%s)
-    norn -p --no-session \
-        --profile norn-reviewer \
-        -s "$OUTDIR/review-schema.json" \
-        -f json \
-        -o "$OUTDIR/review-output-${REVIEW_ATTEMPT}.json" \
-        -- "$(cat "$OUTDIR/review-prompt.md")"
-    REVIEW_END=$(date +%s)
-    STEP_ELAPSED=$((REVIEW_END - REVIEW_START))
-    REVIEW_ELAPSED=$((REVIEW_ELAPSED + STEP_ELAPSED))
-    echo "Review attempt $REVIEW_ATTEMPT: ${STEP_ELAPSED}s"
-
-    REVIEW_PASS=$(jq -r '.output.pass // false' "$OUTDIR/review-output-${REVIEW_ATTEMPT}.json")
-    REVIEW_SUMMARY=$(jq -r '.output.summary // "no summary"' "$OUTDIR/review-output-${REVIEW_ATTEMPT}.json")
-    echo "Review $REVIEW_ATTEMPT: pass=$REVIEW_PASS — $REVIEW_SUMMARY"
-
-    # Commit review fixes
-    if [[ -n "$(git status --porcelain)" ]]; then
-        REVIEW_COMMIT_MSG=$(jq -r '.output.commit_message // "fix: address review findings"' "$OUTDIR/review-output-${REVIEW_ATTEMPT}.json")
-        git add -A && git commit -m "$REVIEW_COMMIT_MSG"
-        echo "Review committed: $REVIEW_COMMIT_MSG"
-    fi
-
-    if [[ "$REVIEW_PASS" == "true" ]]; then
-        break
-    fi
-done
+# Commit review fixes
+if [[ -n "$(git status --porcelain)" ]]; then
+    REVIEW_COMMIT_MSG=$(jq -r '.output.commit_message // "fix: address review findings"' "$OUTDIR/review-output.json")
+    git add -A && git commit -m "$REVIEW_COMMIT_MSG"
+    echo "Review committed: $REVIEW_COMMIT_MSG"
+fi
 
 # =====================================================================
 # SUMMARY
@@ -414,7 +386,6 @@ echo "Scout:  ${SCOUT_ELAPSED}s"
 echo "Dev:    ${DEV_ELAPSED}s"
 echo "Review: ${REVIEW_ELAPSED}s"
 echo "Total:  ${TOTAL}s"
-echo "Pass:   $REVIEW_PASS"
 echo "Branch: $WT_BRANCH"
 echo "Worktree: $WT_DIR"
 echo ""
@@ -425,7 +396,6 @@ echo "To clean:   cargo clean --manifest-path $WT_DIR/Cargo.toml && git worktree
 if [[ -n "$NOTIFY" ]]; then
     REPORT="Benchmark complete: $BRIEF_ID — $BRIEF_TITLE
 Scout: ${SCOUT_ELAPSED}s | Dev: ${DEV_ELAPSED}s | Review: ${REVIEW_ELAPSED}s | Total: ${TOTAL}s
-Pass: $REVIEW_PASS
 Branch: $WT_BRANCH
 Worktree: $WT_DIR"
     collective send --as Meridian --to "$NOTIFY" --subject "benchmark complete: $BRIEF_ID" --message "$REPORT" 2>/dev/null || true

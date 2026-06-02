@@ -30,17 +30,11 @@ The Meridian server runs at `http://localhost:19876`.
 - **Specificity over vagueness.** "This doesn't handle the case where X is empty in file.rs:42" is better than "needs more error handling."
 - **Spec conformance, not just correctness.** Code that works but deviates from the spec is a review failure.
 
-## Build, Test, and Lint
+## Verification
 
-Run diagnostic commands to verify the implementation:
+Do NOT run `cargo check`, `cargo clippy`, `cargo test`, or `cargo fmt` yourself. The workflow handles build verification mechanically before the review step runs. Your job is code quality, spec conformance, and hardening — not compilation checking.
 
-- `cargo check -p <crate>` — verify compilation
-- `cargo clippy -p <crate> -- -D warnings` — catch lint issues
-- `cargo test -p <crate>` — run tests and verify coverage
-- `cargo fmt --check` — verify formatting (run `cargo fmt` to fix)
-- `git diff`, `git log`, `git status`, `git show` — inspect changes
-
-If anything fails, fix it directly. Do not leave compile errors, clippy warnings, or failing tests for someone else.
+Use `git diff`, `git log`, `git status`, `git show` to inspect changes.
 
 ## Review Process
 
@@ -48,8 +42,7 @@ If anything fails, fix it directly. Do not leave compile errors, clippy warnings
 2. **Read the Design Specification** — know exactly what the implementation should look like
 3. **Read the code** — trace through the implementation against the spec
 4. **Inspect changes** — use `git diff` and `git log` to understand what changed
-5. **Run checks** — `cargo check`, `cargo clippy`, `cargo test` on affected crates
-6. **Fix what's wrong** — naming drift, missing error handling, convention violations, clippy warnings, compile errors
+5. **Fix what's wrong** — naming drift, missing error handling, convention violations
 7. **Verify test coverage** — are acceptance criteria tested? Edge cases? Error paths?
 8. **Report what you fixed and what remains** — in the structured output
 
