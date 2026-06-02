@@ -30,6 +30,27 @@ pub enum ResolvedImportTarget {
     },
     /// A Rust native function registered as a BIF.
     Native(NativeEntry),
+    /// A BEAM function whose module was not loaded when this module was loaded.
+    Deferred {
+        /// Target module atom.
+        module: Atom,
+        /// Target function atom.
+        function: Atom,
+        /// Target arity.
+        arity: u8,
+    },
+    /// An import whose module was loaded but did not export the requested MFA.
+    ///
+    /// Keeping a placeholder preserves BEAM import-table indexing so later
+    /// imports remain reachable even when an earlier import is unresolved.
+    Unresolved {
+        /// Target module atom.
+        module: Atom,
+        /// Target function atom.
+        function: Atom,
+        /// Target arity.
+        arity: u8,
+    },
 }
 
 /// One import table entry and the callable target it resolved to.
@@ -83,6 +104,21 @@ impl Module {
             .get(&label)
             .copied()
             .ok_or(ExecError::InvalidLabel { label })
+    }
+
+    /// Resolves an exported function to its instruction index.
+    pub fn export_ip(&self, function: Atom, arity: u8) -> Result<usize, ExecError> {
+        let label = self
+            .exports
+            .get(&(function, arity))
+            .copied()
+            .ok_or(ExecError::Undef {
+                module: self.name,
+                function,
+                arity,
+            })?;
+
+        self.label_ip(label)
     }
 }
 
@@ -458,6 +494,53 @@ mod tests {
         assert_eq!(
             module.label_ip(30),
             Err(ExecError::InvalidLabel { label: 30 })
+        );
+    }
+
+    #[test]
+    fn module_resolves_exports_to_instruction_indices() {
+        let atoms = AtomTable::new();
+        let function = atoms.intern("main");
+        let mut module = empty_module(atoms.intern("sample"));
+        module.code = vec![
+            crate::loader::Instruction::Return,
+            crate::loader::Instruction::Label { label: 10 },
+            crate::loader::Instruction::Return,
+            crate::loader::Instruction::Label { label: 20 },
+        ];
+        module.label_index = label_index(&module.code);
+        module.exports.insert((function, 0), 20);
+
+        assert_eq!(module.export_ip(function, 0), Ok(3));
+    }
+
+    #[test]
+    fn module_reports_undef_for_missing_export() {
+        let atoms = AtomTable::new();
+        let module_name = atoms.intern("sample");
+        let function = atoms.intern("missing");
+        let module = empty_module(module_name);
+
+        assert!(matches!(
+            module.export_ip(function, 0),
+            Err(ExecError::Undef {
+                module,
+                function: undef_function,
+                arity: 0,
+            }) if module == module_name && undef_function == function
+        ));
+    }
+
+    #[test]
+    fn module_reports_invalid_label_for_export_missing_from_index() {
+        let atoms = AtomTable::new();
+        let function = atoms.intern("main");
+        let mut module = empty_module(atoms.intern("sample"));
+        module.exports.insert((function, 0), 99);
+
+        assert_eq!(
+            module.export_ip(function, 0),
+            Err(ExecError::InvalidLabel { label: 99 })
         );
     }
 

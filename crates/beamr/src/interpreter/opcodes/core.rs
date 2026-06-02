@@ -246,9 +246,19 @@ fn call_external_target(
     }
     match resolved.target {
         ResolvedImportTarget::Code {
-            module: target_module,
-            label,
+            module: _,
+            label: _,
         } => {
+            let target_module = resolved.module;
+            let target_mod =
+                ctx.registry
+                    .and_then(|r| r.lookup(target_module))
+                    .ok_or(ExecError::Undef {
+                        module: target_module,
+                        function: resolved.function,
+                        arity,
+                    })?;
+            let instruction_pointer = target_mod.export_ip(resolved.function, resolved.arity)?;
             if save_return {
                 let caller_module = current_module_pin(process, module);
                 process
@@ -256,21 +266,48 @@ fn call_external_target(
                     .push_frame(module.name, return_ip, caller_module, 0)
                     .map_err(ExecError::from)?;
             }
+            let target = CodePosition {
+                module: target_module,
+                instruction_pointer,
+            };
+            jump_position_with_reduction(process, target)
+        }
+        ResolvedImportTarget::Deferred {
+            module: target_module,
+            function,
+            arity: target_arity,
+        } => {
             let target_mod =
                 ctx.registry
                     .and_then(|r| r.lookup(target_module))
                     .ok_or(ExecError::Undef {
                         module: target_module,
-                        function: crate::atom::Atom::UNDEFINED,
-                        arity,
+                        function,
+                        arity: target_arity,
                     })?;
+            let instruction_pointer = target_mod.export_ip(function, target_arity)?;
+            if save_return {
+                process
+                    .stack_mut()
+                    .push_frame(module.name, return_ip, 0)
+                    .map_err(ExecError::from)?;
+            }
             let target = CodePosition {
                 module: target_module,
-                instruction_pointer: label_ip(&target_mod, label)?,
+                instruction_pointer,
             };
             process.set_current_module(Arc::clone(&target_mod));
             jump_position_with_reduction(process, target)
         }
+        ResolvedImportTarget::Unresolved {
+            module,
+            function,
+            arity,
+        } => Err(ExecError::Undef {
+            module,
+            function,
+            arity,
+        }),
         ResolvedImportTarget::Native(entry) => {
             let mut args = Vec::with_capacity(usize::from(arity));
             for register in 0..arity {

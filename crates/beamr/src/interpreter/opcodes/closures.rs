@@ -182,7 +182,7 @@ fn apply_common(
     let function_atom = function_term.as_atom().ok_or(ExecError::Badarg)?;
 
     let pointer = registry.lookup_mfa(module_atom, function_atom, arity)?;
-    let target_ip = core::label_ip(&pointer.module, pointer.label)?;
+    let target_ip = pointer.module.export_ip(function_atom, arity)?;
     if let Some(words) = deallocate {
         core::deallocate_frame(process, words)?;
     }

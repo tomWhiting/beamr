@@ -58,23 +58,44 @@ pub type UnresolvedImport = UnresolvedImportEntry;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct UnresolvedImportReport {
     entries_by_module: HashMap<Atom, Vec<UnresolvedImportEntry>>,
+    deferred_by_module: HashMap<Atom, Vec<UnresolvedImportEntry>>,
 }
 
 impl UnresolvedImportReport {
     /// Creates a grouped report from unresolved import entries.
     #[must_use]
     pub fn new(entries: Vec<UnresolvedImportEntry>) -> Self {
+        Self::with_deferred(entries, Vec::new())
+    }
+
+    /// Creates a grouped report from unresolved and deferred import entries.
+    #[must_use]
+    pub fn with_deferred(
+        entries: Vec<UnresolvedImportEntry>,
+        deferred: Vec<UnresolvedImportEntry>,
+    ) -> Self {
         let mut report = Self::default();
         for entry in entries {
             report.push(entry);
         }
+        for entry in deferred {
+            report.push_deferred(entry);
+        }
         report
     }
 
-    /// Returns true when no imports are unresolved.
+    /// Returns true when no imports are truly unresolved.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries_by_module.values().all(Vec::is_empty)
+    }
+
+    /// Returns true when at least one import was deferred until call time.
+    #[must_use]
+    pub fn has_deferred(&self) -> bool {
+        self.deferred_by_module
+            .values()
+            .any(|entries| !entries.is_empty())
     }
 
     /// Returns the grouped unresolved entries keyed by module atom.
@@ -103,8 +124,41 @@ impl UnresolvedImportReport {
             .collect()
     }
 
+    /// Returns the grouped deferred entries keyed by module atom.
+    #[must_use]
+    pub fn deferred_by_module(&self) -> &HashMap<Atom, Vec<UnresolvedImportEntry>> {
+        &self.deferred_by_module
+    }
+
+    /// Returns deferred entries for one imported module.
+    #[must_use]
+    pub fn deferred_for(&self, module: Atom) -> &[UnresolvedImportEntry] {
+        self.deferred_by_module
+            .get(&module)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Returns all deferred import entries in deterministic module-bucket order.
+    #[must_use]
+    pub fn deferred_imports(&self) -> Vec<UnresolvedImportEntry> {
+        let mut modules: Vec<_> = self.deferred_by_module.keys().copied().collect();
+        modules.sort_by_key(|atom| atom.index());
+        modules
+            .into_iter()
+            .flat_map(|module| self.deferred_for(module).iter().copied())
+            .collect()
+    }
+
     fn push(&mut self, entry: UnresolvedImportEntry) {
         self.entries_by_module
+            .entry(entry.module)
+            .or_default()
+            .push(entry);
+    }
+
+    fn push_deferred(&mut self, entry: UnresolvedImportEntry) {
+        self.deferred_by_module
             .entry(entry.module)
             .or_default()
             .push(entry);
@@ -113,13 +167,13 @@ impl UnresolvedImportReport {
 
 impl fmt::Display for UnresolvedImportReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_empty() {
+        if self.is_empty() && !self.has_deferred() {
             return formatter.write_str("no unresolved imports");
         }
 
         let mut modules: Vec<_> = self.entries_by_module.keys().copied().collect();
         modules.sort_by_key(|atom| atom.index());
-        for (module_index, module) in modules.into_iter().enumerate() {
+        for (module_index, module) in modules.iter().copied().enumerate() {
             if module_index > 0 {
                 formatter.write_str("; ")?;
             }
@@ -129,6 +183,26 @@ impl fmt::Display for UnresolvedImportReport {
                     formatter.write_str(", ")?;
                 }
                 write!(formatter, "{:?}/{}", entry.function, entry.arity)?;
+            }
+        }
+        if !self.deferred_by_module.is_empty() {
+            if !modules.is_empty() {
+                formatter.write_str("; ")?;
+            }
+            formatter.write_str("deferred: ")?;
+            let mut deferred_modules: Vec<_> = self.deferred_by_module.keys().copied().collect();
+            deferred_modules.sort_by_key(|atom| atom.index());
+            for (module_index, module) in deferred_modules.into_iter().enumerate() {
+                if module_index > 0 {
+                    formatter.write_str("; ")?;
+                }
+                write!(formatter, "{module:?}: ")?;
+                for (entry_index, entry) in self.deferred_for(module).iter().enumerate() {
+                    if entry_index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(formatter, "{:?}/{}", entry.function, entry.arity)?;
+                }
             }
         }
         Ok(())
@@ -211,43 +285,78 @@ fn resolve_imports(
 ) -> (Vec<Option<ResolvedImport>>, UnresolvedImportReport) {
     let mut resolved = Vec::with_capacity(parsed.imports.len());
     let mut unresolved = Vec::new();
+    let mut deferred = Vec::new();
 
     for import in &parsed.imports {
-        let target = bif_registry
-            .lookup(import.module, import.function, import.arity)
-            .map(ResolvedImportTarget::Native)
-            .or_else(|| {
-                module_registry.lookup(import.module).and_then(|module| {
-                    module
-                        .exports
-                        .get(&(import.function, import.arity))
-                        .copied()
-                        .map(|label| ResolvedImportTarget::Code {
-                            module: import.module,
-                            label,
-                        })
-                })
-            });
-
-        match target {
-            Some(target) => resolved.push(Some(ResolvedImport {
+        if let Some(entry) = bif_registry.lookup(import.module, import.function, import.arity) {
+            resolved.push(Some(ResolvedImport {
                 module: import.module,
                 function: import.function,
                 arity: import.arity,
-                target,
-            })),
+                target: ResolvedImportTarget::Native(entry),
+            }));
+            continue;
+        }
+
+        let Some(module) = module_registry.lookup(import.module) else {
+            deferred.push(UnresolvedImportEntry::new(
+                import.module,
+                import.function,
+                import.arity,
+            ));
+            resolved.push(Some(ResolvedImport {
+                module: import.module,
+                function: import.function,
+                arity: import.arity,
+                target: ResolvedImportTarget::Deferred {
+                    module: import.module,
+                    function: import.function,
+                    arity: import.arity,
+                },
+            }));
+            continue;
+        };
+
+        match module
+            .exports
+            .get(&(import.function, import.arity))
+            .copied()
+        {
+            Some(label) => {
+                resolved.push(Some(ResolvedImport {
+                    module: import.module,
+                    function: import.function,
+                    arity: import.arity,
+                    target: ResolvedImportTarget::Code {
+                        module: import.module,
+                        label,
+                    },
+                }));
+            }
             None => {
                 unresolved.push(UnresolvedImportEntry::new(
                     import.module,
                     import.function,
                     import.arity,
                 ));
-                resolved.push(None);
+                resolved.push(Some(ResolvedImport {
+                    module: import.module,
+                    function: import.function,
+                    arity: import.arity,
+                    target: ResolvedImportTarget::Unresolved {
+                        module: import.module,
+                        function: import.function,
+                        arity: import.arity,
+                    },
+                }));
             }
         }
     }
 
-    (resolved, UnresolvedImportReport::new(unresolved))
+    (
+        resolved,
+        UnresolvedImportReport::with_deferred(unresolved, deferred),
+    )
 }
 
 fn module_from_parsed(parsed: ParsedModule, resolved_imports: Vec<ResolvedImport>) -> Module {
@@ -336,6 +445,7 @@ mod tests {
 
         assert_eq!(report.entries_for(erlang).len(), 1);
         assert!(report.entries_by_module().contains_key(&erlang));
+        assert!(report.deferred_for(erlang).is_empty());
         assert!(report.to_string().contains("/0"));
     }
 
@@ -368,7 +478,8 @@ mod tests {
                 assert_eq!(module.label_index.get(label).copied(), Some(ip));
             }
         }
-        assert!(!report.is_empty());
+        assert!(!report.deferred_imports().is_empty());
+        assert!(report.is_empty());
     }
 
     #[test]
@@ -403,6 +514,7 @@ mod tests {
         let (resolved, report) = super::resolve_imports(&parsed, &registry, &EmptyBifs);
 
         assert!(report.is_empty());
+        assert!(report.deferred_imports().is_empty());
         assert!(matches!(
             resolved
                 .first()
@@ -444,6 +556,83 @@ mod tests {
                 .and_then(|entry| entry.as_ref())
                 .map(|entry| entry.target),
             Some(ResolvedImportTarget::Native(_))
+        ));
+    }
+
+    #[test]
+    fn missing_loaded_export_is_unresolved_not_deferred() {
+        let atoms = AtomTable::new();
+        let callee = atoms.intern("callee");
+        let function = atoms.intern("run");
+        let registry = ModuleRegistry::new();
+        registry.insert(Module {
+            name: callee,
+            generation: 0,
+            exports: std::collections::HashMap::new(),
+            label_index: std::collections::HashMap::new(),
+            code: Vec::new(),
+            literals: Vec::new(),
+            resolved_imports: Vec::new(),
+            lambdas: Vec::new(),
+            string_table: Vec::new(),
+            line_info: Vec::new(),
+        });
+        let mut parsed =
+            load_beam_chunks(include_bytes!("../../tests/fixtures/hello.beam"), &atoms)
+                .expect("fixture parses");
+        parsed.imports = vec![crate::loader::ImportEntry {
+            module: callee,
+            function,
+            arity: 0,
+        }];
+
+        let (resolved, report) = super::resolve_imports(&parsed, &registry, &EmptyBifs);
+
+        assert!(matches!(
+            resolved
+                .first()
+                .and_then(|entry| entry.as_ref())
+                .map(|entry| entry.target),
+            Some(ResolvedImportTarget::Unresolved { module, function: unresolved_function, arity: 0 })
+                if module == callee && unresolved_function == function
+        ));
+        assert_eq!(
+            report.imports(),
+            vec![UnresolvedImportEntry::new(callee, function, 0)]
+        );
+        assert!(report.deferred_imports().is_empty());
+    }
+
+    #[test]
+    fn missing_import_module_is_deferred_and_kept_resolved_by_index() {
+        let atoms = AtomTable::new();
+        let callee = atoms.intern("callee");
+        let function = atoms.intern("run");
+        let registry = ModuleRegistry::new();
+        let mut parsed =
+            load_beam_chunks(include_bytes!("../../tests/fixtures/hello.beam"), &atoms)
+                .expect("fixture parses");
+        parsed.imports = vec![crate::loader::ImportEntry {
+            module: callee,
+            function,
+            arity: 0,
+        }];
+
+        let (resolved, report) = super::resolve_imports(&parsed, &registry, &EmptyBifs);
+
+        assert!(report.imports().is_empty());
+        assert!(report.is_empty());
+        assert_eq!(
+            report.deferred_imports(),
+            vec![UnresolvedImportEntry::new(callee, function, 0)]
+        );
+        assert!(matches!(
+            resolved
+                .first()
+                .and_then(|entry| entry.as_ref())
+                .map(|entry| entry.target),
+            Some(ResolvedImportTarget::Deferred { module, function: deferred_function, arity: 0 })
+                if module == callee && deferred_function == function
         ));
     }
 }

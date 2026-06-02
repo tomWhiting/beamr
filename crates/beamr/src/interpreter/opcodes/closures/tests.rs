@@ -194,6 +194,76 @@ fn apply_uses_registry_exports_and_rejects_missing_or_private_targets() {
 }
 
 #[test]
+fn apply_uses_latest_registry_export_after_module_reload() {
+    let atoms = AtomTable::new();
+    let module_atom = atoms.intern("math");
+    let value_atom = atoms.intern("value");
+    let registry = ModuleRegistry::new();
+
+    let mut first_target = module(
+        module_atom,
+        vec![
+            Instruction::Label { label: 5 },
+            Instruction::Move {
+                source: Operand::Integer(1),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    first_target.exports.insert((value_atom, 0), 5);
+    registry.insert(first_target);
+
+    let caller = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Atom(Some(module_atom)),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Atom(Some(value_atom)),
+                destination: Operand::X(1),
+            },
+            Instruction::Apply {
+                arity: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut first_process = Process::new(1, 32);
+    assert_eq!(
+        run_with_registry(&mut first_process, &caller, &registry),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(first_process.x_reg(0), Term::small_int(1));
+
+    let mut second_target = module(
+        module_atom,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(-1),
+                destination: Operand::X(2),
+            },
+            Instruction::Label { label: 12 },
+            Instruction::Move {
+                source: Operand::Integer(2),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    second_target.exports.insert((value_atom, 0), 12);
+    registry.insert(second_target);
+    let mut second_process = Process::new(2, 32);
+    assert_eq!(
+        run_with_registry(&mut second_process, &caller, &registry),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(second_process.x_reg(0), Term::small_int(2));
+}
+
+#[test]
 fn apply_last_deallocates_current_frame_before_jump() {
     let atoms = AtomTable::new();
     let module_atom = atoms.intern("math");
@@ -221,6 +291,63 @@ fn apply_last_deallocates_current_frame_before_jump() {
 
     assert_eq!(jump_ip(outcome), 0);
     assert_eq!(process.stack().len(), 0);
+}
+
+#[test]
+fn apply_last_uses_latest_registry_export_after_module_reload() {
+    let atoms = AtomTable::new();
+    let module_atom = atoms.intern("math");
+    let value_atom = atoms.intern("value");
+    let registry = ModuleRegistry::new();
+
+    let mut first_target = module(module_atom, vec![Instruction::Label { label: 3 }]);
+    first_target.exports.insert((value_atom, 0), 3);
+    registry.insert(first_target);
+    let mut process = Process::new(1, 16);
+    process
+        .stack_mut()
+        .push_frame(Atom::OK, 123, 0)
+        .expect("frame push");
+    process.set_x_reg(0, Term::atom(module_atom));
+    process.set_x_reg(1, Term::atom(value_atom));
+    assert_eq!(
+        jump_ip(
+            apply_last(
+                &mut process,
+                &registry,
+                &Operand::Unsigned(0),
+                &Operand::Unsigned(0),
+                5,
+            )
+            .expect("apply_last succeeds")
+        ),
+        0
+    );
+
+    let mut second_target = module(
+        module_atom,
+        vec![Instruction::Return, Instruction::Label { label: 12 }],
+    );
+    second_target.exports.insert((value_atom, 0), 12);
+    registry.insert(second_target);
+    let mut reloaded_process = Process::new(2, 16);
+    reloaded_process
+        .stack_mut()
+        .push_frame(Atom::OK, 123, 0)
+        .expect("frame push");
+    reloaded_process.set_x_reg(0, Term::atom(module_atom));
+    reloaded_process.set_x_reg(1, Term::atom(value_atom));
+    let outcome = apply_last(
+        &mut reloaded_process,
+        &registry,
+        &Operand::Unsigned(0),
+        &Operand::Unsigned(0),
+        5,
+    )
+    .expect("apply_last after reload succeeds");
+
+    assert_eq!(jump_ip(outcome), 1);
+    assert_eq!(reloaded_process.stack().len(), 0);
 }
 
 #[test]
