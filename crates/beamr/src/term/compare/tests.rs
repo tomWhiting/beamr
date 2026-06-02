@@ -58,7 +58,7 @@ fn numeric_equality_coerces_integer_float_pairs() {
 #[test]
 fn beam_ordering_across_available_types_follows_rank_order() {
     let mut ref_heap = [0_u64; 2];
-    let mut closure_heap = [0_u64; 5];
+    let mut closure_heap = [0_u64; 7];
     let mut tuple_heap = [0_u64; 1];
     let mut map_heap = [0_u64; 2];
     let mut list_heap = [0_u64; 2];
@@ -68,7 +68,7 @@ fn beam_ordering_across_available_types_follows_rank_order() {
         Term::small_int(1),
         Term::atom(Atom::OK),
         write_reference(&mut ref_heap, 1).unwrap(),
-        write_closure(&mut closure_heap, Atom::OK, 0, 0, &[]).unwrap(),
+        write_closure(&mut closure_heap, Atom::OK, 0, 0, 1, 0, &[]).unwrap(),
         // Port rank is reserved in the comparator but no term encoding exists yet.
         Term::pid(1),
         write_tuple(&mut tuple_heap, &[]).unwrap(),
@@ -221,8 +221,8 @@ fn exact_equality_covers_boxed_numeric_reference_fun_map_and_binary_terms() {
     let mut bigint_b_heap = [0_u64; 4];
     let mut ref_a_heap = [0_u64; 2];
     let mut ref_b_heap = [0_u64; 2];
-    let mut closure_a_heap = [0_u64; 6];
-    let mut closure_b_heap = [0_u64; 6];
+    let mut closure_a_heap = [0_u64; 8];
+    let mut closure_b_heap = [0_u64; 8];
     let mut bin_a_heap = [0_u64; 3];
     let mut bin_b_heap = [0_u64; 3];
 
@@ -232,10 +232,26 @@ fn exact_equality_covers_boxed_numeric_reference_fun_map_and_binary_terms() {
     let bigint_b = write_bigint(&mut bigint_b_heap, false, &[9]).unwrap();
     let ref_a = write_reference(&mut ref_a_heap, 42).unwrap();
     let ref_b = write_reference(&mut ref_b_heap, 42).unwrap();
-    let closure_a =
-        write_closure(&mut closure_a_heap, Atom::OK, 1, 1, &[Term::small_int(1)]).unwrap();
-    let closure_b =
-        write_closure(&mut closure_b_heap, Atom::OK, 1, 1, &[Term::small_int(1)]).unwrap();
+    let closure_a = write_closure(
+        &mut closure_a_heap,
+        Atom::OK,
+        1,
+        1,
+        1,
+        0,
+        &[Term::small_int(1)],
+    )
+    .unwrap();
+    let closure_b = write_closure(
+        &mut closure_b_heap,
+        Atom::OK,
+        1,
+        1,
+        1,
+        0,
+        &[Term::small_int(1)],
+    )
+    .unwrap();
     let bin_a = write_binary(&mut bin_a_heap, b"ab").unwrap();
     let bin_b = write_binary(&mut bin_b_heap, b"ab").unwrap();
 

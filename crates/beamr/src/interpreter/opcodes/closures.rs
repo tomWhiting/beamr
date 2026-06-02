@@ -37,15 +37,23 @@ pub fn make_fun(
         free_vars.push(process.x_reg(register));
     }
 
-    let words = 5usize
+    let words = 7usize
         .checked_add(free_vars.len())
         .ok_or(ExecError::InvalidOperand("closure size"))?;
     let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
     let heap = core::heap_slice(ptr, words);
     let function_index = u64::try_from(lambda_index)
         .map_err(|_| ExecError::InvalidOperand("make_fun lambda index"))?;
-    let term = write_closure(heap, module.name, function_index, lambda.arity, &free_vars)
-        .ok_or(ExecError::Badarg)?;
+    let term = write_closure(
+        heap,
+        module.name,
+        function_index,
+        lambda.arity,
+        module.generation(),
+        lambda.unique_id,
+        &free_vars,
+    )
+    .ok_or(ExecError::Badarg)?;
     process.set_x_reg(0, term);
     Ok(InstructionOutcome::Continue)
 }
@@ -85,25 +93,68 @@ pub fn call_fun(
         process.set_x_reg(register, value);
     }
 
-    let function_index = usize::try_from(closure.function_index())
-        .map_err(|_| ExecError::InvalidOperand("closure function index"))?;
-    let target_module_atom = closure.module().unwrap_or(module.name);
-    let target_module = registry.and_then(|registry| registry.lookup(target_module_atom));
-    let target_module = target_module.as_deref().unwrap_or(module);
-    let lambda = target_module
-        .lambdas
-        .get(function_index)
-        .ok_or(ExecError::InvalidOperand("closure function index"))?;
+    let resolved = resolve_closure_target(closure, module, registry, fun_term)?;
     let caller_module = core::current_module_pin(process, module);
     process
         .stack_mut()
         .push_frame(module.name, return_ip, caller_module, 0)
         .map_err(ExecError::from)?;
     let target = CodePosition {
-        module: target_module_atom,
-        instruction_pointer: core::label_ip(target_module, lambda.label)?,
+        module: resolved.module_name,
+        instruction_pointer: core::label_ip(resolved.module.as_ref(), resolved.label)?,
     };
+    process.set_current_module(resolved.module);
     core::jump_position_with_reduction(process, target)
+}
+
+pub(crate) struct ResolvedClosureTarget {
+    pub module: Arc<Module>,
+    pub module_name: Atom,
+    pub label: u32,
+}
+
+pub(crate) fn resolve_closure_target(
+    closure: Closure,
+    fallback_module: &Module,
+    registry: Option<&ModuleRegistry>,
+    fun_term: Term,
+) -> Result<ResolvedClosureTarget, ExecError> {
+    let target_module_atom = closure.module().unwrap_or(fallback_module.name);
+    let current = registry
+        .and_then(|registry| registry.lookup(target_module_atom))
+        .unwrap_or_else(|| Arc::new(fallback_module.clone()));
+
+    let label = if closure.generation() == current.generation() {
+        let function_index = usize::try_from(closure.function_index())
+            .map_err(|_| ExecError::InvalidOperand("closure function index"))?;
+        current
+            .lambdas
+            .get(function_index)
+            .ok_or(ExecError::Badfun { term: fun_term })?
+            .label
+    } else if let Some(lambda) = current.find_lambda_by_id(closure.unique_id()) {
+        lambda.label
+    } else {
+        let old = registry.and_then(|registry| registry.lookup_old(target_module_atom));
+        let old = old
+            .filter(|module| module.find_lambda_by_id(closure.unique_id()).is_some())
+            .ok_or(ExecError::Badfun { term: fun_term })?;
+        let label = old
+            .find_lambda_by_id(closure.unique_id())
+            .ok_or(ExecError::Badfun { term: fun_term })?
+            .label;
+        return Ok(ResolvedClosureTarget {
+            module_name: old.name,
+            module: old,
+            label,
+        });
+    };
+
+    Ok(ResolvedClosureTarget {
+        module_name: current.name,
+        module: current,
+        label,
+    })
 }
 
 pub fn call_fun2(

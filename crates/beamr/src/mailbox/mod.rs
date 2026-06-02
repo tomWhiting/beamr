@@ -286,12 +286,14 @@ fn copy_closure(closure: Closure, heap: &mut Heap) -> Result<Term, SendError> {
                 .and_then(|free_var| copy_term(free_var, heap))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let words = alloc_words(heap, 5 + free_vars.len())?;
+    let words = alloc_words(heap, 7 + free_vars.len())?;
     boxed::write_closure(
         words,
         module,
         closure.function_index(),
         closure.arity(),
+        closure.generation(),
+        closure.unique_id(),
         &free_vars,
     )
     .ok_or(SendError::InvalidBoxedTerm)

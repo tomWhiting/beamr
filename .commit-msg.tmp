@@ -1,5 +1,1 @@
-Harden B-043 dynamic import resolution
-
-- add explicit unresolved import target placeholders to preserve import-table index layout
-- make Code dispatch use the ResolvedImport MFA module field and ignore cached Code fields
-- add runtime coverage for unresolved call_ext undef behavior and index preservation
+feat(beamr): bind closures to lambda unique ids

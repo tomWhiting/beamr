@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::Hasher;
 use std::sync::Arc;
 
 use crate::atom::{Atom, AtomTable};
@@ -239,7 +240,9 @@ pub fn load_beam_chunks(bytes: &[u8], atom_table: &AtomTable) -> Result<ParsedMo
         None => Vec::new(),
     };
     let lambdas = match find_chunk(&chunks, b"FunT") {
-        Some(bytes) => decode_lambda_chunk(bytes, &atoms)?,
+        Some(bytes) => {
+            assign_lambda_unique_ids(name, decode_lambda_chunk(bytes, &atoms)?, atom_table)?
+        }
         None => Vec::new(),
     };
     let string_table = find_chunk(&chunks, b"StrT")
@@ -386,6 +389,80 @@ fn module_from_parsed(parsed: ParsedModule, resolved_imports: Vec<ResolvedImport
         lambdas: parsed.lambdas,
         string_table: parsed.string_table,
         line_info: parsed.line_info,
+    }
+}
+
+fn assign_lambda_unique_ids(
+    module_name: Atom,
+    mut lambdas: Vec<LambdaEntry>,
+    atom_table: &AtomTable,
+) -> Result<Vec<LambdaEntry>, LoadError> {
+    for lambda in &mut lambdas {
+        lambda.unique_id = lambda_unique_id(
+            atom_table,
+            module_name,
+            lambda.function,
+            lambda.arity,
+            lambda.num_free,
+        )?;
+    }
+    Ok(lambdas)
+}
+
+/// Computes a deterministic lambda identifier for hot-code closure resolution.
+///
+/// This intentionally hashes the module and function names instead of atom
+/// indices so the value survives recompilation with different atom-table
+/// population order. The tuple `(module, function, arity, num_free)` is unique
+/// for generated Gleam closures in practice; Erlang modules that generate two
+/// closures with the same tuple collide and require positional disambiguation
+/// that this loader does not retain.
+pub fn lambda_unique_id(
+    atom_table: &AtomTable,
+    module_name: Atom,
+    function_name: Atom,
+    arity: u8,
+    num_free: u32,
+) -> Result<u64, LoadError> {
+    let module_name = atom_table
+        .resolve(module_name)
+        .ok_or_else(|| LoadError::DecodeError("module atom is not interned".into()))?;
+    let function_name = atom_table
+        .resolve(function_name)
+        .ok_or_else(|| LoadError::DecodeError("lambda function atom is not interned".into()))?;
+    let mut hasher = DeterministicHasher::default();
+    hash_bytes_with_len(&mut hasher, module_name.as_bytes());
+    hash_bytes_with_len(&mut hasher, function_name.as_bytes());
+    hasher.write(&[arity]);
+    hasher.write(&num_free.to_be_bytes());
+    Ok(hasher.finish())
+}
+
+fn hash_bytes_with_len(hasher: &mut DeterministicHasher, bytes: &[u8]) {
+    hasher.write(&bytes.len().to_be_bytes());
+    hasher.write(bytes);
+}
+
+struct DeterministicHasher(u64);
+
+impl Default for DeterministicHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for DeterministicHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = self.0;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.0 = hash;
     }
 }
 

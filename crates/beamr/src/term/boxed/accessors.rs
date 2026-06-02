@@ -151,9 +151,17 @@ impl Closure {
         self.word(4) as usize
     }
 
+    pub fn generation(self) -> u64 {
+        self.word(5)
+    }
+
+    pub fn unique_id(self) -> u64 {
+        self.word(6)
+    }
+
     pub fn free_var(self, index: usize) -> Option<Term> {
         if index < self.num_free() {
-            Some(Term::from_raw(self.word(5 + index)))
+            Some(Term::from_raw(self.word(7 + index)))
         } else {
             None
         }

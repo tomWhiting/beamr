@@ -27,6 +27,11 @@ pub struct LambdaEntry {
     pub arity: u8,
     pub label: u32,
     pub num_free: u32,
+    /// Stable identifier derived from module/function/arity/free-count.
+    ///
+    /// Raw FunT decoding does not know the module name, so this is populated
+    /// by the loader after the atom chunk has identified the module.
+    pub unique_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +139,7 @@ pub fn decode_lambda_chunk(bytes: &[u8], atoms: &[Atom]) -> Result<Vec<LambdaEnt
             arity,
             label,
             num_free,
+            unique_id: 0,
         });
     }
     cursor.expect_empty("lambda")?;

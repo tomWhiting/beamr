@@ -120,24 +120,29 @@ pub fn write_bigint(heap: &mut [u64], negative: bool, limbs: &[u64]) -> Option<T
     Some(Term::boxed_ptr(heap.as_ptr()))
 }
 
-/// Writes a closure layout (`header, module, function_index, arity, num_free, free...`).
+/// Writes a closure layout
+/// (`header, module, function_index, arity, num_free, generation, unique_id, free...`).
 pub fn write_closure(
     heap: &mut [u64],
     module: Atom,
     function_index: u64,
     arity: u8,
+    generation: u64,
+    unique_id: u64,
     free_vars: &[Term],
 ) -> Option<Term> {
-    if heap.len() < 5 + free_vars.len() {
+    if heap.len() < 7 + free_vars.len() {
         return None;
     }
 
-    heap[0] = BoxedHeader::new(BoxedTag::Closure, 4 + free_vars.len());
+    heap[0] = BoxedHeader::new(BoxedTag::Closure, 6 + free_vars.len());
     heap[1] = Term::atom(module).raw();
     heap[2] = function_index;
     heap[3] = u64::from(arity);
     heap[4] = free_vars.len() as u64;
-    for (slot, free_var) in heap[5..].iter_mut().zip(free_vars.iter()) {
+    heap[5] = generation;
+    heap[6] = unique_id;
+    for (slot, free_var) in heap[7..].iter_mut().zip(free_vars.iter()) {
         *slot = free_var.raw();
     }
 
@@ -307,17 +312,19 @@ mod tests {
     #[test]
     fn closure_write_then_read_round_trip_and_bounds_check() {
         let free_vars = [Term::small_int(42), Term::atom(Atom::ERROR)];
-        let mut heap = [0_u64; 7];
-        let term =
-            write_closure(&mut heap, Atom::OK, 9, 2, &free_vars).expect("closure should fit");
+        let mut heap = [0_u64; 9];
+        let term = write_closure(&mut heap, Atom::OK, 9, 2, 3, 0xfeed, &free_vars)
+            .expect("closure should fit");
         let closure = Closure::new(term).expect("closure accessor");
 
         assert_eq!(BoxedHeader::tag(heap[0]), Some(BoxedTag::Closure));
-        assert_eq!(BoxedHeader::size(heap[0]), 6);
+        assert_eq!(BoxedHeader::size(heap[0]), 8);
         assert_eq!(closure.module(), Some(Atom::OK));
         assert_eq!(closure.function_index(), 9);
         assert_eq!(closure.arity(), 2);
         assert_eq!(closure.num_free(), 2);
+        assert_eq!(closure.generation(), 3);
+        assert_eq!(closure.unique_id(), 0xfeed);
         assert_eq!(closure.free_var(0), Some(free_vars[0]));
         assert_eq!(closure.free_var(1), Some(free_vars[1]));
         assert_eq!(closure.free_var(2), None);

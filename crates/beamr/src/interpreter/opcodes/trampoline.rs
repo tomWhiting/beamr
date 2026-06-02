@@ -18,7 +18,8 @@ use crate::process::{CodePosition, Process, ProcessStatus, ReceiveTimeout};
 use crate::term::Term;
 use crate::term::boxed::Closure;
 
-use super::core::{charge_reduction, label_ip};
+use super::closures::resolve_closure_target;
+use super::core::charge_reduction;
 
 /// Build a mailbox snapshot for the select facility.
 ///
@@ -79,18 +80,7 @@ pub fn handle_trampoline(
         process.set_x_reg(register, value);
     }
 
-    // Look up the lambda entry point.
-    let function_index = usize::try_from(closure.function_index())
-        .map_err(|_| ExecError::InvalidOperand("trampoline closure function index"))?;
-    let target_module_atom = closure.module().unwrap_or(module.name);
-    let target_module = registry.and_then(|registry| registry.lookup(target_module_atom));
-    let target_module = target_module.as_deref().unwrap_or(module);
-    let lambda = target_module
-        .lambdas
-        .get(function_index)
-        .ok_or(ExecError::InvalidOperand(
-            "trampoline closure function index",
-        ))?;
+    let resolved = resolve_closure_target(closure, module, registry, trampoline.fun)?;
 
     // Push a return frame so the closure returns to the BIF's caller.
     let return_ip = process
@@ -106,9 +96,10 @@ pub fn handle_trampoline(
     process.set_native_continuation(trampoline.continuation);
 
     let target = CodePosition {
-        module: target_module_atom,
-        instruction_pointer: label_ip(target_module, lambda.label)?,
+        module: resolved.module_name,
+        instruction_pointer: super::core::label_ip(resolved.module.as_ref(), resolved.label)?,
     };
+    process.set_current_module(resolved.module);
 
     charge_reduction(process)?;
     Ok(if process.reductions_exhausted() {
@@ -198,8 +189,36 @@ pub fn handle_suspend(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atom::{Atom, AtomTable};
+    use crate::loader::{Instruction, LambdaEntry};
+    use crate::module::{Module, ModuleRegistry};
     use crate::native::select::SelectFacility;
     use crate::process::Process;
+    use crate::term::boxed::{Closure, write_closure};
+    use std::collections::HashMap;
+
+    fn module(name: Atom, code: Vec<Instruction>) -> Module {
+        let label_index = code
+            .iter()
+            .enumerate()
+            .filter_map(|(ip, instruction)| match instruction {
+                Instruction::Label { label } => Some((*label, ip)),
+                _ => None,
+            })
+            .collect();
+        Module {
+            name,
+            generation: 0,
+            exports: HashMap::new(),
+            label_index,
+            code,
+            literals: Vec::new(),
+            resolved_imports: Vec::new(),
+            lambdas: Vec::new(),
+            string_table: Vec::new(),
+            line_info: Vec::new(),
+        }
+    }
 
     #[test]
     fn build_mailbox_snapshot_empty_returns_none() {
@@ -247,11 +266,6 @@ mod tests {
 
     #[test]
     fn handle_suspend_transitions_to_waiting() {
-        use crate::atom::Atom;
-        use crate::loader::Instruction;
-        use crate::module::Module;
-        use std::collections::HashMap;
-
         let module = Module {
             name: Atom::OK,
             generation: 0,
@@ -282,5 +296,90 @@ mod tests {
 
         let timeout = process.receive_timeout().expect("timeout set");
         assert_eq!(timeout.milliseconds, 5000);
+    }
+
+    #[test]
+    fn handle_trampoline_resolves_reloaded_closure_by_unique_id() {
+        let atoms = AtomTable::new();
+        let module_atom = atoms.intern("trampoline_hot");
+        let callback_atom = atoms.intern("callback@anon");
+        let other_atom = atoms.intern("other@anon");
+        let callback_id = crate::loader::lambda_unique_id(&atoms, module_atom, callback_atom, 1, 0)
+            .expect("callback id");
+        let other_id = crate::loader::lambda_unique_id(&atoms, module_atom, other_atom, 1, 0)
+            .expect("other id");
+        let registry = ModuleRegistry::new();
+
+        let mut v1 = module(module_atom, vec![Instruction::Label { label: 10 }]);
+        v1.lambdas.push(LambdaEntry {
+            function: callback_atom,
+            arity: 1,
+            label: 10,
+            num_free: 0,
+            unique_id: callback_id,
+        });
+        let v1 = registry.insert(v1);
+        let mut closure_words = [0_u64; 7];
+        let fun = write_closure(
+            &mut closure_words,
+            module_atom,
+            0,
+            1,
+            v1.generation(),
+            callback_id,
+            &[],
+        )
+        .expect("closure");
+        assert_eq!(Closure::new(fun).expect("closure").unique_id(), callback_id);
+
+        let mut v2 = module(
+            module_atom,
+            vec![
+                Instruction::Label { label: 20 },
+                Instruction::Return,
+                Instruction::Label { label: 30 },
+            ],
+        );
+        v2.lambdas.push(LambdaEntry {
+            function: other_atom,
+            arity: 1,
+            label: 20,
+            num_free: 0,
+            unique_id: other_id,
+        });
+        v2.lambdas.push(LambdaEntry {
+            function: callback_atom,
+            arity: 1,
+            label: 30,
+            num_free: 0,
+            unique_id: callback_id,
+        });
+        let v2 = registry.insert(v2);
+        let mut process = Process::new(1, 32);
+
+        let outcome = handle_trampoline(
+            &mut process,
+            &v2,
+            Some(&registry),
+            crate::native::TrampolineRequest {
+                fun,
+                args: vec![Term::small_int(42)],
+                continuation: None,
+            },
+        )
+        .expect("trampoline resolves by unique id");
+
+        assert_eq!(
+            outcome,
+            InstructionOutcome::Jump(CodePosition {
+                module: module_atom,
+                instruction_pointer: 2
+            })
+        );
+        assert_eq!(process.x_reg(0), Term::small_int(42));
+        assert_eq!(
+            process.current_module().map(|module| module.generation()),
+            Some(2)
+        );
     }
 }

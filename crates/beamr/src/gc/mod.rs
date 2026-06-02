@@ -211,7 +211,7 @@ pub(crate) fn rewrite_copied_object(
         BoxedTag::Closure => {
             let num_free = read_raw_word(ptr, 4) as usize;
             for index in 0..num_free {
-                rewrite_word(ptr, 5 + index, work_queue, &mut copy_term)?;
+                rewrite_word(ptr, 7 + index, work_queue, &mut copy_term)?;
             }
         }
         BoxedTag::Map => {

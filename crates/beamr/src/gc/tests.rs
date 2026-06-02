@@ -8,7 +8,7 @@ use crate::{
     atom::Atom,
     loader::Instruction,
     module::Module,
-    term::boxed::{Cons, Tuple, write_cons, write_tuple},
+    term::boxed::{Closure, Cons, Tuple, write_closure, write_cons, write_tuple},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +48,20 @@ pub(crate) fn alloc_cons(process: &mut Process, head: Term, tail: Term) -> Term 
     // SAFETY: GC allocation returned two writable words.
     let words = unsafe { std::slice::from_raw_parts_mut(ptr, 2) };
     write_cons(words, head, tail).expect("cons writer should fit allocated words")
+}
+
+pub(crate) fn alloc_closure(
+    process: &mut Process,
+    generation: u64,
+    unique_id: u64,
+    free_vars: &[Term],
+) -> Term {
+    let words_count = 7 + free_vars.len();
+    let ptr = alloc(process, words_count).expect("closure allocation via GC should fit");
+    // SAFETY: GC allocation returned `words_count` writable words.
+    let words = unsafe { std::slice::from_raw_parts_mut(ptr, words_count) };
+    write_closure(words, Atom::OK, 0, 0, generation, unique_id, free_vars)
+        .expect("closure writer should fit allocated words")
 }
 
 pub(crate) fn snapshot(term: Term) -> Snapshot {
@@ -107,6 +121,12 @@ pub(crate) fn assert_no_term_pointer_into_young(process: &Process, term: Term) {
                 for index in 0..tuple.arity() {
                     if let Some(element) = tuple.get(index) {
                         stack.push(element);
+                    }
+                }
+            } else if let Some(closure) = Closure::new(current) {
+                for index in 0..closure.num_free() {
+                    if let Some(free_var) = closure.free_var(index) {
+                        stack.push(free_var);
                     }
                 }
             }
@@ -197,6 +217,27 @@ fn mixed_x_y_and_mailbox_roots_survive_minor_gc() {
         expected[2]
     );
     assert_no_reachable_pointer_into_young(&process);
+}
+
+#[test]
+fn closure_metadata_and_free_vars_survive_minor_gc() {
+    let mut process = Process::new(1, 32);
+    let captured = alloc_tuple(&mut process, &[Term::small_int(42)]);
+    let closure = alloc_closure(&mut process, 7, 0x1234_5678, &[captured]);
+    process.set_x_reg(0, closure);
+
+    collect_minor(&mut process).expect("minor GC succeeds");
+
+    let closure = Closure::new(process.x_reg(0)).expect("closure root");
+    assert_eq!(closure.module(), Some(Atom::OK));
+    assert_eq!(closure.function_index(), 0);
+    assert_eq!(closure.arity(), 0);
+    assert_eq!(closure.num_free(), 1);
+    assert_eq!(closure.generation(), 7);
+    assert_eq!(closure.unique_id(), 0x1234_5678);
+    let free_var = closure.free_var(0).expect("captured term");
+    assert_eq!(snapshot(free_var), Snapshot::Tuple(vec![Snapshot::Int(42)]));
+    assert_no_term_pointer_into_young(&process, process.x_reg(0));
 }
 
 #[test]

@@ -79,8 +79,8 @@ fn type_tests_fall_through_or_jump_to_fail_label() {
     let mut process = Process::new(1, 32);
     let mut tuple_words = [0_u64; 2];
     let tuple = write_tuple(&mut tuple_words, &[Term::small_int(1)]).expect("tuple");
-    let mut closure_words = [0_u64; 5];
-    let closure = write_closure(&mut closure_words, Atom::OK, 0, 2, &[]).expect("closure");
+    let mut closure_words = [0_u64; 7];
+    let closure = write_closure(&mut closure_words, Atom::OK, 0, 2, 1, 0, &[]).expect("closure");
     process.set_x_reg(0, Term::small_int(1));
     process.set_x_reg(1, Term::atom(Atom::OK));
     process.set_x_reg(2, tuple);

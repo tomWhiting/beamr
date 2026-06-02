@@ -98,6 +98,14 @@ impl Module {
         self.generation
     }
 
+    /// Finds a lambda by its stable hot-code identifier.
+    #[must_use]
+    pub fn find_lambda_by_id(&self, unique_id: u64) -> Option<&LambdaEntry> {
+        self.lambdas
+            .iter()
+            .find(|lambda| lambda.unique_id == unique_id)
+    }
+
     /// Resolves a code label to its instruction index.
     pub fn label_ip(&self, label: u32) -> Result<usize, ExecError> {
         self.label_index
@@ -318,6 +326,7 @@ mod tests {
     use super::{Module, ModuleRegistry, PurgeError};
     use crate::atom::AtomTable;
     use crate::error::ExecError;
+    use crate::loader::LambdaEntry;
 
     fn label_index(code: &[crate::loader::Instruction]) -> HashMap<u32, usize> {
         code.iter()
@@ -541,6 +550,70 @@ mod tests {
         assert_eq!(
             module.export_ip(function, 0),
             Err(ExecError::InvalidLabel { label: 99 })
+        );
+    }
+
+    #[test]
+    fn find_lambda_by_id_resolves_reordered_lambda_tables() {
+        let atoms = AtomTable::new();
+        let module_name = atoms.intern("sample");
+        let first_fun = atoms.intern("first@anon");
+        let second_fun = atoms.intern("second@anon");
+        let first_id = crate::loader::lambda_unique_id(&atoms, module_name, first_fun, 1, 2)
+            .expect("first id");
+        let second_id = crate::loader::lambda_unique_id(&atoms, module_name, second_fun, 0, 0)
+            .expect("second id");
+
+        let mut v1 = empty_module(module_name);
+        v1.lambdas = vec![
+            LambdaEntry {
+                function: first_fun,
+                arity: 1,
+                label: 10,
+                num_free: 2,
+                unique_id: first_id,
+            },
+            LambdaEntry {
+                function: second_fun,
+                arity: 0,
+                label: 20,
+                num_free: 0,
+                unique_id: second_id,
+            },
+        ];
+        let mut v2 = empty_module(module_name);
+        v2.lambdas = vec![
+            LambdaEntry {
+                function: second_fun,
+                arity: 0,
+                label: 200,
+                num_free: 0,
+                unique_id: second_id,
+            },
+            LambdaEntry {
+                function: first_fun,
+                arity: 1,
+                label: 100,
+                num_free: 2,
+                unique_id: first_id,
+            },
+        ];
+
+        assert_eq!(
+            v1.find_lambda_by_id(first_id).map(|lambda| lambda.label),
+            Some(10)
+        );
+        assert_eq!(
+            v2.find_lambda_by_id(first_id).map(|lambda| lambda.label),
+            Some(100)
+        );
+        assert_eq!(
+            v1.find_lambda_by_id(second_id).map(|lambda| lambda.label),
+            Some(20)
+        );
+        assert_eq!(
+            v2.find_lambda_by_id(second_id).map(|lambda| lambda.label),
+            Some(200)
         );
     }
 

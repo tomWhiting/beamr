@@ -257,8 +257,8 @@ fn is_process_alive_badarg_wrong_arity() {
 #[test]
 fn spawn_1_with_zero_arity_closure() {
     let (f, mut ctx) = spawn_ctx(42, 1);
-    let mut heap = [0u64; 5];
-    let fun = write_closure(&mut heap, Atom::OK, 0, 0, &[]).expect("closure");
+    let mut heap = [0u64; 7];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &[]).expect("closure");
     assert_eq!(bif_spawn_1(&[fun], &mut ctx), Ok(Term::pid(42)));
     let records = f.lambda_records();
     assert_eq!(records.len(), 1);
@@ -268,8 +268,8 @@ fn spawn_1_with_zero_arity_closure() {
 #[test]
 fn spawn_1_badarg_non_zero_arity() {
     let (_, mut ctx) = spawn_ctx(42, 1);
-    let mut heap = [0u64; 5];
-    let fun = write_closure(&mut heap, Atom::OK, 0, 2, &[]).expect("closure");
+    let mut heap = [0u64; 7];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 2, 1, 0, &[]).expect("closure");
     assert_eq!(bif_spawn_1(&[fun], &mut ctx), Err(badarg()));
 }
 
@@ -277,8 +277,8 @@ fn spawn_1_badarg_non_zero_arity() {
 fn spawn_1_badarg_with_captures() {
     let (_, mut ctx) = spawn_ctx(42, 1);
     let free_vars = [Term::small_int(1)];
-    let mut heap = [0u64; 6];
-    let fun = write_closure(&mut heap, Atom::OK, 0, 0, &free_vars).expect("closure");
+    let mut heap = [0u64; 8];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &free_vars).expect("closure");
     assert_eq!(bif_spawn_1(&[fun], &mut ctx), Err(badarg()));
 }
 
@@ -292,8 +292,8 @@ fn spawn_1_badarg_non_closure() {
 fn spawn_1_badarg_no_facility() {
     let mut ctx = ProcessContext::new();
     ctx.set_pid(Some(1));
-    let mut heap = [0u64; 5];
-    let fun = write_closure(&mut heap, Atom::OK, 0, 0, &[]).expect("closure");
+    let mut heap = [0u64; 7];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &[]).expect("closure");
     assert_eq!(bif_spawn_1(&[fun], &mut ctx), Err(badarg()));
 }
 
@@ -308,8 +308,8 @@ fn spawn_1_badarg_wrong_arity() {
 #[test]
 fn spawn_link_1_sets_link_to_parent() {
     let (f, mut ctx) = spawn_ctx(42, 3);
-    let mut heap = [0u64; 5];
-    let fun = write_closure(&mut heap, Atom::OK, 0, 0, &[]).expect("closure");
+    let mut heap = [0u64; 7];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &[]).expect("closure");
     assert_eq!(bif_spawn_link_1(&[fun], &mut ctx), Ok(Term::pid(42)));
     let records = f.lambda_records();
     assert_eq!(records[0].link_to, Some(3));
@@ -320,8 +320,8 @@ fn spawn_link_1_badarg_without_pid() {
     let f: Arc<dyn SpawnFacility> = Arc::new(MockSpawnFacility::new(42));
     let mut ctx = ProcessContext::new();
     ctx.set_spawn_facility(Some(f));
-    let mut heap = [0u64; 5];
-    let fun = write_closure(&mut heap, Atom::OK, 0, 0, &[]).expect("closure");
+    let mut heap = [0u64; 7];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &[]).expect("closure");
     assert_eq!(bif_spawn_link_1(&[fun], &mut ctx), Err(badarg()));
 }
 

@@ -45,6 +45,7 @@ fn make_fun_captures_exact_free_variables() {
         arity: 1,
         label: 7,
         num_free: 2,
+        unique_id: 11,
     });
     let mut process = Process::new(1, 16);
     process.set_x_reg(0, Term::small_int(42));
@@ -57,6 +58,8 @@ fn make_fun_captures_exact_free_variables() {
     let closure = Closure::new(process.x_reg(0)).expect("closure term");
     assert_eq!(closure.arity(), 1);
     assert_eq!(closure.num_free(), 2);
+    assert_eq!(closure.generation(), module.generation());
+    assert_eq!(closure.unique_id(), 11);
     assert_eq!(closure.free_var(0), Some(Term::small_int(42)));
     assert_eq!(closure.free_var(1), Some(Term::small_int(99)));
     assert_eq!(closure.free_var(2), None);
@@ -70,6 +73,7 @@ fn make_fun_with_no_free_variables_creates_empty_closure() {
         arity: 0,
         label: 1,
         num_free: 0,
+        unique_id: 12,
     });
     let mut process = Process::new(1, 8);
 
@@ -91,6 +95,7 @@ fn call_fun_restores_captured_variables_and_jumps_to_lambda_label() {
         arity: 1,
         label: 10,
         num_free: 1,
+        unique_id: 13,
     });
     let mut process = Process::new(1, 16);
     process.set_x_reg(0, Term::small_int(7));
@@ -116,6 +121,7 @@ fn call_fun_reports_badfun_and_badarity() {
         arity: 2,
         label: 1,
         num_free: 0,
+        unique_id: 14,
     });
     let mut process = Process::new(1, 16);
     process.set_x_reg(1, Term::small_int(42));
@@ -137,6 +143,109 @@ fn call_fun_reports_badfun_and_badarity() {
             fun,
             args: vec![Term::small_int(10)],
         })
+    );
+}
+
+#[test]
+fn call_fun_resolves_reloaded_module_by_unique_id() {
+    let atoms = AtomTable::new();
+    let module_atom = atoms.intern("hot");
+    let callback_atom = atoms.intern("callback@anon");
+    let other_atom = atoms.intern("other@anon");
+    let callback_id = crate::loader::lambda_unique_id(&atoms, module_atom, callback_atom, 0, 0)
+        .expect("callback id");
+    let other_id =
+        crate::loader::lambda_unique_id(&atoms, module_atom, other_atom, 0, 0).expect("other id");
+    let registry = ModuleRegistry::new();
+
+    let mut v1 = module(module_atom, vec![Instruction::Label { label: 10 }]);
+    v1.lambdas.push(LambdaEntry {
+        function: callback_atom,
+        arity: 0,
+        label: 10,
+        num_free: 0,
+        unique_id: callback_id,
+    });
+    let v1 = registry.insert(v1);
+    let mut process = Process::new(1, 16);
+    make_fun(&mut process, &v1, &[Operand::Unsigned(0)]).expect("make_fun v1");
+    let fun = process.x_reg(0);
+
+    let mut v2 = module(
+        module_atom,
+        vec![
+            Instruction::Label { label: 20 },
+            Instruction::Return,
+            Instruction::Label { label: 30 },
+        ],
+    );
+    v2.lambdas.push(LambdaEntry {
+        function: other_atom,
+        arity: 0,
+        label: 20,
+        num_free: 0,
+        unique_id: other_id,
+    });
+    v2.lambdas.push(LambdaEntry {
+        function: callback_atom,
+        arity: 0,
+        label: 30,
+        num_free: 0,
+        unique_id: callback_id,
+    });
+    let v2 = registry.insert(v2);
+    process.set_x_reg(0, fun);
+
+    let outcome = call_fun(
+        &mut process,
+        &v2,
+        &Operand::Unsigned(0),
+        99,
+        Some(&registry),
+    )
+    .expect("call_fun resolves by unique id");
+
+    assert_eq!(jump_ip(outcome), 2);
+    assert_eq!(
+        process.current_module().map(|module| module.generation()),
+        Some(2)
+    );
+}
+
+#[test]
+fn call_fun_reports_badfun_when_reloaded_lambda_removed() {
+    let atoms = AtomTable::new();
+    let module_atom = atoms.intern("hot_removed");
+    let callback_atom = atoms.intern("callback@anon");
+    let callback_id = crate::loader::lambda_unique_id(&atoms, module_atom, callback_atom, 0, 0)
+        .expect("callback id");
+    let registry = ModuleRegistry::new();
+
+    let mut v1 = module(module_atom, vec![Instruction::Label { label: 10 }]);
+    v1.lambdas.push(LambdaEntry {
+        function: callback_atom,
+        arity: 0,
+        label: 10,
+        num_free: 0,
+        unique_id: callback_id,
+    });
+    let v1 = registry.insert(v1);
+    let mut process = Process::new(1, 16);
+    make_fun(&mut process, &v1, &[Operand::Unsigned(0)]).expect("make_fun v1");
+    let fun = process.x_reg(0);
+    registry.insert(module(module_atom, vec![Instruction::Label { label: 20 }]));
+    let v3 = registry.insert(module(module_atom, vec![Instruction::Label { label: 30 }]));
+    process.set_x_reg(0, fun);
+
+    assert_eq!(
+        call_fun(
+            &mut process,
+            &v3,
+            &Operand::Unsigned(0),
+            99,
+            Some(&registry)
+        ),
+        Err(ExecError::Badfun { term: fun })
     );
 }
 
