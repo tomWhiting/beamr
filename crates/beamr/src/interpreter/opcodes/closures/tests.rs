@@ -306,7 +306,7 @@ fn apply_last_uses_latest_registry_export_after_module_reload() {
     let mut process = Process::new(1, 16);
     process
         .stack_mut()
-        .push_frame(Atom::OK, 123, 0)
+        .push_frame(Atom::OK, 123, Arc::new(module(Atom::OK, Vec::new())), 0)
         .expect("frame push");
     process.set_x_reg(0, Term::atom(module_atom));
     process.set_x_reg(1, Term::atom(value_atom));
@@ -333,7 +333,7 @@ fn apply_last_uses_latest_registry_export_after_module_reload() {
     let mut reloaded_process = Process::new(2, 16);
     reloaded_process
         .stack_mut()
-        .push_frame(Atom::OK, 123, 0)
+        .push_frame(Atom::OK, 123, Arc::new(module(Atom::OK, Vec::new())), 0)
         .expect("frame push");
     reloaded_process.set_x_reg(0, Term::atom(module_atom));
     reloaded_process.set_x_reg(1, Term::atom(value_atom));

@@ -186,11 +186,13 @@ fn external_return_restores_caller_version_and_qualified_self_call_upgrades() {
     a_v1_data.resolved_imports.push(import_b);
     a_v1_data.resolved_imports.push(import_self);
     let a_v1 = registry.insert(a_v1_data);
-    let _b_v1 = registry.insert(module(
+    let mut b_v1_data = module(
         Atom::ERROR,
         vec![Instruction::Label { label: 1 }, Instruction::Return],
-    ));
-    let _a_v2 = registry.insert(module(
+    );
+    b_v1_data.exports.insert((Atom::OK, 0), 1);
+    let _b_v1 = registry.insert(b_v1_data);
+    let mut a_v2_data = module(
         Atom::OK,
         vec![
             Instruction::Label { label: 9 },
@@ -200,8 +202,10 @@ fn external_return_restores_caller_version_and_qualified_self_call_upgrades() {
             },
             Instruction::Return,
         ],
-    ));
-    let mut process = Process::new(1, 32);
+    );
+    a_v2_data.exports.insert((Atom::OK, 0), 9);
+    let _a_v2 = registry.insert(a_v2_data);
+    let mut process = Process::new(1, 128);
     process.set_current_module(Arc::clone(&a_v1));
 
     assert_eq!(

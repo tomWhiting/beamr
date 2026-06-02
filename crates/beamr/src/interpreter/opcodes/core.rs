@@ -270,6 +270,7 @@ fn call_external_target(
                 module: target_module,
                 instruction_pointer,
             };
+            process.set_current_module(Arc::clone(&target_mod));
             jump_position_with_reduction(process, target)
         }
         ResolvedImportTarget::Deferred {
@@ -287,9 +288,10 @@ fn call_external_target(
                     })?;
             let instruction_pointer = target_mod.export_ip(function, target_arity)?;
             if save_return {
+                let caller_module = current_module_pin(process, module);
                 process
                     .stack_mut()
-                    .push_frame(module.name, return_ip, 0)
+                    .push_frame(module.name, return_ip, caller_module, 0)
                     .map_err(ExecError::from)?;
             }
             let target = CodePosition {
