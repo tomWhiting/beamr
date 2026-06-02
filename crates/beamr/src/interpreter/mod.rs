@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::ExecError;
 use crate::io::IoSink;
 use crate::module::{Module, ModuleRegistry};
+use crate::native::code_management::CodeManagementFacility;
 use crate::native::links::LinkFacility;
 use crate::native::spawn::SpawnFacility;
 use crate::native::supervision::SupervisionFacility;
@@ -29,6 +30,8 @@ pub struct NativeServices {
     pub supervision_facility: Option<Arc<dyn SupervisionFacility>>,
     /// Output sink for `io` module BIFs.
     pub io_sink: Option<Arc<dyn IoSink>>,
+    /// Code management facility for hot-loading BIFs.
+    pub code_management_facility: Option<Arc<dyn CodeManagementFacility>>,
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.
@@ -57,6 +60,8 @@ pub enum InstructionOutcome {
     Waiting,
     /// Exit the process.
     Exit(ExitReason),
+    /// The loader on_load instruction completed successfully.
+    OnLoadComplete,
 }
 
 /// Execute `process` against `module` until a scheduler boundary or exit.
@@ -67,6 +72,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         link_facility: None,
         supervision_facility: None,
         io_sink: None,
+        code_management_facility: None,
     };
     run_loop(process, module, None, &empty)
 }
@@ -83,6 +89,7 @@ pub fn run_with_registry(
         link_facility: None,
         supervision_facility: None,
         io_sink: None,
+        code_management_facility: None,
     };
     run_loop(process, initial_module, Some(registry), &empty)
 }
@@ -99,6 +106,7 @@ pub fn run_with_timer_services(
         link_facility: None,
         supervision_facility: None,
         io_sink: None,
+        code_management_facility: None,
     };
     run_loop(process, initial_module, None, &services)
 }
@@ -184,6 +192,11 @@ fn run_loop(
                 process.set_code_position(None);
                 process.clear_current_module();
                 return Ok(ExecutionResult::Exited(reason));
+            }
+            InstructionOutcome::OnLoadComplete => {
+                process.set_code_position(None);
+                process.clear_current_module();
+                return Ok(ExecutionResult::Exited(ExitReason::Normal));
             }
         }
     }

@@ -18,12 +18,15 @@ use crossbeam_deque::Stealer;
 use crossbeam_queue::SegQueue;
 use dashmap::DashMap;
 
-use crate::atom::Atom;
-use crate::error::ExecError;
+use crate::atom::{Atom, AtomTable};
+use crate::error::{ExecError, LoadError};
 use crate::hook::{Hook, HookDecision};
 use crate::interpreter::{self, ExecutionResult};
 use crate::io::{IoSink, NullSink};
+use crate::loader::{self, Instruction};
+use crate::module::PurgeError;
 use crate::module::{Module, ModuleRegistry};
+use crate::native::{BifRegistryImpl, CodeManagementFacility};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
@@ -44,10 +47,12 @@ pub struct SchedulerConfig {
     pub thread_count: Option<usize>,
 }
 
-struct SharedState {
+pub(super) struct SharedState {
     shutdown: AtomicBool,
     process_table: ProcessTable,
     module_registry: Arc<ModuleRegistry>,
+    atom_table: Arc<AtomTable>,
+    bif_registry: Arc<BifRegistryImpl>,
     spawn_counter: AtomicUsize,
     thread_count: usize,
     next_pid: AtomicU64,
@@ -95,17 +100,51 @@ pub struct Scheduler {
     worker_names: Vec<String>,
 }
 
+/// Result returned by a successful hot module load.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HotLoadResult {
+    pub module_name: Atom,
+    pub generation: u64,
+    pub had_old_version: bool,
+    pub on_load_required: bool,
+    pub on_load_succeeded: bool,
+}
+
+/// Result returned by safe or forced module purge.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PurgeResult {
+    pub module_name: Atom,
+    pub processes_killed: usize,
+}
+
 impl Scheduler {
     /// Create and start a scheduler with the supplied module registry.
     pub fn new(
         config: SchedulerConfig,
         module_registry: Arc<ModuleRegistry>,
     ) -> Result<Self, String> {
+        Self::with_code_server(
+            config,
+            module_registry,
+            Arc::new(AtomTable::with_common_atoms()),
+            Arc::new(BifRegistryImpl::new()),
+        )
+    }
+
+    /// Create and start a scheduler with explicit code-server state.
+    pub fn with_code_server(
+        config: SchedulerConfig,
+        module_registry: Arc<ModuleRegistry>,
+        atom_table: Arc<AtomTable>,
+        bif_registry: Arc<BifRegistryImpl>,
+    ) -> Result<Self, String> {
         let thread_count = configured_thread_count(config.thread_count);
         let shared = Arc::new(SharedState {
             shutdown: AtomicBool::new(false),
             process_table: ProcessTable::new(),
             module_registry,
+            atom_table,
+            bif_registry,
             spawn_counter: AtomicUsize::new(0),
             thread_count,
             next_pid: AtomicU64::new(0),
@@ -175,6 +214,39 @@ impl Scheduler {
             inject_queues,
             worker_names,
         })
+    }
+
+    /// Hot-load a BEAM module, running on_load before committing when required.
+    pub fn hot_load_module(&self, bytes: &[u8]) -> Result<HotLoadResult, LoadError> {
+        hot_load_module_shared(&self.shared, bytes)
+    }
+
+    /// Safely purge retained old code when no process still references it.
+    pub fn purge_module(&self, name: Atom) -> Result<PurgeResult, PurgeError> {
+        purge_module_shared(&self.shared, name)
+    }
+
+    /// Kill processes pinned to old code, then purge the retained old version.
+    pub fn force_purge_module(&self, name: Atom) -> Result<PurgeResult, PurgeError> {
+        force_purge_module_shared(&self.shared, name)
+    }
+
+    /// Remove every version of a module from the registry.
+    pub fn delete_module(&self, name: Atom) -> bool {
+        self.shared.module_registry.delete_module(name)
+    }
+
+    /// Return true when an old module version is retained.
+    pub fn check_old_code(&self, name: Atom) -> bool {
+        self.shared.module_registry.has_old_code(name)
+    }
+
+    /// Return true when a process is currently running or pinned to old code.
+    pub fn check_process_code(&self, pid: u64, name: Atom) -> bool {
+        let Some(old) = self.shared.module_registry.lookup_old(name) else {
+            return false;
+        };
+        process_references_old_code(&self.shared, pid, &old)
     }
 
     /// Spawn a process at an exported module/function/arity entrypoint.
@@ -330,6 +402,35 @@ impl Scheduler {
 impl Drop for Scheduler {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+pub(super) struct SchedulerCodeManagementFacility {
+    pub(super) shared: Arc<SharedState>,
+}
+
+impl CodeManagementFacility for SchedulerCodeManagementFacility {
+    fn load_module(&self, bytes: &[u8]) -> Result<HotLoadResult, LoadError> {
+        hot_load_module_shared(&self.shared, bytes)
+    }
+
+    fn purge_module(&self, module: Atom) -> Result<PurgeResult, PurgeError> {
+        purge_module_shared(&self.shared, module)
+    }
+
+    fn delete_module(&self, module: Atom) -> bool {
+        self.shared.module_registry.delete_module(module)
+    }
+
+    fn check_old_code(&self, module: Atom) -> bool {
+        self.shared.module_registry.has_old_code(module)
+    }
+
+    fn check_process_code(&self, pid: u64, module: Atom) -> bool {
+        let Some(old) = self.shared.module_registry.lookup_old(module) else {
+            return false;
+        };
+        process_references_old_code(&self.shared, pid, &old)
     }
 }
 
@@ -542,6 +643,135 @@ fn exit_reason_from_status(status: ProcessStatus) -> ExitReason {
         ProcessStatus::Exited(reason) => reason,
         _ => ExitReason::Error,
     }
+}
+
+fn hot_load_module_shared(
+    shared: &Arc<SharedState>,
+    bytes: &[u8],
+) -> Result<HotLoadResult, LoadError> {
+    let (staged, _report) = loader::prepare_module(
+        bytes,
+        &shared.atom_table,
+        &shared.module_registry,
+        shared.bif_registry.as_ref(),
+    )?;
+    let module_name = staged.name;
+    if shared.module_registry.lookup_old(module_name).is_some() {
+        return Err(LoadError::OldCodeStillRunning);
+    }
+    let had_old_version = shared.module_registry.lookup(module_name).is_some();
+    let on_load_ip = find_on_load_ip(&staged);
+    if let Some(ip) = on_load_ip {
+        let outcome = run_on_load(shared, &staged, ip);
+        if outcome != ExitReason::Normal {
+            return Ok(HotLoadResult {
+                module_name,
+                generation: staged.generation,
+                had_old_version,
+                on_load_required: true,
+                on_load_succeeded: false,
+            });
+        }
+    }
+    let committed = shared.module_registry.insert(staged);
+    Ok(HotLoadResult {
+        module_name,
+        generation: committed.generation(),
+        had_old_version,
+        on_load_required: on_load_ip.is_some(),
+        on_load_succeeded: on_load_ip.is_some(),
+    })
+}
+
+fn find_on_load_ip(module: &Module) -> Option<usize> {
+    module
+        .code
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::OnLoad))
+}
+
+fn run_on_load(shared: &Arc<SharedState>, module: &Module, ip: usize) -> ExitReason {
+    let mut process = Process::new(u64::MAX, DEFAULT_HEAP_SIZE);
+    process.set_code_position(Some(CodePosition {
+        module: module.name,
+        instruction_pointer: ip,
+    }));
+    process.set_current_module(Arc::new(module.clone()));
+    loop {
+        process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
+        let services = supervision_integration::build_native_services(shared);
+        match interpreter::run_with_native_services(
+            &mut process,
+            module,
+            &shared.module_registry,
+            &services,
+        ) {
+            Ok(ExecutionResult::Exited(reason)) => return reason,
+            Ok(ExecutionResult::Yielded) => continue,
+            Ok(ExecutionResult::Waiting) | Err(_) => return ExitReason::Error,
+        }
+    }
+}
+
+fn purge_module_shared(shared: &Arc<SharedState>, name: Atom) -> Result<PurgeResult, PurgeError> {
+    if let Some(old) = shared.module_registry.lookup_old(name) {
+        let references = process_references_to_module(shared, &old);
+        if references != 0 {
+            return Err(PurgeError::StillReferenced {
+                module: name,
+                ref_count: references,
+            });
+        }
+    }
+    shared.module_registry.purge_old(name)?;
+    Ok(PurgeResult {
+        module_name: name,
+        processes_killed: 0,
+    })
+}
+
+fn force_purge_module_shared(
+    shared: &Arc<SharedState>,
+    name: Atom,
+) -> Result<PurgeResult, PurgeError> {
+    let old = shared
+        .module_registry
+        .lookup_old(name)
+        .ok_or(PurgeError::NoOldVersion { module: name })?;
+    let victims = old_code_pids(shared, &old);
+    let processes_killed = victims.len();
+    for pid in victims {
+        cleanup_exited_process(shared, pid, ExitReason::Killed);
+    }
+    shared.module_registry.force_remove_old(name)?;
+    Ok(PurgeResult {
+        module_name: name,
+        processes_killed,
+    })
+}
+
+fn process_references_to_module(shared: &SharedState, module: &Arc<Module>) -> usize {
+    old_code_pids(shared, module).len()
+}
+
+fn old_code_pids(shared: &SharedState, module: &Arc<Module>) -> Vec<u64> {
+    shared
+        .process_bodies
+        .iter()
+        .filter_map(|entry| {
+            let pid = *entry.key();
+            process_references_old_code(shared, pid, module).then_some(pid)
+        })
+        .collect()
+}
+
+fn process_references_old_code(shared: &SharedState, pid: u64, module: &Arc<Module>) -> bool {
+    let Some(entry) = shared.process_bodies.get(&pid) else {
+        return false;
+    };
+    let slot = lock_or_recover(&entry);
+    slot.as_ref()
+        .is_some_and(|scheduled| scheduled.0.references_module(module))
 }
 
 fn cleanup_exited_process(shared: &SharedState, pid: u64, reason: ExitReason) {

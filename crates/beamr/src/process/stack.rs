@@ -250,6 +250,11 @@ impl Stack {
         self.frame_limit
     }
 
+    /// Iterator over every module version pinned by stack frames.
+    pub fn pinned_modules(&self) -> impl Iterator<Item = &Arc<Module>> {
+        self.frames.iter().map(StackFrame::pinned_module)
+    }
+
     /// Iterator over every Y-register in every stack frame.
     pub(crate) fn y_regs(&self) -> impl Iterator<Item = &Term> {
         self.frames.iter().flat_map(StackFrame::y_regs)

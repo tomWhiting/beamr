@@ -317,6 +317,35 @@ impl ModuleRegistry {
             label,
         })
     }
+
+    /// Returns true when an old version is retained for `name`.
+    #[must_use]
+    pub fn has_old_code(&self, name: Atom) -> bool {
+        self.lookup_old(name).is_some()
+    }
+
+    /// Removes every retained version for `name` from the registry.
+    ///
+    /// Callers are responsible for checking process references before deleting.
+    pub fn delete_module(&self, name: Atom) -> bool {
+        self.modules.remove(&name).is_some()
+    }
+
+    /// Removes the retained old version without checking external references.
+    ///
+    /// This is only for force purge after the scheduler has terminated every
+    /// process that was running or pinned to old code.
+    pub(crate) fn force_remove_old(&self, name: Atom) -> Result<(), PurgeError> {
+        let mut entry = self
+            .modules
+            .get_mut(&name)
+            .ok_or(PurgeError::NoOldVersion { module: name })?;
+        entry
+            .old
+            .take()
+            .ok_or(PurgeError::NoOldVersion { module: name })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

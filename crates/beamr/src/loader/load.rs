@@ -273,11 +273,22 @@ pub fn load_module(
     module_registry: &ModuleRegistry,
     bif_registry: &impl BifRegistry,
 ) -> Result<(Arc<Module>, UnresolvedImportReport), LoadError> {
+    let (module, report) = prepare_module(bytes, atom_table, module_registry, bif_registry)?;
+    let module = module_registry.insert(module);
+    Ok((module, report))
+}
+
+/// Parses, resolves, and validates a BEAM module without registering it.
+pub fn prepare_module(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &impl BifRegistry,
+) -> Result<(Module, UnresolvedImportReport), LoadError> {
     let parsed = load_beam_chunks(bytes, atom_table)?;
     let (resolved_by_index, report) = resolve_imports(&parsed, module_registry, bif_registry);
     validate_module(&parsed, &resolved_by_index)?;
     let module = module_from_parsed(parsed, resolved_by_index.into_iter().flatten().collect());
-    let module = module_registry.insert(module);
     Ok((module, report))
 }
 

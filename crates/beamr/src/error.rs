@@ -18,6 +18,9 @@ pub enum LoadError {
     DecodeError(String),
     /// Decoded module contents failed semantic validation.
     ValidationError(String),
+    /// A second old code version would be created before the existing old
+    /// version was purged.
+    OldCodeStillRunning,
 }
 
 impl fmt::Display for LoadError {
@@ -31,6 +34,8 @@ impl fmt::Display for LoadError {
             Self::ValidationError(message) => {
                 write!(formatter, "BEAM module validation failed: {message}")
             }
+            Self::OldCodeStillRunning => formatter
+                .write_str("old code is still running and must be purged before loading again"),
         }
     }
 }

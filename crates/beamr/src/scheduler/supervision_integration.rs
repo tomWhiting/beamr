@@ -202,12 +202,17 @@ pub(super) fn build_native_services(
         Arc::new(SchedulerSupervisionFacility {
             shared: Arc::clone(shared),
         });
+    let code_management: Arc<dyn crate::native::CodeManagementFacility> =
+        Arc::new(super::SchedulerCodeManagementFacility {
+            shared: Arc::clone(shared),
+        });
     crate::interpreter::NativeServices {
         timers: Some(Arc::clone(&shared.timers)),
         spawn_facility: Some(spawn),
         link_facility: Some(link),
         supervision_facility: Some(supervision),
         io_sink: Some(Arc::clone(&lock_or_recover(&shared.output_sink))),
+        code_management_facility: Some(code_management),
     }
 }
 

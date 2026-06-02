@@ -1,1 +1,1 @@
-Harden closure version binding dispatch and metadata handling
+feat(beamr): add hot code loading lifecycle APIs and BIFs

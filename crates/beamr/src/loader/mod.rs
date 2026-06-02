@@ -14,6 +14,6 @@ pub use decode::{
 };
 pub use load::{
     ParsedModule, UnresolvedImport, UnresolvedImportEntry, UnresolvedImportReport,
-    lambda_unique_id, load_beam_chunks, load_module,
+    lambda_unique_id, load_beam_chunks, load_module, prepare_module,
 };
 pub use parser::{FourCC, parse_beam_chunks};

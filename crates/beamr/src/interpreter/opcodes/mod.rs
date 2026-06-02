@@ -272,6 +272,7 @@ fn dispatch_common(
                 .ok_or(ExecError::InvalidOperand("apply_last: registry required"))?;
             closures::apply_last(process, registry, arity, deallocate, next_ip)
         }
+        Instruction::OnLoad => Ok(InstructionOutcome::OnLoadComplete),
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),
         other => Err(ExecError::UnsupportedOpcode {
             name: instruction_name(other),

@@ -523,6 +523,18 @@ impl Process {
         self.current_module.as_ref()
     }
 
+    /// Returns true when the current module or any stack frame pins `module`.
+    #[must_use]
+    pub fn references_module(&self, module: &Arc<Module>) -> bool {
+        self.current_module
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, module))
+            || self
+                .stack
+                .pinned_modules()
+                .any(|pinned| Arc::ptr_eq(pinned, module))
+    }
+
     /// Set the currently executing module version.
     pub fn set_current_module(&mut self, module: Arc<Module>) {
         self.current_module = Some(module);

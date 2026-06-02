@@ -46,6 +46,8 @@ pub fn register_gate1_bifs(
         registry.register(erlang, function, arity, native_function)?;
     }
 
+    crate::native::code_management::register_code_management_bifs(registry, atom_table)?;
+
     Ok(())
 }
 
@@ -449,6 +451,11 @@ mod tests {
             ("send_after", 3),
             ("start_timer", 3),
             ("cancel_timer", 1),
+            ("load_module", 2),
+            ("purge_module", 1),
+            ("delete_module", 1),
+            ("check_old_code", 1),
+            ("check_process_code", 2),
         ] {
             let function = atom_table.intern(name);
             assert!(

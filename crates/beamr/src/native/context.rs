@@ -13,6 +13,7 @@ use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofS
 use crate::term::Term;
 use crate::timer::{TimerRef, TimerWheel};
 
+use super::code_management::CodeManagementFacility;
 use super::links::LinkFacility;
 use super::registry::RegistryFacility;
 use super::select::SelectFacility;
@@ -66,6 +67,7 @@ pub struct ProcessContext {
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
     link_facility: Option<Arc<dyn LinkFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
+    code_management_facility: Option<Arc<dyn CodeManagementFacility>>,
     registry_facility: Option<Arc<dyn RegistryFacility>>,
     select_facility: Option<Arc<dyn SelectFacility>>,
     io_sink: Arc<dyn IoSink>,
@@ -88,6 +90,10 @@ impl fmt::Debug for ProcessContext {
             .field(
                 "supervision_facility",
                 &self.supervision_facility.as_ref().map(|_| ".."),
+            )
+            .field(
+                "code_management_facility",
+                &self.code_management_facility.as_ref().map(|_| ".."),
             )
             .field(
                 "registry_facility",
@@ -122,6 +128,7 @@ impl ProcessContext {
             spawn_facility: None,
             link_facility: None,
             supervision_facility: None,
+            code_management_facility: None,
             registry_facility: None,
             select_facility: None,
             io_sink: Arc::new(NullSink),
@@ -141,6 +148,7 @@ impl ProcessContext {
             spawn_facility: None,
             link_facility: None,
             supervision_facility: None,
+            code_management_facility: None,
             registry_facility: None,
             select_facility: None,
             io_sink: Arc::new(NullSink),
@@ -192,6 +200,20 @@ impl ProcessContext {
     /// Set the supervision facility for monitor/demonitor/exit BIFs.
     pub fn set_supervision_facility(&mut self, facility: Option<Arc<dyn SupervisionFacility>>) {
         self.supervision_facility = facility;
+    }
+
+    /// Return the code-management facility, if one has been configured.
+    #[must_use]
+    pub fn code_management_facility(&self) -> Option<&dyn CodeManagementFacility> {
+        self.code_management_facility.as_deref()
+    }
+
+    /// Set the code-management facility for hot-code BIFs.
+    pub fn set_code_management_facility(
+        &mut self,
+        facility: Option<Arc<dyn CodeManagementFacility>>,
+    ) {
+        self.code_management_facility = facility;
     }
 
     /// Return the atom table, if one has been configured.
