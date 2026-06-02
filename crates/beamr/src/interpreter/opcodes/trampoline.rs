@@ -253,7 +253,9 @@ mod tests {
 
         let module = Module {
             name: Atom::OK,
+            generation: 0,
             exports: HashMap::new(),
+            label_index: HashMap::new(),
             code: vec![Instruction::Return],
             literals: Vec::new(),
             resolved_imports: Vec::new(),

@@ -6,9 +6,19 @@ use crate::term::binary::{Binary, write_binary};
 use std::collections::HashMap;
 
 fn module(code: Vec<Instruction>) -> Module {
+    let label_index = code
+        .iter()
+        .enumerate()
+        .filter_map(|(ip, instruction)| match instruction {
+            Instruction::Label { label } => Some((*label, ip)),
+            _ => None,
+        })
+        .collect();
     Module {
         name: Atom::OK,
+        generation: 0,
         exports: HashMap::new(),
+        label_index,
         code,
         literals: Vec::new(),
         resolved_imports: Vec::new(),

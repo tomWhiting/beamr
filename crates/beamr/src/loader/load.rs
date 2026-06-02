@@ -256,10 +256,21 @@ fn module_from_parsed(parsed: ParsedModule, resolved_imports: Vec<ResolvedImport
         .into_iter()
         .map(|export| ((export.function, export.arity), export.label))
         .collect();
+    let label_index = parsed
+        .instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(ip, instruction)| match instruction {
+            Instruction::Label { label } => Some((*label, ip)),
+            _ => None,
+        })
+        .collect();
 
     Module {
         name: parsed.name,
+        generation: 0,
         exports,
+        label_index,
         code: parsed.instructions,
         literals: parsed.literals,
         resolved_imports,
@@ -352,6 +363,11 @@ mod tests {
             &registry.lookup(module.name).expect("registered module"),
             &module
         ));
+        for (ip, instruction) in module.code.iter().enumerate() {
+            if let crate::loader::Instruction::Label { label } = instruction {
+                assert_eq!(module.label_index.get(label).copied(), Some(ip));
+            }
+        }
         assert!(!report.is_empty());
     }
 
@@ -363,7 +379,9 @@ mod tests {
         let registry = ModuleRegistry::new();
         let mut target = Module {
             name: callee,
+            generation: 0,
             exports: std::collections::HashMap::new(),
+            label_index: std::collections::HashMap::new(),
             code: Vec::new(),
             literals: Vec::new(),
             resolved_imports: Vec::new(),

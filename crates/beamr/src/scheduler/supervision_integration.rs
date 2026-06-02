@@ -15,9 +15,7 @@ use crate::supervision::link;
 use crate::supervision::monitor;
 use crate::term::Term;
 
-use super::{
-    ScheduledProcess, SharedState, cleanup_exited_process, label_ip, lock_or_recover, wake_process,
-};
+use super::{ScheduledProcess, SharedState, cleanup_exited_process, lock_or_recover, wake_process};
 
 /// Propagate exit signals through links and deliver DOWN messages through
 /// monitors when a process exits. Uses a worklist pattern to handle cascade
@@ -234,7 +232,10 @@ impl SpawnFacility for SchedulerSpawnFacility {
             .module_registry
             .lookup_mfa(module, function, arity)
             .map_err(|_| SpawnError::UnresolvedMfa)?;
-        let ip = label_ip(&entry.module, entry.label).map_err(|_| SpawnError::UnresolvedMfa)?;
+        let ip = entry
+            .module
+            .label_ip(entry.label)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
 
         let child_pid = self
             .shared
@@ -298,7 +299,9 @@ impl SpawnFacility for SchedulerSpawnFacility {
             .lambdas
             .get(lambda_index as usize)
             .ok_or(SpawnError::UnresolvedMfa)?;
-        let ip = label_ip(&loaded, lambda.label).map_err(|_| SpawnError::UnresolvedMfa)?;
+        let ip = loaded
+            .label_ip(lambda.label)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
 
         let child_pid = self
             .shared

@@ -23,7 +23,6 @@ use crate::error::ExecError;
 use crate::hook::{Hook, HookDecision};
 use crate::interpreter::{self, ExecutionResult};
 use crate::io::{IoSink, NullSink};
-use crate::loader::Instruction;
 use crate::module::{Module, ModuleRegistry};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::registry::ProcessTable;
@@ -189,7 +188,7 @@ impl Scheduler {
             .shared
             .module_registry
             .lookup_mfa(entry_module, entry_function, arity)?;
-        let instruction_pointer = label_ip(&entry.module, entry.label)?;
+        let instruction_pointer = entry.module.label_ip(entry.label)?;
         Ok(self.enqueue_spawn(entry.module.name, instruction_pointer, args))
     }
 
@@ -587,14 +586,6 @@ fn park_thread(shared: &SharedState) {
             let _recovered = error.into_inner();
         }
     }
-}
-
-fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
-    module
-        .code
-        .iter()
-        .position(|instr| matches!(instr, Instruction::Label { label: seen } if *seen == label))
-        .ok_or(ExecError::InvalidLabel { label })
 }
 
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

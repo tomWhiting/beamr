@@ -74,14 +74,25 @@ mod tests {
     use std::collections::HashMap;
 
     fn module() -> Module {
+        let code = vec![
+            Instruction::Label { label: 1 },
+            Instruction::Label { label: 2 },
+            Instruction::Label { label: 3 },
+        ];
+        let label_index = code
+            .iter()
+            .enumerate()
+            .filter_map(|(ip, instruction)| match instruction {
+                Instruction::Label { label } => Some((*label, ip)),
+                _ => None,
+            })
+            .collect();
         Module {
             name: Atom::OK,
+            generation: 0,
             exports: HashMap::new(),
-            code: vec![
-                Instruction::Label { label: 1 },
-                Instruction::Label { label: 2 },
-                Instruction::Label { label: 3 },
-            ],
+            label_index,
+            code,
             literals: Vec::new(),
             resolved_imports: Vec::new(),
             lambdas: Vec::new(),

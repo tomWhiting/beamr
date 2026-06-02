@@ -398,11 +398,7 @@ pub(crate) fn charge_reduction(process: &mut Process) -> Result<(), ExecError> {
 }
 
 pub(crate) fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> {
-    module
-        .code
-        .iter()
-        .position(|instruction| matches!(instruction, crate::loader::Instruction::Label { label: seen } if *seen == label))
-        .ok_or(ExecError::InvalidLabel { label })
+    module.label_ip(label)
 }
 
 pub(crate) fn read_term(process: &Process, operand: &Operand) -> Result<Term, ExecError> {
