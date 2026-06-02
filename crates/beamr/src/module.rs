@@ -146,7 +146,6 @@ impl std::error::Error for PurgeError {}
 #[derive(Debug, Default)]
 pub struct ModuleRegistry {
     modules: DashMap<Atom, ModuleVersions>,
-    generations: DashMap<Atom, u64>,
 }
 
 impl ModuleRegistry {
@@ -162,43 +161,38 @@ impl ModuleRegistry {
     }
 
     /// Inserts an already shared module, promoting any current version to old.
+    ///
+    /// The registry assigns generations at insertion time, so this method clones
+    /// the module data into a newly shared current version instead of storing the
+    /// caller-provided `Arc` by pointer identity.
     pub fn insert_arc(&self, module: Arc<Module>) -> Arc<Module> {
         self.insert_version((*module).clone())
     }
 
     fn insert_version(&self, mut module: Module) -> Arc<Module> {
-        let generation = match self.generations.entry(module.name) {
-            Entry::Occupied(mut entry) => {
-                let next = entry.get().saturating_add(1);
-                *entry.get_mut() = next;
-                next
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(1);
-                1
-            }
-        };
-        module.generation = generation;
-        let module = Arc::new(module);
         let name = module.name;
 
         match self.modules.entry(name) {
             Entry::Occupied(mut entry) => {
                 let previous_current = Arc::clone(&entry.get().current);
+                module.generation = previous_current.generation().saturating_add(1);
+                let module = Arc::new(module);
                 *entry.get_mut() = ModuleVersions {
                     current: Arc::clone(&module),
                     old: Some(previous_current),
                 };
+                module
             }
             Entry::Vacant(entry) => {
+                module.generation = 1;
+                let module = Arc::new(module);
                 entry.insert(ModuleVersions {
                     current: Arc::clone(&module),
                     old: None,
                 });
+                module
             }
         }
-
-        module
     }
 
     /// Looks up the current module version by name.
@@ -375,6 +369,22 @@ mod tests {
         assert_eq!(v1.generation(), 1);
         assert_eq!(v2.generation(), 2);
         assert_eq!(v3.generation(), 3);
+    }
+
+    #[test]
+    fn generations_are_tracked_per_module_name() {
+        let atoms = AtomTable::new();
+        let first_name = atoms.intern("first");
+        let second_name = atoms.intern("second");
+        let registry = ModuleRegistry::new();
+
+        let first_v1 = registry.insert(empty_module(first_name));
+        let second_v1 = registry.insert(empty_module(second_name));
+        let first_v2 = registry.insert(empty_module(first_name));
+
+        assert_eq!(first_v1.generation(), 1);
+        assert_eq!(second_v1.generation(), 1);
+        assert_eq!(first_v2.generation(), 2);
     }
 
     #[test]

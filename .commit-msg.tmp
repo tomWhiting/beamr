@@ -1,1 +1,1 @@
-feat(beamr): retain dual module versions with purge support
+Harden module generation assignment for dual-version registry
