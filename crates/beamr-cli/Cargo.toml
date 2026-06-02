@@ -1,6 +1,6 @@
 [package]
 name = "beamr-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Thin runner for beamr — load a .beam file and execute it"
 readme = "README.md"
@@ -13,4 +13,4 @@ name = "beamr"
 path = "src/main.rs"
 
 [dependencies]
-beamr = { version = "0.1.0", path = "../beamr" }
+beamr = { version = "0.2.0", path = "../beamr" }
