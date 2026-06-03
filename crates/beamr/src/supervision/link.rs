@@ -175,9 +175,13 @@ fn enqueue_exit_message(
 ) -> Result<(), ()> {
     const EXIT_TUPLE_WORDS: usize = 4;
 
-    while target.heap().available() < EXIT_TUPLE_WORDS {
-        target.heap_mut().grow_to_next_capacity();
-    }
+    // Route heap growth through the GC: `ensure_space` runs minor/major
+    // collection (moving live young-generation data into old space and
+    // rewriting roots) BEFORE growing the nursery. Calling
+    // `grow_to_next_capacity` directly here would swap in a fresh empty region
+    // without copying live data, leaving registers, prior mailbox messages, and
+    // stack slots dangling. See `gc::ensure_space` and `heap.rs` region invariant.
+    crate::gc::ensure_space(target, EXIT_TUPLE_WORDS, 256).map_err(|_| ())?;
 
     let elements = [
         Term::atom(Atom::EXIT),
@@ -344,6 +348,62 @@ mod tests {
         links.link_pid(&mut caller, dead.pid());
 
         assert_eq!(caller.status(), ProcessStatus::Exited(ExitReason::Error));
+    }
+
+    /// Allocate a 3-element tuple directly on the process nursery (no GC), so it
+    /// is a live young-generation object the next heap growth must preserve.
+    fn alloc_young_tuple(process: &mut Process, elements: &[Term]) -> Term {
+        let ptr = process
+            .heap_mut()
+            .alloc(1 + elements.len())
+            .unwrap_or_else(|_| panic!("young tuple fits"));
+        // SAFETY: `alloc` returned `1 + elements.len()` writable young-heap words.
+        let words = unsafe { std::slice::from_raw_parts_mut(ptr, 1 + elements.len()) };
+        boxed::write_tuple(words, elements).unwrap_or_else(|| panic!("tuple writes"))
+    }
+
+    /// PR-6: delivering an exit signal to a trapping process whose nursery is
+    /// near-full must not abandon live young-generation terms. Before the fix the
+    /// signal path called `grow_to_next_capacity()` directly, swapping in a fresh
+    /// empty region without copying live data or rewriting roots — every live
+    /// young pointer (here, the tuple in X0) was left dangling into freed memory.
+    /// Routing through `gc::ensure_space` collects and rewrites roots first, so
+    /// the term survives intact.
+    #[test]
+    fn exit_signal_on_near_full_heap_preserves_live_young_terms() {
+        let mut links = LinkSet::new();
+        // Small nursery so we can drive it near-full cheaply.
+        let mut watcher = Process::new(1, 16);
+        watcher
+            .transition_to(ProcessStatus::Running)
+            .unwrap_or_else(|error| panic!("process starts: {error}"));
+        watcher.set_trap_exit(true);
+
+        // Live term kept as a root via X0.
+        let live = alloc_young_tuple(&mut watcher, &[Term::small_int(111), Term::small_int(222)]);
+        watcher.set_x_reg(0, live);
+
+        // Fill the remaining nursery so the 4-word exit tuple cannot fit without
+        // growth — forcing the heap-growth path on the signal.
+        while watcher.heap().available() >= 4 {
+            let _ = watcher.heap_mut().alloc(1);
+        }
+        assert!(watcher.heap().available() < 4);
+
+        links.deliver_exit_signal(2, &mut watcher, ExitReason::Error);
+
+        // The previously-live tuple must still be valid and correct.
+        let recovered =
+            Tuple::new(watcher.x_reg(0)).unwrap_or_else(|| panic!("X0 is still a tuple"));
+        assert_eq!(recovered.arity(), 2);
+        assert_eq!(recovered.get(0), Some(Term::small_int(111)));
+        assert_eq!(recovered.get(1), Some(Term::small_int(222)));
+
+        // And the exit message was still delivered.
+        assert_eq!(watcher.status(), ProcessStatus::Running);
+        let tuple = mailbox_tuple(&mut watcher);
+        assert_eq!(tuple.get(0), Some(Term::atom(Atom::EXIT)));
+        assert_eq!(tuple.get(1).and_then(Term::as_pid), Some(2));
     }
 
     #[test]
