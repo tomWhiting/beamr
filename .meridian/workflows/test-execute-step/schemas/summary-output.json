@@ -1,7 +1,0 @@
-{
-  "type": "object",
-  "properties": {
-    "summary": {"type": "string", "description": "One-paragraph summary."}
-  },
-  "required": ["summary"]
-}
