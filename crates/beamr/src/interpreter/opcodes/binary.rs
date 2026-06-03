@@ -97,7 +97,7 @@ fn bs_get_integer(
     let (fail, context, size, unit, flags, destination) =
         parse_get_operands(operands, "bs_get_integer2")?;
     let size_bits = segment_bits(size, unit)?;
-    let endian = Endian::from_flags(flags);
+    let segment_flags = SegmentFlags::from_flags(flags);
     let context_term = core::read_term(process, context)?;
     let context = MatchContext::new(context_term).ok_or(ExecError::Badarg)?;
     if !size_bits.is_multiple_of(u8::BITS as usize)
@@ -110,7 +110,7 @@ fn bs_get_integer(
     }
 
     let bytes = context.slice(size_bits).ok_or(ExecError::Badarg)?;
-    let value = decode_integer(bytes, endian)?;
+    let value = decode_integer(bytes, segment_flags)?;
     let term = Term::try_small_int(value).ok_or(ExecError::Badarg)?;
     core::write_term(process, destination, term)?;
     context.set_position_bits(context.position_bits() + size_bits);
@@ -413,8 +413,45 @@ impl Endian {
         match flags {
             Operand::Unsigned(1) | Operand::Integer(1) => Self::Little,
             Operand::List(items) if items.iter().any(is_little_flag) => Self::Little,
+            // BEAM: the flags field is a bitmask; BSF_LITTLE = 0x02.
+            Operand::Unsigned(v) if v & 0x02 != 0 => Self::Little,
+            Operand::Integer(v) if v & 0x02 != 0 => Self::Little,
             _ => Self::Big,
         }
+    }
+}
+
+/// Endianness plus signedness for a binary integer segment.
+///
+/// BEAM: `bs_get_integer2`'s flags operand is a bitmask — `BSF_LITTLE = 0x02`
+/// selects little-endian, `BSF_SIGNED = 0x04` selects two's-complement
+/// interpretation. Compiled code may also surface flags as a list of markers.
+#[derive(Copy, Clone)]
+struct SegmentFlags {
+    endian: Endian,
+    signed: bool,
+}
+
+impl SegmentFlags {
+    fn from_flags(flags: &Operand) -> Self {
+        let signed = match flags {
+            Operand::Unsigned(v) => v & 0x04 != 0,
+            Operand::Integer(v) => v & 0x04 != 0,
+            Operand::List(items) => items.iter().any(is_signed_flag),
+            _ => false,
+        };
+        Self {
+            endian: Endian::from_flags(flags),
+            signed,
+        }
+    }
+}
+
+fn is_signed_flag(flag: &Operand) -> bool {
+    match flag {
+        Operand::Unsigned(v) => v & 0x04 != 0,
+        Operand::Integer(v) => v & 0x04 != 0,
+        _ => false,
     }
 }
 
@@ -469,16 +506,27 @@ fn encode_integer(value: i64, byte_count: usize, endian: Endian) -> Result<Vec<u
     Ok(bytes)
 }
 
-fn decode_integer(bytes: &[u8], endian: Endian) -> Result<i64, ExecError> {
+fn decode_integer(bytes: &[u8], flags: SegmentFlags) -> Result<i64, ExecError> {
     if bytes.len() > std::mem::size_of::<i64>() {
         return Err(ExecError::Badarg);
     }
-    let mut full = [0_u8; 8];
-    match endian {
+    // BEAM: a signed field with its top (sign) bit set must sign-extend the fill
+    // so the field is read as a two's-complement value; unsigned fields and
+    // non-negative signed fields zero-extend. The sign bit lives in the
+    // most-significant decoded byte, which is the first byte for big-endian and
+    // the last byte for little-endian.
+    let msb = match flags.endian {
+        Endian::Big => bytes.first(),
+        Endian::Little => bytes.last(),
+    };
+    let negative = flags.signed && msb.is_some_and(|byte| byte & 0x80 != 0);
+    let fill = if negative { 0xff_u8 } else { 0x00_u8 };
+    let mut full = [fill; 8];
+    match flags.endian {
         Endian::Big => full[8 - bytes.len()..].copy_from_slice(bytes),
         Endian::Little => full[..bytes.len()].copy_from_slice(bytes),
     }
-    Ok(match endian {
+    Ok(match flags.endian {
         Endian::Big => u64::from_be_bytes(full) as i64,
         Endian::Little => u64::from_le_bytes(full) as i64,
     })
