@@ -10,7 +10,7 @@ use crate::term::binary::{Binary, write_binary};
 use crate::term::boxed::write_tuple;
 
 pub fn register_meridian_ffi(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let module = atom_table.intern("meridian_ffi");

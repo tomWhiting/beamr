@@ -454,9 +454,9 @@ fn binary_part_extracts_slices_and_rejects_out_of_bounds() {
 #[test]
 fn register_stdlib_stubs_registers_all_expected_mfas() {
     let atom_table = AtomTable::new();
-    let mut registry = BifRegistryImpl::new();
+    let registry = BifRegistryImpl::new();
 
-    register_stdlib_stubs(&mut registry, &atom_table).expect("registration should succeed");
+    register_stdlib_stubs(&registry, &atom_table).expect("registration should succeed");
 
     let expected = [
         ("erlang", "atom_to_binary", 1),
@@ -526,8 +526,8 @@ fn register_stdlib_stubs_registers_all_expected_mfas() {
 #[test]
 fn register_stdlib_stubs_fails_on_duplicate() {
     let atom_table = AtomTable::new();
-    let mut registry = BifRegistryImpl::new();
+    let registry = BifRegistryImpl::new();
 
-    register_stdlib_stubs(&mut registry, &atom_table).expect("first registration");
-    assert!(register_stdlib_stubs(&mut registry, &atom_table).is_err());
+    register_stdlib_stubs(&registry, &atom_table).expect("first registration");
+    assert!(register_stdlib_stubs(&registry, &atom_table).is_err());
 }

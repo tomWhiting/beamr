@@ -73,8 +73,8 @@ fn parse_query_returns_binary_key_value_map() {
 #[test]
 fn register_stdlib_stubs_includes_uri_bifs() {
     let atom_table = AtomTable::with_common_atoms();
-    let mut registry = BifRegistryImpl::new();
-    register_stdlib_stubs(&mut registry, &atom_table).expect("registration");
+    let registry = BifRegistryImpl::new();
+    register_stdlib_stubs(&registry, &atom_table).expect("registration");
 
     let gleam_stdlib = atom_table.intern("gleam_stdlib");
     for name in [

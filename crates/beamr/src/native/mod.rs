@@ -21,8 +21,8 @@ pub mod spawn;
 pub mod stdlib_stubs;
 pub mod supervision;
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use std::error::Error;
 use std::fmt;
 
@@ -91,14 +91,14 @@ pub trait BifRegistry {
 
 pub use crate::loader::{UnresolvedImport, UnresolvedImportReport};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct NativeRegistry {
-    entries: HashMap<NativeKey, NativeEntry>,
+    entries: DashMap<NativeKey, NativeEntry>,
 }
 
 impl NativeRegistry {
     fn register(
-        &mut self,
+        &self,
         module: Atom,
         function: Atom,
         arity: u8,
@@ -122,12 +122,14 @@ impl NativeRegistry {
     }
 
     fn lookup(&self, module: Atom, function: Atom, arity: u8) -> Option<NativeEntry> {
-        self.entries.get(&(module, function, arity)).copied()
+        self.entries
+            .get(&(module, function, arity))
+            .map(|entry| *entry)
     }
 }
 
 /// Built-in function registry populated by the VM before module loading.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct BifRegistryImpl {
     registry: NativeRegistry,
 }
@@ -141,7 +143,7 @@ impl BifRegistryImpl {
 
     /// Registers a normal built-in function.
     pub fn register(
-        &mut self,
+        &self,
         module: Atom,
         function: Atom,
         arity: u8,
@@ -153,7 +155,7 @@ impl BifRegistryImpl {
 
     /// Registers a built-in function that should use dirty scheduling later.
     pub fn register_dirty(
-        &mut self,
+        &self,
         module: Atom,
         function: Atom,
         arity: u8,
@@ -190,7 +192,7 @@ impl BifRegistry for BifRegistryImpl {
 }
 
 /// Host-provided native implemented function registry.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct NifRegistry {
     registry: NativeRegistry,
 }
@@ -279,7 +281,7 @@ mod tests {
         let erlang = atom_table.intern("erlang");
         let plus = atom_table.intern("+");
         let unknown = atom_table.intern("unknown");
-        let mut registry = BifRegistryImpl::new();
+        let registry = BifRegistryImpl::new();
 
         assert!(registry.register(erlang, plus, 2, forty_two).is_ok());
 
@@ -294,7 +296,7 @@ mod tests {
         let atom_table = AtomTable::new();
         let erlang = atom_table.intern("erlang");
         let plus = atom_table.intern("+");
-        let mut registry = BifRegistryImpl::new();
+        let registry = BifRegistryImpl::new();
 
         assert!(registry.register(erlang, plus, 2, forty_two).is_ok());
 
@@ -313,7 +315,7 @@ mod tests {
         let atom_table = AtomTable::new();
         let erlang = atom_table.intern("erlang");
         let plus = atom_table.intern("+");
-        let mut bif_registry = BifRegistryImpl::new();
+        let bif_registry = BifRegistryImpl::new();
         let mut nif_registry = NifRegistry::new();
 
         assert!(bif_registry.register(erlang, plus, 2, forty_two).is_ok());
@@ -335,7 +337,7 @@ mod tests {
         let erlang = atom_table.intern("erlang");
         let plus = atom_table.intern("+");
         let host_only = atom_table.intern("host_only");
-        let mut bif_registry = BifRegistryImpl::new();
+        let bif_registry = BifRegistryImpl::new();
         let mut nif_registry = NifRegistry::new();
 
         bif_registry
@@ -363,7 +365,7 @@ mod tests {
         let erlang = atom_table.intern("erlang");
         let plus = atom_table.intern("+");
         let display = atom_table.intern("display");
-        let mut registry = BifRegistryImpl::new();
+        let registry = BifRegistryImpl::new();
 
         assert!(registry.register(erlang, plus, 2, forty_two).is_ok());
         assert!(
@@ -401,7 +403,7 @@ mod tests {
         let erlang = atom_table.intern("erlang");
         let plus = atom_table.intern("+");
         let unknown = atom_table.intern("unknown");
-        let mut registry = BifRegistryImpl::new();
+        let registry = BifRegistryImpl::new();
         registry
             .register(erlang, plus, 2, forty_two)
             .expect("register plus");
@@ -421,7 +423,7 @@ mod tests {
         let atom_table = AtomTable::new();
         let erlang = atom_table.intern("erlang");
         let plus = atom_table.intern("+");
-        let mut registry = BifRegistryImpl::new();
+        let registry = BifRegistryImpl::new();
         registry
             .register(erlang, plus, 2, forty_two)
             .expect("register plus");

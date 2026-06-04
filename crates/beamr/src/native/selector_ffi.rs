@@ -38,7 +38,7 @@ const SELECTOR_BIFS: &[SelectorBif] = &[
 
 /// Registers all selector BIFs under the `gleam_erlang_ffi` module.
 pub fn register_selector_bifs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let module = atom_table.intern("gleam_erlang_ffi");

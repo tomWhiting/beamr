@@ -366,8 +366,8 @@ fn iolist_size_rejects_complex_iolist_stub() {
 #[test]
 fn register_gate3_bifs_registers_all() {
     let at = AtomTable::new();
-    let mut reg = BifRegistryImpl::new();
-    register_gate3_bifs(&mut reg, &at).expect("gate 3 registration");
+    let reg = BifRegistryImpl::new();
+    register_gate3_bifs(&reg, &at).expect("gate 3 registration");
     let erlang = at.intern("erlang");
     for (name, arity) in [
         ("element", 2),
@@ -412,18 +412,18 @@ fn register_gate3_bifs_registers_all() {
 #[test]
 fn register_gate3_bifs_fails_twice() {
     let at = AtomTable::new();
-    let mut reg = BifRegistryImpl::new();
-    register_gate3_bifs(&mut reg, &at).expect("first");
-    assert!(register_gate3_bifs(&mut reg, &at).is_err());
+    let reg = BifRegistryImpl::new();
+    register_gate3_bifs(&reg, &at).expect("first");
+    assert!(register_gate3_bifs(&reg, &at).is_err());
 }
 
 #[test]
 fn all_three_gates_coexist() {
     let at = AtomTable::new();
-    let mut reg = BifRegistryImpl::new();
-    crate::native::bifs::register_gate1_bifs(&mut reg, &at).expect("gate 1");
-    crate::native::process_bifs::register_gate2_bifs(&mut reg, &at).expect("gate 2");
-    register_gate3_bifs(&mut reg, &at).expect("gate 3");
+    let reg = BifRegistryImpl::new();
+    crate::native::bifs::register_gate1_bifs(&reg, &at).expect("gate 1");
+    crate::native::process_bifs::register_gate2_bifs(&reg, &at).expect("gate 2");
+    register_gate3_bifs(&reg, &at).expect("gate 3");
     let erlang = at.intern("erlang");
     // Gate 1
     assert!(reg.lookup(erlang, at.intern("+"), 2).is_some());

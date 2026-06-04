@@ -29,9 +29,9 @@ fn supervisor_start_link_rejects_wrong_arity() {
 fn register_otp_stubs_registers_all_entries() {
     let atom_table = AtomTable::with_common_atoms();
     init_otp_atoms(&atom_table);
-    let mut registry = BifRegistryImpl::new();
+    let registry = BifRegistryImpl::new();
 
-    register_otp_stubs(&mut registry, &atom_table).expect("otp stub registration");
+    register_otp_stubs(&registry, &atom_table).expect("otp stub registration");
 
     let gleam_otp_ext = atom_table.intern("gleam_otp_external");
     let app_stopped = atom_table.intern("application_stopped");
@@ -66,10 +66,10 @@ fn register_otp_stubs_registers_all_entries() {
 fn register_otp_stubs_rejects_duplicate_registration() {
     let atom_table = AtomTable::with_common_atoms();
     init_otp_atoms(&atom_table);
-    let mut registry = BifRegistryImpl::new();
+    let registry = BifRegistryImpl::new();
 
-    register_otp_stubs(&mut registry, &atom_table).expect("first");
-    assert!(register_otp_stubs(&mut registry, &atom_table).is_err());
+    register_otp_stubs(&registry, &atom_table).expect("first");
+    assert!(register_otp_stubs(&registry, &atom_table).is_err());
 }
 
 #[test]

@@ -270,16 +270,137 @@ impl Scheduler {
         self.enqueue_spawn(Arc::clone(module), 0, Vec::new())
     }
 
+    /// Spawn a process with trap-exit set before it is made runnable.
+    pub fn spawn_trap_exit(
+        &self,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<Term>,
+    ) -> Result<u64, ExecError> {
+        let arity = u8::try_from(args.len()).map_err(|_| ExecError::Badarg)?;
+        let entry = self
+            .shared
+            .module_registry
+            .lookup_mfa(entry_module, entry_function, arity)?;
+        let instruction_pointer = entry.module.label_ip(entry.label)?;
+        Ok(self.enqueue_spawn_with_trap_exit(entry.module, instruction_pointer, args, true))
+    }
+
+    /// Set a live process's trap-exit flag, returning the previous value.
+    pub fn set_trap_exit(
+        &self,
+        pid: u64,
+        value: bool,
+    ) -> Result<bool, crate::native::links::LinkError> {
+        let facility = supervision_integration::SchedulerLinkFacility {
+            shared: Arc::clone(&self.shared),
+        };
+        crate::native::LinkFacility::set_trap_exit(&facility, pid, value)
+    }
+
+    /// Return true when a live process currently traps exits.
+    #[must_use]
+    pub fn trap_exit(&self, pid: u64) -> Option<bool> {
+        self.with_process(pid, |process| process.trap_exit())
+    }
+
+    /// Return true when `left` and `right` have a bidirectional live-process link.
+    #[must_use]
+    pub fn is_linked(&self, left: u64, right: u64) -> bool {
+        self.with_process(left, |process| process.links().contains(&right))
+            .unwrap_or(false)
+            && self
+                .with_process(right, |process| process.links().contains(&left))
+                .unwrap_or(false)
+    }
+
+    /// Spawn a process and link it to `parent_pid`.
+    pub fn spawn_link(
+        &self,
+        parent_pid: u64,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<Term>,
+    ) -> Result<u64, ExecError> {
+        let facility = supervision_integration::SchedulerSpawnFacility {
+            shared: Arc::clone(&self.shared),
+        };
+        crate::native::SpawnFacility::spawn(
+            &facility,
+            entry_module,
+            entry_function,
+            args,
+            Some(parent_pid),
+        )
+        .map_err(|_| ExecError::Badarg)
+    }
+
+    /// Spawn a linked process eligible for the dirty scheduler pool.
+    ///
+    /// The dirty pool integration is scaffolded; this uses normal linked-spawn
+    /// until the pool is wired in.
+    pub fn spawn_link_dirty(
+        &self,
+        parent_pid: u64,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<Term>,
+    ) -> Result<u64, ExecError> {
+        self.spawn_link(parent_pid, entry_module, entry_function, args)
+    }
+
+    /// Enqueue an immediate atom message into a live process mailbox.
+    #[must_use]
+    pub fn enqueue_atom_message(&self, target_pid: u64, atom: Atom) -> bool {
+        let delivered = self
+            .with_process(target_pid, |process| {
+                process.mailbox_mut().push_owned(Term::atom(atom));
+                true
+            })
+            .unwrap_or(false);
+        if delivered {
+            self.wake_process(target_pid);
+        }
+        delivered
+    }
+
     fn enqueue_spawn(
         &self,
         module_version: Arc<Module>,
         instruction_pointer: usize,
         args: Vec<Term>,
     ) -> u64 {
+        self.enqueue_spawn_with_trap_exit(module_version, instruction_pointer, args, false)
+    }
+
+    fn enqueue_spawn_with_trap_exit(
+        &self,
+        module_version: Arc<Module>,
+        instruction_pointer: usize,
+        args: Vec<Term>,
+        trap_exit: bool,
+    ) -> u64 {
         let pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(pid);
         let index =
             self.shared.spawn_counter.fetch_add(1, Ordering::Relaxed) % self.shared.thread_count;
+        if trap_exit {
+            let mut process = build_process(SpawnRequest {
+                pid,
+                module: module_version.name,
+                module_version,
+                instruction_pointer,
+                args,
+            });
+            process.set_trap_exit(true);
+            self.shared
+                .process_bodies
+                .insert(pid, Mutex::new(Some(ScheduledProcess(process))));
+            let mut wait_set = lock_or_recover(&self.shared.wait_set);
+            wait_set.woken.push((pid, index));
+            self.shared.wake_condvar.notify_all();
+            return pid;
+        }
         self.inject_queues[index].push(SpawnRequest {
             pid,
             module: module_version.name,
@@ -289,6 +410,67 @@ impl Scheduler {
         });
         self.shared.wake_condvar.notify_all();
         pid
+    }
+
+    fn with_process<T>(&self, pid: u64, f: impl FnOnce(&mut Process) -> T) -> Option<T> {
+        let entry = self.shared.process_bodies.get(&pid)?;
+        let mut slot = lock_or_recover(&entry);
+        let scheduled = slot.as_mut()?;
+        Some(f(&mut scheduled.0))
+    }
+
+    /// Spawn an inert process without module code for host-side policy tests.
+    #[cfg(test)]
+    pub fn spawn_test_process(&self, trap_exit: bool) -> u64 {
+        let pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
+        self.shared.process_table.spawn_with_pid(pid);
+        let mut process = Process::new(pid, DEFAULT_HEAP_SIZE);
+        process.set_trap_exit(trap_exit);
+        self.shared
+            .process_bodies
+            .insert(pid, Mutex::new(Some(ScheduledProcess(process))));
+        pid
+    }
+
+    /// Spawn an inert process linked to a live parent for host-side policy tests.
+    #[cfg(test)]
+    pub fn spawn_linked_test_process(
+        &self,
+        parent_pid: u64,
+    ) -> Result<u64, crate::native::links::LinkError> {
+        let Some(parent_entry) = self.shared.process_bodies.get(&parent_pid) else {
+            return Err(crate::native::links::LinkError::NoProc);
+        };
+        let mut parent_slot = lock_or_recover(&parent_entry);
+        let Some(ScheduledProcess(parent)) = parent_slot.as_mut() else {
+            return Err(crate::native::links::LinkError::NoProc);
+        };
+        let child_pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
+        self.shared.process_table.spawn_with_pid(child_pid);
+        let mut child = Process::new(child_pid, DEFAULT_HEAP_SIZE);
+        child.add_link(parent_pid);
+        parent.add_link(child_pid);
+        self.shared
+            .process_bodies
+            .insert(child_pid, Mutex::new(Some(ScheduledProcess(child))));
+        Ok(child_pid)
+    }
+
+    /// Return true when a trapped EXIT message from `source_pid` is queued.
+    #[cfg(test)]
+    #[must_use]
+    pub fn has_trapped_exit_message(&self, target_pid: u64, source_pid: u64) -> Option<bool> {
+        self.with_process(target_pid, |process| {
+            process.mailbox_mut().drain_arrival();
+            process.mailbox().scan_iter().any(|message| {
+                let Some(tuple) = crate::term::boxed::Tuple::new(*message) else {
+                    return false;
+                };
+                tuple.arity() == 3
+                    && tuple.get(0) == Some(Term::atom(Atom::EXIT))
+                    && tuple.get(1) == Some(Term::pid(source_pid))
+            })
+        })
     }
 
     /// Return a callback suitable for mailbox senders to wake `pid`.

@@ -302,8 +302,8 @@ fn bit_array_wrappers_operate_on_byte_aligned_binaries() {
 #[test]
 fn register_stdlib_stubs_includes_gleam_stdlib_ffi2_bifs() {
     let atom_table = AtomTable::with_common_atoms();
-    let mut registry = BifRegistryImpl::new();
-    register_stdlib_stubs(&mut registry, &atom_table).expect("registration");
+    let registry = BifRegistryImpl::new();
+    register_stdlib_stubs(&registry, &atom_table).expect("registration");
 
     let expected = [
         ("classify_dynamic", 1),

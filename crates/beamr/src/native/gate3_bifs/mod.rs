@@ -73,7 +73,7 @@ static REF_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Registers all Gate 3 BIFs into the VM-owned BIF registry.
 pub fn register_gate3_bifs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");

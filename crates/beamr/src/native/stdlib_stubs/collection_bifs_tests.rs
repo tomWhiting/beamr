@@ -379,9 +379,9 @@ fn timer_sleep_rejects_wrong_arity() {
 #[test]
 fn register_stdlib_stubs_includes_collection_bifs() {
     let atom_table = AtomTable::new();
-    let mut registry = BifRegistryImpl::new();
+    let registry = BifRegistryImpl::new();
 
-    register_stdlib_stubs(&mut registry, &atom_table).expect("registration should succeed");
+    register_stdlib_stubs(&registry, &atom_table).expect("registration should succeed");
 
     let collection_bifs = [
         ("maps", "from_list", 1),

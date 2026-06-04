@@ -16,12 +16,12 @@ use beamr::native::stdlib_stubs::register_stdlib_stubs;
 
 /// Helper: set up the full BIF registry matching what the CLI creates.
 fn full_bif_registry(atom_table: &AtomTable) -> BifRegistryImpl {
-    let mut registry = BifRegistryImpl::new();
-    register_gate1_bifs(&mut registry, atom_table).expect("gate1");
-    register_gate2_bifs(&mut registry, atom_table).expect("gate2");
-    register_gate3_bifs(&mut registry, atom_table).expect("gate3");
-    register_stdlib_stubs(&mut registry, atom_table).expect("stdlib");
-    register_selector_bifs(&mut registry, atom_table).expect("selector");
+    let registry = BifRegistryImpl::new();
+    register_gate1_bifs(&registry, atom_table).expect("gate1");
+    register_gate2_bifs(&registry, atom_table).expect("gate2");
+    register_gate3_bifs(&registry, atom_table).expect("gate3");
+    register_stdlib_stubs(&registry, atom_table).expect("stdlib");
+    register_selector_bifs(&registry, atom_table).expect("selector");
     registry
 }
 

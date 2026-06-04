@@ -46,8 +46,8 @@ fn module(name: beamr::atom::Atom, code: Vec<Instruction>) -> Module {
 #[test]
 fn proof_1_arithmetic_add_two_numbers_via_bif() {
     let atoms = AtomTable::new();
-    let mut bifs = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bifs, &atoms).expect("register BIFs");
+    let bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&bifs, &atoms).expect("register BIFs");
     let erlang = atoms.intern("erlang");
     let plus = atoms.intern("+");
 
@@ -480,8 +480,8 @@ fn call_gleam_function(
 #[test]
 fn proof_9_gleam_answer_returns_42() {
     let atoms = AtomTable::new();
-    let mut bifs = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bifs, &atoms).expect("register BIFs");
+    let bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&bifs, &atoms).expect("register BIFs");
     let module = load_proof_module(&atoms, &bifs);
 
     let result = call_gleam_function(&module, &atoms, "answer", &[]).expect("answer/0 runs");
@@ -491,8 +491,8 @@ fn proof_9_gleam_answer_returns_42() {
 #[test]
 fn proof_10_gleam_add_computes_17_plus_25() {
     let atoms = AtomTable::new();
-    let mut bifs = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bifs, &atoms).expect("register BIFs");
+    let bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&bifs, &atoms).expect("register BIFs");
     let module = load_proof_module(&atoms, &bifs);
 
     let result = call_gleam_function(
@@ -508,8 +508,8 @@ fn proof_10_gleam_add_computes_17_plus_25() {
 #[test]
 fn proof_11_gleam_pipeline_transforms_input() {
     let atoms = AtomTable::new();
-    let mut bifs = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bifs, &atoms).expect("register BIFs");
+    let bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&bifs, &atoms).expect("register BIFs");
     let module = load_proof_module(&atoms, &bifs);
 
     // run_pipeline(5) → doubled=10, added=20, squared=400
@@ -521,8 +521,8 @@ fn proof_11_gleam_pipeline_transforms_input() {
 #[test]
 fn proof_12_gleam_factorial_computes_recursively() {
     let atoms = AtomTable::new();
-    let mut bifs = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bifs, &atoms).expect("register BIFs");
+    let bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&bifs, &atoms).expect("register BIFs");
     let module = load_proof_module(&atoms, &bifs);
 
     // factorial(0) = 1, factorial(5) = 120, factorial(10) = 3628800
@@ -537,8 +537,8 @@ fn proof_12_gleam_factorial_computes_recursively() {
 #[test]
 fn proof_13_gleam_fibonacci_computes_recursively() {
     let atoms = AtomTable::new();
-    let mut bifs = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bifs, &atoms).expect("register BIFs");
+    let bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&bifs, &atoms).expect("register BIFs");
     let module = load_proof_module(&atoms, &bifs);
 
     // fib(0)=0, fib(1)=1, fib(10)=55

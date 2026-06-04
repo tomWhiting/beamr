@@ -24,8 +24,8 @@ use beamr::process::ExitReason;
 
 // Set up the VM
 let atom_table = AtomTable::with_common_atoms();
-let mut bif_registry = BifRegistryImpl::new();
-register_gate1_bifs(&mut bif_registry, &atom_table).unwrap();
+let bif_registry = BifRegistryImpl::new();
+register_gate1_bifs(&bif_registry, &atom_table).unwrap();
 
 // Load a .beam file
 let bytes = std::fs::read("my_module.beam").unwrap();

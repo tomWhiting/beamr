@@ -22,8 +22,8 @@ fn fixture(name: &str) -> Vec<u8> {
 }
 
 fn scheduler(atom_table: Arc<AtomTable>) -> (Scheduler, Arc<ModuleRegistry>) {
-    let mut bifs = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bifs, &atom_table).expect("gate1 bifs");
+    let bifs = BifRegistryImpl::new();
+    register_gate1_bifs(&bifs, &atom_table).expect("gate1 bifs");
     let registry = Arc::new(ModuleRegistry::new());
     let scheduler = Scheduler::with_code_server(
         SchedulerConfig {

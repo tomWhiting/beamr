@@ -320,17 +320,17 @@ struct LoadContext {
 
 fn load_context(path: &Path, dirs: &[PathBuf]) -> Result<LoadContext, CliError> {
     let atom_table = AtomTable::with_common_atoms();
-    let mut bif_registry = BifRegistryImpl::new();
-    register_gate1_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
-    register_gate2_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
-    register_gate3_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
-    register_stdlib_stubs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
-    register_selector_bifs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
-    register_gleam_ffi_bifs(&mut bif_registry, &atom_table)
+    let bif_registry = BifRegistryImpl::new();
+    register_gate1_bifs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_gate2_bifs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_gate3_bifs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_stdlib_stubs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_selector_bifs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_gleam_ffi_bifs(&bif_registry, &atom_table)
         .map_err(CliError::NativeRegistration)?;
-    register_meridian_ffi(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_meridian_ffi(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     init_otp_atoms(&atom_table);
-    register_otp_stubs(&mut bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
+    register_otp_stubs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     let module_registry = ModuleRegistry::new();
 
     // Load all .beam files from --dir directories first so they are

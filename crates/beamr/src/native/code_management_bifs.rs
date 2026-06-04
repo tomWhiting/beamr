@@ -41,7 +41,7 @@ const CODE_BIFS: &[CodeBif] = &[
 
 /// Registers code-management BIFs under the `erlang` module.
 pub fn register_code_management_bifs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");

@@ -169,8 +169,8 @@ fn register_selector_bifs_registers_all_expected_mfas() {
     use crate::native::BifRegistryImpl;
 
     let atom_table = AtomTable::with_common_atoms();
-    let mut registry = BifRegistryImpl::new();
-    register_selector_bifs(&mut registry, &atom_table)
+    let registry = BifRegistryImpl::new();
+    register_selector_bifs(&registry, &atom_table)
         .expect("selector registration should succeed");
 
     let module = atom_table.intern("gleam_erlang_ffi");
@@ -197,9 +197,9 @@ fn register_selector_bifs_fails_on_duplicate() {
     use crate::native::BifRegistryImpl;
 
     let atom_table = AtomTable::with_common_atoms();
-    let mut registry = BifRegistryImpl::new();
-    register_selector_bifs(&mut registry, &atom_table).expect("first");
-    assert!(register_selector_bifs(&mut registry, &atom_table).is_err());
+    let registry = BifRegistryImpl::new();
+    register_selector_bifs(&registry, &atom_table).expect("first");
+    assert!(register_selector_bifs(&registry, &atom_table).is_err());
 }
 
 #[test]

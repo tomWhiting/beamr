@@ -301,7 +301,7 @@ const STDLIB_STUBS: &[StubBif] = &[
 
 /// Registers all stdlib stub BIFs under their OTP module names.
 pub fn register_stdlib_stubs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     for &(module_name, function_name, arity, native_function) in STDLIB_STUBS {

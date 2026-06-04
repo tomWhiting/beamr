@@ -26,15 +26,15 @@ use beamr::term::boxed::Cons;
 
 /// Set up the full BIF registry matching the CLI.
 fn full_bif_registry(atom_table: &AtomTable) -> BifRegistryImpl {
-    let mut registry = BifRegistryImpl::new();
-    register_gate1_bifs(&mut registry, atom_table).expect("gate1");
-    register_gate2_bifs(&mut registry, atom_table).expect("gate2");
-    register_gate3_bifs(&mut registry, atom_table).expect("gate3");
-    register_stdlib_stubs(&mut registry, atom_table).expect("stdlib");
-    register_selector_bifs(&mut registry, atom_table).expect("selector");
-    register_gleam_ffi_bifs(&mut registry, atom_table).expect("gleam_ffi");
+    let registry = BifRegistryImpl::new();
+    register_gate1_bifs(&registry, atom_table).expect("gate1");
+    register_gate2_bifs(&registry, atom_table).expect("gate2");
+    register_gate3_bifs(&registry, atom_table).expect("gate3");
+    register_stdlib_stubs(&registry, atom_table).expect("stdlib");
+    register_selector_bifs(&registry, atom_table).expect("selector");
+    register_gleam_ffi_bifs(&registry, atom_table).expect("gleam_ffi");
     init_otp_atoms(atom_table);
-    register_otp_stubs(&mut registry, atom_table).expect("otp_stubs");
+    register_otp_stubs(&registry, atom_table).expect("otp_stubs");
     registry
 }
 

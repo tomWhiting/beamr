@@ -293,8 +293,8 @@ fn list_to_vec_rejects_non_list() {
 #[test]
 fn register_gate2_bifs_registers_all() {
     let at = AtomTable::new();
-    let mut reg = BifRegistryImpl::new();
-    register_gate2_bifs(&mut reg, &at).expect("gate 2 registration");
+    let reg = BifRegistryImpl::new();
+    register_gate2_bifs(&reg, &at).expect("gate 2 registration");
     let erlang = at.intern("erlang");
     for (name, arity) in [
         ("self", 0),
@@ -317,17 +317,17 @@ fn register_gate2_bifs_registers_all() {
 #[test]
 fn register_gate2_bifs_fails_twice() {
     let at = AtomTable::new();
-    let mut reg = BifRegistryImpl::new();
-    register_gate2_bifs(&mut reg, &at).expect("first");
-    assert!(register_gate2_bifs(&mut reg, &at).is_err());
+    let reg = BifRegistryImpl::new();
+    register_gate2_bifs(&reg, &at).expect("first");
+    assert!(register_gate2_bifs(&reg, &at).is_err());
 }
 
 #[test]
 fn gate1_and_gate2_coexist() {
     let at = AtomTable::new();
-    let mut reg = BifRegistryImpl::new();
-    crate::native::bifs::register_gate1_bifs(&mut reg, &at).expect("gate 1");
-    register_gate2_bifs(&mut reg, &at).expect("gate 2");
+    let reg = BifRegistryImpl::new();
+    crate::native::bifs::register_gate1_bifs(&reg, &at).expect("gate 1");
+    register_gate2_bifs(&reg, &at).expect("gate 2");
     let erlang = at.intern("erlang");
     assert!(reg.lookup(erlang, at.intern("+"), 2).is_some());
     assert!(reg.lookup(erlang, at.intern("self"), 0).is_some());

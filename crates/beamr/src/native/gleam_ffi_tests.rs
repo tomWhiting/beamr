@@ -385,8 +385,8 @@ fn pid_from_dynamic_badarg_wrong_arity() {
 #[test]
 fn register_gleam_ffi_bifs_registers_all_expected() {
     let atom_table = AtomTable::with_common_atoms();
-    let mut registry = BifRegistryImpl::new();
-    register_gleam_ffi_bifs(&mut registry, &atom_table)
+    let registry = BifRegistryImpl::new();
+    register_gleam_ffi_bifs(&registry, &atom_table)
         .expect("gleam ffi registration should succeed");
 
     let module = atom_table.intern("gleam_erlang_ffi");
@@ -413,9 +413,9 @@ fn register_gleam_ffi_bifs_registers_all_expected() {
 #[test]
 fn register_gleam_ffi_bifs_fails_on_duplicate() {
     let atom_table = AtomTable::with_common_atoms();
-    let mut registry = BifRegistryImpl::new();
-    register_gleam_ffi_bifs(&mut registry, &atom_table).expect("first");
-    assert!(register_gleam_ffi_bifs(&mut registry, &atom_table).is_err());
+    let registry = BifRegistryImpl::new();
+    register_gleam_ffi_bifs(&registry, &atom_table).expect("first");
+    assert!(register_gleam_ffi_bifs(&registry, &atom_table).is_err());
 }
 
 #[test]
@@ -423,9 +423,9 @@ fn gleam_ffi_coexists_with_selector_bifs() {
     use crate::native::selector_ffi::register_selector_bifs;
 
     let atom_table = AtomTable::with_common_atoms();
-    let mut registry = BifRegistryImpl::new();
-    register_selector_bifs(&mut registry, &atom_table).expect("selector");
-    register_gleam_ffi_bifs(&mut registry, &atom_table).expect("gleam ffi");
+    let registry = BifRegistryImpl::new();
+    register_selector_bifs(&registry, &atom_table).expect("selector");
+    register_gleam_ffi_bifs(&registry, &atom_table).expect("gleam ffi");
 
     let module = atom_table.intern("gleam_erlang_ffi");
 

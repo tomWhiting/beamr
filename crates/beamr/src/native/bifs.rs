@@ -36,7 +36,7 @@ const GATE1_BIFS: &[Gate1Bif] = &[
 
 /// Registers all Gate 1 BIFs into the VM-owned BIF registry.
 pub fn register_gate1_bifs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");
@@ -429,9 +429,9 @@ mod tests {
     #[test]
     fn register_gate1_bifs_registers_all_minimum_mfas() {
         let atom_table = AtomTable::new();
-        let mut registry = BifRegistryImpl::new();
+        let registry = BifRegistryImpl::new();
 
-        register_gate1_bifs(&mut registry, &atom_table).expect("gate 1 BIF registration");
+        register_gate1_bifs(&registry, &atom_table).expect("gate 1 BIF registration");
 
         let erlang = atom_table.intern("erlang");
         for (name, arity) in [
@@ -468,11 +468,11 @@ mod tests {
     #[test]
     fn register_gate1_bifs_fails_when_called_twice() {
         let atom_table = AtomTable::new();
-        let mut registry = BifRegistryImpl::new();
+        let registry = BifRegistryImpl::new();
 
-        register_gate1_bifs(&mut registry, &atom_table).expect("first registration");
+        register_gate1_bifs(&registry, &atom_table).expect("first registration");
 
-        assert!(register_gate1_bifs(&mut registry, &atom_table).is_err());
+        assert!(register_gate1_bifs(&registry, &atom_table).is_err());
     }
 
     #[test]

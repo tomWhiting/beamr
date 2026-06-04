@@ -27,7 +27,7 @@ const GATE2_BIFS: &[Gate2Bif] = &[
 
 /// Registers all Gate 2 (process lifecycle) BIFs into the VM-owned BIF registry.
 pub fn register_gate2_bifs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");

@@ -87,7 +87,7 @@ const OTP_STUBS: &[OtpBif] = &[
 
 /// Registers all OTP stub BIFs under their respective module names.
 pub fn register_otp_stubs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     for &(module_name, function_name, arity, native_function) in OTP_STUBS {

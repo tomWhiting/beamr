@@ -40,7 +40,7 @@ const GLEAM_PROCESS_BIFS: &[GleamBif] = &[
 /// These are registered under the same `gleam_erlang_ffi` module as the
 /// selector BIFs; the module atom must already exist in the atom table.
 pub fn register_gleam_ffi_bifs(
-    registry: &mut BifRegistryImpl,
+    registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let module = atom_table.intern("gleam_erlang_ffi");

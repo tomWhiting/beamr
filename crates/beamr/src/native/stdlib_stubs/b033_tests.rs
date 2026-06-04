@@ -476,8 +476,8 @@ fn b039_io_and_init_bifs_cover_sink_formatter_and_stop() {
 #[test]
 fn b033_registry_entries_are_wired_to_function_pointers() {
     let atom_table = AtomTable::new();
-    let mut registry = BifRegistryImpl::new();
-    register_stdlib_stubs(&mut registry, &atom_table).expect("registration");
+    let registry = BifRegistryImpl::new();
+    register_stdlib_stubs(&registry, &atom_table).expect("registration");
 
     let expected = [
         ("gleam_stdlib", "string_replace", 3),
