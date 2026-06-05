@@ -320,6 +320,86 @@ fn interpreter_binary_match_failures_branch_without_advancing() {
     ));
 }
 
+/// Match a single integer segment out of `source` and return the decoded term.
+///
+/// `flags` is the BEAM bitmask flags operand (`0x02` little, `0x04` signed).
+fn match_one_integer(source_bytes: &[u8], size_bits: u64, flags: Operand) -> Term {
+    let mut process = Process::new(1, 64);
+    let module = module(vec![Instruction::Label { label: 9 }]);
+    let source = binary_term(&mut process, source_bytes);
+    process.set_x_reg(0, source);
+    binary_op(
+        &mut process,
+        &module,
+        BinaryOp::BsStartMatch3,
+        &[Operand::Label(9), Operand::X(0), Operand::X(1)],
+    )
+    .expect("start match");
+    binary_op(
+        &mut process,
+        &module,
+        BinaryOp::BsGetInteger2,
+        &[
+            Operand::Label(9),
+            Operand::X(1),
+            Operand::Unsigned(size_bits),
+            Operand::Unsigned(1),
+            flags,
+            Operand::X(2),
+        ],
+    )
+    .expect("get integer");
+    process.x_reg(2)
+}
+
+#[test]
+fn bs_get_integer_signed_high_bit_byte_is_negative() {
+    // BEAM: <<X:8/signed>> over 0xFF must be -1, not 255.
+    let value = match_one_integer(&[0xFF], 8, Operand::Unsigned(0x04));
+    assert_eq!(value.as_small_int(), Some(-1));
+}
+
+#[test]
+fn bs_get_integer_unsigned_high_bit_byte_stays_positive() {
+    // BEAM: <<X:8/unsigned>> over 0xFF stays 255.
+    let value = match_one_integer(&[0xFF], 8, Operand::Atom(None));
+    assert_eq!(value.as_small_int(), Some(255));
+}
+
+#[test]
+fn bs_get_integer_signed_multibit_sign_extends_to_full_width() {
+    // BEAM: a signed two-byte field with its top bit set is two's-complement.
+    // <<0x80, 0x00 :16/signed>> == -32768; the unsigned read would be 32768.
+    let signed = match_one_integer(&[0x80, 0x00], 16, Operand::Unsigned(0x04));
+    assert_eq!(signed.as_small_int(), Some(-32768));
+    let unsigned = match_one_integer(&[0x80, 0x00], 16, Operand::Atom(None));
+    assert_eq!(unsigned.as_small_int(), Some(32768));
+}
+
+#[test]
+fn bs_get_integer_signed_respects_endianness() {
+    // BEAM: the sign bit lives in the most-significant byte, which differs by
+    // endianness. 0x80,0x01 big-endian signed = -32767; little-endian signed
+    // reads the bytes as 0x0180 with a clear high bit, so it is +384.
+    let big = match_one_integer(&[0x80, 0x01], 16, Operand::Unsigned(0x04));
+    assert_eq!(big.as_small_int(), Some(-32767));
+    // 0x02 little | 0x04 signed = 0x06.
+    let little = match_one_integer(&[0x80, 0x01], 16, Operand::Unsigned(0x06));
+    assert_eq!(little.as_small_int(), Some(384));
+}
+
+#[test]
+fn decode_integer_sign_extends_sub_byte_width() {
+    // BEAM: a 4-bit signed field 0b1000 == -8. The opcode path is byte-aligned,
+    // so this exercises decode_integer directly with the field's single byte.
+    let signed = SegmentFlags {
+        endian: Endian::Big,
+        signed: true,
+    };
+    // Pre-shifted single-byte field: low nibble 0b1000 sign-extended over 4 bits.
+    assert_eq!(decode_integer(&[0xF8], signed), Ok(-8));
+}
+
 #[test]
 fn interpreter_binary_start_match_non_binary_branches_to_fail() {
     let mut process = Process::new(1, 16);
