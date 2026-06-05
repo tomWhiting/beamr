@@ -87,14 +87,20 @@ impl Term {
 
     /// Creates a small integer term.
     ///
-    /// Panics when `value` is outside the immediate small integer range. Use
-    /// [`Term::try_small_int`] when handling runtime arithmetic that may need
-    /// big integer boxing in a later implementation phase.
-    pub const fn small_int(value: i64) -> Self {
-        match Self::try_small_int(value) {
-            Some(term) => term,
-            None => panic!("small integer value is outside the immediate range"),
-        }
+    /// This infallible constructor is for compile-time in-range constants. Use
+    /// [`Term::try_small_int`] for runtime arithmetic that may produce
+    /// out-of-range values needing big-integer boxing in a later phase. Passing
+    /// an out-of-range value is a programming error: it is caught by
+    /// `debug_assert!` in debug/test builds; in release builds the value is
+    /// truncated by the raw tagged-word encoding rather than panicking, so a
+    /// runtime overflow can never abort the whole VM.
+    #[must_use]
+    pub fn small_int(value: i64) -> Self {
+        debug_assert!(
+            (SMALL_INT_MIN..=SMALL_INT_MAX).contains(&value),
+            "small integer value is outside the immediate range"
+        );
+        Self(((value as u64) << TAG_BITS) | SMALL_INT_TAG)
     }
 
     /// Attempts to create a small integer term without truncating out-of-range
@@ -114,13 +120,19 @@ impl Term {
 
     /// Creates an immediate local pid term.
     ///
-    /// Panics when `pid` does not fit in the immediate pid payload. Use
+    /// This infallible constructor is for known in-range pid literals. Use
     /// [`Term::try_pid`] for fallible construction from arbitrary `u64` values.
-    pub const fn pid(pid: u64) -> Self {
-        match Self::try_pid(pid) {
-            Some(term) => term,
-            None => panic!("pid value is outside the immediate range"),
-        }
+    /// Passing an out-of-range value is a programming error: it is caught by
+    /// `debug_assert!` in debug/test builds; in release builds the high bits are
+    /// truncated by the raw tagged-word encoding rather than panicking, so an
+    /// untrusted-reachable pid can never abort the whole VM.
+    #[must_use]
+    pub fn pid(pid: u64) -> Self {
+        debug_assert!(
+            pid <= UNSIGNED_PAYLOAD_MAX,
+            "pid value is outside the immediate range"
+        );
+        Self((pid << TAG_BITS) | PID_TAG)
     }
 
     /// Attempts to create an immediate local pid term without truncating high
@@ -279,6 +291,26 @@ mod tests {
         assert_eq!(Term::try_small_int(Term::SMALL_INT_MIN - 1), None);
     }
 
+    /// PR-7: the infallible `small_int` constructor previously `panic!`ed on
+    /// out-of-range input. It now relies on `debug_assert!` and otherwise never
+    /// panics; the boundary in-range values must round-trip, and out-of-range
+    /// runtime values must flow through the explicit-error `try_small_int` path
+    /// rather than aborting the VM.
+    #[test]
+    fn small_int_boundary_constructs_without_panicking_and_overflow_uses_error_path() {
+        assert_eq!(
+            Term::small_int(Term::SMALL_INT_MAX).as_small_int(),
+            Some(Term::SMALL_INT_MAX)
+        );
+        assert_eq!(
+            Term::small_int(Term::SMALL_INT_MIN).as_small_int(),
+            Some(Term::SMALL_INT_MIN)
+        );
+        // Overflowing arithmetic must use the fallible path, which reports the
+        // error instead of panicking.
+        assert!(Term::try_small_int(Term::SMALL_INT_MAX + 1).is_none());
+    }
+
     #[test]
     fn atom_round_trips_without_becoming_nil() {
         for atom in [Atom::OK, Atom::ERROR, Atom::NIL] {
@@ -309,6 +341,16 @@ mod tests {
     #[test]
     fn pid_checked_constructor_rejects_out_of_range_values() {
         assert_eq!(Term::try_pid(Term::PID_MAX + 1), None);
+    }
+
+    /// PR-7: the infallible `pid` constructor previously `panic!`ed on
+    /// out-of-range input. It now relies on `debug_assert!` and otherwise never
+    /// panics; the boundary in-range pid must round-trip, and an out-of-range
+    /// pid must flow through the explicit-error `try_pid` path.
+    #[test]
+    fn pid_boundary_constructs_without_panicking_and_overflow_uses_error_path() {
+        assert_eq!(Term::pid(Term::PID_MAX).as_pid(), Some(Term::PID_MAX));
+        assert!(Term::try_pid(Term::PID_MAX + 1).is_none());
     }
 
     #[test]
