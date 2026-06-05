@@ -5,12 +5,14 @@
 //! provides the minimum arithmetic, comparison, and utility BIFs required by
 //! unresolved imports.
 
+use std::cmp::Ordering;
 use std::time::Duration;
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
 use crate::term::Term;
 use crate::term::boxed::write_tuple;
+use crate::term::compare;
 use crate::timer::TimerRef;
 
 type Gate1Bif = (&'static str, u8, NativeFn);
@@ -76,16 +78,23 @@ pub fn rem(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
     arithmetic(args, i64::checked_rem)
 }
 
-/// erlang:</2 for small integers.
+/// erlang:</2 over the full BEAM term order.
+///
+/// BEAM: `<` is total over every term type and never raises — it routes
+/// through the same `compare::cmp` order as the fused comparison opcode, so
+/// `1 < a` is `true` (number < atom). See [`crate::term::compare::cmp`].
 pub fn less_than(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    let (left, right) = two_small_ints(args)?;
-    Ok(bool_term(left < right))
+    let (left, right) = two_terms(args)?;
+    Ok(bool_term(compare::cmp(left, right) == Ordering::Less))
 }
 
-/// erlang:>=/2 for small integers.
+/// erlang:>=/2 over the full BEAM term order.
+///
+/// BEAM: `>=` is total over every term type and never raises — the inverse of
+/// `<` under the same `compare::cmp` order. See [`crate::term::compare::cmp`].
 pub fn greater_equal(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    let (left, right) = two_small_ints(args)?;
-    Ok(bool_term(left >= right))
+    let (left, right) = two_terms(args)?;
+    Ok(bool_term(compare::cmp(left, right) != Ordering::Less))
 }
 
 /// erlang:=:=/2 exact term equality.
@@ -199,6 +208,17 @@ fn arithmetic(args: &[Term], operation: fn(i64, i64) -> Option<i64>) -> Result<T
     Term::try_small_int(result).ok_or_else(badarith)
 }
 
+/// Extracts exactly two operands for a total-order comparison BIF.
+///
+/// Comparison BIFs accept any two terms (BEAM total order); only a wrong
+/// arity is an error, reported as `badarg`.
+fn two_terms(args: &[Term]) -> Result<(Term, Term), Term> {
+    let [left, right] = args else {
+        return Err(badarg());
+    };
+    Ok((*left, *right))
+}
+
 fn two_small_ints(args: &[Term]) -> Result<(i64, i64), Term> {
     let [left, right] = args else {
         return Err(badarith());
@@ -253,14 +273,16 @@ fn badarg() -> Term {
 #[cfg(test)]
 mod tests {
     use super::{
-        add, cancel_timer, display, div, error, exact_equal, exact_not_equal, greater_equal,
-        less_than, multiply, register_gate1_bifs, rem, send_after, start_timer, subtract,
+        add, cancel_timer, compare, display, div, error, exact_equal, exact_not_equal,
+        greater_equal, less_than, multiply, register_gate1_bifs, rem, send_after, start_timer,
+        subtract,
     };
     use crate::atom::{Atom, AtomTable};
     use crate::native::{BifRegistryImpl, ProcessContext};
     use crate::term::Term;
-    use crate::term::boxed::Tuple;
+    use crate::term::boxed::{Tuple, write_cons, write_map, write_tuple};
     use crate::timer::TimerWheel;
+    use std::cmp::Ordering;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -385,23 +407,97 @@ mod tests {
     }
 
     #[test]
-    fn comparison_bifs_return_errors_for_invalid_inputs() {
+    fn comparison_bifs_return_badarg_only_for_wrong_arity() {
         let mut context = context();
 
-        assert_eq!(
-            less_than(&[Term::atom(Atom::OK), small_int(2)], &mut context),
-            Err(badarith())
-        );
-        assert_eq!(less_than(&[small_int(1)], &mut context), Err(badarith()));
-        assert_eq!(
-            greater_equal(&[small_int(1), Term::atom(Atom::OK)], &mut context),
-            Err(badarith())
-        );
+        // Wrong arity is the sole error condition for total-order comparisons.
+        assert_eq!(less_than(&[small_int(1)], &mut context), Err(badarg()));
+        assert_eq!(greater_equal(&[], &mut context), Err(badarg()));
         assert_eq!(exact_equal(&[small_int(1)], &mut context), Err(badarg()));
         assert_eq!(
             exact_not_equal(&[small_int(1)], &mut context),
             Err(badarg())
         );
+    }
+
+    #[test]
+    fn comparison_bifs_use_beam_total_term_order_across_types() {
+        let mut context = context();
+
+        // number < atom: `1 < a` is true; `a >= 1` is true.
+        assert_eq!(
+            less_than(&[small_int(1), Term::atom(Atom::OK)], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(
+            greater_equal(&[Term::atom(Atom::OK), small_int(1)], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        // The reverse direction agrees: `a < 1` is false.
+        assert_eq!(
+            less_than(&[Term::atom(Atom::OK), small_int(1)], &mut context),
+            Ok(Term::atom(Atom::FALSE))
+        );
+
+        // nil < list: `[] < [1]` is true (rank nil < rank list).
+        let mut list_heap = [0_u64; 2];
+        let list = write_cons(&mut list_heap, small_int(1), Term::NIL).expect("cons");
+        assert_eq!(
+            less_than(&[Term::NIL, list], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+
+        // tuple < map: rank tuple < rank map.
+        let mut tuple_heap = [0_u64; 1];
+        let tuple = write_tuple(&mut tuple_heap, &[]).expect("tuple");
+        let mut map_heap = [0_u64; 2];
+        let map = write_map(&mut map_heap, &[], &[]).expect("map");
+        assert_eq!(
+            less_than(&[tuple, map], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        // Mixed-type `>=`: map >= tuple is true.
+        assert_eq!(
+            greater_equal(&[map, tuple], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+    }
+
+    /// Regression: the BIF comparison path must agree with the fused opcode
+    /// comparison path (`compare::cmp`) on the same operands — they previously
+    /// disagreed (BIF raised `badarith` where the opcode returned a boolean).
+    #[test]
+    fn comparison_bifs_agree_with_opcode_compare_cmp() {
+        let mut context = context();
+
+        let mut list_heap = [0_u64; 2];
+        let list = write_cons(&mut list_heap, small_int(1), Term::NIL).expect("cons");
+        let mut tuple_heap = [0_u64; 1];
+        let tuple = write_tuple(&mut tuple_heap, &[]).expect("tuple");
+
+        let pairs = [
+            (small_int(1), Term::atom(Atom::OK)),
+            (Term::atom(Atom::OK), small_int(1)),
+            (small_int(1), small_int(2)),
+            (Term::NIL, list),
+            (tuple, list),
+            (Term::atom(Atom::OK), Term::atom(Atom::OK)),
+        ];
+
+        for (left, right) in pairs {
+            let opcode_lt = compare::cmp(left, right) == Ordering::Less;
+            let opcode_ge = compare::cmp(left, right) != Ordering::Less;
+            assert_eq!(
+                less_than(&[left, right], &mut context),
+                Ok(Term::atom(if opcode_lt { Atom::TRUE } else { Atom::FALSE })),
+                "less_than disagrees with opcode cmp on {left:?} < {right:?}"
+            );
+            assert_eq!(
+                greater_equal(&[left, right], &mut context),
+                Ok(Term::atom(if opcode_ge { Atom::TRUE } else { Atom::FALSE })),
+                "greater_equal disagrees with opcode cmp on {left:?} >= {right:?}"
+            );
+        }
     }
 
     #[test]
