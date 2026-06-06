@@ -358,15 +358,15 @@ impl Scheduler {
             function: entry_function,
             arity,
         })?;
-        self.spawn_in_registry(
-            namespace,
-            &registry,
-            entry_module,
-            entry_function,
-            arity,
+        let entry = registry.lookup_mfa(entry_module, entry_function, arity)?;
+        let instruction_pointer = entry.module.label_ip(entry.label)?;
+        Ok(self.enqueue_spawn_with_trap_exit(
+            entry.module,
+            instruction_pointer,
             args,
             false,
-        )
+            namespace,
+        ))
     }
 
     /// Spawn a process in a namespace with trap-exit set before it is made runnable.
@@ -383,34 +383,13 @@ impl Scheduler {
             function: entry_function,
             arity,
         })?;
-        self.spawn_in_registry(
-            namespace,
-            &registry,
-            entry_module,
-            entry_function,
-            arity,
-            args,
-            true,
-        )
-    }
-
-    fn spawn_in_registry(
-        &self,
-        namespace: NamespaceId,
-        registry: &Arc<ModuleRegistry>,
-        entry_module: Atom,
-        entry_function: Atom,
-        arity: u8,
-        args: Vec<Term>,
-        trap_exit: bool,
-    ) -> Result<u64, ExecError> {
         let entry = registry.lookup_mfa(entry_module, entry_function, arity)?;
         let instruction_pointer = entry.module.label_ip(entry.label)?;
         Ok(self.enqueue_spawn_with_trap_exit(
             entry.module,
             instruction_pointer,
             args,
-            trap_exit,
+            true,
             namespace,
         ))
     }
@@ -1130,13 +1109,6 @@ fn purge_module_in_shared(
     })
 }
 
-fn force_purge_module_shared(
-    shared: &Arc<SharedState>,
-    name: Atom,
-) -> Result<PurgeResult, PurgeError> {
-    force_purge_module_in_shared(shared, NamespaceId::DEFAULT, &shared.module_registry, name)
-}
-
 fn force_purge_module_in_shared(
     shared: &Arc<SharedState>,
     namespace: NamespaceId,
@@ -1158,27 +1130,12 @@ fn force_purge_module_in_shared(
     })
 }
 
-fn process_references_to_module(shared: &SharedState, module: &Arc<Module>) -> usize {
-    old_code_pids(shared, module).len()
-}
-
 fn process_references_to_module_in(
     shared: &SharedState,
     namespace: NamespaceId,
     module: &Arc<Module>,
 ) -> usize {
     old_code_pids_in(shared, namespace, module).len()
-}
-
-fn old_code_pids(shared: &SharedState, module: &Arc<Module>) -> Vec<u64> {
-    shared
-        .process_bodies
-        .iter()
-        .filter_map(|entry| {
-            let pid = *entry.key();
-            process_references_old_code(shared, pid, module).then_some(pid)
-        })
-        .collect()
 }
 
 fn old_code_pids_in(
