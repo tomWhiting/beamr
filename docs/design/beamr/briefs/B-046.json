@@ -1,0 +1,126 @@
+{
+  "id": "B-046",
+  "cluster": "beamr",
+  "title": "Atom term comparison by name, not intern index",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C48", "C177"],
+  "stories": ["S28"],
+  "purpose": "Atom term comparison currently orders by intern index (the order atoms happen to be interned), which violates BEAM's requirement that atoms sort by name (Unicode code-point order). This makes lists:sort over atoms, ordered maps keyed by atoms, and guard comparisons on atoms non-reproducible across runs — a BEAM-conformance bug and a direct hit on determinism. This brief fixes the comparison to use name-based ordering.",
+  "task": "Change the atom comparison arm in term/compare to resolve atom names via the AtomTable and compare by name string, not by raw term value (intern index). The AtomTable is currently not accessible from the comparison path, so a name-resolution mechanism must be threaded in. The hot-path cost must be considered — pre-computing a sort key at intern time is preferred over a table lookup on every comparison. Scope: atom ordering only. Does not touch the full determinism seam (#10).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Atom sort key stored at intern time",
+      "spec": "WHEN an atom is interned via AtomTable::intern(), THE SYSTEM SHALL store the atom's name bytes alongside the index so that name-based comparison does not require a DashMap lookup on the hot path. THE SYSTEM SHALL NOT change the Atom newtype representation (it remains u32 index).",
+      "acceptance": [
+        "AtomTable stores a contiguous, index-addressable structure (e.g. Vec<String> behind a RwLock, or a second DashMap<u32, &'static str> which already exists as by_index) that supports O(1) name retrieval by index",
+        "The existing by_index DashMap already stores &'static str — this requirement may be satisfied by the current structure if the comparison path can access the AtomTable",
+        "No new allocation per comparison — name lookup uses the already-interned &'static str"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/atom/table.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Thread AtomTable reference into comparison",
+      "spec": "THE SYSTEM SHALL provide a comparison function that accepts an AtomTable reference (or a name-resolver closure) so that atom names can be resolved during term ordering. THE SYSTEM SHALL NOT require a global/static AtomTable — the table must be passed explicitly.",
+      "acceptance": [
+        "compare_terms (or a new variant) accepts an &AtomTable parameter",
+        "All call sites that invoke term comparison are updated to pass the AtomTable",
+        "Call sites include: comparison BIFs (erlang:'<'/2, '>='/2, etc.), select_val, sorted map operations, lists:sort, and any test helpers",
+        "The existing compare_terms without AtomTable is either removed or deprecated"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/compare/mod.rs",
+          "crates/beamr/src/interpreter/opcodes/core.rs",
+          "crates/beamr/src/native/bifs.rs",
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Name-based atom ordering in compare_same_rank",
+      "spec": "WHEN two atom terms are compared for ordering, THE SYSTEM SHALL resolve both atoms to their name strings via the AtomTable and compare lexicographically by Unicode code points (byte order of UTF-8 encoding). THE SYSTEM SHALL NOT compare by raw term value or intern index.",
+      "acceptance": [
+        "compare_same_rank's TermRank::Atom arm calls atom_table.resolve(left_atom) and atom_table.resolve(right_atom) and compares the resulting &str values",
+        "Atom ordering is identical to Rust's str::cmp on the atom name strings",
+        "Atoms interned in different orders produce the same sort result: e.g. intern 'zebra' first, 'apple' second — 'apple' < 'zebra' regardless of intern order"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/compare/mod.rs"]
+      },
+      "checklist": ["C177"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Equality comparison unchanged",
+      "spec": "WHEN two atom terms are compared for equality (== or =:=), THE SYSTEM SHALL continue to compare by raw value (intern index), since two atoms with the same index are guaranteed to have the same name. THE SYSTEM SHALL NOT introduce a name lookup for equality checks.",
+      "acceptance": [
+        "is_eq_exact and is_ne_exact for atoms still compare Term::raw() values directly",
+        "No performance regression on atom equality — it remains a single integer comparison"
+      ],
+      "files": {
+        "modify": []
+      },
+      "checklist": ["C48"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Map key ordering uses name-based atom comparison",
+      "spec": "WHEN a flatmap sorts its keys or performs key lookup by ordering, THE SYSTEM SHALL use the name-based atom comparison. THE SYSTEM SHALL NOT use index-based ordering for map key sorting.",
+      "acceptance": [
+        "Map put_map_assoc and put_map_exact use the updated comparison function with AtomTable",
+        "A map with atom keys {zebra: 1, apple: 2} iterates in name order {apple, zebra} regardless of intern order",
+        "has_map_fields and get_map_elements use consistent ordering"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/map.rs",
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": ["C48"],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Tests for deterministic atom ordering",
+      "spec": "THE SYSTEM SHALL include tests that verify atom ordering is by name, not by intern order, and is stable across different interning sequences.",
+      "acceptance": [
+        "Test: intern atoms in order [zebra, mango, apple], compare all pairs — apple < mango < zebra",
+        "Test: intern atoms in order [apple, mango, zebra], compare all pairs — same result: apple < mango < zebra",
+        "Test: sort a list of atom terms — result matches alphabetical name order regardless of intern sequence",
+        "Test: map with atom keys iterates in name order",
+        "Existing comparison tests continue to pass"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/compare/mod.rs"]
+      },
+      "checklist": ["C177"],
+      "stories": ["S28"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the Atom struct representation — it remains a u32 newtype",
+    "SHALL NOT add a global/static AtomTable — the table must be passed explicitly to comparison functions",
+    "SHALL NOT change atom equality semantics — only ordering is affected",
+    "SHALL NOT implement full Unicode collation (DUCET/ICU) — byte-order comparison of UTF-8 encoded names is sufficient and matches BEAM behaviour"
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests plus new atom ordering tests",
+    "Atoms interned in different orders produce identical sort results",
+    "No regression in atom equality comparison performance",
+    "Map key ordering is consistent with atom name ordering",
+    "grep for 'left.raw().cmp(&right.raw())' in the atom comparison arm returns zero matches"
+  ]
+}

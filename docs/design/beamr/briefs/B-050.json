@@ -1,0 +1,139 @@
+{
+  "id": "B-050",
+  "cluster": "beamr",
+  "title": "Per-module constant pool for literals — eliminate Box::leak in interpreter",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C187"],
+  "stories": ["S32"],
+  "purpose": "Every non-immediate literal (float, bigint, binary, tuple, list, map) materialised during execution is allocated via Box::leak in literal_term (interpreter/opcodes/core.rs:495-543), creating a permanent global allocation that is never freed. A tight loop materialising literals leaks memory monotonically — a trivial DoS for a runtime whose pitch is bounded execution. This brief replaces per-materialisation leaks with a per-module constant pool: the Module owns its literal storage, literals are materialised once at load time, and the storage is freed when the Module is purged.",
+  "task": "Add a ConstantPool to the Module struct that owns pre-materialised literal term storage. During module loading, materialise all LitT literals into the constant pool as term-compatible heap words. At execution time, literal_term reads from the constant pool (pointer into Module-owned memory) instead of leaking a new allocation. When a Module is purged and its Arc<Module> refcount drops to zero, the constant pool is dropped with it. Scope: interpreter literal path only. Does not touch BIF/NIF result allocation (that is B-051).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ConstantPool struct",
+      "spec": "THE SYSTEM SHALL define a ConstantPool struct that owns a Vec<Box<[u64]>> of pre-materialised literal storage blocks. Each block contains the heap words for one literal term. THE SYSTEM SHALL provide a method to retrieve a Term pointer into block N.",
+      "acceptance": [
+        "ConstantPool struct in crates/beamr/src/module.rs (or a new constant_pool.rs)",
+        "Storage: Vec<Box<[u64]>> — each entry is a heap block for one literal",
+        "get(index: usize) -> Option<Term> returns a Term whose pointer refers into the owned block",
+        "The Term returned is valid for the lifetime of the ConstantPool (and therefore the Module)",
+        "Drop impl for ConstantPool frees all blocks — no leak"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/constant_pool.rs"],
+        "modify": ["crates/beamr/src/lib.rs"]
+      },
+      "checklist": ["C187"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Materialise literals at load time",
+      "spec": "WHEN a module is loaded, THE SYSTEM SHALL materialise all decoded Literal values into term-compatible heap words in the ConstantPool. THE SYSTEM SHALL use the same write_float, write_bigint, write_binary, write_tuple, write_cons, write_map helpers as the current literal_term, but target the ConstantPool's owned blocks instead of Box::leak.",
+      "acceptance": [
+        "A new function materialise_literals(literals: &[Literal]) -> ConstantPool converts each Literal to a heap block",
+        "Float: 2-word block (header + f64 bits), returns a boxed float Term",
+        "BigInt: variable-length block, returns a boxed bigint Term",
+        "Binary/String: variable-length block, returns a boxed binary Term",
+        "Tuple: (1 + arity)-word block, returns a boxed tuple Term",
+        "List: chain of 2-word cons cells in one contiguous block, terminated by nil, returns a list Term",
+        "Map: block with sorted key/value arrays, returns a boxed map Term",
+        "Nested structures (tuple containing a list) materialise inner terms into the same block or a separate indexed block",
+        "The Module constructor calls materialise_literals and stores the result"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/constant_pool.rs",
+          "crates/beamr/src/loader/load.rs",
+          "crates/beamr/src/module.rs"
+        ]
+      },
+      "checklist": ["C187"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Module owns ConstantPool",
+      "spec": "THE SYSTEM SHALL add a constant_pool: ConstantPool field to the Module struct. WHEN the Module's last Arc reference is dropped (e.g. after purge and all processes exit their pinned frames), THE SYSTEM SHALL drop the ConstantPool, freeing all literal storage.",
+      "acceptance": [
+        "Module struct gains constant_pool: ConstantPool field",
+        "Module constructor populates constant_pool from the loaded literals",
+        "Arc<Module> semantics ensure the pool lives as long as any process holds a pinned reference",
+        "After purge_module + all Arc references dropped, the ConstantPool's Vec<Box<[u64]>> is deallocated"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/module.rs"]
+      },
+      "checklist": ["C187"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "literal_term reads from constant pool instead of Box::leak",
+      "spec": "WHEN the interpreter executes an instruction referencing a literal operand, THE SYSTEM SHALL read the pre-materialised Term from the current module's ConstantPool. THE SYSTEM SHALL NOT allocate new memory or call Box::leak for literal materialisation.",
+      "acceptance": [
+        "literal_term in interpreter/opcodes/core.rs becomes a lookup: module.constant_pool.get(literal_index)",
+        "The six Box::leak arms (float, bigint, binary, tuple, list, map) at core.rs:495-543 are removed",
+        "literal_term returns a Term that points into Module-owned memory",
+        "The function no longer takes a &[Literal] slice — it takes the module reference",
+        "A loop that materialises the same literal 1M times allocates zero additional bytes"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+      },
+      "checklist": ["C187"],
+      "stories": ["S32"]
+    },
+    {
+      "id": "R5",
+      "title": "GC safety for constant pool references",
+      "spec": "WHILE a process holds a Term that points into a Module's ConstantPool, THE SYSTEM SHALL ensure the GC treats such terms as non-moveable roots (they point into Module-owned memory, not the process heap). THE SYSTEM SHALL NOT copy constant pool terms during GC — they are immutable and owned by the Module.",
+      "acceptance": [
+        "GC's copy phase recognises terms pointing outside the process heap and skips them (they are not on the from-space)",
+        "This is likely already the behaviour — terms pointing to non-heap memory are not followed by the GC. Verify with a test.",
+        "Test: a process stores a constant-pool literal in a register, triggers GC, the term is still valid and points to the same address",
+        "No double-free: the process heap never owns constant pool memory"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/gc/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Tests for constant pool lifecycle",
+      "spec": "THE SYSTEM SHALL include tests verifying constant pool creation, literal access, and cleanup on Module drop.",
+      "acceptance": [
+        "Test: load a module with float, tuple, list, binary, map literals — all accessible via constant_pool.get(i)",
+        "Test: literal_term returns the same Term pointer on repeated calls (no new allocation)",
+        "Test: after module purge and Arc drop, constant pool is freed (verify with a custom allocator or by checking Arc::strong_count)",
+        "Test: a tight loop calling a function that references a literal does not grow memory (measure process heap size before and after)",
+        "All existing interpreter and loader tests pass"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/constant_pool.rs",
+          "crates/beamr/tests/hot_code_loading.rs"
+        ]
+      },
+      "checklist": ["C187"],
+      "stories": ["S32"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change BIF/NIF result allocation — that is B-051",
+    "SHALL NOT touch Box::leak sites in native/ — only interpreter/opcodes/core.rs literal_term",
+    "SHALL NOT change the Literal enum or the loader's literal decoding — only how decoded literals are stored in the Module",
+    "SHALL NOT implement copy-on-access for shared literals — the Module-owned block is the single allocation, shared by all processes via Arc<Module>",
+    "SHALL NOT add per-process literal caching or copying — constant pool terms are accessed directly"
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests plus new constant pool tests",
+    "grep for 'Box::leak' in interpreter/opcodes/core.rs returns zero matches",
+    "A tight literal-materialisation loop shows zero memory growth (no leak)",
+    "Module purge + Arc drop frees constant pool memory",
+    "GC handles constant pool references without corruption"
+  ]
+}

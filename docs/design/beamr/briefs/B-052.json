@@ -1,0 +1,117 @@
+{
+  "id": "B-052",
+  "cluster": "beamr",
+  "title": "Box::leak audit, removal, and CI prevention gate",
+  "depends_on": ["B-050", "B-051"],
+  "blocked_by": [],
+  "checklist": ["C189", "C190"],
+  "stories": ["S32"],
+  "purpose": "After B-050 (constant pool for literals) and B-051 (process-heap BIF allocation) land, all known Box::leak sites should be eliminated except the legitimate atom-name intern in atom/table.rs. This brief performs a full audit, fixes any remaining sites missed by the two prior briefs, adds a CI-checkable grep gate to prevent new leaks, and verifies the fix with a long-running memory-stability test.",
+  "task": "Audit every Box::leak call in crates/beamr/src/. Fix any remaining sites not covered by B-050 or B-051 (e.g. code_management_bifs.rs, code_management.rs, or any new code added between briefs). Consolidate the duplicate code_management.rs / code_management_bifs.rs files. Add a verification script or test that greps for Box::leak and fails if any are found outside atom/table.rs. Add a memory-stability integration test that runs a BIF-and-literal-heavy workload and asserts no monotonic memory growth.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Full Box::leak audit",
+      "spec": "THE SYSTEM SHALL audit every Box::leak call in crates/beamr/src/ and categorise each as: (a) already fixed by B-050/B-051, (b) needs fixing in this brief, or (c) legitimate (atom/table.rs only).",
+      "acceptance": [
+        "A grep of 'Box::leak' across crates/beamr/src/ is performed",
+        "Every match is categorised: fixed (B-050/B-051), to-fix (this brief), or legitimate (atom/table.rs:136)",
+        "The audit covers test files too — Box::leak in test helpers is acceptable but should be documented",
+        "No uncategorised Box::leak site remains"
+      ],
+      "files": {
+        "modify": []
+      },
+      "checklist": ["C189"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Fix remaining Box::leak sites",
+      "spec": "IF any Box::leak calls remain in non-test production code after B-050 and B-051, THE SYSTEM SHALL replace them with the appropriate allocation mechanism (process heap via ProcessContext, or constant pool, or removal if the leak is unnecessary).",
+      "acceptance": [
+        "Every remaining Box::leak in production code (not tests, not atom/table.rs) is replaced",
+        "Code paths that previously leaked now use ProcessContext helpers or other owned allocation",
+        "Any Box::leak in code_management_bifs.rs or code_management.rs is fixed",
+        "grep for 'Box::leak' in crates/beamr/src/ (excluding tests/ and atom/table.rs) returns zero matches"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/code_management_bifs.rs",
+          "crates/beamr/src/native/code_management.rs"
+        ]
+      },
+      "checklist": ["C189"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Consolidate duplicate code_management files",
+      "spec": "THE SYSTEM SHALL consolidate code_management.rs and code_management_bifs.rs into a single file. IF both files contain overlapping BIF implementations, THE SYSTEM SHALL keep the more complete version and remove the other.",
+      "acceptance": [
+        "Only one code management file exists under native/ (either code_management.rs or code_management_bifs.rs, not both)",
+        "All code management BIFs (load_module, purge_module, delete_module, check_old_code, check_process_code) are in the surviving file",
+        "The module is re-exported from native/mod.rs",
+        "No dead code or duplicate function definitions"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ],
+        "delete": ["crates/beamr/src/native/code_management.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "CI-checkable Box::leak prevention gate",
+      "spec": "THE SYSTEM SHALL include a test that greps for Box::leak in crates/beamr/src/ and fails if any matches are found outside atom/table.rs and test code.",
+      "acceptance": [
+        "A #[test] function in a new or existing test file runs a grep-equivalent check",
+        "The test uses include_str! or std::process::Command to search the source tree",
+        "Matches in atom/table.rs are explicitly allowed",
+        "Matches in #[cfg(test)] blocks are explicitly allowed",
+        "Any new Box::leak in production code causes test failure with a descriptive message",
+        "The test is in the default test suite (runs with cargo test --workspace)"
+      ],
+      "files": {
+        "create": ["crates/beamr/tests/no_box_leak.rs"]
+      },
+      "checklist": ["C190"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Memory-stability integration test",
+      "spec": "THE SYSTEM SHALL include an integration test that runs a BIF-and-literal-heavy workload and verifies no monotonic memory growth over time.",
+      "acceptance": [
+        "Test spawns a process that loops N times (e.g. 10_000), each iteration: call rand:uniform/0, build a tuple, build a list, materialise a literal, send a message to self",
+        "After the loop, trigger a full GC on the process",
+        "Assert: process heap size after GC is within a reasonable bound (not proportional to N)",
+        "Assert: no panic, no OOM, process exits normally",
+        "Test is in crates/beamr/tests/ and runs with cargo test --workspace"
+      ],
+      "files": {
+        "create": ["crates/beamr/tests/memory_stability.rs"]
+      },
+      "checklist": ["C189"],
+      "stories": ["S32"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT re-implement what B-050 and B-051 already fixed — this brief covers residual sites and verification only",
+    "SHALL NOT remove the Box::leak in atom/table.rs — atom name interning is permanent by design (ADR-002)",
+    "SHALL NOT remove Box::leak from test code — test helpers may legitimately leak for simplicity",
+    "SHALL NOT implement a custom global allocator for leak detection — the grep gate and memory-stability test are sufficient",
+    "SHALL NOT change any term layout or allocation semantics — this brief is cleanup and verification"
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests plus new audit/stability tests",
+    "grep for 'Box::leak' in crates/beamr/src/ (excluding atom/table.rs and #[cfg(test)] blocks) returns zero matches",
+    "The no_box_leak.rs test passes",
+    "The memory_stability.rs test shows no monotonic memory growth",
+    "Only one code_management file exists under native/",
+    "All code management BIFs remain functional"
+  ]
+}

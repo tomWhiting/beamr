@@ -1,0 +1,197 @@
+{
+  "id": "B-051",
+  "cluster": "beamr",
+  "title": "Process-heap allocation for BIF and NIF results — eliminate Box::leak in native boundary",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C188"],
+  "stories": ["S32"],
+  "purpose": "BIF and NIF results that return boxed terms (tuples, lists, binaries, floats, maps) are allocated via Box::leak through ProcessContext's alloc_tuple/alloc_cons and direct Box::leak calls across 20+ native files. These allocations are permanent — never freed, never garbage collected. Every BIF call that returns a boxed term leaks memory. This brief routes all BIF/NIF boxed result allocation through the calling process's heap via ProcessContext, making them GC-reclaimable.",
+  "task": "Give ProcessContext access to the process heap. Replace alloc_tuple and alloc_cons in context.rs to allocate on the process heap (with GC-safe ensure-space). Provide additional process-heap allocation helpers (alloc_float, alloc_binary, alloc_bigint, alloc_map). Migrate all BIF/NIF files that call Box::leak directly to use the new ProcessContext helpers. The meridian_ffi helpers (ok_binary, err_binary, ok_nil) are migrated too. Scope: native boundary allocation only. Does not touch interpreter literal path (that is B-050).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ProcessContext gains process heap access",
+      "spec": "THE SYSTEM SHALL give ProcessContext a mutable reference to the calling process's heap so that BIF/NIF results can be allocated on GC-managed memory. THE SYSTEM SHALL provide ensure_heap_space(words: usize) to trigger GC if insufficient space.",
+      "acceptance": [
+        "ProcessContext gains a field or method to access the process heap (&mut [u64] or a HeapAllocator trait)",
+        "ensure_heap_space(n) checks available heap words, triggers minor GC if insufficient, triggers major GC if still insufficient",
+        "The heap reference is valid for the duration of the BIF call and points to the process's current heap",
+        "ProcessContext's existing fields (pid, registers, atom_table, etc.) are unchanged"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/context.rs",
+          "crates/beamr/src/interpreter/mod.rs"
+        ]
+      },
+      "checklist": ["C188"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Process-heap allocation helpers in ProcessContext",
+      "spec": "THE SYSTEM SHALL replace alloc_tuple and alloc_cons with process-heap-allocating versions. THE SYSTEM SHALL add alloc_float, alloc_binary, alloc_bigint, alloc_list, and alloc_map helpers. THE SYSTEM SHALL NOT use Box::leak in any allocation helper.",
+      "acceptance": [
+        "alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> allocates on process heap, calls ensure_heap_space first",
+        "alloc_cons(&mut self, head: Term, tail: Term) -> Result<Term, Term> allocates 2 words on process heap",
+        "alloc_float(&mut self, value: f64) -> Result<Term, Term> allocates header + f64 on process heap",
+        "alloc_binary(&mut self, bytes: &[u8]) -> Result<Term, Term> allocates header + length + data on process heap",
+        "alloc_bigint(&mut self, sign: bool, limbs: &[u64]) -> Result<Term, Term> allocates header + sign + limbs on process heap",
+        "alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term> builds a proper list (chain of cons cells) on process heap",
+        "alloc_map(&mut self, keys: &[Term], values: &[Term]) -> Result<Term, Term> allocates flatmap on process heap",
+        "All helpers use write_float/write_tuple/write_cons/write_binary from term::boxed — same term layout as before",
+        "No Box::leak in context.rs"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/context.rs"]
+      },
+      "checklist": ["C188"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Migrate meridian_ffi helpers",
+      "spec": "THE SYSTEM SHALL replace ok_binary, err_binary, and ok_nil in meridian_ffi.rs with ProcessContext-based allocation. Each NIF SHALL use its _ctx parameter for allocation instead of Box::leak.",
+      "acceptance": [
+        "ok_binary uses ctx.alloc_binary(bytes) instead of Box::leak",
+        "err_binary uses ctx.alloc_binary(bytes) instead of Box::leak",
+        "ok_nil returns a simple nil term (no allocation needed) or uses ctx.alloc_tuple for the {ok, nil} wrapper",
+        "All 6 meridian_ffi NIFs use ctx for any boxed allocation",
+        "No Box::leak in meridian_ffi.rs"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/meridian_ffi.rs"]
+      },
+      "checklist": ["C188"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Migrate gate3_bifs Box::leak sites",
+      "spec": "THE SYSTEM SHALL replace all Box::leak calls in gate3_bifs/ with ProcessContext allocation helpers.",
+      "acceptance": [
+        "gate3_bifs/mod.rs: timeout_tuple and make_ref result allocation via ctx",
+        "gate3_bifs/type_conversion.rs: integer_to_list, list_to_binary, float_to_list, atom_to_binary via ctx",
+        "gate3_bifs/additional.rs: any remaining Box::leak sites via ctx",
+        "No Box::leak in any file under native/gate3_bifs/"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/gate3_bifs/mod.rs",
+          "crates/beamr/src/native/gate3_bifs/type_conversion.rs",
+          "crates/beamr/src/native/gate3_bifs/additional.rs"
+        ]
+      },
+      "checklist": ["C188"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Migrate stdlib_stubs Box::leak sites",
+      "spec": "THE SYSTEM SHALL replace all Box::leak calls in stdlib_stubs/ with ProcessContext allocation helpers.",
+      "acceptance": [
+        "stdlib_stubs/mod.rs: rand float, BIF results via ctx",
+        "stdlib_stubs/string_bifs.rs: string operation results via ctx",
+        "stdlib_stubs/collection_bifs.rs: list/map results via ctx",
+        "stdlib_stubs/maps_bifs.rs: map construction via ctx",
+        "stdlib_stubs/math_bifs.rs: float results via ctx",
+        "stdlib_stubs/uri_bifs.rs: binary results via ctx",
+        "stdlib_stubs/encoding_bifs.rs: binary results via ctx",
+        "stdlib_stubs/io_bifs.rs: I/O results via ctx",
+        "stdlib_stubs/gleam_stdlib_ffi.rs: FFI results via ctx",
+        "stdlib_stubs/gleam_stdlib_ffi2.rs: FFI results via ctx",
+        "stdlib_stubs/type_conversion_bifs.rs: conversion results via ctx",
+        "stdlib_stubs/erlang_stubs.rs: erlang stub results via ctx",
+        "No Box::leak in any file under native/stdlib_stubs/"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/stdlib_stubs/mod.rs",
+          "crates/beamr/src/native/stdlib_stubs/string_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/collection_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/maps_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/math_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/uri_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/encoding_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/io_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi.rs",
+          "crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi2.rs",
+          "crates/beamr/src/native/stdlib_stubs/type_conversion_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/erlang_stubs.rs"
+        ]
+      },
+      "checklist": ["C188"],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Migrate otp_stubs and bifs.rs Box::leak sites",
+      "spec": "THE SYSTEM SHALL replace all Box::leak calls in otp_stubs/ and native/bifs.rs with ProcessContext allocation helpers.",
+      "acceptance": [
+        "native/bifs.rs: any remaining Box::leak (timeout_tuple_term, etc.) via ctx",
+        "otp_stubs/gleam_stubs.rs: results via ctx",
+        "otp_stubs/erlang_stubs.rs: results via ctx",
+        "No Box::leak in native/bifs.rs or any file under native/otp_stubs/"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/bifs.rs",
+          "crates/beamr/src/native/otp_stubs/gleam_stubs.rs",
+          "crates/beamr/src/native/otp_stubs/erlang_stubs.rs"
+        ]
+      },
+      "checklist": ["C188"],
+      "stories": []
+    },
+    {
+      "id": "R7",
+      "title": "Migrate term/json.rs Box::leak sites",
+      "spec": "WHEN JSON terms are constructed, THE SYSTEM SHALL allocate on the process heap instead of using Box::leak. THE SYSTEM SHALL thread ProcessContext (or a heap reference) through JSON-to-Term conversion.",
+      "acceptance": [
+        "term/json.rs Box::leak sites at lines 310, 325, 332, 373, 399 replaced with process-heap allocation",
+        "JSON-to-Term conversion accepts a heap allocator parameter",
+        "No Box::leak in term/json.rs"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/json.rs"]
+      },
+      "checklist": ["C188"],
+      "stories": []
+    },
+    {
+      "id": "R8",
+      "title": "Tests for process-heap BIF allocation",
+      "spec": "THE SYSTEM SHALL include tests verifying BIF results are on the process heap and reclaimable by GC.",
+      "acceptance": [
+        "Test: a BIF returning a tuple (e.g. erlang:make_ref) — result is on the process heap, survives GC, is collected when unreachable",
+        "Test: a tight loop calling rand:uniform/0 1000 times — process heap grows and GC reclaims, no monotonic memory growth",
+        "Test: meridian_ffi:read_file result is on process heap, GC-reclaimable",
+        "Test: alloc_float, alloc_binary, alloc_list, alloc_map all produce valid terms on the process heap",
+        "All existing BIF tests pass — results are identical, only allocation location changed"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/context.rs",
+          "crates/beamr/src/native/bifs.rs"
+        ]
+      },
+      "checklist": ["C188"],
+      "stories": ["S32"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT touch interpreter literal allocation — that is B-050",
+    "SHALL NOT touch the atom-name intern Box::leak in atom/table.rs — that is legitimate and permanent by design",
+    "SHALL NOT change NativeFn signature — BIFs still receive &[Term] and &mut ProcessContext, return Result<Term, Term>",
+    "SHALL NOT change term layout or encoding — only where the memory backing the term lives",
+    "SHALL NOT implement a global term allocator or arena — allocation targets the calling process's heap specifically"
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests plus new heap-allocation tests",
+    "grep for 'Box::leak' in native/ returns zero matches (except tests if any)",
+    "grep for 'Box::leak' in term/json.rs returns zero matches",
+    "A BIF-heavy workload shows GC reclaiming BIF result memory — no monotonic growth",
+    "ProcessContext::alloc_* helpers all allocate on the process heap, not static/global memory"
+  ]
+}

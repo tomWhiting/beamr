@@ -16,8 +16,10 @@ use std::sync::{Arc, Mutex};
 use crate::error::ExecError;
 use crate::interpreter::{InstructionOutcome, NativeServices};
 use crate::loader::Instruction;
+use crate::loader::decode::Operand;
 use crate::module::{Module, ModuleRegistry};
 use crate::process::Process;
+use crate::term::Term;
 use crate::timer::TimerWheel;
 
 /// Optional runtime context passed alongside instruction dispatch.
@@ -273,6 +275,16 @@ fn dispatch_common(
             closures::apply_last(process, registry, arity, deallocate, next_ip)
         }
         Instruction::OnLoad => Ok(InstructionOutcome::OnLoadComplete),
+        Instruction::InitYregs { registers } => {
+            if let Operand::List(regs) = registers {
+                for reg in regs {
+                    core::write_term(process, reg, Term::NIL)?;
+                }
+                Ok(InstructionOutcome::Continue)
+            } else {
+                Err(ExecError::InvalidOperand("init_yregs: expected register list"))
+            }
+        }
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),
         other => Err(ExecError::UnsupportedOpcode {
             name: instruction_name(other),

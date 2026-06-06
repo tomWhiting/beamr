@@ -32,6 +32,10 @@
         {
           "id": "S7",
           "text": "As a workflow author, I want to set timeouts on receive expressions so that a step waiting for input does not hang indefinitely if its dependency fails silently."
+        },
+        {
+          "id": "S32",
+          "text": "As a workflow author, I want the VM not to leak memory monotonically when my workflow calls BIFs or materialises literals in a loop, so that long-running workflows don't OOM the host."
         }
       ]
     },
@@ -70,6 +74,10 @@
         {
           "id": "S15",
           "text": "As the Meridian runtime, I want to shut down the VM cleanly, terminating all scheduler threads and processes, so that there are no leaked threads or orphan resources."
+        },
+        {
+          "id": "S31",
+          "text": "As the Meridian runtime, I want native function access gated by a capability policy so that untrusted Gleam code cannot reach shell commands or filesystem operations without explicit host authorization."
         }
       ]
     },
@@ -142,6 +150,10 @@
         {
           "id": "S30",
           "text": "As a reviewer, I want the reduction boundary hook to be tested with a callback that records every yield so that I can verify the hook fires at every yield point and receives correct process metadata."
+        },
+        {
+          "id": "S33",
+          "text": "As a reviewer, I want to verify that the loader rejects adversarial .beam files (deep nesting, huge counts, zlib bombs) within bounded resource usage, so that untrusted bytecode cannot crash or OOM the host during decode."
         }
       ]
     }

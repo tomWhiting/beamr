@@ -173,6 +173,31 @@
           "id": "C32",
           "text": "Loading a .beam file produced by gleam build + erlc succeeds for a pure Gleam module with no external dependencies beyond erlang: built-ins",
           "done": false
+        },
+        {
+          "id": "C178",
+          "text": "Loader uses a BoundedCursor that validates all element counts against remaining payload bytes before pre-allocating",
+          "done": false
+        },
+        {
+          "id": "C179",
+          "text": "A DecodeBudget (recursion depth, total decoded nodes, total allocated bytes) is threaded through every recursive ETF and chunk decoder",
+          "done": false
+        },
+        {
+          "id": "C180",
+          "text": "Zlib literal decompression is capped upfront via take(limit) — never inflate-then-check",
+          "done": false
+        },
+        {
+          "id": "C181",
+          "text": "Per-load atom budget prevents a single module from interning more than MAX_ATOMS_PER_MODULE atoms into the global table",
+          "done": false
+        },
+        {
+          "id": "C182",
+          "text": "All pre-allocation in the loader routes through an ensure_count helper that rejects counts exceeding remaining bytes or MAX_TABLE_ENTRIES",
+          "done": false
         }
       ]
     },
@@ -257,6 +282,11 @@
         {
           "id": "C48",
           "text": "Term ordering follows the BEAM order: number < atom < reference < fun < port < pid < tuple < map < nil < list < binary",
+          "done": false
+        },
+        {
+          "id": "C177",
+          "text": "Atom term comparison uses name-based (Unicode code-point) ordering, not intern index ordering — ordering is stable across runs regardless of atom interning order",
           "done": false
         }
       ]
@@ -768,6 +798,11 @@
           "id": "C144",
           "text": "Linking to a process that has already exited immediately sends an exit signal",
           "done": false
+        },
+        {
+          "id": "C183",
+          "text": "Process link and monitor sets use insertion-ordered storage (not HashSet) so exit signal delivery order is deterministic and reproducible across runs",
+          "done": false
         }
       ]
     },
@@ -843,6 +878,21 @@
           "id": "C157",
           "text": "Minimum BIFs for Gate 1: erlang:+/2, erlang:-/2, erlang:*/2, erlang:div/2, erlang:rem/2, erlang:</2, erlang:>=/2, erlang:=:=/2, erlang:=/=/2, erlang:error/1, erlang:display/1",
           "done": false
+        },
+        {
+          "id": "C184",
+          "text": "Every registered native entry carries a capability class tag: Pure, Clock, Entropy, or ExternalIo",
+          "done": false
+        },
+        {
+          "id": "C185",
+          "text": "The loader evaluates each resolved native import against a host-supplied CapabilityPolicy at link time; denied imports are bound to a undef-trapping stub",
+          "done": false
+        },
+        {
+          "id": "C186",
+          "text": "The default capability policy grants only Pure natives; Clock, Entropy, and ExternalIo require explicit host grants",
+          "done": false
         }
       ]
     },
@@ -917,6 +967,31 @@
         {
           "id": "C170",
           "text": "Timer resolution is millisecond-granularity or better",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Memory Safety",
+      "items": [
+        {
+          "id": "C187",
+          "text": "Non-immediate literals are stored in a per-module constant pool (owned Vec of allocations) freed when the Module is purged — not leaked per materialisation",
+          "done": false
+        },
+        {
+          "id": "C188",
+          "text": "BIF and NIF boxed results are allocated on the calling process's heap via ProcessContext heap allocation — not via Box::leak",
+          "done": false
+        },
+        {
+          "id": "C189",
+          "text": "No Box::leak call exists in crates/beamr/src/ interpreter or native code paths except the legitimate atom-name intern in atom/table.rs",
+          "done": false
+        },
+        {
+          "id": "C190",
+          "text": "A CI-checkable grep gate confirms no new Box::leak is introduced outside atom/table.rs",
           "done": false
         }
       ]
