@@ -77,7 +77,7 @@ pub struct CodePosition {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Register {
     /// X register index.
-    X(u8),
+    X(u16),
     /// Y register index in the current stack frame.
     Y(u16),
 }

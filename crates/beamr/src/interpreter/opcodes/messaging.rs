@@ -136,9 +136,9 @@ pub fn try_case(process: &mut Process, source: &Operand) -> Result<InstructionOu
         let stacktrace = base
             .checked_add(2)
             .ok_or(ExecError::InvalidOperand("try_case registers"))?;
-        process.set_x_reg(base.into(), exception.class);
-        process.set_x_reg(reason.into(), exception.reason);
-        process.set_x_reg(stacktrace.into(), exception.stacktrace);
+        process.set_x_reg(base, exception.class);
+        process.set_x_reg(reason, exception.reason);
+        process.set_x_reg(stacktrace, exception.stacktrace);
     }
     Ok(InstructionOutcome::Continue)
 }
@@ -258,7 +258,7 @@ fn timeout_milliseconds(process: &Process, operand: &Operand) -> Result<u64, Exe
 
 fn register(operand: &Operand) -> Result<Register, ExecError> {
     match operand {
-        Operand::X(index) => u8::try_from(*index)
+        Operand::X(index) => u16::try_from(*index)
             .map(Register::X)
             .map_err(|_| ExecError::InvalidOperand("X register")),
         Operand::Y(index) => u16::try_from(*index)
@@ -269,7 +269,7 @@ fn register(operand: &Operand) -> Result<Register, ExecError> {
     }
 }
 
-fn x_register_index(operand: &Operand) -> Result<u8, ExecError> {
+fn x_register_index(operand: &Operand) -> Result<u16, ExecError> {
     match register(operand)? {
         Register::X(index) => Ok(index),
         Register::Y(_) => Err(ExecError::InvalidOperand("X register")),
@@ -283,7 +283,7 @@ fn write_register(
 ) -> Result<(), ExecError> {
     match destination {
         Register::X(index) => {
-            process.set_x_reg(index.into(), value);
+            process.set_x_reg(index, value);
             Ok(())
         }
         Register::Y(index) => process
