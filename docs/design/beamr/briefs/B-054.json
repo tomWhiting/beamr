@@ -1,0 +1,145 @@
+{
+  "id": "B-054",
+  "cluster": "beamr",
+  "title": "Process-scoped module lookup — namespace-aware interpreter and spawn inheritance",
+  "depends_on": ["B-053"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": ["S8"],
+  "purpose": "B-053 adds the namespace infrastructure (NamespaceId, namespace store, spawn_in API). This brief wires namespaces into the runtime: the interpreter resolves deferred imports and module lookups against the process's namespace registry, child processes inherit the parent's namespace, and the run loop passes the correct registry to the interpreter. This completes the namespace isolation — processes in different namespaces see different module versions without bytecode rewriting.",
+  "task": "Wire the process's NamespaceId into the interpreter run loop, deferred import resolution, closure module lookup, and child process spawning. The run_process function resolves the namespace's registry from the namespace_store and passes it to the interpreter. Deferred imports (B-043) resolve against the namespace registry. Closures resolve their module against the namespace registry. Child processes spawned via erlang:spawn/3 or spawn_link inherit the parent's namespace. Scope: runtime wiring only. Does not change the namespace store or public API (that was B-053).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "run_process uses namespace registry",
+      "spec": "WHEN run_process executes a time slice for a process, THE SYSTEM SHALL resolve the process's namespace registry from the namespace_store and pass it to the interpreter. IF the process's namespace no longer exists, THE SYSTEM SHALL use the default namespace registry.",
+      "acceptance": [
+        "run_process resolves shared.namespace_store.get(process.namespace_id()) to get Arc<ModuleRegistry>",
+        "Falls back to shared.module_registry (default namespace) if the namespace was deleted",
+        "The resolved registry is passed to interpreter::run_with_native_services as the registry parameter",
+        "current_module_for_position uses the namespace registry, not shared.module_registry",
+        "Module lookups in the run loop (line ~795) use the namespace registry"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Deferred imports resolve against namespace registry",
+      "spec": "WHEN a deferred import is resolved at call time, THE SYSTEM SHALL look up the target module in the calling process's namespace registry. THE SYSTEM SHALL NOT fall back to the default namespace or other namespaces.",
+      "acceptance": [
+        "call_external_target's Deferred path (opcodes/core.rs ~276-303) uses ctx.registry which now points to the namespace registry",
+        "A deferred call to module M resolves against the namespace's registry — if M is loaded in namespace A but not B, a process in B gets Undef",
+        "No cross-namespace leakage: module loaded only in the default namespace is not visible from namespace A"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/core.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Closure module lookup uses namespace registry",
+      "spec": "WHEN a closure is called and its module needs to be resolved (for generation mismatch or cross-module closures), THE SYSTEM SHALL resolve the module from the calling process's namespace registry.",
+      "acceptance": [
+        "resolve_closure_target (closures.rs) uses the registry parameter which is now the namespace registry",
+        "A closure created in namespace A and called in namespace A resolves correctly",
+        "A closure passed to a process in namespace B via message: the closure carries its own Arc<Module> reference (per B-042 pinning), so it doesn't need registry lookup in the common case",
+        "Cross-namespace closure calls where generation matches work via the pinned Arc<Module>"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/interpreter/opcodes/closures.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Spawn inherits parent namespace",
+      "spec": "WHEN a process spawns a child via erlang:spawn/3, spawn_link, or the SpawnFacility, THE SYSTEM SHALL set the child's namespace_id to the parent's namespace_id. THE SYSTEM SHALL resolve the child's entry module from the parent's namespace registry.",
+      "acceptance": [
+        "SpawnFacility::spawn resolves the entry module from the parent process's namespace registry, not the default",
+        "The child process inherits the parent's NamespaceId",
+        "spawn_link inherits namespace from the parent",
+        "Cascading spawns preserve namespace: P1 (ns1) spawns P2, P2 spawns P3 — all three are in ns1",
+        "The explicit spawn_in API from B-053 overrides inheritance — spawn_in(ns2, ...) creates a process in ns2 regardless of caller"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/supervision_integration.rs",
+          "crates/beamr/src/native/spawn.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": ["S8"]
+    },
+    {
+      "id": "R5",
+      "title": "on_load handler respects namespace",
+      "spec": "WHEN a module with an on_load attribute is loaded into a namespace via load_module_in, THE SYSTEM SHALL run the on_load handler as a process in that namespace.",
+      "acceptance": [
+        "run_on_load spawns the on_load process in the module's namespace",
+        "The on_load process resolves imports against the namespace registry",
+        "on_load in namespace A does not see modules from namespace B"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Cross-namespace messaging and links are transparent",
+      "spec": "THE SYSTEM SHALL allow message passing, links, and monitors between processes in different namespaces without restriction. PID addressing is global.",
+      "acceptance": [
+        "Process in namespace A can send a message to process in namespace B via PID",
+        "link(pid_in_ns1, pid_in_ns2) works — exit signals propagate across namespaces",
+        "monitor(pid_in_ns1, pid_in_ns2) works — DOWN messages cross namespaces",
+        "No namespace check on send, link, or monitor operations"
+      ],
+      "files": {
+        "modify": []
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R7",
+      "title": "Integration tests for namespace-scoped execution",
+      "spec": "THE SYSTEM SHALL include integration tests verifying that processes in different namespaces see different module versions during execution.",
+      "acceptance": [
+        "Test: load hello_world v1 (returns 1) in ns1, hello_world v2 (returns 2) in ns2. spawn_in(ns1) returns 1, spawn_in(ns2) returns 2",
+        "Test: process in ns1 spawns child — child is in ns1 and sees ns1's modules",
+        "Test: process in ns1 sends message to process in ns2 — message arrives correctly",
+        "Test: deferred import in ns1 code resolves against ns1 modules only",
+        "Test: closure created in ns1 and passed via message to ns2 process — closure executes using its pinned module (ns1 code), not ns2's version",
+        "Test: hot_load_module_in(ns1, ...) updates ns1 without affecting ns2"
+      ],
+      "files": {
+        "modify": ["crates/beamr/tests/namespace_isolation.rs"]
+      },
+      "checklist": [],
+      "stories": ["S8"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement namespace deletion or cleanup — namespaces are permanent for now",
+    "SHALL NOT restrict cross-namespace communication — PIDs are global, messages/links/monitors cross freely",
+    "SHALL NOT implement namespace-scoped BIF registration — BIFs are always shared",
+    "SHALL NOT change the interpreter's function signatures — the registry parameter already exists, it just points to a different ModuleRegistry",
+    "SHALL NOT implement namespace-aware apply/3 — apply resolves against the calling process's namespace"
+  ],
+  "verification": [
+    "cargo test --workspace passes with all existing tests plus new namespace integration tests",
+    "Two processes with same-named module in different namespaces get different results",
+    "Spawn inheritance chains preserve namespace",
+    "Deferred imports resolve within the correct namespace",
+    "Cross-namespace messaging works transparently",
+    "Closures passed across namespaces execute using their pinned module"
+  ]
+}
