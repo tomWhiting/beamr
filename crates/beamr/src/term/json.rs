@@ -90,7 +90,10 @@ pub fn term_to_value(term: Term, atom_table: &AtomTable) -> Result<Value, JsonTe
 /// Convert a `serde_json::Value` to a BEAM term.
 pub fn value_to_term(value: &Value, context: &mut ProcessContext) -> Result<Term, JsonTermError> {
     match value {
-        Value::Null => Ok(Term::NIL),
+        Value::Null => {
+            let atom_table = context.atom_table().ok_or(JsonTermError::MissingAtomTable)?;
+            Ok(Term::atom(atom_table.intern("null")))
+        }
         Value::Bool(true) => Ok(Term::atom(Atom::TRUE)),
         Value::Bool(false) => Ok(Term::atom(Atom::FALSE)),
         Value::Number(number) => number_to_term(number),
@@ -105,10 +108,16 @@ fn atom_to_value(atom: Atom, atom_table: &AtomTable) -> Result<Value, JsonTermEr
         Atom::TRUE => Ok(Value::Bool(true)),
         Atom::FALSE => Ok(Value::Bool(false)),
         Atom::NIL | Atom::UNDEFINED => Ok(Value::Null),
-        other => atom_table
-            .resolve(other)
-            .map(|name| Value::String(name.to_owned()))
-            .ok_or(JsonTermError::UnknownAtom(other)),
+        other => {
+            let name = atom_table
+                .resolve(other)
+                .ok_or(JsonTermError::UnknownAtom(other))?;
+            if name == "null" {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::String(name.to_owned()))
+            }
+        }
     }
 }
 
@@ -513,7 +522,9 @@ mod tests {
             value_to_term(&json!(42), &mut context),
             Ok(Term::small_int(42))
         );
-        assert_eq!(value_to_term(&Value::Null, &mut context), Ok(Term::NIL));
+        let null_term = value_to_term(&Value::Null, &mut context).expect("null");
+        assert!(null_term.is_atom());
+        assert_eq!(table.resolve(null_term.as_atom().unwrap()), Some("null"));
         assert_eq!(
             value_to_term(&json!(true), &mut context),
             Ok(Term::atom(Atom::TRUE))
@@ -606,11 +617,12 @@ mod tests {
     }
 
     #[test]
-    fn null_round_trip_follows_nil_empty_list_mapping() {
+    fn null_round_trips_as_null_atom() {
         let (table, mut context) = context();
-        let term = value_to_term(&Value::Null, &mut context).expect("null to nil");
+        let term = value_to_term(&Value::Null, &mut context).expect("null to atom");
 
-        assert_eq!(term, Term::NIL);
-        assert_eq!(term_to_value(term, &table), Ok(json!([])));
+        assert!(term.is_atom());
+        assert_eq!(table.resolve(term.as_atom().unwrap()), Some("null"));
+        assert_eq!(term_to_value(term, &table), Ok(Value::Null));
     }
 }
