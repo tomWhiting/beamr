@@ -15,8 +15,14 @@ use crate::term::boxed::{self, Tuple};
 
 /// Helper: insert a running process into shared state with the given pid.
 fn insert_process(shared: &SharedState, pid: u64) -> u64 {
+    insert_process_in(shared, pid, NamespaceId::DEFAULT)
+}
+
+/// Helper: insert a running process assigned to `namespace`.
+fn insert_process_in(shared: &SharedState, pid: u64, namespace: NamespaceId) -> u64 {
     shared.process_table.spawn_with_pid(pid);
     let mut process = Process::new(pid, 64);
+    process.set_namespace_id(namespace);
     process
         .transition_to(ProcessStatus::Running)
         .unwrap_or_else(|error| panic!("process {pid} starts: {error}"));
@@ -306,4 +312,44 @@ fn monitor_and_link_both_fire_on_exit() {
     assert_eq!(msg[0], Term::atom(Atom::DOWN));
     let ref_term = boxed::Reference::new(msg[1]).unwrap_or_else(|| panic!("reference in DOWN"));
     assert_eq!(ref_term.id(), reference);
+}
+
+#[test]
+fn cross_namespace_link_exit_propagates() {
+    let shared = make_shared_state();
+    let ns1 = NamespaceId(1);
+    let ns2 = NamespaceId(2);
+    let a = insert_process_in(&shared, 1, ns1);
+    let b = insert_process_in(&shared, 2, ns2);
+    add_link(&shared, a, b);
+
+    cleanup_exited_process(&shared, a, ExitReason::Error);
+
+    assert!(!is_alive(&shared, a), "source process removed");
+    assert!(
+        !is_alive(&shared, b),
+        "linked process in another namespace dies from error exit"
+    );
+}
+
+#[test]
+fn cross_namespace_monitor_delivers_down_message() {
+    let shared = make_shared_state();
+    let ns1 = NamespaceId(1);
+    let ns2 = NamespaceId(2);
+    let watcher = insert_process_in(&shared, 1, ns1);
+    let target = insert_process_in(&shared, 2, ns2);
+    let reference = add_monitor(&shared, watcher, target);
+
+    cleanup_exited_process(&shared, target, ExitReason::Error);
+
+    assert!(!is_alive(&shared, target), "target should be removed");
+    assert!(is_alive(&shared, watcher), "watcher stays alive");
+    let msg = read_mailbox_tuple(&shared, watcher)
+        .unwrap_or_else(|| panic!("watcher should have received cross-namespace DOWN"));
+    assert_eq!(msg[0], Term::atom(Atom::DOWN));
+    let ref_term = boxed::Reference::new(msg[1]).unwrap_or_else(|| panic!("reference in DOWN"));
+    assert_eq!(ref_term.id(), reference);
+    assert_eq!(msg[3].as_pid(), Some(target));
+    assert_eq!(msg[4], Term::atom(Atom::ERROR));
 }

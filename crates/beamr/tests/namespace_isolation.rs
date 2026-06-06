@@ -315,6 +315,7 @@ fn cross_namespace_pid_message_delivery_remains_global() {
 
     assert!(scheduler.enqueue_atom_message(receiver, ok));
     assert_eq!(scheduler.has_message(receiver, Term::atom(ok)), Some(true));
+    assert_eq!(scheduler.has_message(sender, Term::atom(ok)), Some(false));
     assert_eq!(scheduler.process_namespace(sender), Some(ns1));
     assert_eq!(scheduler.process_namespace(receiver), Some(ns2));
     scheduler.shutdown();

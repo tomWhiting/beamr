@@ -262,6 +262,7 @@ fn spawn_1_with_zero_arity_closure() {
     assert_eq!(bif_spawn_1(&[fun], &mut ctx), Ok(Term::pid(42)));
     let records = f.lambda_records();
     assert_eq!(records.len(), 1);
+    assert_eq!(records[0].caller_pid, 1);
     assert_eq!(records[0].link_to, None);
 }
 
@@ -312,6 +313,7 @@ fn spawn_link_1_sets_link_to_parent() {
     let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &[]).expect("closure");
     assert_eq!(bif_spawn_link_1(&[fun], &mut ctx), Ok(Term::pid(42)));
     let records = f.lambda_records();
+    assert_eq!(records[0].caller_pid, 3);
     assert_eq!(records[0].link_to, Some(3));
 }
 
@@ -459,6 +461,7 @@ fn sup_ctx(
 // ---- Mock spawn facility ----
 
 struct LambdaSpawnRecord {
+    caller_pid: u64,
     link_to: Option<u64>,
 }
 
@@ -509,7 +512,7 @@ impl SpawnFacility for MockSpawnFacility {
 
     fn spawn_lambda(
         &self,
-        _caller_pid: u64,
+        caller_pid: u64,
         _module: Atom,
         _lambda_index: u32,
         link_to: Option<u64>,
@@ -517,7 +520,10 @@ impl SpawnFacility for MockSpawnFacility {
         self.lambda_records
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(LambdaSpawnRecord { link_to });
+            .push(LambdaSpawnRecord {
+                caller_pid,
+                link_to,
+            });
         Ok(self.next_pid)
     }
 }
