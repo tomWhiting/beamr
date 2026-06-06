@@ -250,7 +250,9 @@ fn dispatch_common(
         Instruction::Badmatch { value } => messaging::badmatch(process, value),
         Instruction::CaseEnd { value } => messaging::case_end(process, value),
         Instruction::IfEnd => messaging::if_end(process),
-        Instruction::Line { .. } => Ok(InstructionOutcome::Continue),
+        Instruction::Line { .. } | Instruction::Generic { name: "executable_line", .. } => {
+            Ok(InstructionOutcome::Continue)
+        }
         Instruction::BinaryOp { op, operands } => binary::binary_op(process, module, *op, operands),
         Instruction::MapOp { op, operands } => closures::map_op(process, module, *op, operands),
         Instruction::MakeFun { operands } => closures::make_fun(process, module, operands),
