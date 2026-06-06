@@ -299,12 +299,25 @@ const STDLIB_STUBS: &[StubBif] = &[
     ("io_lib_format", "fwrite_g", 1, bif_fwrite_g),
 ];
 
+#[cfg(feature = "json")]
+const JSON_STUBS: &[StubBif] = &[
+    ("json", "decode", 1, bif_json_decode),
+    ("json", "encode", 1, bif_json_encode),
+];
+
 /// Registers all stdlib stub BIFs under their OTP module names.
 pub fn register_stdlib_stubs(
     registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     for &(module_name, function_name, arity, native_function) in STDLIB_STUBS {
+        let module = atom_table.intern(module_name);
+        let function = atom_table.intern(function_name);
+        registry.register(module, function, arity, native_function)?;
+    }
+
+    #[cfg(feature = "json")]
+    for &(module_name, function_name, arity, native_function) in JSON_STUBS {
         let module = atom_table.intern(module_name);
         let function = atom_table.intern(function_name);
         registry.register(module, function, arity, native_function)?;
@@ -549,6 +562,29 @@ mod b038_tests;
 mod bitwise_bifs_tests;
 #[cfg(test)]
 mod collection_bifs_tests;
+#[cfg(feature = "json")]
+fn bif_json_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [input] = args else {
+        return Err(badarg());
+    };
+    let binary = Binary::new(*input).ok_or_else(badarg)?;
+    let json_value: serde_json::Value =
+        serde_json::from_slice(binary.as_bytes()).map_err(|_| badarg())?;
+    crate::term::json::value_to_term(&json_value, context).map_err(|_| badarg())
+}
+
+#[cfg(feature = "json")]
+fn bif_json_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [input] = args else {
+        return Err(badarg());
+    };
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let json_value =
+        crate::term::json::term_to_value(*input, atom_table).map_err(|_| badarg())?;
+    let json_bytes = serde_json::to_vec(&json_value).map_err(|_| badarg())?;
+    Ok(make_leaked_binary(&json_bytes))
+}
+
 #[cfg(test)]
 mod gleam_stdlib_ffi2_tests;
 #[cfg(test)]
