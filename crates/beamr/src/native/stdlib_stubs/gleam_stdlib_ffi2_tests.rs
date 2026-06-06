@@ -68,17 +68,20 @@ fn assert_error_nil_tuple(term: Term) {
 }
 
 #[test]
-fn classify_dynamic_returns_type_atoms() {
+fn classify_dynamic_returns_type_binaries() {
     let mut context = context();
 
-    assert_eq!(
-        bif_classify_dynamic(&[Term::small_int(42)], &mut context),
-        Ok(atom(&context, "int"))
-    );
-    assert_eq!(
-        bif_classify_dynamic(&[binary(b"hello")], &mut context),
-        Ok(atom(&context, "binary"))
-    );
+    let result = bif_classify_dynamic(&[Term::small_int(42)], &mut context).unwrap();
+    assert_eq!(Binary::new(result).unwrap().as_bytes(), b"Int");
+
+    let result = bif_classify_dynamic(&[binary(b"hello")], &mut context).unwrap();
+    assert_eq!(Binary::new(result).unwrap().as_bytes(), b"String");
+
+    let result = bif_classify_dynamic(&[Term::atom(Atom::TRUE)], &mut context).unwrap();
+    assert_eq!(Binary::new(result).unwrap().as_bytes(), b"Bool");
+
+    let result = bif_classify_dynamic(&[Term::atom(Atom::NIL)], &mut context).unwrap();
+    assert_eq!(Binary::new(result).unwrap().as_bytes(), b"Nil");
 }
 
 #[test]

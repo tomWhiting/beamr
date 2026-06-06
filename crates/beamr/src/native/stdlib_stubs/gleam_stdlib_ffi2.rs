@@ -4,18 +4,18 @@ use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
-use crate::term::boxed::{Cons, Float, Map, Tuple, write_float, write_map, write_tuple};
+use crate::term::boxed::{Closure, Cons, Float, Map, Tuple, write_float, write_map, write_tuple};
 
 use super::encoding_bifs::{
     bif_base64_decode as erlang_base64_decode, bif_base64_encode as erlang_base64_encode,
     bif_binary_decode_hex, bif_binary_encode_hex,
 };
 
-pub fn bif_classify_dynamic(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_classify_dynamic(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
     let [value] = args else {
         return Err(badarg());
     };
-    Ok(Term::atom(intern_atom(context, classify(*value))?))
+    make_binary(classify(*value).as_bytes())
 }
 
 pub fn bif_dict(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -301,32 +301,34 @@ pub fn bif_bit_array_to_int_and_size(
 }
 
 fn classify(value: Term) -> &'static str {
-    if value.is_small_int() {
-        "int"
-    } else if value.is_atom() {
-        "atom"
-    } else if value.is_pid() {
-        "pid"
-    } else if value.is_nil() || Cons::new(value).is_some() {
-        "list"
+    if value.is_atom() {
+        let atom = value.as_atom().unwrap_or(Atom::NIL);
+        if atom == Atom::TRUE || atom == Atom::FALSE {
+            return "Bool";
+        }
+        if atom == Atom::NIL {
+            return "Nil";
+        }
+        "Atom"
+    } else if value.is_small_int() {
+        "Int"
     } else if Binary::new(value).is_some() {
-        "binary"
+        "String"
+    } else if value.is_nil() || Cons::new(value).is_some() {
+        "List"
     } else if Float::new(value).is_some() {
-        "float"
-    } else if Tuple::new(value).is_some() {
-        "tuple"
+        "Float"
     } else if Map::new(value).is_some() {
-        "map"
+        "Dict"
+    } else if Tuple::new(value).is_some() {
+        "Tuple"
+    } else if value.is_pid() {
+        "Pid"
+    } else if Closure::new(value).is_some() {
+        "Function"
     } else {
-        "unknown"
+        "Unknown"
     }
-}
-
-fn intern_atom(context: &mut ProcessContext, name: &str) -> Result<Atom, Term> {
-    context
-        .atom_table()
-        .map(|table| table.intern(name))
-        .ok_or_else(badarg)
 }
 
 fn set_entry(entries: &mut Vec<(Term, Term)>, key: Term, value: Term) {
