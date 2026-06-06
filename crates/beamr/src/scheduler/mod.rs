@@ -562,7 +562,6 @@ impl Scheduler {
     }
 
     /// Spawn an inert process pinned to a module in a namespace for policy tests.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn spawn_test_process_in(&self, namespace: NamespaceId, module: Arc<Module>) -> u64 {
         let pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(pid);
@@ -600,14 +599,12 @@ impl Scheduler {
     }
 
     /// Return the namespace assigned to a live process.
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn process_namespace(&self, pid: u64) -> Option<NamespaceId> {
         self.with_process(pid, |process| process.namespace_id())
     }
 
     /// Return true when a term is queued in a live process mailbox.
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn has_message(&self, target_pid: u64, expected: Term) -> Option<bool> {
         self.with_process(target_pid, |process| {
@@ -620,7 +617,6 @@ impl Scheduler {
     }
 
     /// Return true when a trapped EXIT message from `source_pid` is queued.
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn has_trapped_exit_message(&self, target_pid: u64, source_pid: u64) -> Option<bool> {
         self.with_process(target_pid, |process| {

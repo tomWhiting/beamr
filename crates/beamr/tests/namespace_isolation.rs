@@ -209,8 +209,8 @@ fn force_purge_module_in_only_affects_target_namespace() {
 fn spawn_from_process_inherits_parent_namespace() {
     let atoms = Arc::new(AtomTable::with_common_atoms());
     let counter = atoms.intern("counter");
+    let child_version = atoms.intern("child_version");
     let parent = atoms.intern("spawn_parent");
-    let spawn_child = atoms.intern("spawn_child");
     let (scheduler, _registry) = scheduler(Arc::clone(&atoms));
     let ns1 = scheduler.create_namespace();
     let ns2 = scheduler.create_namespace();
@@ -228,17 +228,21 @@ fn spawn_from_process_inherits_parent_namespace() {
         .load_module_in(ns2, &fixture("spawn_parent.beam"))
         .expect("load spawner into ns2");
 
-    let parent_pid = scheduler
-        .spawn_in(ns1, parent, spawn_child, Vec::new())
-        .expect("spawn parent in ns1");
-    let (parent_reason, child_pid_term) = scheduler.run_until_exit(parent_pid);
-    assert_eq!(parent_reason, ExitReason::Normal);
-    let child_pid = child_pid_term.as_pid().expect("spawn returns child pid");
+    let ns1_pid = scheduler
+        .spawn_in(ns1, parent, child_version, Vec::new())
+        .expect("spawn child_version in ns1");
+    let (ns1_reason, ns1_result) = scheduler.run_until_exit(ns1_pid);
+    assert_eq!(ns1_reason, ExitReason::Normal);
+    assert_eq!(ns1_result, Term::small_int(1));
 
-    assert_eq!(scheduler.process_namespace(child_pid), Some(ns1));
-    let (child_reason, child_result) = scheduler.run_until_exit(child_pid);
-    assert_eq!(child_reason, ExitReason::Normal);
-    assert_eq!(child_result, Term::small_int(1));
+    let ns2_pid = scheduler
+        .spawn_in(ns2, parent, child_version, Vec::new())
+        .expect("spawn child_version in ns2");
+    let (ns2_reason, ns2_result) = scheduler.run_until_exit(ns2_pid);
+    assert_eq!(ns2_reason, ExitReason::Normal);
+    assert_eq!(ns2_result, Term::small_int(2));
+
+    assert!(scheduler.lookup_module_in(ns1, counter).is_some());
     assert!(scheduler.lookup_module_in(ns2, counter).is_some());
     scheduler.shutdown();
 }
