@@ -216,15 +216,12 @@ fn spawn_from_fun(args: &[Term], context: &mut ProcessContext, link: bool) -> Re
     let module = closure.module().ok_or_else(badarg)?;
     let lambda_index = closure.function_index() as u32;
 
-    let link_to = if link {
-        Some(context.pid().ok_or_else(badarg)?)
-    } else {
-        None
-    };
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let link_to = if link { Some(caller_pid) } else { None };
 
     let facility = context.spawn_facility().ok_or_else(badarg)?;
     let new_pid = facility
-        .spawn_lambda(module, lambda_index, link_to)
+        .spawn_lambda(caller_pid, module, lambda_index, link_to)
         .map_err(|_| badarg())?;
     Term::try_pid(new_pid).ok_or_else(badarg)
 }

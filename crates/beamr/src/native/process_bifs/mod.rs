@@ -184,14 +184,11 @@ fn spawn_impl(args: &[Term], context: &mut ProcessContext, link: bool) -> Result
     let module = module_term.as_atom().ok_or_else(badarg)?;
     let function = function_term.as_atom().ok_or_else(badarg)?;
     let spawn_args = list_to_vec(*args_term)?;
-    let link_to = if link {
-        Some(context.pid().ok_or_else(badarg)?)
-    } else {
-        None
-    };
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let link_to = if link { Some(caller_pid) } else { None };
     let facility = context.spawn_facility().ok_or_else(badarg)?;
     let new_pid = facility
-        .spawn(module, function, spawn_args, link_to)
+        .spawn(caller_pid, module, function, spawn_args, link_to)
         .map_err(|_| badarg())?;
     Term::try_pid(new_pid).ok_or_else(badarg)
 }

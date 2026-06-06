@@ -437,11 +437,16 @@ impl Scheduler {
         entry_function: Atom,
         args: Vec<Term>,
     ) -> Result<u64, ExecError> {
+        let parent_namespace = self
+            .with_process(parent_pid, |process| process.namespace_id())
+            .ok_or(ExecError::Badarg)?;
         let facility = supervision_integration::SchedulerSpawnFacility {
             shared: Arc::clone(&self.shared),
+            namespace_id: parent_namespace,
         };
         crate::native::SpawnFacility::spawn(
             &facility,
+            parent_pid,
             entry_module,
             entry_function,
             args,
@@ -558,11 +563,7 @@ impl Scheduler {
 
     /// Spawn an inert process pinned to a module in a namespace for policy tests.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn spawn_test_process_in(
-        &self,
-        namespace: NamespaceId,
-        module: Arc<Module>,
-    ) -> u64 {
+    pub fn spawn_test_process_in(&self, namespace: NamespaceId, module: Arc<Module>) -> u64 {
         let pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(pid);
         let mut process = Process::new(pid, DEFAULT_HEAP_SIZE);
@@ -596,6 +597,26 @@ impl Scheduler {
             .process_bodies
             .insert(child_pid, Mutex::new(Some(ScheduledProcess(child))));
         Ok(child_pid)
+    }
+
+    /// Return the namespace assigned to a live process.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn process_namespace(&self, pid: u64) -> Option<NamespaceId> {
+        self.with_process(pid, |process| process.namespace_id())
+    }
+
+    /// Return true when a term is queued in a live process mailbox.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn has_message(&self, target_pid: u64, expected: Term) -> Option<bool> {
+        self.with_process(target_pid, |process| {
+            process.mailbox_mut().drain_arrival();
+            process
+                .mailbox()
+                .scan_iter()
+                .any(|message| *message == expected)
+        })
     }
 
     /// Return true when a trapped EXIT message from `source_pid` is queued.
@@ -960,9 +981,8 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
         Some(position) => position.module,
         None => return exit_process(shared, process, ExitReason::Normal),
     };
-    let Some(registry) = namespace_registry(shared, process.namespace_id()) else {
-        return exit_process(shared, process, ExitReason::Error);
-    };
+    let registry = namespace_registry(shared, process.namespace_id())
+        .unwrap_or_else(|| Arc::clone(&shared.module_registry));
     let module = if let Some(current) = process.current_module()
         && current.name == module_atom
         && current
@@ -982,7 +1002,7 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
         process.set_current_module(Arc::clone(&module));
         module
     };
-    let services = supervision_integration::build_native_services(shared);
+    let services = supervision_integration::build_native_services(shared, process.namespace_id());
     let result = interpreter::run_with_native_services(process, &module, &registry, &services);
     let reductions = DEFAULT_REDUCTION_BUDGET.saturating_sub(process.reduction_counter());
     if matches!(
@@ -1119,7 +1139,7 @@ fn run_on_load(
     process.set_current_module(Arc::new(module.clone()));
     loop {
         process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
-        let services = supervision_integration::build_native_services(shared);
+        let services = supervision_integration::build_native_services(shared, namespace);
         match interpreter::run_with_native_services(&mut process, module, registry, &services) {
             Ok(ExecutionResult::Exited(reason)) => return reason,
             Ok(ExecutionResult::Yielded) => continue,

@@ -42,6 +42,7 @@ pub trait SpawnFacility: Send + Sync {
     /// module/function cannot be resolved or process creation fails.
     fn spawn(
         &self,
+        caller_pid: u64,
         module: Atom,
         function: Atom,
         args: Vec<Term>,
@@ -55,6 +56,7 @@ pub trait SpawnFacility: Send + Sync {
     /// and `erlang:spawn_link/1` which receive a closure term.
     fn spawn_lambda(
         &self,
+        caller_pid: u64,
         module: Atom,
         lambda_index: u32,
         link_to: Option<u64>,
@@ -64,6 +66,8 @@ pub trait SpawnFacility: Send + Sync {
 /// Record of a spawn request, used by test mocks to verify BIF behavior.
 #[derive(Clone, Debug)]
 pub struct SpawnRecord {
+    /// Calling process PID requesting the spawn.
+    pub caller_pid: u64,
     /// Module atom for the entry point.
     pub module: Atom,
     /// Function atom for the entry point.

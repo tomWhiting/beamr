@@ -488,6 +488,7 @@ impl MockSpawnFacility {
 impl SpawnFacility for MockSpawnFacility {
     fn spawn(
         &self,
+        caller_pid: u64,
         module: Atom,
         function: Atom,
         args: Vec<Term>,
@@ -497,6 +498,7 @@ impl SpawnFacility for MockSpawnFacility {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(SpawnRecord {
+                caller_pid,
                 module,
                 function,
                 args,
@@ -507,6 +509,7 @@ impl SpawnFacility for MockSpawnFacility {
 
     fn spawn_lambda(
         &self,
+        _caller_pid: u64,
         _module: Atom,
         _lambda_index: u32,
         link_to: Option<u64>,

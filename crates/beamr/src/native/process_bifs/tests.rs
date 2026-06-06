@@ -62,6 +62,7 @@ fn spawn_returns_new_pid() {
         Ok(Term::pid(7)),
     );
     assert_eq!(f.records().len(), 1);
+    assert_eq!(f.records()[0].caller_pid, 0);
     assert_eq!(f.records()[0].link_to, None);
 }
 
@@ -132,6 +133,7 @@ fn spawn_link_sets_link_to_parent() {
         ),
         Ok(Term::pid(8)),
     );
+    assert_eq!(f.records()[0].caller_pid, 3);
     assert_eq!(f.records()[0].link_to, Some(3));
 }
 
@@ -519,6 +521,7 @@ impl MockSpawnFacility {
 impl SpawnFacility for MockSpawnFacility {
     fn spawn(
         &self,
+        caller_pid: u64,
         module: Atom,
         function: Atom,
         args: Vec<Term>,
@@ -528,6 +531,7 @@ impl SpawnFacility for MockSpawnFacility {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(SpawnRecord {
+                caller_pid,
                 module,
                 function,
                 args,
@@ -536,7 +540,7 @@ impl SpawnFacility for MockSpawnFacility {
         Ok(self.next_pid)
     }
 
-    fn spawn_lambda(&self, _: Atom, _: u32, _: Option<u64>) -> Result<u64, SpawnError> {
+    fn spawn_lambda(&self, _: u64, _: Atom, _: u32, _: Option<u64>) -> Result<u64, SpawnError> {
         Ok(self.next_pid)
     }
 }
@@ -544,11 +548,18 @@ impl SpawnFacility for MockSpawnFacility {
 struct FailingSpawnFacility;
 
 impl SpawnFacility for FailingSpawnFacility {
-    fn spawn(&self, _: Atom, _: Atom, _: Vec<Term>, _: Option<u64>) -> Result<u64, SpawnError> {
+    fn spawn(
+        &self,
+        _: u64,
+        _: Atom,
+        _: Atom,
+        _: Vec<Term>,
+        _: Option<u64>,
+    ) -> Result<u64, SpawnError> {
         Err(SpawnError::UnresolvedMfa)
     }
 
-    fn spawn_lambda(&self, _: Atom, _: u32, _: Option<u64>) -> Result<u64, SpawnError> {
+    fn spawn_lambda(&self, _: u64, _: Atom, _: u32, _: Option<u64>) -> Result<u64, SpawnError> {
         Err(SpawnError::UnresolvedMfa)
     }
 }

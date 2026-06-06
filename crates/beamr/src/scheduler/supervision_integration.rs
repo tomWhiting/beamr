@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use crate::atom::Atom;
+use crate::namespace::NamespaceId;
 use crate::native::links::{LinkError, LinkFacility};
 use crate::native::spawn::{SpawnError, SpawnFacility};
 use crate::native::supervision::{MonitorResult, SupervisionError, SupervisionFacility};
@@ -15,7 +16,10 @@ use crate::supervision::link;
 use crate::supervision::monitor;
 use crate::term::Term;
 
-use super::{ScheduledProcess, SharedState, cleanup_exited_process, lock_or_recover, wake_process};
+use super::{
+    ScheduledProcess, SharedState, cleanup_exited_process, lock_or_recover, namespace_registry,
+    wake_process,
+};
 
 /// Propagate exit signals through links and deliver DOWN messages through
 /// monitors when a process exits. Uses a worklist pattern to handle cascade
@@ -191,9 +195,11 @@ fn deliver_single_down(
 /// Build the `NativeServices` bundle for a scheduler time slice.
 pub(super) fn build_native_services(
     shared: &Arc<SharedState>,
+    namespace_id: NamespaceId,
 ) -> crate::interpreter::NativeServices {
     let spawn: Arc<dyn SpawnFacility> = Arc::new(SchedulerSpawnFacility {
         shared: Arc::clone(shared),
+        namespace_id,
     });
     let link: Arc<dyn crate::native::links::LinkFacility> = Arc::new(SchedulerLinkFacility {
         shared: Arc::clone(shared),
@@ -221,20 +227,23 @@ pub(super) fn build_native_services(
 /// Real `SpawnFacility` backed by the scheduler's shared state.
 pub(super) struct SchedulerSpawnFacility {
     pub(super) shared: Arc<SharedState>,
+    pub(super) namespace_id: NamespaceId,
 }
 
 impl SpawnFacility for SchedulerSpawnFacility {
     fn spawn(
         &self,
+        caller_pid: u64,
         module: Atom,
         function: Atom,
         args: Vec<Term>,
         link_to: Option<u64>,
     ) -> Result<u64, SpawnError> {
+        let namespace_id = self.caller_namespace(caller_pid);
+        let registry = namespace_registry(&self.shared, namespace_id)
+            .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
-        let entry = self
-            .shared
-            .module_registry
+        let entry = registry
             .lookup_mfa(module, function, arity)
             .map_err(|_| SpawnError::UnresolvedMfa)?;
         let ip = entry
@@ -254,7 +263,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             module_version: Arc::clone(&entry.module),
             instruction_pointer: ip,
             args,
-            namespace_id: crate::namespace::NamespaceId::DEFAULT,
+            namespace_id,
         });
 
         if let Some(parent_pid) = link_to {
@@ -293,15 +302,15 @@ impl SpawnFacility for SchedulerSpawnFacility {
 
     fn spawn_lambda(
         &self,
+        caller_pid: u64,
         module: Atom,
         lambda_index: u32,
         link_to: Option<u64>,
     ) -> Result<u64, SpawnError> {
-        let loaded = self
-            .shared
-            .module_registry
-            .lookup(module)
-            .ok_or(SpawnError::UnresolvedMfa)?;
+        let namespace_id = self.caller_namespace(caller_pid);
+        let registry = namespace_registry(&self.shared, namespace_id)
+            .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
+        let loaded = registry.lookup(module).ok_or(SpawnError::UnresolvedMfa)?;
         let lambda = loaded
             .lambdas
             .get(lambda_index as usize)
@@ -322,7 +331,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             module_version: Arc::clone(&loaded),
             instruction_pointer: ip,
             args: Vec::new(),
-            namespace_id: crate::namespace::NamespaceId::DEFAULT,
+            namespace_id,
         });
 
         if let Some(parent_pid) = link_to {
@@ -350,6 +359,18 @@ impl SpawnFacility for SchedulerSpawnFacility {
         self.shared.wake_condvar.notify_all();
 
         Ok(child_pid)
+    }
+}
+
+impl SchedulerSpawnFacility {
+    fn caller_namespace(&self, caller_pid: u64) -> NamespaceId {
+        if let Some(parent_entry) = self.shared.process_bodies.get(&caller_pid) {
+            let parent_slot = lock_or_recover(&parent_entry);
+            if let Some(ScheduledProcess(parent)) = parent_slot.as_ref() {
+                return parent.namespace_id();
+            }
+        }
+        self.namespace_id
     }
 }
 
