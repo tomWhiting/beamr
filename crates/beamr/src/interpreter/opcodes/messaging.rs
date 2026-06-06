@@ -128,17 +128,11 @@ pub fn try_end(process: &mut Process, source: &Operand) -> Result<InstructionOut
 }
 
 pub fn try_case(process: &mut Process, source: &Operand) -> Result<InstructionOutcome, ExecError> {
-    let base = x_register_index(source)?;
+    core::write_term(process, source, Term::NIL)?;
     if let Some(exception) = process.current_exception() {
-        let reason = base
-            .checked_add(1)
-            .ok_or(ExecError::InvalidOperand("try_case registers"))?;
-        let stacktrace = base
-            .checked_add(2)
-            .ok_or(ExecError::InvalidOperand("try_case registers"))?;
-        process.set_x_reg(base, exception.class);
-        process.set_x_reg(reason, exception.reason);
-        process.set_x_reg(stacktrace, exception.stacktrace);
+        process.set_x_reg(0, exception.class);
+        process.set_x_reg(1, exception.reason);
+        process.set_x_reg(2, exception.stacktrace);
     }
     Ok(InstructionOutcome::Continue)
 }
@@ -269,12 +263,6 @@ fn register(operand: &Operand) -> Result<Register, ExecError> {
     }
 }
 
-fn x_register_index(operand: &Operand) -> Result<u16, ExecError> {
-    match register(operand)? {
-        Register::X(index) => Ok(index),
-        Register::Y(_) => Err(ExecError::InvalidOperand("X register")),
-    }
-}
 
 fn write_register(
     process: &mut Process,
