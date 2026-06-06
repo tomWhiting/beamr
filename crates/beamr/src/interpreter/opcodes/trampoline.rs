@@ -70,7 +70,7 @@ pub fn handle_trampoline(
 
     // Load arguments into x registers.
     for (index, arg) in trampoline.args.iter().enumerate() {
-        let register = u8::try_from(index)
+        let register = u16::try_from(index)
             .map_err(|_| ExecError::InvalidOperand("trampoline argument register"))?;
         process.set_x_reg(register, *arg);
     }
@@ -81,7 +81,7 @@ pub fn handle_trampoline(
         let value = closure.free_var(index).ok_or(ExecError::InvalidOperand(
             "trampoline closure free variable",
         ))?;
-        let register = u8::try_from(usize::from(arity) + index)
+        let register = u16::try_from(usize::from(arity) + index)
             .map_err(|_| ExecError::InvalidOperand("trampoline X register"))?;
         process.set_x_reg(register, value);
     }

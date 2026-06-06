@@ -695,8 +695,8 @@ fn build_process(request: SpawnRequest) -> Process {
         instruction_pointer: request.instruction_pointer,
     }));
     process.set_current_module(request.module_version);
-    for (index, arg) in request.args.into_iter().enumerate().take(256) {
-        if let Ok(register) = u8::try_from(index) {
+    for (index, arg) in request.args.into_iter().enumerate().take(1024) {
+        if let Ok(register) = u16::try_from(index) {
             process.set_x_reg(register, arg);
         }
     }

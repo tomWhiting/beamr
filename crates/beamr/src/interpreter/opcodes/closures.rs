@@ -33,7 +33,7 @@ pub fn make_fun(
     let mut free_vars = Vec::with_capacity(num_free);
     for register in 0..num_free {
         let register =
-            u8::try_from(register).map_err(|_| ExecError::InvalidOperand("X register"))?;
+            u16::try_from(register).map_err(|_| ExecError::InvalidOperand("X register"))?;
         free_vars.push(process.x_reg(register));
     }
 
@@ -66,7 +66,7 @@ pub fn call_fun(
     registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
     let arity = operand_u8(arity, "call_fun arity")?;
-    let fun_term = process.x_reg(arity);
+    let fun_term = process.x_reg(arity.into());
     let closure = Closure::new(fun_term).ok_or(ExecError::Badfun { term: fun_term })?;
     if closure.arity() != arity {
         let args = collect_args(process, arity);
@@ -88,7 +88,7 @@ pub fn call_fun(
         let value = closure
             .free_var(index)
             .ok_or(ExecError::InvalidOperand("closure free variable"))?;
-        let register = u8::try_from(usize::from(arity) + index)
+        let register = u16::try_from(usize::from(arity) + index)
             .map_err(|_| ExecError::InvalidOperand("X register"))?;
         process.set_x_reg(register, value);
     }
@@ -227,11 +227,11 @@ fn apply_common(
     save_return_module: Option<Atom>,
 ) -> Result<InstructionOutcome, ExecError> {
     let arity = operand_u8(arity, "apply arity")?;
-    let module_term = process.x_reg(arity);
+    let module_term = process.x_reg(arity.into());
     let function_register = arity
         .checked_add(1)
         .ok_or(ExecError::InvalidOperand("apply function register"))?;
-    let function_term = process.x_reg(function_register);
+    let function_term = process.x_reg(function_register.into());
     let module_atom = module_term.as_atom().ok_or(ExecError::Badarg)?;
     let function_atom = function_term.as_atom().ok_or(ExecError::Badarg)?;
 
@@ -420,7 +420,7 @@ fn operand_u8(operand: &Operand, context: &'static str) -> Result<u8, ExecError>
 }
 
 fn collect_args(process: &Process, arity: u8) -> Vec<Term> {
-    (0..arity).map(|register| process.x_reg(register)).collect()
+    (0..arity).map(|register| process.x_reg(register.into())).collect()
 }
 
 #[cfg(test)]

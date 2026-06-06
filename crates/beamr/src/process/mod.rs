@@ -216,7 +216,7 @@ pub struct Process {
     current_exception: Option<Exception>,
     receive_timeout: Option<ReceiveTimeout>,
     receive_timer_ref: Option<u64>,
-    x_regs: [Term; 256],
+    x_regs: [Term; 1024],
     native_continuation: Option<NativeContinuation>,
     reduction_counter: u32,
     code_position: Option<CodePosition>,
@@ -244,7 +244,7 @@ impl Process {
             current_exception: None,
             receive_timeout: None,
             receive_timer_ref: None,
-            x_regs: [Term::NIL; 256],
+            x_regs: [Term::NIL; 1024],
             native_continuation: None,
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
             code_position: None,
@@ -448,23 +448,23 @@ impl Process {
 
     /// Read X register `n`.
     #[must_use]
-    pub fn x_reg(&self, n: u8) -> Term {
+    pub fn x_reg(&self, n: u16) -> Term {
         self.x_regs[usize::from(n)]
     }
 
     /// Write X register `n`.
-    pub fn set_x_reg(&mut self, n: u8, value: Term) {
+    pub fn set_x_reg(&mut self, n: u16, value: Term) {
         self.x_regs[usize::from(n)] = value;
     }
 
     /// Read all X registers.
     #[must_use]
-    pub const fn x_regs(&self) -> &[Term; 256] {
+    pub const fn x_regs(&self) -> &[Term; 1024] {
         &self.x_regs
     }
 
     /// Mutable access to all X registers.
-    pub fn x_regs_mut(&mut self) -> &mut [Term; 256] {
+    pub fn x_regs_mut(&mut self) -> &mut [Term; 1024] {
         &mut self.x_regs
     }
 
@@ -630,7 +630,7 @@ impl Process {
         self.current_exception = None;
         self.receive_timeout = None;
         self.receive_timer_ref = None;
-        self.x_regs = [Term::NIL; 256];
+        self.x_regs = [Term::NIL; 1024];
         self.reduction_counter = 0;
         self.code_position = None;
         self.current_module = None;
@@ -684,7 +684,7 @@ mod tests {
     fn all_x_registers_start_as_nil() {
         let process = Process::new(0, 233);
 
-        for register in u8::MIN..=u8::MAX {
+        for register in u16::MIN..=u8::MAX as u16 {
             assert_eq!(process.x_reg(register), Term::NIL);
         }
     }

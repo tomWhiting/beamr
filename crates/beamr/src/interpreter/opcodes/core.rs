@@ -313,7 +313,7 @@ fn call_external_target(
         ResolvedImportTarget::Native(entry) => {
             let mut args = Vec::with_capacity(usize::from(arity));
             for register in 0..arity {
-                args.push(process.x_reg(register));
+                args.push(process.x_reg(register.into()));
             }
             let mut context = match ctx.timers {
                 Some(timers) => {
@@ -462,7 +462,7 @@ pub(crate) fn read_term(process: &Process, operand: &Operand) -> Result<Term, Ex
         }
         Operand::Atom(Some(atom)) => Ok(Term::atom(*atom)),
         Operand::Atom(None) => Ok(Term::NIL),
-        Operand::X(index) => Ok(process.x_reg(u8_from_u32(*index, "X register")?)),
+        Operand::X(index) => Ok(process.x_reg(u16_from_u32(*index, "X register")?)),
         Operand::Y(index) => process
             .stack()
             .y_reg(u16_from_u32(*index, "Y register")?)
@@ -480,7 +480,7 @@ pub(crate) fn write_term(
 ) -> Result<(), ExecError> {
     match destination {
         Operand::X(index) => {
-            process.set_x_reg(u8_from_u32(*index, "X register")?, value);
+            process.set_x_reg(u16_from_u32(*index, "X register")?, value);
             Ok(())
         }
         Operand::Y(index) => process
@@ -609,10 +609,6 @@ fn operand_u8(operand: &Operand, context: &'static str) -> Result<u8, ExecError>
 
 fn operand_u16(operand: &Operand, context: &'static str) -> Result<u16, ExecError> {
     u16::try_from(operand_usize(operand, context)?).map_err(|_| ExecError::InvalidOperand(context))
-}
-
-fn u8_from_u32(value: u32, context: &'static str) -> Result<u8, ExecError> {
-    u8::try_from(value).map_err(|_| ExecError::InvalidOperand(context))
 }
 
 fn u16_from_u32(value: u32, context: &'static str) -> Result<u16, ExecError> {

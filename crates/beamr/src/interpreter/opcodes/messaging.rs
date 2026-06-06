@@ -136,9 +136,9 @@ pub fn try_case(process: &mut Process, source: &Operand) -> Result<InstructionOu
         let stacktrace = base
             .checked_add(2)
             .ok_or(ExecError::InvalidOperand("try_case registers"))?;
-        process.set_x_reg(base, exception.class);
-        process.set_x_reg(reason, exception.reason);
-        process.set_x_reg(stacktrace, exception.stacktrace);
+        process.set_x_reg(base.into(), exception.class);
+        process.set_x_reg(reason.into(), exception.reason);
+        process.set_x_reg(stacktrace.into(), exception.stacktrace);
     }
     Ok(InstructionOutcome::Continue)
 }
@@ -283,7 +283,7 @@ fn write_register(
 ) -> Result<(), ExecError> {
     match destination {
         Register::X(index) => {
-            process.set_x_reg(index, value);
+            process.set_x_reg(index.into(), value);
             Ok(())
         }
         Register::Y(index) => process

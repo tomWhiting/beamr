@@ -463,7 +463,7 @@ fn call_gleam_function(
 
     let mut process = Process::new(1, 4096);
     for (i, arg) in args.iter().enumerate() {
-        process.set_x_reg(i as u8, *arg);
+        process.set_x_reg(i as u16, *arg);
     }
     process.set_code_position(Some(beamr::process::CodePosition {
         module: module.name,
