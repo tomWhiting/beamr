@@ -312,6 +312,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         exit_tombstones: DashMap::new(),
         exit_results: DashMap::new(),
         exit_errors: DashMap::new(),
+        exit_exceptions: DashMap::new(),
         async_results: DashMap::new(),
         link_set: Mutex::new(LinkSet::new()),
         monitor_set: Mutex::new(MonitorSet::new()),

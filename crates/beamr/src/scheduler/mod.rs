@@ -62,6 +62,7 @@ pub(super) struct SharedState {
     exit_tombstones: DashMap<u64, ExitReason>,
     exit_results: DashMap<u64, Term>,
     exit_errors: DashMap<u64, ExecError>,
+    exit_exceptions: DashMap<u64, crate::process::Exception>,
     async_results: DashMap<u64, Term>,
     link_set: Mutex<LinkSet>,
     monitor_set: Mutex<MonitorSet>,
@@ -155,6 +156,7 @@ impl Scheduler {
             exit_tombstones: DashMap::new(),
             exit_results: DashMap::new(),
             exit_errors: DashMap::new(),
+            exit_exceptions: DashMap::new(),
             async_results: DashMap::new(),
             link_set: Mutex::new(LinkSet::new()),
             monitor_set: Mutex::new(MonitorSet::new()),
@@ -533,6 +535,15 @@ impl Scheduler {
         self.shared.exit_errors.remove(&pid).map(|(_, e)| e)
     }
 
+    /// Retrieve the BEAM exception that caused a process to exit, if any.
+    ///
+    /// Returns `Some(Exception { class, reason, stacktrace })` when the
+    /// process exited due to an uncaught BEAM-level exception (function_clause,
+    /// badmatch, case_clause, etc.). Removed on retrieval.
+    pub fn take_exit_exception(&self, pid: u64) -> Option<crate::process::Exception> {
+        self.shared.exit_exceptions.remove(&pid).map(|(_, e)| e)
+    }
+
     /// Wake a suspended process with a result term.
     ///
     /// The process will resume execution with `result` in x(0) and the
@@ -788,7 +799,7 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
     process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
     let module_atom = match process.code_position() {
         Some(position) => position.module,
-        None => return exit_process(process, ExitReason::Normal),
+        None => return exit_process(shared, process, ExitReason::Normal),
     };
     let module = if let Some(current) = process.current_module()
         && current.name == module_atom
@@ -804,7 +815,7 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
         Arc::clone(current)
     } else {
         let Some(module) = shared.module_registry.lookup(module_atom) else {
-            return exit_process(process, ExitReason::Error);
+            return exit_process(shared, process, ExitReason::Error);
         };
         process.set_current_module(Arc::clone(&module));
         module
@@ -831,17 +842,25 @@ fn execute_slice(shared: &Arc<SharedState>, process: &mut Process) -> SliceOutco
             let _t = process.transition_to(ProcessStatus::Waiting);
             SliceOutcome::Wait(take_process(process))
         }
-        Ok(ExecutionResult::Exited(reason)) => exit_process(process, reason),
+        Ok(ExecutionResult::Exited(reason)) => exit_process(shared, process, reason),
         Err(error) => {
             let pid = process.pid();
             shared.exit_errors.insert(pid, error);
-            exit_process(process, ExitReason::Error)
+            exit_process(shared, process, ExitReason::Error)
         }
     }
 }
 
-fn exit_process(process: &mut Process, reason: ExitReason) -> SliceOutcome {
+fn exit_process(
+    shared: &SharedState,
+    process: &mut Process,
+    reason: ExitReason,
+) -> SliceOutcome {
+    let pid = process.pid();
     let result = process.x_reg(0);
+    if let Some(exception) = process.current_exception() {
+        shared.exit_exceptions.insert(pid, exception);
+    }
     process.terminate(reason);
     SliceOutcome::Exited(reason, result)
 }

@@ -110,6 +110,7 @@ fn make_shared_state() -> Arc<SharedState> {
         exit_tombstones: DashMap::new(),
         exit_results: DashMap::new(),
         exit_errors: DashMap::new(),
+        exit_exceptions: DashMap::new(),
         async_results: DashMap::new(),
         link_set: std::sync::Mutex::new(LinkSet::new()),
         monitor_set: std::sync::Mutex::new(MonitorSet::new()),
