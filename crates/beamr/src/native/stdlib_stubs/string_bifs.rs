@@ -3,7 +3,7 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 
 pub fn bif_length(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let _ = context;
@@ -316,7 +316,9 @@ fn atom_name<'a>(term: Term, context: &'a ProcessContext<'_>) -> Result<&'a str,
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
-    Binary::new(term).map(Binary::as_bytes).ok_or_else(badarg)
+    BinaryRef::new(term)
+        .map(|binary| binary.as_bytes())
+        .ok_or_else(badarg)
 }
 
 fn bool_term(value: bool) -> Term {

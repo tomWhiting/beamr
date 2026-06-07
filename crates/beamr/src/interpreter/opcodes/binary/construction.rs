@@ -4,8 +4,10 @@ use crate::loader::decode::compact::Operand;
 use crate::module::Module;
 use crate::process::Process;
 use crate::term::Term;
-use crate::term::binary::{Binary, packed_word_count, write_binary};
+use crate::term::binary::packed_word_count;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{BoxedHeader, BoxedTag};
+use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 
 use super::super::core;
 use super::matching::{Endian, segment_bits};
@@ -90,7 +92,7 @@ pub(crate) fn bs_put_binary(
     source: &Operand,
 ) -> Result<(), ExecError> {
     let source = core::read_term(process, module, source)?;
-    let binary = Binary::new(source).ok_or(ExecError::Badarg)?;
+    let binary = BinaryRef::new(source).ok_or(ExecError::Badarg)?;
     let bytes = binary.as_bytes();
     let size_bits = bytes.len() * u8::BITS as usize;
     let builder = BinaryBuilder::new(builder).ok_or(ExecError::Badarg)?;
@@ -113,10 +115,10 @@ pub(crate) fn finalize_builder(process: &mut Process, builder: Term) -> Result<T
     }
     let byte_len = builder.write_position_bits() / u8::BITS as usize;
     let bytes = builder.bytes(byte_len).ok_or(ExecError::Badarg)?;
-    let words = 2 + packed_word_count(byte_len);
+    let words = alloc_binary_word_count(byte_len);
     let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
     let heap = heap_slice(ptr, words);
-    write_binary(heap, bytes).ok_or(ExecError::Badarg)
+    alloc_binary(heap, bytes).ok_or(ExecError::Badarg)
 }
 
 fn allocate_builder(process: &mut Process, capacity: usize) -> Result<Term, ExecError> {

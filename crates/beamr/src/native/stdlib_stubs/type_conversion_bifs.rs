@@ -3,7 +3,7 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Float, Tuple};
 
 pub fn bif_atom_to_binary(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -20,7 +20,7 @@ pub fn bif_binary_to_float(args: &[Term], context: &mut ProcessContext) -> Resul
     let [binary_term] = args else {
         return Err(badarg());
     };
-    let binary = Binary::new(*binary_term).ok_or_else(badarg)?;
+    let binary = BinaryRef::new(*binary_term).ok_or_else(badarg)?;
     let text = std::str::from_utf8(binary.as_bytes()).map_err(|_| badarg())?;
     let value = text.parse::<f64>().map_err(|_| badarg())?;
     make_float(context, value)
@@ -128,7 +128,7 @@ pub fn bif_tuple_to_list(args: &[Term], context: &mut ProcessContext) -> Result<
 }
 
 fn binary_to_integer(binary_term: Term, radix: u32) -> Result<Term, Term> {
-    let binary = Binary::new(binary_term).ok_or_else(badarg)?;
+    let binary = BinaryRef::new(binary_term).ok_or_else(badarg)?;
     let text = std::str::from_utf8(binary.as_bytes()).map_err(|_| badarg())?;
     let integer = i64::from_str_radix(text, radix).map_err(|_| badarg())?;
     Term::try_small_int(integer).ok_or_else(badarg)
@@ -171,7 +171,7 @@ fn collect_iodata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
         bytes.push(byte);
         return Ok(());
     }
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         bytes.extend_from_slice(binary.as_bytes());
         return Ok(());
     }

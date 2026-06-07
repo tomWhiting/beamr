@@ -3,7 +3,7 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Closure, Cons, Float, Map, Tuple};
 use crate::term::compare;
 
@@ -190,7 +190,7 @@ fn write_print_args(
 }
 
 fn print_bytes(value: Term, context: &ProcessContext) -> Vec<u8> {
-    Binary::new(value)
+    BinaryRef::new(value)
         .map(|binary| binary.as_bytes().to_vec())
         .unwrap_or_else(|| render_term(value, context).into_bytes())
 }
@@ -219,7 +219,7 @@ pub fn bif_bit_array(args: &[Term], context: &mut ProcessContext) -> Result<Term
     let [value] = args else {
         return Err(badarg());
     };
-    Binary::new(*value).ok_or_else(badarg)?;
+    BinaryRef::new(*value).ok_or_else(badarg)?;
     Ok(*value)
 }
 
@@ -240,7 +240,7 @@ pub fn bif_bit_array_concat(args: &[Term], context: &mut ProcessContext) -> Resu
     let mut current = *parts;
     while !current.is_nil() {
         let cons = Cons::new(current).ok_or_else(badarg)?;
-        let binary = Binary::new(cons.head()).ok_or_else(badarg)?;
+        let binary = BinaryRef::new(cons.head()).ok_or_else(badarg)?;
         bytes.extend_from_slice(binary.as_bytes());
         current = cons.tail();
     }
@@ -255,7 +255,7 @@ pub fn bif_bit_array_pad_to_bytes(
     let [input] = args else {
         return Err(badarg());
     };
-    Binary::new(*input).ok_or_else(badarg)?;
+    BinaryRef::new(*input).ok_or_else(badarg)?;
     Ok(*input)
 }
 
@@ -310,7 +310,7 @@ fn classify(value: Term) -> &'static str {
         "Atom"
     } else if value.is_small_int() {
         "Int"
-    } else if Binary::new(value).is_some() {
+    } else if BinaryRef::new(value).is_some() {
         "String"
     } else if value.is_nil() || Cons::new(value).is_some() {
         "List"
@@ -388,7 +388,7 @@ fn render_term(term: Term, context: &ProcessContext) -> String {
     if term.is_nil() {
         return "[]".to_owned();
     }
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         return match std::str::from_utf8(binary.as_bytes()) {
             Ok(text) => text.to_owned(),
             Err(_) => format!("<<{} bytes>>", binary.len()),
@@ -419,7 +419,7 @@ fn binary_text(binary: Term) -> Result<&'static str, Term> {
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
-    Binary::new(term)
+    BinaryRef::new(term)
         .map(|binary| binary.as_bytes())
         .ok_or_else(badarg)
 }

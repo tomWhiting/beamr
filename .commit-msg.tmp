@@ -1,1 +1,1 @@
-Harden process priority info visibility
+Harden binary threshold promotion by accepting ProcBin inputs across stdlib binary consumers

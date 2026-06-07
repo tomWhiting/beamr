@@ -27,7 +27,7 @@ use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::Cons;
 use rand::RngExt;
 
@@ -694,7 +694,7 @@ pub fn bif_logger_warning(args: &[Term], _context: &mut ProcessContext) -> Resul
     };
 
     // Try to extract the format string from a binary term.
-    if let Some(binary) = Binary::new(*format_term) {
+    if let Some(binary) = BinaryRef::new(*format_term) {
         let format_str = String::from_utf8_lossy(binary.as_bytes());
         eprintln!("[warning] {format_str} {args_term:?}");
     } else {
@@ -716,7 +716,7 @@ pub fn bif_characters_to_binary(args: &[Term], context: &mut ProcessContext) -> 
     };
 
     // If already a binary, return unchanged.
-    if Binary::new(*input).is_some() {
+    if BinaryRef::new(*input).is_some() {
         return Ok(*input);
     }
 
@@ -744,7 +744,7 @@ pub fn bif_characters_to_binary(args: &[Term], context: &mut ProcessContext) -> 
                 let mut buf = [0u8; 4];
                 let encoded = ch.encode_utf8(&mut buf);
                 bytes.extend_from_slice(encoded.as_bytes());
-            } else if let Some(binary) = Binary::new(head) {
+            } else if let Some(binary) = BinaryRef::new(head) {
                 bytes.extend_from_slice(binary.as_bytes());
             } else {
                 return Err(badarg());
@@ -767,7 +767,7 @@ pub fn bif_characters_to_list(args: &[Term], context: &mut ProcessContext) -> Re
         return Err(badarg());
     };
 
-    let binary = Binary::new(*input).ok_or_else(badarg)?;
+    let binary = BinaryRef::new(*input).ok_or_else(badarg)?;
     let bytes = binary.as_bytes();
 
     let text = std::str::from_utf8(bytes).map_err(|_| badarg())?;
@@ -784,7 +784,7 @@ pub fn bif_binary_part(args: &[Term], context: &mut ProcessContext) -> Result<Te
     let [binary_term, offset_term, length_term] = args else {
         return Err(badarg());
     };
-    let binary = Binary::new(*binary_term).ok_or_else(badarg)?;
+    let binary = BinaryRef::new(*binary_term).ok_or_else(badarg)?;
     let offset = offset_term
         .as_small_int()
         .and_then(|value| usize::try_from(value).ok())
@@ -892,7 +892,7 @@ fn bif_json_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     let [input] = args else {
         return Err(badarg());
     };
-    let binary = Binary::new(*input).ok_or_else(badarg)?;
+    let binary = BinaryRef::new(*input).ok_or_else(badarg)?;
     let json_value: serde_json::Value =
         serde_json::from_slice(binary.as_bytes()).map_err(|_| badarg())?;
     crate::term::json::value_to_term(&json_value, context).map_err(|_| badarg())

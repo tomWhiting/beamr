@@ -1,13 +1,14 @@
-use super::*;
 use super::construction::{BinaryBuilder, bs_put_binary, bs_put_integer, finalize_builder};
 use super::matching::{Endian, MatchContext, SegmentFlags, decode_integer};
+use super::*;
 use crate::atom::Atom;
 use crate::loader::{Instruction, Literal};
 use crate::module::Module;
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
-use crate::term::boxed::Float;
+use crate::term::binary_ref::BinaryRef;
+use crate::term::boxed::{Float, ProcBin};
 use std::collections::HashMap;
 
 fn module(code: Vec<Instruction>) -> Module {
@@ -129,6 +130,41 @@ fn interpreter_binary_builder_appends_integer_and_binary_segments() {
         Binary::new(result).expect("binary").as_bytes(),
         &[65, 66, 67]
     );
+}
+
+#[test]
+fn interpreter_binary_builder_promotes_large_result_to_proc_bin() {
+    let mut process = Process::new(1, 64);
+    let module = module(Vec::new());
+    binary_op(
+        &mut process,
+        &module,
+        BinaryOp::BsInitWritable,
+        &[Operand::Unsigned(100), Operand::X(0)],
+    )
+    .expect("builder init");
+    let builder = process.x_reg(0);
+
+    for index in 0..100_i64 {
+        bs_put_integer(
+            &mut process,
+            &module,
+            builder,
+            &Operand::Integer(index),
+            &Operand::Unsigned(8),
+            &Operand::Unsigned(1),
+            &Operand::Atom(None),
+        )
+        .expect("put integer");
+    }
+
+    let result = finalize_builder(&mut process, builder).expect("final binary");
+    let expected: Vec<u8> = (0..100).collect();
+    assert_eq!(
+        BinaryRef::new(result).expect("binary ref").as_bytes(),
+        expected.as_slice()
+    );
+    assert!(ProcBin::new(result).is_some());
 }
 
 #[test]

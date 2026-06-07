@@ -3,7 +3,7 @@
 use crate::atom::Atom;
 use crate::native::{NativeContinuation, ProcessContext};
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Closure, Tuple};
 
 use super::gleam_stdlib_ffi::bif_string_replace;
@@ -22,7 +22,7 @@ pub fn bif_gleam_string_repeat(args: &[Term], context: &mut ProcessContext) -> R
     let [input, count] = args else {
         return Err(badarg());
     };
-    let bytes = Binary::new(*input)
+    let bytes = BinaryRef::new(*input)
         .map(|binary| binary.as_bytes())
         .ok_or_else(badarg)?;
     let count = count

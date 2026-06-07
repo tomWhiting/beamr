@@ -3,7 +3,7 @@
 use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::compare;
 
 pub fn bif_percent_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -168,7 +168,7 @@ fn binary_text(binary: Term) -> Result<&'static str, Term> {
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
-    Binary::new(term)
+    BinaryRef::new(term)
         .map(|binary| binary.as_bytes())
         .ok_or_else(badarg)
 }

@@ -3,7 +3,7 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Tuple};
 
 pub fn bif_io_put_chars_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -106,7 +106,7 @@ fn collect_iodata(term: Term, out: &mut Vec<u8>) -> Result<(), Term> {
     if term.is_nil() {
         return Ok(());
     }
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         out.extend_from_slice(binary.as_bytes());
         return Ok(());
     }
@@ -152,7 +152,7 @@ fn render_term(term: Term, context: &ProcessContext) -> String {
     if let Some(pid) = term.as_pid() {
         return format!("<0.{pid}.0>");
     }
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         return match std::str::from_utf8(binary.as_bytes()) {
             Ok(text) => format!("<<\"{text}\">>"),
             Err(_) => format!("<<{} bytes>>", binary.len()),
@@ -171,7 +171,9 @@ fn render_term(term: Term, context: &ProcessContext) -> String {
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
-    Binary::new(term).map(Binary::as_bytes).ok_or_else(badarg)
+    BinaryRef::new(term)
+        .map(|binary| binary.as_bytes())
+        .ok_or_else(badarg)
 }
 
 fn badarg() -> Term {

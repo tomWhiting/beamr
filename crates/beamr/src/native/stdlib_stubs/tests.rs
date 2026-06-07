@@ -3,7 +3,8 @@ use crate::native::{BifRegistryImpl, ProcessContext};
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary::{self, Binary};
-use crate::term::boxed::{Cons, Tuple, write_cons};
+use crate::term::binary_ref::BinaryRef;
+use crate::term::boxed::{Cons, ProcBin, Tuple, write_cons};
 use std::sync::Arc;
 
 use super::{
@@ -29,7 +30,7 @@ fn binary(bytes: &[u8]) -> Term {
 }
 
 fn assert_binary(term: Term, expected: &[u8]) {
-    let binary = Binary::new(term).expect("binary term");
+    let binary = BinaryRef::new(term).expect("binary term");
     assert_eq!(binary.as_bytes(), expected);
 }
 
@@ -345,6 +346,21 @@ fn gleam_stdlib_other_functions_handle_binary_cases() {
             .expect("append"),
         b"hello world",
     );
+
+    let large_left = vec![b'a'; 40];
+    let large_right = vec![b'b'; 25];
+    let large_result =
+        gleam_stdlib_ffi::bif_iodata_append(&[binary(&large_left), binary(&large_right)], &mut ctx)
+            .expect("large append");
+    let mut expected_large = large_left;
+    expected_large.extend_from_slice(&large_right);
+    assert_eq!(
+        BinaryRef::new(large_result)
+            .expect("large binary")
+            .as_bytes(),
+        expected_large.as_slice()
+    );
+    assert!(ProcBin::new(large_result).is_some());
     assert_binary(
         gleam_stdlib_ffi::bif_utf_codepoint_list_to_string(
             &[write_cons(
