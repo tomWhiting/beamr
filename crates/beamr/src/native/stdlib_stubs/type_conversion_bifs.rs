@@ -11,7 +11,7 @@ pub fn bif_atom_to_binary(args: &[Term], context: &mut ProcessContext) -> Result
         return Err(badarg());
     };
     let atom = atom_term.as_atom().ok_or_else(badarg)?;
-    let table = context.atom_table().ok_or_else(badarg)?;
+    let table = context.atom_table_arc().ok_or_else(badarg)?;
     let name = table.resolve(atom).ok_or_else(badarg)?;
     context.alloc_binary(name.as_bytes())
 }
@@ -26,7 +26,7 @@ pub fn bif_binary_to_float(args: &[Term], context: &mut ProcessContext) -> Resul
     make_float(context, value)
 }
 
-pub fn bif_binary_to_integer(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_binary_to_integer(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
     let [binary_term] = args else {
         return Err(badarg());
     };

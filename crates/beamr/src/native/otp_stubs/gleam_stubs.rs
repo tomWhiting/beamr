@@ -73,7 +73,7 @@ pub fn bif_dynamic_string(args: &[Term], context: &mut ProcessContext) -> Result
 // ── gleam@string ──────────────────────────────────────────────────────────
 
 /// `gleam@string:inspect/1` -- returns a binary with a debug representation.
-pub fn bif_string_inspect(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_string_inspect(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [term] = args else {
         return Err(badarg());
     };
@@ -82,7 +82,7 @@ pub fn bif_string_inspect(args: &[Term], _context: &mut ProcessContext) -> Resul
 }
 
 /// `gleam@string:append/2` -- concatenates two binary strings.
-pub fn bif_string_append(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_string_append(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [first, second] = args else {
         return Err(badarg());
     };

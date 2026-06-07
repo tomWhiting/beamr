@@ -9,7 +9,6 @@ const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub fn bif_binary_encode_hex(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -23,7 +22,6 @@ pub fn bif_binary_encode_hex(args: &[Term], context: &mut ProcessContext) -> Res
 }
 
 pub fn bif_binary_decode_hex(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -51,7 +49,6 @@ pub fn bif_base64_encode(args: &[Term], context: &mut ProcessContext) -> Result<
 }
 
 pub fn bif_base64_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -145,7 +142,7 @@ fn hex_value(byte: u8) -> Result<u8, Term> {
     }
 }
 
-fn atom_name(term: Term, context: &ProcessContext) -> Result<&str, Term> {
+fn atom_name<'a>(term: Term, context: &'a ProcessContext<'_>) -> Result<&'a str, Term> {
     let atom = term.as_atom().ok_or_else(badarg)?;
     if let Some(name) = context.atom_table().and_then(|table| table.resolve(atom)) {
         return Ok(name);

@@ -356,10 +356,14 @@ fn call_external_target(
             );
             context.attach_process(process, usize::from(arity));
 
-            let result = match (entry.function)(&args, &mut context) {
+            let call_result = (entry.function)(&args, &mut context);
+            let shutdown_requested = context.take_shutdown_request();
+            let suspend = context.take_suspend();
+            let trampoline_req = context.take_trampoline();
+            context.detach_process();
+            let result = match call_result {
                 Ok(value) => value,
                 Err(reason) => {
-                    context.detach_process();
                     let exception = crate::process::Exception {
                         class: Term::atom(crate::atom::Atom::ERROR),
                         reason,
@@ -368,8 +372,6 @@ fn call_external_target(
                     return super::messaging::raise_exception(process, exception);
                 }
             };
-            context.detach_process();
-            let shutdown_requested = context.take_shutdown_request();
 
             // Handle mailbox removal if the select facility recorded one.
             if let Some(snapshot) = snapshot {
@@ -378,12 +380,12 @@ fn call_external_target(
 
             // Check for suspend request before trampoline (suspend takes priority
             // when no message matched).
-            if let Some(suspend) = context.take_suspend() {
+            if let Some(suspend) = suspend {
                 return trampoline::handle_suspend(process, module, suspend);
             }
 
             // Check for trampoline request from the BIF.
-            if let Some(trampoline_req) = context.take_trampoline() {
+            if let Some(trampoline_req) = trampoline_req {
                 return trampoline::handle_trampoline(
                     process,
                     module,

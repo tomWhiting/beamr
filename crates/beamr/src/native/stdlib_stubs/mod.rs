@@ -846,7 +846,7 @@ pub fn bif_fun_info(args: &[Term], context: &mut ProcessContext) -> Result<Term,
         return Err(badarg());
     };
     let item_atom = item.as_atom().ok_or_else(badarg)?;
-    let at = context.atom_table().ok_or_else(badarg)?;
+    let at = context.atom_table_arc().ok_or_else(badarg)?;
     let item_name = at.resolve(item_atom).unwrap_or("");
     let value = match item_name {
         "arity" => {

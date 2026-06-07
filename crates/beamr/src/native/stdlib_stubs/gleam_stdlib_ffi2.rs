@@ -12,7 +12,7 @@ use super::encoding_bifs::{
     bif_binary_decode_hex, bif_binary_encode_hex,
 };
 
-pub fn bif_classify_dynamic(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_classify_dynamic(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [value] = args else {
         return Err(badarg());
     };
@@ -42,7 +42,6 @@ pub fn bif_dict(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
 }
 
 pub fn bif_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
@@ -56,7 +55,6 @@ pub fn bif_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
 }
 
 pub fn bif_float_to_string(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
@@ -106,7 +104,7 @@ pub fn bif_parse_float(args: &[Term], context: &mut ProcessContext) -> Result<Te
     let [string] = args else {
         return Err(badarg());
     };
-    let result = parse_float_binary(*string).and_then(make_float);
+    let result = parse_float_binary(*string).and_then(|value| make_float(context, value));
     result_tuple(context, result)
 }
 

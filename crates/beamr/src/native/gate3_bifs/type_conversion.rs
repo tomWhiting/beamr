@@ -19,7 +19,7 @@ pub fn bif_atom_to_binary(args: &[Term], context: &mut ProcessContext) -> Result
     if encoding != Atom::UTF8 && encoding != Atom::LATIN1 {
         return Err(badarg());
     }
-    let table = context.atom_table().ok_or_else(badarg)?;
+    let table = context.atom_table_arc().ok_or_else(badarg)?;
     let name = table.resolve(atom).ok_or_else(badarg)?;
     let bytes = name.as_bytes();
 

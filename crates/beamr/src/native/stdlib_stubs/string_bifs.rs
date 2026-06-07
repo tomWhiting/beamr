@@ -297,7 +297,7 @@ fn atom_term(name: &str, context: &mut ProcessContext) -> Result<Term, Term> {
     Ok(Term::atom(table.intern(name)))
 }
 
-fn atom_name(term: Term, context: &ProcessContext) -> Result<&str, Term> {
+fn atom_name<'a>(term: Term, context: &'a ProcessContext<'_>) -> Result<&'a str, Term> {
     let atom = term.as_atom().ok_or_else(badarg)?;
     if let Some(name) = context.atom_table().and_then(|table| table.resolve(atom)) {
         return Ok(name);

@@ -260,6 +260,12 @@ impl<'process> ProcessContext<'process> {
         self.atom_table.as_deref()
     }
 
+    /// Return a shared atom table handle, if one has been configured.
+    #[must_use]
+    pub fn atom_table_arc(&self) -> Option<Arc<AtomTable>> {
+        self.atom_table.clone()
+    }
+
     /// Set the atom table for type conversion BIFs.
     pub fn set_atom_table(&mut self, table: Option<Arc<AtomTable>>) {
         self.atom_table = table;
@@ -328,12 +334,10 @@ impl<'process> ProcessContext<'process> {
         message: Term,
     ) -> Option<TimerRef> {
         let timers = self.timers.as_ref()?;
-        Some(
-            timers
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .schedule_reserved(reference, delay, target_pid, message),
-        )
+        timers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .schedule_reserved(reference, delay, target_pid, message)
     }
 
     /// Cancel a timer via the runtime timer wheel.

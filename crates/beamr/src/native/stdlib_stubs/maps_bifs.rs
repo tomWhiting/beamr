@@ -35,10 +35,10 @@ pub fn bif_maps_put(args: &[Term], context: &mut ProcessContext) -> Result<Term,
     let [key, value, map_term] = args else {
         return Err(badarg());
     };
-    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
     let mut entries = map_entries(*map_term)?;
-    set_entry(&mut entries, *key, *value, atom_table);
-    make_sorted_map(context, &entries, atom_table)
+    set_entry(&mut entries, *key, *value, atom_table.as_ref());
+    make_sorted_map(context, &entries, atom_table.as_ref())
 }
 
 pub fn bif_maps_find(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -115,8 +115,8 @@ pub fn bif_maps_filter(args: &[Term], context: &mut ProcessContext) -> Result<Te
     ensure_fun_arity(*fun, 2)?;
     let entries = map_entries(*map_term)?;
     if entries.is_empty() {
-        let atom_table = context.atom_table().ok_or_else(badarg)?;
-        return make_sorted_map(context, &[], atom_table);
+        let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
+        return make_sorted_map(context, &[], atom_table.as_ref());
     }
     let (key, value) = entries[0];
     context.set_continuation_trampoline(
@@ -137,7 +137,7 @@ pub fn bif_maps_merge_with(args: &[Term], context: &mut ProcessContext) -> Resul
         return Err(badarg());
     };
     ensure_fun_arity(*fun, 3)?;
-    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
     let map1_entries = map_entries(*map1_term)?;
     let map2_entries = map_entries(*map2_term)?;
     let mut entries = map1_entries.clone();
@@ -152,9 +152,9 @@ pub fn bif_maps_merge_with(args: &[Term], context: &mut ProcessContext) -> Resul
             entries.push((key, value2));
         }
     }
-    sort_entries_by_key(&mut entries, atom_table);
+    sort_entries_by_key(&mut entries, atom_table.as_ref());
     if collisions.is_empty() {
-        return make_sorted_map(context, &entries, atom_table);
+        return make_sorted_map(context, &entries, atom_table.as_ref());
     }
     let (key, value1, value2) = collisions[0];
     context.set_continuation_trampoline(
@@ -175,12 +175,12 @@ pub fn bif_maps_update_with(args: &[Term], context: &mut ProcessContext) -> Resu
         return Err(badarg());
     };
     ensure_fun_arity(*fun, 1)?;
-    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
     let entries = map_entries(*map_term)?;
     let Some(position) = entries.iter().position(|(entry_key, _)| entry_key == key) else {
         let mut with_init = entries;
         with_init.push((*key, *init));
-        return make_sorted_map(context, &with_init, atom_table);
+        return make_sorted_map(context, &with_init, atom_table.as_ref());
     };
     let (existing_key, existing_value) = entries[position];
     let remaining = entries[position + 1..].to_vec();
@@ -200,28 +200,28 @@ pub fn bif_maps_with(args: &[Term], context: &mut ProcessContext) -> Result<Term
     let [keys_term, map_term] = args else {
         return Err(badarg());
     };
-    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
     let keys = list_to_vec(*keys_term)?;
     let entries = map_entries(*map_term)?;
     let kept: Vec<_> = entries
         .into_iter()
         .filter(|(key, _)| keys.iter().any(|wanted| wanted == key))
         .collect();
-    make_sorted_map(context, &kept, atom_table)
+    make_sorted_map(context, &kept, atom_table.as_ref())
 }
 
 pub fn bif_maps_without(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [keys_term, map_term] = args else {
         return Err(badarg());
     };
-    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
     let keys = list_to_vec(*keys_term)?;
     let entries = map_entries(*map_term)?;
     let kept: Vec<_> = entries
         .into_iter()
         .filter(|(key, _)| !keys.iter().any(|removed| removed == key))
         .collect();
-    make_sorted_map(context, &kept, atom_table)
+    make_sorted_map(context, &kept, atom_table.as_ref())
 }
 
 pub fn resume_maps_continuation(
