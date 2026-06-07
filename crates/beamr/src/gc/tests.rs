@@ -394,8 +394,8 @@ fn surviving_proc_bin_has_stable_ref_count_after_major_gc() {
 
 #[test]
 fn virtual_binary_pressure_triggers_minor_gc_even_with_nursery_space() {
-    let shared = SharedBinary::new(vec![0xEF; 1024]);
-    let mut process = Process::new(1, 233);
+    let shared = SharedBinary::new(vec![0xEF; 4096]);
+    let mut process = Process::new(1, 32);
     let _unreachable = alloc_proc_bin(&mut process, &shared);
     let used_before = process.heap().young_used();
     assert!(process.heap().available() > 1);

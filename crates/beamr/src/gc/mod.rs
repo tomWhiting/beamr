@@ -114,9 +114,11 @@ pub fn collect_major(process: &mut Process) -> Result<GcStats, GcError> {
 /// during minor GC requires old-space compaction. The function does not touch
 /// any process except `process`.
 pub fn alloc(process: &mut Process, words: usize) -> Result<*mut u64, GcError> {
-    match process.heap_mut().alloc(words) {
-        Ok(ptr) => return Ok(ptr),
-        Err(_heap_full) => {}
+    if !virtual_binary_pressure_exceeds_heap(process) {
+        match process.heap_mut().alloc(words) {
+            Ok(ptr) => return Ok(ptr),
+            Err(_heap_full) => {}
+        }
     }
 
     ensure_space(process, words, 256)?;
@@ -150,7 +152,7 @@ pub fn ensure_space(process: &mut Process, words: usize, live_x: usize) -> Resul
 
 fn virtual_binary_pressure_exceeds_heap(process: &Process) -> bool {
     let heap_used_bytes = process.heap().total_used().saturating_mul(WORD_BYTES);
-    let heap_capacity_bytes = process.heap().capacity().saturating_mul(WORD_BYTES);
+    let heap_capacity_bytes = process.heap().total_capacity().saturating_mul(WORD_BYTES);
     heap_used_bytes.saturating_add(process.virtual_binary_heap()) >= heap_capacity_bytes
 }
 
@@ -259,6 +261,9 @@ pub(crate) fn release_proc_bins_in_young(
     process: &mut Process,
     is_forwarded: impl Fn(usize) -> bool,
 ) {
+    if process.virtual_binary_heap() == 0 {
+        return;
+    }
     let mut unreachable_bytes = 0_usize;
     process
         .heap()
