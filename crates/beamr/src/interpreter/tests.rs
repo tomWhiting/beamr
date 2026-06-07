@@ -5,7 +5,7 @@ use crate::loader::decode::BinaryOp;
 use crate::loader::decode::compact::Operand;
 use crate::loader::{Instruction, Literal};
 use crate::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
-use crate::native::{NativeEntry, ProcessContext};
+use crate::native::{Capability, NativeEntry, ProcessContext};
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Cons, Tuple};
@@ -359,6 +359,7 @@ fn call_ext_invokes_registered_native_and_tail_call_deallocates() {
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add_one,
             is_dirty: false,
+            capability: Capability::Pure,
         }),
     };
     let mut module = module(
@@ -757,6 +758,7 @@ fn guard_bif_failure_branches_without_exiting_process() {
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add,
             is_dirty: false,
+            capability: Capability::Pure,
         }),
     });
     let mut process = Process::new(1, 16);

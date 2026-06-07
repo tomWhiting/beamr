@@ -6,23 +6,25 @@
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::links::LinkError;
-use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
+use crate::native::{
+    BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
+};
 use crate::process::ExitReason;
 use crate::term::Term;
 use crate::term::boxed::Cons;
 
-type Gate2Bif = (&'static str, u8, NativeFn);
+type Gate2Bif = (&'static str, u8, Capability, NativeFn);
 
 const GATE2_BIFS: &[Gate2Bif] = &[
-    ("self", 0, bif_self),
-    ("spawn", 3, bif_spawn),
-    ("spawn_link", 3, bif_spawn_link),
-    ("link", 1, bif_link),
-    ("unlink", 1, bif_unlink),
-    ("process_flag", 2, bif_process_flag),
-    ("monitor", 2, bif_monitor),
-    ("demonitor", 1, bif_demonitor),
-    ("exit", 2, bif_exit),
+    ("self", 0, Capability::Pure, bif_self),
+    ("spawn", 3, Capability::Pure, bif_spawn),
+    ("spawn_link", 3, Capability::Pure, bif_spawn_link),
+    ("link", 1, Capability::Pure, bif_link),
+    ("unlink", 1, Capability::Pure, bif_unlink),
+    ("process_flag", 2, Capability::Pure, bif_process_flag),
+    ("monitor", 2, Capability::Pure, bif_monitor),
+    ("demonitor", 1, Capability::Pure, bif_demonitor),
+    ("exit", 2, Capability::Pure, bif_exit),
 ];
 
 /// Registers all Gate 2 (process lifecycle) BIFs into the VM-owned BIF registry.
@@ -32,9 +34,9 @@ pub fn register_gate2_bifs(
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");
 
-    for &(function_name, arity, native_function) in GATE2_BIFS {
+    for &(function_name, arity, capability, native_function) in GATE2_BIFS {
         let function = atom_table.intern(function_name);
-        registry.register(erlang, function, arity, native_function)?;
+        registry.register(erlang, function, arity, native_function, capability)?;
     }
 
     Ok(())

@@ -131,6 +131,7 @@ fn make_shared_state() -> Arc<SharedState> {
         output_sink: std::sync::Mutex::new(Arc::new(crate::io::NullSink)),
         atom_table: Arc::new(crate::atom::AtomTable::new()),
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
+        capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
     })
 }

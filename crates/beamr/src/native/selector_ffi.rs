@@ -8,7 +8,9 @@
 //! provide the foundation for gleam_otp's actor message loop.
 
 use crate::atom::{Atom, AtomTable};
-use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
+use crate::native::{
+    BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
+};
 use crate::term::Term;
 use crate::term::boxed::{Cons, Tuple};
 
@@ -24,16 +26,26 @@ fn anything_atom() -> Option<Atom> {
 }
 
 /// BIF entry for selector registration.
-type SelectorBif = (&'static str, u8, NativeFn);
+type SelectorBif = (&'static str, u8, Capability, NativeFn);
 
 const SELECTOR_BIFS: &[SelectorBif] = &[
-    ("new_selector", 0, bif_new_selector),
-    ("insert_selector_handler", 3, bif_insert_selector_handler),
-    ("map_selector", 2, bif_map_selector),
-    ("merge_selector", 2, bif_merge_selector),
-    ("remove_selector_handler", 2, bif_remove_selector_handler),
-    ("select", 1, bif_select),
-    ("select", 2, bif_select_with_timeout),
+    ("new_selector", 0, Capability::Pure, bif_new_selector),
+    (
+        "insert_selector_handler",
+        3,
+        Capability::Pure,
+        bif_insert_selector_handler,
+    ),
+    ("map_selector", 2, Capability::Pure, bif_map_selector),
+    ("merge_selector", 2, Capability::Pure, bif_merge_selector),
+    (
+        "remove_selector_handler",
+        2,
+        Capability::Pure,
+        bif_remove_selector_handler,
+    ),
+    ("select", 1, Capability::Pure, bif_select),
+    ("select", 2, Capability::Clock, bif_select_with_timeout),
 ];
 
 /// Registers all selector BIFs under the `gleam_erlang_ffi` module.
@@ -44,9 +56,9 @@ pub fn register_selector_bifs(
     let module = atom_table.intern("gleam_erlang_ffi");
     let _ = ANYTHING_ATOM.set(atom_table.intern("anything"));
 
-    for &(function_name, arity, native_function) in SELECTOR_BIFS {
+    for &(function_name, arity, capability, native_function) in SELECTOR_BIFS {
         let function = atom_table.intern(function_name);
-        registry.register(module, function, arity, native_function)?;
+        registry.register(module, function, arity, native_function, capability)?;
     }
 
     Ok(())

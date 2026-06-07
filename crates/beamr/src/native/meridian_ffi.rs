@@ -4,7 +4,7 @@
 //! implementations for testing the NIF wiring end-to-end.
 
 use crate::atom::{Atom, AtomTable};
-use crate::native::{BifRegistryImpl, NativeRegistrationError, ProcessContext};
+use crate::native::{BifRegistryImpl, Capability, NativeRegistrationError, ProcessContext};
 use crate::term::Term;
 use crate::term::binary::{Binary, write_binary};
 use crate::term::boxed::write_tuple;
@@ -14,16 +14,47 @@ pub fn register_meridian_ffi(
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let module = atom_table.intern("meridian_ffi");
-    registry.register(module, atom_table.intern("read_file"), 1, nif_read_file)?;
-    registry.register(module, atom_table.intern("run_cmd"), 1, nif_run_cmd)?;
-    registry.register(module, atom_table.intern("write_file"), 2, nif_write_file)?;
-    registry.register(module, atom_table.intern("read_json"), 1, nif_read_json)?;
-    registry.register(module, atom_table.intern("commit"), 1, nif_commit)?;
+    registry.register(
+        module,
+        atom_table.intern("read_file"),
+        1,
+        nif_read_file,
+        Capability::ExternalIo,
+    )?;
+    registry.register(
+        module,
+        atom_table.intern("run_cmd"),
+        1,
+        nif_run_cmd,
+        Capability::ExternalIo,
+    )?;
+    registry.register(
+        module,
+        atom_table.intern("write_file"),
+        2,
+        nif_write_file,
+        Capability::ExternalIo,
+    )?;
+    registry.register(
+        module,
+        atom_table.intern("read_json"),
+        1,
+        nif_read_json,
+        Capability::ExternalIo,
+    )?;
+    registry.register(
+        module,
+        atom_table.intern("commit"),
+        1,
+        nif_commit,
+        Capability::ExternalIo,
+    )?;
     registry.register(
         module,
         atom_table.intern("run_step_norn"),
         4,
         nif_run_step_norn,
+        Capability::ExternalIo,
     )?;
     Ok(())
 }

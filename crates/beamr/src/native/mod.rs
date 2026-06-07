@@ -6,6 +6,7 @@
 //! BIFs (built-in, ship with the VM) and NIFs (registered by the host)
 //! use the same mechanism but have different ownership (per D6).
 pub mod bifs;
+pub mod capability;
 pub mod code_management_bifs;
 mod context;
 pub mod gate3_bifs;
@@ -29,6 +30,10 @@ use std::fmt;
 use crate::atom::Atom;
 use crate::term::Term;
 
+pub use capability::{
+    AllCapabilitiesPolicy, Capability, CapabilityPolicy, CapabilitySet, DenialMode,
+    LeastAuthorityPolicy, denial_stub,
+};
 pub use code_management_bifs::CodeManagementFacility;
 pub use context::{NativeContinuation, ProcessContext, SuspendRequest, TrampolineRequest};
 pub use links::LinkFacility;
@@ -50,6 +55,8 @@ pub struct NativeEntry {
     pub function: NativeFn,
     /// Whether the function should eventually run on the dirty scheduler pool.
     pub is_dirty: bool,
+    /// Capability required to bind this native during import resolution.
+    pub capability: Capability,
 }
 
 /// Errors returned while registering native functions.
@@ -104,12 +111,14 @@ impl NativeRegistry {
         arity: u8,
         native_function: NativeFn,
         is_dirty: bool,
+        capability: Capability,
     ) -> Result<(), NativeRegistrationError> {
         match self.entries.entry((module, function, arity)) {
             Entry::Vacant(entry) => {
                 entry.insert(NativeEntry {
                     function: native_function,
                     is_dirty,
+                    capability,
                 });
                 Ok(())
             }
@@ -148,9 +157,10 @@ impl BifRegistryImpl {
         function: Atom,
         arity: u8,
         native_function: NativeFn,
+        capability: Capability,
     ) -> Result<(), NativeRegistrationError> {
         self.registry
-            .register(module, function, arity, native_function, false)
+            .register(module, function, arity, native_function, false, capability)
     }
 
     /// Registers a built-in function that should use dirty scheduling later.
@@ -160,9 +170,10 @@ impl BifRegistryImpl {
         function: Atom,
         arity: u8,
         native_function: NativeFn,
+        capability: Capability,
     ) -> Result<(), NativeRegistrationError> {
         self.registry
-            .register(module, function, arity, native_function, true)
+            .register(module, function, arity, native_function, true, capability)
     }
 
     /// Looks up a built-in function by module/function/arity.
@@ -211,9 +222,10 @@ impl NifRegistry {
         function: Atom,
         arity: u8,
         native_function: NativeFn,
+        capability: Capability,
     ) -> Result<(), NativeRegistrationError> {
         self.registry
-            .register(module, function, arity, native_function, false)
+            .register(module, function, arity, native_function, false, capability)
     }
 
     /// Registers a host native function that should use dirty scheduling later.
@@ -223,9 +235,10 @@ impl NifRegistry {
         function: Atom,
         arity: u8,
         native_function: NativeFn,
+        capability: Capability,
     ) -> Result<(), NativeRegistrationError> {
         self.registry
-            .register(module, function, arity, native_function, true)
+            .register(module, function, arity, native_function, true, capability)
     }
 
     /// Looks up a host native function by module/function/arity.
@@ -257,8 +270,8 @@ pub fn lookup_native(
 #[cfg(test)]
 mod tests {
     use super::{
-        BifRegistryImpl, NativeRegistrationError, NifRegistry, ProcessContext, UnresolvedImport,
-        UnresolvedImportReport, lookup_native,
+        BifRegistryImpl, Capability, NativeRegistrationError, NifRegistry, ProcessContext,
+        UnresolvedImport, UnresolvedImportReport, lookup_native,
     };
     use crate::atom::AtomTable;
     use crate::term::Term;
@@ -283,11 +296,16 @@ mod tests {
         let unknown = atom_table.intern("unknown");
         let registry = BifRegistryImpl::new();
 
-        assert!(registry.register(erlang, plus, 2, forty_two).is_ok());
+        assert!(
+            registry
+                .register(erlang, plus, 2, forty_two, Capability::Pure)
+                .is_ok()
+        );
 
         let entry = registry.lookup(erlang, plus, 2).expect("registered BIF");
         assert_eq!(entry.function as usize, forty_two as usize);
         assert!(!entry.is_dirty);
+        assert_eq!(entry.capability, Capability::Pure);
         assert!(registry.lookup(erlang, unknown, 0).is_none());
     }
 
@@ -298,10 +316,14 @@ mod tests {
         let plus = atom_table.intern("+");
         let registry = BifRegistryImpl::new();
 
-        assert!(registry.register(erlang, plus, 2, forty_two).is_ok());
+        assert!(
+            registry
+                .register(erlang, plus, 2, forty_two, Capability::Pure)
+                .is_ok()
+        );
 
         assert_eq!(
-            registry.register(erlang, plus, 2, thirteen),
+            registry.register(erlang, plus, 2, thirteen, Capability::Pure),
             Err(NativeRegistrationError::DuplicateMfa {
                 module: erlang,
                 function: plus,
@@ -318,8 +340,16 @@ mod tests {
         let bif_registry = BifRegistryImpl::new();
         let mut nif_registry = NifRegistry::new();
 
-        assert!(bif_registry.register(erlang, plus, 2, forty_two).is_ok());
-        assert!(nif_registry.register(erlang, plus, 2, thirteen).is_ok());
+        assert!(
+            bif_registry
+                .register(erlang, plus, 2, forty_two, Capability::Pure)
+                .is_ok()
+        );
+        assert!(
+            nif_registry
+                .register(erlang, plus, 2, thirteen, Capability::ExternalIo)
+                .is_ok()
+        );
 
         let bif_entry = bif_registry
             .lookup(erlang, plus, 2)
@@ -341,13 +371,13 @@ mod tests {
         let mut nif_registry = NifRegistry::new();
 
         bif_registry
-            .register(erlang, plus, 2, forty_two)
+            .register(erlang, plus, 2, forty_two, Capability::Pure)
             .expect("register plus BIF");
         nif_registry
-            .register(erlang, plus, 2, thirteen)
+            .register(erlang, plus, 2, thirteen, Capability::ExternalIo)
             .expect("register plus NIF");
         nif_registry
-            .register(erlang, host_only, 0, thirteen)
+            .register(erlang, host_only, 0, thirteen, Capability::ExternalIo)
             .expect("register host-only NIF");
 
         let shadowed = lookup_native(&bif_registry, &nif_registry, erlang, plus, 2)
@@ -367,10 +397,14 @@ mod tests {
         let display = atom_table.intern("display");
         let registry = BifRegistryImpl::new();
 
-        assert!(registry.register(erlang, plus, 2, forty_two).is_ok());
         assert!(
             registry
-                .register_dirty(erlang, display, 1, thirteen)
+                .register(erlang, plus, 2, forty_two, Capability::Pure)
+                .is_ok()
+        );
+        assert!(
+            registry
+                .register_dirty(erlang, display, 1, thirteen, Capability::ExternalIo)
                 .is_ok()
         );
 
@@ -380,6 +414,13 @@ mod tests {
                 .lookup(erlang, display, 1)
                 .expect("display")
                 .is_dirty
+        );
+        assert_eq!(
+            registry
+                .lookup(erlang, display, 1)
+                .expect("display")
+                .capability,
+            Capability::ExternalIo
         );
     }
 
@@ -405,7 +446,7 @@ mod tests {
         let unknown = atom_table.intern("unknown");
         let registry = BifRegistryImpl::new();
         registry
-            .register(erlang, plus, 2, forty_two)
+            .register(erlang, plus, 2, forty_two, Capability::Pure)
             .expect("register plus");
         let report = UnresolvedImportReport::new(vec![
             UnresolvedImport::new(erlang, plus, 2),
@@ -425,7 +466,7 @@ mod tests {
         let plus = atom_table.intern("+");
         let registry = BifRegistryImpl::new();
         registry
-            .register(erlang, plus, 2, forty_two)
+            .register(erlang, plus, 2, forty_two, Capability::Pure)
             .expect("register plus");
         let report = UnresolvedImportReport::new(vec![UnresolvedImport::new(erlang, plus, 2)]);
 
