@@ -84,6 +84,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::atom::Atom;
+    use crate::error::ExecError;
     use crate::interpreter::opcodes::dispatch;
     use crate::loader::Instruction;
     use crate::loader::decode::Operand;

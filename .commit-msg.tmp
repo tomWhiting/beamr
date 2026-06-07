@@ -1,1 +1,1 @@
-feat(beamr): add OTP 24 recv_marker opcode stubs
+review(beamr): harden recv_marker opcode coverage
