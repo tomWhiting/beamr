@@ -695,6 +695,8 @@ mod tests {
             ("get_keys", 1, Capability::ProcessLocal),
             ("term_to_binary", 1, Capability::Pure),
             ("raise", 3, Capability::Pure),
+            ("process_info", 1, Capability::Pure),
+            ("process_info", 2, Capability::Pure),
         ] {
             let function = atom_table.intern(name);
             let entry = registry

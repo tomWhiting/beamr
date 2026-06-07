@@ -137,7 +137,7 @@ pub fn bif_process_info_2(args: &[Term], context: &mut ProcessContext) -> Result
     let pid = pid_term.as_pid().ok_or_else(badarg)?;
     let item_atom = item_term.as_atom().ok_or_else(badarg)?;
     let item = parse_item(context, item_atom)?;
-    let Some(value) = query_process_info(context, pid, item) else {
+    let Some(value) = query_process_info(context, pid, item)? else {
         return Ok(Term::atom(Atom::UNDEFINED));
     };
 
@@ -156,7 +156,7 @@ pub fn bif_process_info_1(args: &[Term], context: &mut ProcessContext) -> Result
 
     let mut values = Vec::with_capacity(SUPPORTED_ITEMS.len());
     for item in SUPPORTED_ITEMS {
-        let Some(value) = query_process_info(context, pid, *item) else {
+        let Some(value) = query_process_info(context, pid, *item)? else {
             return Ok(Term::atom(Atom::UNDEFINED));
         };
         values.push((*item, value));
@@ -181,8 +181,9 @@ fn query_process_info(
     context: &ProcessContext,
     pid: u64,
     item: ProcessInfoItem,
-) -> Option<ProcessInfoValue> {
-    context.process_info_facility()?.process_info(pid, item)
+) -> Result<Option<ProcessInfoValue>, Term> {
+    let facility = context.process_info_facility().ok_or_else(badarg)?;
+    Ok(facility.process_info(pid, item))
 }
 
 fn parse_item(context: &ProcessContext, atom: Atom) -> Result<ProcessInfoItem, Term> {
@@ -240,7 +241,7 @@ fn value_heap_words(queried_pid: u64, value: &ProcessInfoValue) -> usize {
                 .iter()
                 .filter(|monitor| monitor.watcher == queried_pid)
                 .count()
-                * 5
+                * 4
         }
     }
 }
@@ -450,6 +451,25 @@ mod tests {
         let unknown = atom_table.intern("unknown_process_info_item");
         assert_eq!(
             bif_process_info_2(&[Term::pid(99), Term::atom(unknown)], &mut context),
+            Err(Term::atom(Atom::BADARG))
+        );
+    }
+
+    #[test]
+    fn process_info_requires_configured_facility() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let mut process = Process::new(0, 128);
+        let mut context = ProcessContext::new();
+        context.set_atom_table(Some(atom_table.clone()));
+        context.attach_process(&mut process, 0);
+        let heap_size = atom_table.intern("heap_size");
+
+        assert_eq!(
+            bif_process_info_2(&[Term::pid(1), Term::atom(heap_size)], &mut context),
+            Err(Term::atom(Atom::BADARG))
+        );
+        assert_eq!(
+            bif_process_info_1(&[Term::pid(1)], &mut context),
             Err(Term::atom(Atom::BADARG))
         );
     }

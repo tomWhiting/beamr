@@ -1,1 +1,1 @@
-feat(beamr): add process_info bif introspection
+review: harden process_info BIF introspection

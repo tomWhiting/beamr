@@ -399,6 +399,57 @@ fn spawn_link_uses_executing_parent_namespace_and_merges_parent_link() {
 }
 
 #[test]
+fn process_info_reads_executing_process_metadata() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("executing_info");
+    let function = atoms.intern("main");
+    let module = test_module(module_name, vec![Instruction::Label { label: 1 }]);
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = registry.insert(module);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    scheduler.shutdown();
+    let pid = scheduler.spawn_test_process_in(NamespaceId::DEFAULT, Arc::clone(&module));
+    {
+        let entry = scheduler
+            .shared
+            .process_bodies
+            .get(&pid)
+            .unwrap_or_else(|| panic!("process body exists"));
+        let mut slot = lock_or_recover(&entry);
+        let ProcessSlot::Present(ScheduledProcess(process)) = &mut *slot else {
+            panic!("test process should be present");
+        };
+        process.set_current_mfa(Some((module_name, function, 0)));
+    }
+
+    let process = take_runnable_process(&scheduler.shared, pid)
+        .unwrap_or_else(|| panic!("process should transition to executing"));
+
+    assert_eq!(
+        scheduler
+            .shared
+            .process_info(pid, ProcessInfoItem::CurrentFunction),
+        Some(ProcessInfoValue::CurrentFunction(Some((
+            module_name,
+            function,
+            0
+        ))))
+    );
+    assert_eq!(
+        scheduler.shared.process_info(pid, ProcessInfoItem::Status),
+        Some(ProcessInfoValue::Status(ProcessInfoStatus::Running))
+    );
+
+    store_runnable_process(&scheduler.shared, process);
+}
+
+#[test]
 fn tombstone_after_wait_store_prevents_wait_parking() {
     let shared = Arc::new(SharedState {
         shutdown: AtomicBool::new(false),
