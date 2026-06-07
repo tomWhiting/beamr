@@ -73,6 +73,48 @@ pub struct NativeEntry {
     pub capability: Capability,
 }
 
+/// Ergonomic constructors for host-declared dirty NIF entries.
+///
+/// Dirty NIFs still carry capability metadata. The short constructors default
+/// to `ExternalIo`, which is appropriate for host-provided blocking work; use
+/// the capability-aware constructors when a dirty native needs a narrower or
+/// different capability.
+pub struct DirtyNif;
+
+impl DirtyNif {
+    /// Creates a CPU-dirty native entry using the default host capability.
+    #[must_use]
+    pub fn cpu(function: NativeFn) -> NativeEntry {
+        Self::cpu_with_capability(function, Capability::ExternalIo)
+    }
+
+    /// Creates an IO-dirty native entry using the default host capability.
+    #[must_use]
+    pub fn io(function: NativeFn) -> NativeEntry {
+        Self::io_with_capability(function, Capability::ExternalIo)
+    }
+
+    /// Creates a CPU-dirty native entry with explicit capability metadata.
+    #[must_use]
+    pub fn cpu_with_capability(function: NativeFn, capability: Capability) -> NativeEntry {
+        NativeEntry {
+            function,
+            dirty_kind: Some(DirtySchedulerKind::Cpu),
+            capability,
+        }
+    }
+
+    /// Creates an IO-dirty native entry with explicit capability metadata.
+    #[must_use]
+    pub fn io_with_capability(function: NativeFn, capability: Capability) -> NativeEntry {
+        NativeEntry {
+            function,
+            dirty_kind: Some(DirtySchedulerKind::Io),
+            capability,
+        }
+    }
+}
+
 /// Errors returned while registering native functions.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum NativeRegistrationError {
@@ -184,14 +226,15 @@ impl BifRegistryImpl {
         function: Atom,
         arity: u8,
         native_function: NativeFn,
+        dirty_kind: DirtySchedulerKind,
         capability: Capability,
     ) -> Result<(), NativeRegistrationError> {
-        self.registry.register(
+        self.register_dirty_kind(
             module,
             function,
             arity,
             native_function,
-            Some(DirtySchedulerKind::Io),
+            dirty_kind,
             capability,
         )
     }
@@ -316,8 +359,8 @@ pub fn lookup_native(
 #[cfg(test)]
 mod tests {
     use super::{
-        BifRegistryImpl, Capability, NativeRegistrationError, NifRegistry, ProcessContext,
-        UnresolvedImport, UnresolvedImportReport, lookup_native,
+        BifRegistryImpl, Capability, DirtyNif, NativeRegistrationError, NifRegistry,
+        ProcessContext, UnresolvedImport, UnresolvedImportReport, lookup_native,
     };
     use crate::atom::AtomTable;
     use crate::scheduler::dirty::DirtySchedulerKind;
@@ -475,7 +518,14 @@ mod tests {
         );
         assert!(
             registry
-                .register_dirty(erlang, display, 1, thirteen, Capability::ExternalIo)
+                .register_dirty(
+                    erlang,
+                    display,
+                    1,
+                    thirteen,
+                    DirtySchedulerKind::Io,
+                    Capability::ExternalIo,
+                )
                 .is_ok()
         );
 
@@ -500,6 +550,35 @@ mod tests {
                 .capability,
             Capability::ExternalIo
         );
+    }
+
+    #[test]
+    fn dirty_nif_cpu_constructor_sets_cpu_dirty_kind() {
+        let entry = DirtyNif::cpu(forty_two);
+
+        assert_eq!(entry.function as usize, forty_two as usize);
+        assert_eq!(entry.dirty_kind, Some(DirtySchedulerKind::Cpu));
+        assert_eq!(entry.capability, Capability::ExternalIo);
+    }
+
+    #[test]
+    fn dirty_nif_io_constructor_sets_io_dirty_kind() {
+        let entry = DirtyNif::io(thirteen);
+
+        assert_eq!(entry.function as usize, thirteen as usize);
+        assert_eq!(entry.dirty_kind, Some(DirtySchedulerKind::Io));
+        assert_eq!(entry.capability, Capability::ExternalIo);
+    }
+
+    #[test]
+    fn dirty_nif_capability_constructors_preserve_capability() {
+        let cpu_entry = DirtyNif::cpu_with_capability(forty_two, Capability::Pure);
+        let io_entry = DirtyNif::io_with_capability(thirteen, Capability::Clock);
+
+        assert_eq!(cpu_entry.dirty_kind, Some(DirtySchedulerKind::Cpu));
+        assert_eq!(cpu_entry.capability, Capability::Pure);
+        assert_eq!(io_entry.dirty_kind, Some(DirtySchedulerKind::Io));
+        assert_eq!(io_entry.capability, Capability::Clock);
     }
 
     #[test]

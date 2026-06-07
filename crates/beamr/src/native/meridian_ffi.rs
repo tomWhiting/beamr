@@ -5,6 +5,7 @@
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, Capability, NativeRegistrationError, ProcessContext};
+use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::binary::Binary;
 
@@ -13,25 +14,28 @@ pub fn register_meridian_ffi(
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let module = atom_table.intern("meridian_ffi");
-    registry.register(
+    registry.register_dirty(
         module,
         atom_table.intern("read_file"),
         1,
         nif_read_file,
+        DirtySchedulerKind::Io,
         Capability::ExternalIo,
     )?;
-    registry.register(
+    registry.register_dirty(
         module,
         atom_table.intern("run_cmd"),
         1,
         nif_run_cmd,
+        DirtySchedulerKind::Io,
         Capability::ExternalIo,
     )?;
-    registry.register(
+    registry.register_dirty(
         module,
         atom_table.intern("write_file"),
         2,
         nif_write_file,
+        DirtySchedulerKind::Io,
         Capability::ExternalIo,
     )?;
     registry.register(
@@ -150,4 +154,28 @@ fn nif_run_step_norn(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Te
     let _instruction = extract_string(*instruction_term)?;
     let _schema = extract_string(*schema_term)?;
     ok_binary(ctx, b"step stub")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::register_meridian_ffi;
+    use crate::atom::AtomTable;
+    use crate::native::BifRegistryImpl;
+    use crate::scheduler::dirty::DirtySchedulerKind;
+
+    #[test]
+    fn register_meridian_ffi_marks_blocking_io_nifs_dirty() {
+        let atom_table = AtomTable::new();
+        let registry = BifRegistryImpl::new();
+        register_meridian_ffi(&registry, &atom_table).expect("meridian ffi registration");
+
+        let module = atom_table.intern("meridian_ffi");
+        for (function_name, arity) in [("read_file", 1), ("run_cmd", 1), ("write_file", 2)] {
+            let function = atom_table.intern(function_name);
+            let entry = registry
+                .lookup(module, function, arity)
+                .expect("blocking meridian ffi NIF");
+            assert_eq!(entry.dirty_kind, Some(DirtySchedulerKind::Io));
+        }
+    }
 }
