@@ -1,1 +1,1 @@
-harden(beamr): finalize is_tagged_tuple guard review
+feat(beamr): add OTP 24 recv_marker opcode stubs

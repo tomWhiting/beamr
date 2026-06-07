@@ -144,6 +144,19 @@ pub enum Instruction {
         fail: Operand,
         timeout: Operand,
     },
+    RecvMarkerReserve {
+        dest: Operand,
+    },
+    RecvMarkerBind {
+        marker: Operand,
+        label: Operand,
+    },
+    RecvMarkerClear {
+        marker: Operand,
+    },
+    RecvMarkerUse {
+        marker: Operand,
+    },
     Catch {
         destination: Operand,
         label: Operand,
@@ -316,6 +329,10 @@ pub(crate) fn instruction_opcode(instruction: &Instruction) -> Option<u8> {
         Instruction::CallExt { .. } => Some(7),
         Instruction::CallExtLast { .. } => Some(8),
         Instruction::CallExtOnly { .. } => Some(78),
+        Instruction::RecvMarkerReserve { .. } => Some(173),
+        Instruction::RecvMarkerBind { .. } => Some(174),
+        Instruction::RecvMarkerClear { .. } => Some(175),
+        Instruction::RecvMarkerUse { .. } => Some(176),
         Instruction::IsTaggedTuple { .. } => Some(159),
         Instruction::Generic { opcode, .. } => Some(*opcode),
         _ => None,
