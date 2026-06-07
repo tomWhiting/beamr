@@ -1,1 +1,1 @@
-fix(beamr): compare atom terms by interned name
+fix(beamr): harden atom-name term ordering wiring
