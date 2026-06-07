@@ -13,10 +13,10 @@ mod etf;
 mod instruction;
 mod opcode;
 
-pub use chunks::{
-    ExportEntry, ImportEntry, LambdaEntry, LineInfo, Literal, decode_atom_chunk,
-    decode_export_chunk, decode_import_chunk, decode_lambda_chunk, decode_line_chunk,
-    decode_literal_chunk, decode_string_chunk,
+pub use chunks::{ExportEntry, ImportEntry, LambdaEntry, LineInfo, Literal, decode_string_chunk};
+pub(crate) use chunks::{
+    decode_atom_chunk, decode_export_chunk, decode_import_chunk, decode_lambda_chunk,
+    decode_line_chunk, decode_literal_chunk,
 };
 pub use code::{decode_code_chunk, decode_instructions};
 pub use compact::{Allocation, Operand};

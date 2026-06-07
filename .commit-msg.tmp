@@ -1,1 +1,1 @@
-feat(loader): add bounded decode cursor and per-load budgets
+fix(loader): keep budgeted chunk decoders crate-private

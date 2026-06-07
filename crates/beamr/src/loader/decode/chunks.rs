@@ -57,7 +57,7 @@ pub enum Literal {
     String(Vec<u8>),
 }
 
-pub fn decode_atom_chunk(
+pub(crate) fn decode_atom_chunk(
     bytes: &[u8],
     atom_table: &AtomTable,
     budget: &mut DecodeBudget,
@@ -110,7 +110,7 @@ pub fn decode_atom_chunk(
     Ok(atoms)
 }
 
-pub fn decode_import_chunk(
+pub(crate) fn decode_import_chunk(
     bytes: &[u8],
     atoms: &[Atom],
     budget: &mut DecodeBudget,
@@ -142,7 +142,7 @@ pub fn decode_import_chunk(
     Ok(imports)
 }
 
-pub fn decode_export_chunk(
+pub(crate) fn decode_export_chunk(
     bytes: &[u8],
     atoms: &[Atom],
     budget: &mut DecodeBudget,
@@ -174,7 +174,7 @@ pub fn decode_export_chunk(
     Ok(exports)
 }
 
-pub fn decode_lambda_chunk(
+pub(crate) fn decode_lambda_chunk(
     bytes: &[u8],
     atoms: &[Atom],
     budget: &mut DecodeBudget,
@@ -215,7 +215,7 @@ pub fn decode_string_chunk(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
 }
 
-pub fn decode_line_chunk(
+pub(crate) fn decode_line_chunk(
     bytes: &[u8],
     budget: &mut DecodeBudget,
 ) -> Result<Vec<LineInfo>, LoadError> {
@@ -292,7 +292,7 @@ pub fn decode_line_chunk(
     Ok(lines)
 }
 
-pub fn decode_literal_chunk(
+pub(crate) fn decode_literal_chunk(
     bytes: &[u8],
     atom_table: &AtomTable,
     budget: &mut DecodeBudget,
