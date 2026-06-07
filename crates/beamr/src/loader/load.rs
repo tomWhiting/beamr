@@ -8,6 +8,7 @@ use crate::error::LoadError;
 use crate::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use crate::native::BifRegistry;
 
+use super::decode::budget::DecodeBudget;
 use super::decode::{
     ExportEntry, ImportEntry, Instruction, LambdaEntry, LineInfo, Literal, decode_atom_chunk,
     decode_code_chunk, decode_export_chunk, decode_import_chunk, decode_lambda_chunk,
@@ -213,17 +214,19 @@ impl fmt::Display for UnresolvedImportReport {
 pub fn load_beam_chunks(bytes: &[u8], atom_table: &AtomTable) -> Result<ParsedModule, LoadError> {
     let chunks = parse_beam_chunks(bytes)?;
 
+    let mut budget = DecodeBudget::default();
+
     let atom_chunk = find_chunk(&chunks, b"AtU8")
         .or_else(|| find_chunk(&chunks, b"Atom"))
         .ok_or_else(|| LoadError::MissingChunk("Atom/AtU8".into()))?;
-    let atoms = decode_atom_chunk(atom_chunk, atom_table)?;
+    let atoms = decode_atom_chunk(atom_chunk, atom_table, &mut budget)?;
     let name = atoms
         .first()
         .copied()
         .ok_or_else(|| LoadError::DecodeError("atom chunk is empty".into()))?;
 
     let literals = match find_chunk(&chunks, b"LitT") {
-        Some(bytes) => decode_literal_chunk(bytes, atom_table)?,
+        Some(bytes) => decode_literal_chunk(bytes, atom_table, &mut budget)?,
         None => Vec::new(),
     };
 
@@ -232,24 +235,26 @@ pub fn load_beam_chunks(bytes: &[u8], atom_table: &AtomTable) -> Result<ParsedMo
     let instructions = decode_code_chunk(code_chunk, &atoms, &literals)?;
 
     let imports = match find_chunk(&chunks, b"ImpT") {
-        Some(bytes) => decode_import_chunk(bytes, &atoms)?,
+        Some(bytes) => decode_import_chunk(bytes, &atoms, &mut budget)?,
         None => Vec::new(),
     };
     let exports = match find_chunk(&chunks, b"ExpT") {
-        Some(bytes) => decode_export_chunk(bytes, &atoms)?,
+        Some(bytes) => decode_export_chunk(bytes, &atoms, &mut budget)?,
         None => Vec::new(),
     };
     let lambdas = match find_chunk(&chunks, b"FunT") {
-        Some(bytes) => {
-            assign_lambda_unique_ids(name, decode_lambda_chunk(bytes, &atoms)?, atom_table)?
-        }
+        Some(bytes) => assign_lambda_unique_ids(
+            name,
+            decode_lambda_chunk(bytes, &atoms, &mut budget)?,
+            atom_table,
+        )?,
         None => Vec::new(),
     };
     let string_table = find_chunk(&chunks, b"StrT")
         .map(decode_string_chunk)
         .unwrap_or_default();
     let line_info = match find_chunk(&chunks, b"Line") {
-        Some(bytes) => decode_line_chunk(bytes)?,
+        Some(bytes) => decode_line_chunk(bytes, &mut budget)?,
         None => Vec::new(),
     };
 

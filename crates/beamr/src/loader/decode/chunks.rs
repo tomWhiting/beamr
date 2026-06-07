@@ -5,9 +5,10 @@ use flate2::read::ZlibDecoder;
 use crate::atom::{Atom, AtomTable};
 use crate::error::LoadError;
 
+use super::bounded::BoundedCursor;
+use super::budget::DecodeBudget;
 use super::compact::CompactDecoder;
 use super::etf::decode_external_term;
-use super::MAX_TABLE_ENTRIES;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportEntry {
@@ -56,17 +57,27 @@ pub enum Literal {
     String(Vec<u8>),
 }
 
-pub fn decode_atom_chunk(bytes: &[u8], atom_table: &AtomTable) -> Result<Vec<Atom>, LoadError> {
-    let mut cursor = Cursor::new(bytes);
+pub(crate) fn decode_atom_chunk(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    budget: &mut DecodeBudget,
+) -> Result<Vec<Atom>, LoadError> {
+    let mut cursor = BoundedCursor::new(bytes);
     let raw_count = cursor.read_i32()?;
     let count = raw_count.unsigned_abs() as usize;
     let compact_lengths = raw_count < 0;
     // Each atom is at least a 1-byte length prefix, so the count cannot exceed
     // the remaining bytes — reject an attacker count before preallocating.
-    ensure_count(count, cursor.remaining().len(), "atom count")?;
+    cursor.ensure_count(count, 1, "atom count")?;
+    budget.charge_bytes(
+        count
+            .checked_mul(std::mem::size_of::<Atom>())
+            .ok_or_else(|| LoadError::DecodeError("atom table allocation size overflow".into()))?,
+    )?;
     let mut atoms = Vec::with_capacity(count);
 
     for _ in 0..count {
+        budget.charge_node()?;
         let len = if compact_lengths {
             let mut decoder = CompactDecoder::new(cursor.remaining(), &[], &[]);
             let (tag, value) = decoder.read_raw_compact_i64()?;
@@ -82,7 +93,14 @@ pub fn decode_atom_chunk(bytes: &[u8], atom_table: &AtomTable) -> Result<Vec<Ato
         let text = cursor.read_bytes(len)?;
         let name = std::str::from_utf8(text)
             .map_err(|_| LoadError::DecodeError("atom name is not valid UTF-8".into()))?;
-        atoms.push(atom_table.intern(name));
+        let atom = match atom_table.lookup(name) {
+            Some(atom) => atom,
+            None => {
+                budget.charge_atom()?;
+                atom_table.intern(name)
+            }
+        };
+        atoms.push(atom);
     }
 
     if !cursor.remaining().is_empty() {
@@ -92,13 +110,25 @@ pub fn decode_atom_chunk(bytes: &[u8], atom_table: &AtomTable) -> Result<Vec<Ato
     Ok(atoms)
 }
 
-pub fn decode_import_chunk(bytes: &[u8], atoms: &[Atom]) -> Result<Vec<ImportEntry>, LoadError> {
-    let mut cursor = Cursor::new(bytes);
+pub(crate) fn decode_import_chunk(
+    bytes: &[u8],
+    atoms: &[Atom],
+    budget: &mut DecodeBudget,
+) -> Result<Vec<ImportEntry>, LoadError> {
+    let mut cursor = BoundedCursor::new(bytes);
     let count = cursor.read_u32()? as usize;
     // Each import entry is 3 × u32 = 12 bytes.
-    ensure_count(count, cursor.remaining().len() / 12, "import count")?;
+    cursor.ensure_count(count, 12, "import count")?;
+    budget.charge_bytes(
+        count
+            .checked_mul(std::mem::size_of::<ImportEntry>())
+            .ok_or_else(|| {
+                LoadError::DecodeError("import table allocation size overflow".into())
+            })?,
+    )?;
     let mut imports = Vec::with_capacity(count);
     for _ in 0..count {
+        budget.charge_node()?;
         let module = resolve_atom(cursor.read_u32()?, atoms)?;
         let function = resolve_atom(cursor.read_u32()?, atoms)?;
         let arity = checked_arity(cursor.read_u32()?)?;
@@ -112,13 +142,25 @@ pub fn decode_import_chunk(bytes: &[u8], atoms: &[Atom]) -> Result<Vec<ImportEnt
     Ok(imports)
 }
 
-pub fn decode_export_chunk(bytes: &[u8], atoms: &[Atom]) -> Result<Vec<ExportEntry>, LoadError> {
-    let mut cursor = Cursor::new(bytes);
+pub(crate) fn decode_export_chunk(
+    bytes: &[u8],
+    atoms: &[Atom],
+    budget: &mut DecodeBudget,
+) -> Result<Vec<ExportEntry>, LoadError> {
+    let mut cursor = BoundedCursor::new(bytes);
     let count = cursor.read_u32()? as usize;
     // Each export entry is 3 × u32 = 12 bytes.
-    ensure_count(count, cursor.remaining().len() / 12, "export count")?;
+    cursor.ensure_count(count, 12, "export count")?;
+    budget.charge_bytes(
+        count
+            .checked_mul(std::mem::size_of::<ExportEntry>())
+            .ok_or_else(|| {
+                LoadError::DecodeError("export table allocation size overflow".into())
+            })?,
+    )?;
     let mut exports = Vec::with_capacity(count);
     for _ in 0..count {
+        budget.charge_node()?;
         let function = resolve_atom(cursor.read_u32()?, atoms)?;
         let arity = checked_arity(cursor.read_u32()?)?;
         let label = cursor.read_u32()?;
@@ -132,13 +174,25 @@ pub fn decode_export_chunk(bytes: &[u8], atoms: &[Atom]) -> Result<Vec<ExportEnt
     Ok(exports)
 }
 
-pub fn decode_lambda_chunk(bytes: &[u8], atoms: &[Atom]) -> Result<Vec<LambdaEntry>, LoadError> {
-    let mut cursor = Cursor::new(bytes);
+pub(crate) fn decode_lambda_chunk(
+    bytes: &[u8],
+    atoms: &[Atom],
+    budget: &mut DecodeBudget,
+) -> Result<Vec<LambdaEntry>, LoadError> {
+    let mut cursor = BoundedCursor::new(bytes);
     let count = cursor.read_u32()? as usize;
     // Each lambda (FunT) entry is 6 × u32 = 24 bytes.
-    ensure_count(count, cursor.remaining().len() / 24, "lambda count")?;
+    cursor.ensure_count(count, 24, "lambda count")?;
+    budget.charge_bytes(
+        count
+            .checked_mul(std::mem::size_of::<LambdaEntry>())
+            .ok_or_else(|| {
+                LoadError::DecodeError("lambda table allocation size overflow".into())
+            })?,
+    )?;
     let mut lambdas = Vec::with_capacity(count);
     for _ in 0..count {
+        budget.charge_node()?;
         let function = resolve_atom(cursor.read_u32()?, atoms)?;
         let arity = checked_arity(cursor.read_u32()?)?;
         let label = cursor.read_u32()?;
@@ -161,11 +215,14 @@ pub fn decode_string_chunk(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
 }
 
-pub fn decode_line_chunk(bytes: &[u8]) -> Result<Vec<LineInfo>, LoadError> {
+pub(crate) fn decode_line_chunk(
+    bytes: &[u8],
+    budget: &mut DecodeBudget,
+) -> Result<Vec<LineInfo>, LoadError> {
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedCursor::new(bytes);
     let _version = cursor.read_u32()?;
     let _flags = cursor.read_u32()?;
     let _num_line_instrs = cursor.read_u32()?;
@@ -173,10 +230,17 @@ pub fn decode_line_chunk(bytes: &[u8]) -> Result<Vec<LineInfo>, LoadError> {
     let _num_fnames = cursor.read_u32()?;
     let mut current_file = 0;
     // Each line is at least one compact-encoded byte.
-    ensure_count(num_lines as usize, cursor.remaining().len(), "line count")?;
-    let mut lines = Vec::with_capacity(num_lines as usize);
+    let num_lines = num_lines as usize;
+    cursor.ensure_count(num_lines, 1, "line count")?;
+    budget.charge_bytes(
+        num_lines
+            .checked_mul(std::mem::size_of::<LineInfo>())
+            .ok_or_else(|| LoadError::DecodeError("line table allocation size overflow".into()))?,
+    )?;
+    let mut lines = Vec::with_capacity(num_lines);
 
     for _ in 0..num_lines {
+        budget.charge_node()?;
         let mut decoder = CompactDecoder::new(cursor.remaining(), &[], &[]);
         let (tag, value) = decoder.read_raw_compact_i64()?;
         cursor.advance(decoder.offset())?;
@@ -219,7 +283,7 @@ pub fn decode_line_chunk(bytes: &[u8]) -> Result<Vec<LineInfo>, LoadError> {
         }
     }
 
-    if lines.len() != num_lines as usize {
+    if lines.len() != num_lines {
         return Err(LoadError::DecodeError(format!(
             "Line chunk declared {num_lines} lines but decoded {}",
             lines.len()
@@ -228,33 +292,43 @@ pub fn decode_line_chunk(bytes: &[u8]) -> Result<Vec<LineInfo>, LoadError> {
     Ok(lines)
 }
 
-pub fn decode_literal_chunk(
+pub(crate) fn decode_literal_chunk(
     bytes: &[u8],
     atom_table: &AtomTable,
+    budget: &mut DecodeBudget,
 ) -> Result<Vec<Literal>, LoadError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedCursor::new(bytes);
     let uncompressed_size = cursor.read_u32()?;
     let payload = if uncompressed_size == 0 {
+        budget.charge_bytes(cursor.remaining_len())?;
         cursor.remaining().to_vec()
     } else {
-        decompress_bounded(cursor.remaining(), uncompressed_size as usize)?
+        decompress_bounded(cursor.remaining(), uncompressed_size as usize, budget)?
     };
 
-    let mut literal_cursor = Cursor::new(&payload);
+    let mut literal_cursor = BoundedCursor::new(&payload);
     let count = literal_cursor.read_u32()? as usize;
     // Each literal carries at least a 4-byte size prefix.
-    ensure_count(count, literal_cursor.remaining().len() / 4, "literal count")?;
+    literal_cursor.ensure_count(count, 4, "literal count")?;
+    budget.charge_bytes(
+        count
+            .checked_mul(std::mem::size_of::<Literal>())
+            .ok_or_else(|| {
+                LoadError::DecodeError("literal table allocation size overflow".into())
+            })?,
+    )?;
     let mut literals = Vec::with_capacity(count);
     for _ in 0..count {
+        budget.charge_node()?;
         let size = literal_cursor.read_u32()? as usize;
         let term_bytes = literal_cursor.read_bytes(size)?;
-        let mut term_cursor = Cursor::new(term_bytes);
+        let mut term_cursor = BoundedCursor::new(term_bytes);
         if term_cursor.read_u8()? != 131 {
             return Err(LoadError::DecodeError(
                 "ETF literal missing version byte".into(),
             ));
         }
-        let literal = decode_external_term(&mut term_cursor, atom_table, 0)?;
+        let literal = decode_external_term(&mut term_cursor, atom_table, budget)?;
         term_cursor.expect_empty("literal ETF")?;
         literals.push(literal);
     }
@@ -267,40 +341,33 @@ pub fn decode_literal_chunk(
 /// highly-compressible payload (a "zip bomb") inflates to gigabytes before any
 /// size check fires. Bounding the reader to `declared_size + 1` means an
 /// oversized stream errors out at the cap instead of exhausting memory.
-fn decompress_bounded(bytes: &[u8], declared_size: usize) -> Result<Vec<u8>, LoadError> {
-    let limit = u64::try_from(declared_size)
-        .map_err(|_| LoadError::DecodeError("literal declared size overflow".into()))?;
+fn decompress_bounded(
+    bytes: &[u8],
+    declared_size: usize,
+    budget: &mut DecodeBudget,
+) -> Result<Vec<u8>, LoadError> {
+    let limit = u64::try_from(budget.bytes_remaining)
+        .map_err(|_| LoadError::DecodeError("literal budget size overflow".into()))?;
     let decoder = ZlibDecoder::new(bytes);
-    // Read at most declared_size + 1: any overflow byte trips the check below.
+    // Read at most budget + 1: any overflow byte trips the check below.
     let mut reader: Take<ZlibDecoder<&[u8]>> = decoder.take(limit.saturating_add(1));
-    let mut out = Vec::with_capacity(declared_size.min(1024 * 1024));
+    let mut out = Vec::new();
     reader
         .read_to_end(&mut out)
         .map_err(|error| LoadError::DecodeError(format!("zlib literal decode failed: {error}")))?;
+    if out.len() > budget.bytes_remaining {
+        return Err(LoadError::DecodeError(
+            "literal chunk exceeds decode byte budget".into(),
+        ));
+    }
     if out.len() != declared_size {
         return Err(LoadError::DecodeError(format!(
             "literal chunk decompressed to {} bytes, expected {declared_size}",
             out.len()
         )));
     }
+    budget.charge_bytes(out.len())?;
     Ok(out)
-}
-
-/// Validate a length-prefixed count read from untrusted bytes before it is used
-/// to preallocate. `feasible` is the maximum number of elements the remaining
-/// input could possibly contain (remaining bytes / min bytes-per-element). A
-/// crafted `u32` count would otherwise force a multi-gigabyte
-/// `Vec::with_capacity` before the element read loop ever fails on truncation.
-fn ensure_count(count: usize, feasible: usize, label: &str) -> Result<(), LoadError> {
-    if count > MAX_TABLE_ENTRIES {
-        return Err(LoadError::DecodeError(format!("{label} exceeds limit")));
-    }
-    if count > feasible {
-        return Err(LoadError::DecodeError(format!(
-            "{label} impossible for payload size"
-        )));
-    }
-    Ok(())
 }
 
 fn resolve_atom(index: u32, atoms: &[Atom]) -> Result<Atom, LoadError> {
@@ -319,84 +386,6 @@ fn checked_arity(value: u32) -> Result<u8, LoadError> {
     u8::try_from(value).map_err(|_| LoadError::DecodeError(format!("arity {value} out of range")))
 }
 
-/// Bounds-checked byte cursor shared by the chunk decoders and the ETF
-/// sub-decoder (`super::etf`). Visible to the parent module so the ETF decoder
-/// in its sibling file can reuse the same truncation-safe reads.
-pub(super) struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Cursor<'a> {
-    pub(super) fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    pub(super) fn remaining(&self) -> &'a [u8] {
-        &self.bytes[self.offset..]
-    }
-
-    fn advance(&mut self, len: usize) -> Result<(), LoadError> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or_else(|| LoadError::DecodeError("cursor offset overflow".into()))?;
-        if end > self.bytes.len() {
-            return Err(LoadError::DecodeError("truncated chunk data".into()));
-        }
-        self.offset = end;
-        Ok(())
-    }
-
-    fn expect_empty(&self, name: &str) -> Result<(), LoadError> {
-        if self.remaining().is_empty() {
-            Ok(())
-        } else {
-            Err(LoadError::DecodeError(format!(
-                "trailing {name} chunk data"
-            )))
-        }
-    }
-
-    pub(super) fn read_u8(&mut self) -> Result<u8, LoadError> {
-        let byte = self
-            .bytes
-            .get(self.offset)
-            .copied()
-            .ok_or_else(|| LoadError::DecodeError("truncated chunk data".into()))?;
-        self.offset += 1;
-        Ok(byte)
-    }
-
-    pub(super) fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], LoadError> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or_else(|| LoadError::DecodeError("cursor offset overflow".into()))?;
-        let slice = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or_else(|| LoadError::DecodeError("truncated chunk data".into()))?;
-        self.offset = end;
-        Ok(slice)
-    }
-
-    pub(super) fn read_u16(&mut self) -> Result<u16, LoadError> {
-        let bytes = self.read_bytes(2)?;
-        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-    }
-
-    pub(super) fn read_u32(&mut self) -> Result<u32, LoadError> {
-        let bytes = self.read_bytes(4)?;
-        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    pub(super) fn read_i32(&mut self) -> Result<i32, LoadError> {
-        let bytes = self.read_bytes(4)?;
-        Ok(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,7 +401,9 @@ mod tests {
         bytes.push(70);
         bytes.extend_from_slice(&1.5f64.to_bits().to_be_bytes());
 
-        let literals = decode_literal_chunk(&bytes, &atom_table).expect("literal chunk");
+        let mut budget = DecodeBudget::default();
+        let literals =
+            decode_literal_chunk(&bytes, &atom_table, &mut budget).expect("literal chunk");
         assert_eq!(literals, vec![Literal::Float(1.5)]);
     }
 
@@ -427,7 +418,8 @@ mod tests {
         bytes.push(70);
         bytes.extend_from_slice(&1.5f64.to_bits().to_be_bytes()[..7]);
 
-        assert!(decode_literal_chunk(&bytes, &atom_table).is_err());
+        let mut budget = DecodeBudget::default();
+        assert!(decode_literal_chunk(&bytes, &atom_table, &mut budget).is_err());
     }
 
     #[test]
@@ -435,7 +427,8 @@ mod tests {
         // 4-byte header declares u32::MAX import entries (each 12 bytes) but the
         // body is empty. Must reject before `Vec::with_capacity` ever runs.
         let bytes = u32::MAX.to_be_bytes().to_vec();
-        match decode_import_chunk(&bytes, &[]) {
+        let mut budget = DecodeBudget::default();
+        match decode_import_chunk(&bytes, &[], &mut budget) {
             Err(LoadError::DecodeError(message)) => assert!(
                 message.contains("exceeds limit") || message.contains("impossible"),
                 "unexpected error: {message}"
@@ -449,8 +442,9 @@ mod tests {
         // Positive i32 count of ~2.1 billion atoms, empty body.
         let bytes = i32::MAX.to_be_bytes().to_vec();
         let atom_table = AtomTable::with_common_atoms();
+        let mut budget = DecodeBudget::default();
         assert!(matches!(
-            decode_atom_chunk(&bytes, &atom_table),
+            decode_atom_chunk(&bytes, &atom_table, &mut budget),
             Err(LoadError::DecodeError(_))
         ));
     }
@@ -474,12 +468,78 @@ mod tests {
         bytes.extend_from_slice(&compressed);
 
         let atom_table = AtomTable::with_common_atoms();
-        match decode_literal_chunk(&bytes, &atom_table) {
+        let mut budget = DecodeBudget::default();
+        match decode_literal_chunk(&bytes, &atom_table, &mut budget) {
             Err(LoadError::DecodeError(message)) => assert!(
-                message.contains("decompressed to"),
+                message.contains("decompressed to") || message.contains("byte budget"),
                 "unexpected error: {message}"
             ),
             other => panic!("expected bounded decompression DecodeError, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn decode_literal_chunk_rejects_zlib_output_over_byte_budget() {
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+        use std::io::Write;
+
+        let inflated = vec![0u8; 64];
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&inflated).expect("zlib write");
+        let compressed = encoder.finish().expect("zlib finish");
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(inflated.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&compressed);
+
+        let atom_table = AtomTable::with_common_atoms();
+        let mut budget = DecodeBudget::new(16, 16, 8, 16);
+        match decode_literal_chunk(&bytes, &atom_table, &mut budget) {
+            Err(LoadError::DecodeError(message)) => {
+                assert!(
+                    message.contains("byte budget"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected byte-budget DecodeError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_atom_chunk_rejects_excessive_unique_atoms() {
+        let atom_table = AtomTable::with_common_atoms();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2i32.to_be_bytes());
+        bytes.push(1);
+        bytes.push(b'a');
+        bytes.push(1);
+        bytes.push(b'b');
+
+        let mut budget = DecodeBudget::new(16, 16, 1024, 1);
+        match decode_atom_chunk(&bytes, &atom_table, &mut budget) {
+            Err(LoadError::DecodeError(message)) => {
+                assert!(
+                    message.contains("atom budget"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected atom-budget DecodeError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_atom_chunk_existing_atoms_do_not_charge_atom_budget() {
+        let atom_table = AtomTable::with_common_atoms();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&3i32.to_be_bytes());
+        for name in ["ok", "error", "true"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+
+        let mut budget = DecodeBudget::new(16, 16, 1024, 0);
+        let atoms = decode_atom_chunk(&bytes, &atom_table, &mut budget).expect("existing atoms");
+        assert_eq!(atoms.len(), 3);
     }
 }
