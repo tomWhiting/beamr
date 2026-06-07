@@ -429,6 +429,26 @@ fn exit_signal_queues_message_for_executing_trapping_process() {
 }
 
 #[test]
+fn normal_exit_signal_does_not_queue_message_for_executing_trapping_process() {
+    let shared = make_shared_state();
+    let parent = insert_process(&shared, 1);
+    let child = insert_process(&shared, 2);
+    add_link(&shared, parent, child);
+    set_trap_exit(&shared, child, true);
+
+    let process = make_executing(&shared, child);
+
+    cleanup_exited_process(&shared, parent, ExitReason::Normal);
+
+    assert!(
+        !shared.exit_tombstones.contains_key(&child),
+        "normal exit should not tombstone a linked executing child"
+    );
+    store_runnable_process(&shared, process);
+    assert_eq!(read_mailbox_tuple(&shared, child), None);
+}
+
+#[test]
 fn take_links_from_reads_executing_sentinel_links() {
     let shared = make_shared_state();
     let source = insert_process(&shared, 1);

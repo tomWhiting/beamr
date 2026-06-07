@@ -180,7 +180,7 @@ fn process_exit_signal(
                     .into_iter()
                     .map(|linked_pid| (target_pid, linked_pid, propagated_reason))
                     .collect()
-            } else if metadata.trap_exit {
+            } else if reason != ExitReason::Normal && metadata.trap_exit {
                 metadata.pending_exit_messages.push((source_pid, reason));
                 drop(slot);
                 drop(entry);
@@ -621,7 +621,7 @@ impl SupervisionFacility for SchedulerSupervisionFacility {
                     if should_die {
                         let terminal = link::terminal_reason(reason);
                         shared_exit_tombstone(&self.shared, target_pid, terminal);
-                    } else if metadata.trap_exit {
+                    } else if reason != ExitReason::Normal && metadata.trap_exit {
                         metadata.pending_exit_messages.push((_caller_pid, reason));
                         drop(slot);
                         drop(entry);
