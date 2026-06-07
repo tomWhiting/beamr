@@ -14,7 +14,13 @@ use crate::atom::AtomTable;
 /// Compares two terms using Erlang `=:=` exact equality semantics.
 #[must_use]
 pub fn exact_eq(left: Term, right: Term) -> bool {
-    compare_exact(left, right) == Ordering::Equal
+    exact_cmp(left, right) == Ordering::Equal
+}
+
+/// Orders two terms using Erlang `=:=` exact term semantics.
+#[must_use]
+pub(crate) fn exact_cmp(left: Term, right: Term) -> Ordering {
+    compare_exact(left, right)
 }
 
 /// Compares two terms using Erlang `==` semantics.

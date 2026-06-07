@@ -7,6 +7,7 @@ pub mod atom;
 pub mod constant_pool;
 pub mod error;
 pub mod etf;
+pub mod ets;
 pub mod gc;
 pub mod hook;
 pub mod interpreter;

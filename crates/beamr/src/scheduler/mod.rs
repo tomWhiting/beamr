@@ -13,6 +13,7 @@ use self::execution::scheduler_loop;
 use self::spawning::SpawnRequest;
 use crate::atom::AtomTable;
 use crate::error::ExecError;
+use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::hook::Hook;
 use crate::io::{IoSink, NullSink};
 use crate::module::ModuleRegistry;
@@ -67,6 +68,7 @@ pub(super) struct SharedState {
     exit_exceptions: DashMap<u64, crate::process::Exception>,
     async_results: DashMap<u64, Term>,
     dirty_results: DashMap<u64, DirtyResult>,
+    ets_registry: EtsRegistry,
     link_set: Mutex<LinkSet>,
     monitor_set: Mutex<MonitorSet>,
     hook: Hook,
@@ -93,6 +95,24 @@ impl SharedState {
     #[must_use]
     pub(super) fn atom_count(&self) -> usize {
         self.atom_table.len()
+    }
+
+    pub(super) fn create_table(&self, metadata: EtsTableMetadata) -> EtsTableId {
+        self.ets_registry.create_table(metadata)
+    }
+
+    #[must_use]
+    pub(super) fn lookup_table(&self, id: EtsTableId) -> Option<Arc<dyn EtsTable>> {
+        self.ets_registry.lookup_table(id)
+    }
+
+    #[must_use]
+    pub(super) fn lookup_named_table(&self, name: crate::atom::Atom) -> Option<Arc<dyn EtsTable>> {
+        self.ets_registry.lookup_named_table(name)
+    }
+
+    pub(super) fn delete_table(&self, id: EtsTableId) -> bool {
+        self.ets_registry.delete_table(id)
     }
 }
 
@@ -186,6 +206,7 @@ impl Scheduler {
             exit_exceptions: DashMap::new(),
             async_results: DashMap::new(),
             dirty_results: DashMap::new(),
+            ets_registry: EtsRegistry::new(),
             link_set: Mutex::new(LinkSet::new()),
             monitor_set: Mutex::new(MonitorSet::new()),
             hook: Hook::new(),

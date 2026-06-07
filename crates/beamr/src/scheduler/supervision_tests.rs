@@ -9,6 +9,7 @@ use dashmap::DashMap;
 
 use super::*;
 use crate::atom::Atom;
+use crate::ets::EtsRegistry;
 use crate::process::ProcessStatus;
 use crate::process::registry::ProcessTable;
 use crate::scheduler::execution::{
@@ -165,6 +166,7 @@ fn make_shared_state() -> Arc<SharedState> {
         exit_errors: DashMap::new(),
         exit_exceptions: DashMap::new(),
         async_results: DashMap::new(),
+        ets_registry: EtsRegistry::new(),
         link_set: std::sync::Mutex::new(LinkSet::new()),
         monitor_set: std::sync::Mutex::new(MonitorSet::new()),
         hook: crate::hook::Hook::new(),

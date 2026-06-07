@@ -8,6 +8,7 @@ use dashmap::DashMap;
 
 use super::*;
 use crate::atom::{Atom, AtomTable};
+use crate::ets::{EtsRegistry, EtsTableMetadata, EtsTableType, Protection};
 use crate::hook::{Hook, HookDecision};
 use crate::io::NullSink;
 use crate::loader::Instruction;
@@ -26,6 +27,17 @@ use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
 use crate::term::{Term, boxed};
 use crate::timer::TimerWheel;
+
+fn set_metadata() -> EtsTableMetadata {
+    EtsTableMetadata {
+        name: Some(Atom::OK),
+        id: 0,
+        table_type: EtsTableType::Set,
+        protection: Protection::Protected,
+        owner: 1,
+        keypos: 1,
+    }
+}
 
 fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
     let label_index = code
@@ -379,6 +391,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         exit_errors: DashMap::new(),
         exit_exceptions: DashMap::new(),
         async_results: DashMap::new(),
+        ets_registry: EtsRegistry::new(),
         link_set: Mutex::new(LinkSet::new()),
         monitor_set: Mutex::new(MonitorSet::new()),
         hook: Hook::new(),
@@ -407,6 +420,37 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
             .current_module()
             .is_some_and(|current| Arc::ptr_eq(current, &module_v1))
     );
+}
+
+#[test]
+fn shared_state_creates_set_table_that_round_trips_insert_lookup() {
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        Arc::new(ModuleRegistry::new()),
+    )
+    .expect("scheduler starts");
+
+    let table_id = scheduler.shared.create_table(set_metadata());
+    let table = scheduler
+        .shared
+        .lookup_table(table_id)
+        .expect("table is registered");
+    assert!(scheduler.shared.lookup_named_table(Atom::OK).is_some());
+
+    let mut tuple_heap = [0_u64; 3];
+    let tuple = boxed::write_tuple(
+        &mut tuple_heap,
+        &[Term::atom(Atom::OK), Term::small_int(123)],
+    )
+    .expect("tuple fits");
+    table.insert(tuple).expect("insert succeeds");
+    assert_eq!(table.lookup(Term::atom(Atom::OK)), vec![tuple]);
+
+    assert!(scheduler.shared.delete_table(table_id));
+    assert!(scheduler.shared.lookup_table(table_id).is_none());
 }
 
 #[test]
@@ -637,6 +681,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         exit_errors: DashMap::new(),
         exit_exceptions: DashMap::new(),
         async_results: DashMap::new(),
+        ets_registry: EtsRegistry::new(),
         link_set: Mutex::new(LinkSet::new()),
         monitor_set: Mutex::new(MonitorSet::new()),
         hook: Hook::new(),
