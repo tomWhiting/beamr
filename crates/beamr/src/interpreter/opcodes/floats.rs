@@ -218,6 +218,8 @@ mod tests {
             lambdas: Vec::new(),
             string_table: Vec::new(),
             line_info: Vec::new(),
+            function_table: Vec::new(),
+            line_table: Vec::new(),
         }
     }
 
