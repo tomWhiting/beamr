@@ -56,6 +56,7 @@ pub fn register_gate1_bifs(
 
     crate::native::code_management_bifs::register_code_management_bifs(registry, atom_table)?;
     crate::native::dictionary_bifs::register_dictionary_bifs(registry, atom_table)?;
+    crate::native::etf_bifs::register_etf_bifs(registry, atom_table)?;
     crate::native::exception_bifs::register_exception_bifs(registry, atom_table)?;
 
     Ok(())
@@ -691,6 +692,7 @@ mod tests {
             ("erase", 1, Capability::ProcessLocal),
             ("erase", 0, Capability::ProcessLocal),
             ("get_keys", 1, Capability::ProcessLocal),
+            ("term_to_binary", 1, Capability::Pure),
             ("raise", 3, Capability::Pure),
         ] {
             let function = atom_table.intern(name);
