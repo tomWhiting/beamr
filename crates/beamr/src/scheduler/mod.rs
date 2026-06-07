@@ -978,7 +978,7 @@ fn take_runnable_process(shared: &SharedState, pid: u64) -> Option<Process> {
             let process = scheduled.0;
             let metadata = ProcessMetadata {
                 namespace_id: process.namespace_id(),
-                links: process.links().iter().copied().collect(),
+                links: process.links().to_vec(),
                 trap_exit: process.trap_exit(),
                 pending_exit_messages: Vec::new(),
             };
