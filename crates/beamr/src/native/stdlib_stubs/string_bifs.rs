@@ -4,7 +4,6 @@ use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary::Binary;
-use crate::term::boxed::{write_cons, write_tuple};
 
 pub fn bif_length(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let _ = context;
@@ -19,17 +18,15 @@ pub fn bif_length(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
 }
 
 pub fn bif_reverse(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
     let mut bytes = binary_bytes(*input)?.to_vec();
     bytes.reverse();
-    make_binary(&bytes)
+    context.alloc_binary(&bytes)
 }
 
 pub fn bif_lowercase(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -37,11 +34,10 @@ pub fn bif_lowercase(args: &[Term], context: &mut ProcessContext) -> Result<Term
         .iter()
         .map(|byte| byte.to_ascii_lowercase())
         .collect();
-    make_binary(&bytes)
+    context.alloc_binary(&bytes)
 }
 
 pub fn bif_uppercase(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -49,7 +45,7 @@ pub fn bif_uppercase(args: &[Term], context: &mut ProcessContext) -> Result<Term
         .iter()
         .map(|byte| byte.to_ascii_uppercase())
         .collect();
-    make_binary(&bytes)
+    context.alloc_binary(&bytes)
 }
 
 pub fn bif_trim(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -74,7 +70,7 @@ pub fn bif_trim(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
         }
     }
 
-    make_binary(&bytes[start..end])
+    context.alloc_binary(&bytes[start..end])
 }
 
 pub fn bif_split(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -96,9 +92,9 @@ pub fn bif_split(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
 
     let mut terms = Vec::with_capacity(parts.len());
     for part in parts {
-        terms.push(make_binary(part)?);
+        terms.push(context.alloc_binary(part)?);
     }
-    make_list(&terms)
+    context.alloc_list(&terms)
 }
 
 pub fn bif_find(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -108,14 +104,13 @@ pub fn bif_find(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
     let input = binary_bytes(*input)?;
     let pattern = binary_bytes(*pattern)?;
     if let Some(index) = find_bytes(input, pattern) {
-        make_binary(&input[index..])
+        context.alloc_binary(&input[index..])
     } else {
         atom_term("nomatch", context)
     }
 }
 
 pub fn bif_next_grapheme(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -128,9 +123,9 @@ pub fn bif_next_grapheme(args: &[Term], context: &mut ProcessContext) -> Result<
         .ok()
         .and_then(|text| text.chars().next().map(char::len_utf8))
         .unwrap_or(1);
-    let head = make_binary(&bytes[..first_len])?;
-    let rest = make_binary(&bytes[first_len..])?;
-    ok_tuple2(head, rest)
+    let head = context.alloc_binary(&bytes[..first_len])?;
+    let rest = context.alloc_binary(&bytes[first_len..])?;
+    context.alloc_tuple(&[Term::atom(Atom::OK), head, rest])
 }
 
 pub fn bif_pad(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -145,7 +140,7 @@ pub fn bif_pad(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term
         return Err(badarg());
     }
     if input.len() >= target_len {
-        return make_binary(input);
+        return context.alloc_binary(input);
     }
 
     let needed = target_len - input.len();
@@ -159,7 +154,7 @@ pub fn bif_pad(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term
     append_pad(&mut out, pad, leading);
     out.extend_from_slice(input);
     append_pad(&mut out, pad, trailing);
-    make_binary(&out)
+    context.alloc_binary(&out)
 }
 
 pub fn bif_replace(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -179,11 +174,10 @@ pub fn bif_replace(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
         "trailing" => replace_once(input, pattern, replacement, true),
         _ => return Err(badarg()),
     };
-    make_binary(&out)
+    context.alloc_binary(&out)
 }
 
 pub fn bif_slice(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input, offset, length] = args else {
         return Err(badarg());
     };
@@ -194,7 +188,7 @@ pub fn bif_slice(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
     if end > bytes.len() {
         return Err(badarg());
     }
-    make_binary(&bytes[offset..end])
+    context.alloc_binary(&bytes[offset..end])
 }
 
 pub fn bif_equal(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -303,7 +297,7 @@ fn atom_term(name: &str, context: &mut ProcessContext) -> Result<Term, Term> {
     Ok(Term::atom(table.intern(name)))
 }
 
-fn atom_name(term: Term, context: &ProcessContext) -> Result<&str, Term> {
+fn atom_name<'a>(term: Term, context: &'a ProcessContext<'_>) -> Result<&'a str, Term> {
     let atom = term.as_atom().ok_or_else(badarg)?;
     if let Some(name) = context.atom_table().and_then(|table| table.resolve(atom)) {
         return Ok(name);
@@ -327,26 +321,6 @@ fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
 
 fn bool_term(value: bool) -> Term {
     Term::atom(if value { Atom::TRUE } else { Atom::FALSE })
-}
-
-fn make_binary(bytes: &[u8]) -> Result<Term, Term> {
-    let data_words = crate::term::binary::packed_word_count(bytes.len());
-    let heap: &mut [u64] = Box::leak(vec![0u64; 2 + data_words].into_boxed_slice());
-    crate::term::binary::write_binary(heap, bytes).ok_or_else(badarg)
-}
-
-fn make_list(elements: &[Term]) -> Result<Term, Term> {
-    let mut tail = Term::NIL;
-    for element in elements.iter().rev() {
-        let cell = Box::leak(Box::new([0u64; 2]));
-        tail = write_cons(cell, *element, tail).ok_or_else(badarg)?;
-    }
-    Ok(tail)
-}
-
-fn ok_tuple2(first: Term, second: Term) -> Result<Term, Term> {
-    let heap = Box::leak(Box::new([0u64; 4]));
-    write_tuple(heap, &[Term::atom(Atom::OK), first, second]).ok_or_else(badarg)
 }
 
 fn badarg() -> Term {

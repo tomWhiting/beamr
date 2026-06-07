@@ -3,8 +3,8 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::{Binary, packed_word_count, write_binary};
-use crate::term::boxed::{Float, Map, write_float};
+use crate::term::binary::Binary;
+use crate::term::boxed::{Float, Map};
 
 /// erlang:round/1 — rounds a number to the nearest integer.
 pub fn bif_round(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -82,7 +82,7 @@ pub fn bif_binary_part(args: &[Term], context: &mut ProcessContext) -> Result<Te
     if end > bytes.len() {
         return Err(badarg());
     }
-    make_binary(&bytes[offset..end])
+    context.alloc_binary(&bytes[offset..end])
 }
 
 /// erlang:bit_size/1 — returns the bit length of a binary.
@@ -101,7 +101,6 @@ pub fn bif_bit_size(args: &[Term], context: &mut ProcessContext) -> Result<Term,
 
 /// erlang:-/1 — unary numeric negation.
 pub fn bif_unary_minus(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
@@ -115,7 +114,7 @@ pub fn bif_unary_minus(args: &[Term], context: &mut ProcessContext) -> Result<Te
     if !value.is_finite() {
         return Err(badarg());
     }
-    make_float(-value)
+    make_float(context, -value)
 }
 
 fn float_to_small_int(term: Term, operation: fn(f64) -> f64) -> Result<Term, Term> {
@@ -133,17 +132,11 @@ fn float_to_small_int(term: Term, operation: fn(f64) -> f64) -> Result<Term, Ter
     Term::try_small_int(value as i64).ok_or_else(badarg)
 }
 
-fn make_float(value: f64) -> Result<Term, Term> {
+fn make_float(context: &mut ProcessContext, value: f64) -> Result<Term, Term> {
     if !value.is_finite() {
         return Err(badarg());
     }
-    let heap = Box::leak(Box::new([0u64; 2]));
-    write_float(heap, value).ok_or_else(badarg)
-}
-
-fn make_binary(bytes: &[u8]) -> Result<Term, Term> {
-    let heap = Box::leak(vec![0u64; 2 + packed_word_count(bytes.len())].into_boxed_slice());
-    write_binary(heap, bytes).ok_or_else(badarg)
+    context.alloc_float(value)
 }
 
 fn bool_term(value: bool) -> Term {

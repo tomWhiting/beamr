@@ -349,15 +349,21 @@ fn call_external_target(
                 }
             }
 
-            // Provide mailbox access for select BIFs.
+            // Provide mailbox access for select BIFs before borrowing the process for heap allocation.
             let snapshot = trampoline::build_mailbox_snapshot(process);
             context.set_select_facility(
                 snapshot
                     .clone()
                     .map(|s| s as Arc<dyn crate::native::SelectFacility>),
             );
+            context.attach_process(process, usize::from(arity));
 
-            let result = match (entry.function)(&args, &mut context) {
+            let call_result = (entry.function)(&args, &mut context);
+            let shutdown_requested = context.take_shutdown_request();
+            let suspend = context.take_suspend();
+            let trampoline_req = context.take_trampoline();
+            context.detach_process();
+            let result = match call_result {
                 Ok(value) => value,
                 Err(reason) => {
                     let exception = crate::process::Exception {
@@ -368,7 +374,6 @@ fn call_external_target(
                     return super::messaging::raise_exception(process, exception);
                 }
             };
-            let shutdown_requested = context.take_shutdown_request();
 
             // Handle mailbox removal if the select facility recorded one.
             if let Some(snapshot) = snapshot {
@@ -377,12 +382,12 @@ fn call_external_target(
 
             // Check for suspend request before trampoline (suspend takes priority
             // when no message matched).
-            if let Some(suspend) = context.take_suspend() {
+            if let Some(suspend) = suspend {
                 return trampoline::handle_suspend(process, module, suspend);
             }
 
             // Check for trampoline request from the BIF.
-            if let Some(trampoline_req) = context.take_trampoline() {
+            if let Some(trampoline_req) = trampoline_req {
                 return trampoline::handle_trampoline(
                     process,
                     module,

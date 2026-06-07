@@ -3,32 +3,30 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::{Binary, packed_word_count, write_binary};
-use crate::term::boxed::{Cons, Float, Tuple, write_cons, write_float, write_tuple};
+use crate::term::binary::Binary;
+use crate::term::boxed::{Cons, Float, Tuple};
 
 pub fn bif_atom_to_binary(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [atom_term] = args else {
         return Err(badarg());
     };
     let atom = atom_term.as_atom().ok_or_else(badarg)?;
-    let table = context.atom_table().ok_or_else(badarg)?;
+    let table = context.atom_table_arc().ok_or_else(badarg)?;
     let name = table.resolve(atom).ok_or_else(badarg)?;
-    make_binary(name.as_bytes())
+    context.alloc_binary(name.as_bytes())
 }
 
 pub fn bif_binary_to_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [binary_term] = args else {
         return Err(badarg());
     };
     let binary = Binary::new(*binary_term).ok_or_else(badarg)?;
     let text = std::str::from_utf8(binary.as_bytes()).map_err(|_| badarg())?;
     let value = text.parse::<f64>().map_err(|_| badarg())?;
-    make_float(value)
+    make_float(context, value)
 }
 
-pub fn bif_binary_to_integer(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
+pub fn bif_binary_to_integer(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
     let [binary_term] = args else {
         return Err(badarg());
     };
@@ -52,12 +50,11 @@ pub fn bif_binary_to_integer_radix(
 }
 
 pub fn bif_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
     if let Some(integer) = value.as_small_int() {
-        return make_float(integer as f64);
+        return make_float(context, integer as f64);
     }
     if Float::new(*value).is_some() {
         return Ok(*value);
@@ -66,12 +63,11 @@ pub fn bif_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
 }
 
 pub fn bif_integer_to_binary(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [integer_term] = args else {
         return Err(badarg());
     };
     let integer = integer_term.as_small_int().ok_or_else(badarg)?;
-    make_binary(integer.to_string().as_bytes())
+    context.alloc_binary(integer.to_string().as_bytes())
 }
 
 pub fn bif_integer_to_binary_radix(
@@ -88,26 +84,24 @@ pub fn bif_integer_to_binary_radix(
         .and_then(|value| u32::try_from(value).ok())
         .filter(|value| (2..=36).contains(value))
         .ok_or_else(badarg)?;
-    make_binary(format_integer(integer, radix)?.as_bytes())
+    context.alloc_binary(format_integer(integer, radix)?.as_bytes())
 }
 
 pub fn bif_integer_to_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [integer_term] = args else {
         return Err(badarg());
     };
     let integer = integer_term.as_small_int().ok_or_else(badarg)?;
-    make_list(integer.to_string().bytes().map(i64::from))
+    make_list(context, integer.to_string().bytes().map(i64::from))
 }
 
 pub fn bif_iolist_to_binary(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [iodata] = args else {
         return Err(badarg());
     };
     let mut bytes = Vec::new();
     collect_iodata(*iodata, &mut bytes)?;
-    make_binary(&bytes)
+    context.alloc_binary(&bytes)
 }
 
 pub fn bif_list_to_bitstring(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -115,15 +109,13 @@ pub fn bif_list_to_bitstring(args: &[Term], context: &mut ProcessContext) -> Res
 }
 
 pub fn bif_list_to_tuple(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [list_term] = args else {
         return Err(badarg());
     };
-    make_tuple(&list_to_vec(*list_term)?)
+    context.alloc_tuple(&list_to_vec(*list_term)?)
 }
 
 pub fn bif_tuple_to_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [tuple_term] = args else {
         return Err(badarg());
     };
@@ -132,7 +124,7 @@ pub fn bif_tuple_to_list(args: &[Term], context: &mut ProcessContext) -> Result<
     for index in 0..tuple.arity() {
         values.push(tuple.get(index).ok_or_else(badarg)?);
     }
-    make_term_list(&values)
+    context.alloc_list(&values)
 }
 
 fn binary_to_integer(binary_term: Term, radix: u32) -> Result<Term, Term> {
@@ -201,38 +193,21 @@ fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
     }
 }
 
-fn make_binary(bytes: &[u8]) -> Result<Term, Term> {
-    let heap = Box::leak(vec![0u64; 2 + packed_word_count(bytes.len())].into_boxed_slice());
-    write_binary(heap, bytes).ok_or_else(badarg)
-}
-
-fn make_float(value: f64) -> Result<Term, Term> {
+fn make_float(context: &mut ProcessContext, value: f64) -> Result<Term, Term> {
     if !value.is_finite() {
         return Err(badarg());
     }
-    let heap = Box::leak(Box::new([0u64; 2]));
-    write_float(heap, value).ok_or_else(badarg)
+    context.alloc_float(value)
 }
 
-fn make_list(values: impl DoubleEndedIterator<Item = i64>) -> Result<Term, Term> {
+fn make_list(
+    context: &mut ProcessContext,
+    values: impl DoubleEndedIterator<Item = i64>,
+) -> Result<Term, Term> {
     let terms: Result<Vec<Term>, Term> = values
         .map(|value| Term::try_small_int(value).ok_or_else(badarg))
         .collect();
-    make_term_list(&terms?)
-}
-
-fn make_term_list(values: &[Term]) -> Result<Term, Term> {
-    let mut tail = Term::NIL;
-    for value in values.iter().rev() {
-        let heap = Box::leak(Box::new([0u64; 2]));
-        tail = write_cons(heap, *value, tail).ok_or_else(badarg)?;
-    }
-    Ok(tail)
-}
-
-fn make_tuple(values: &[Term]) -> Result<Term, Term> {
-    let heap = Box::leak(vec![0u64; 1 + values.len()].into_boxed_slice());
-    write_tuple(heap, values).ok_or_else(badarg)
+    context.alloc_list(&terms?)
 }
 
 fn badarg() -> Term {

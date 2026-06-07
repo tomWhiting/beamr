@@ -3,34 +3,30 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::boxed::{Float, write_float};
+use crate::term::boxed::Float;
 
 pub fn bif_ceil(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
-    make_float(number_to_f64(*value)?.ceil())
+    make_float(context, number_to_f64(*value)?.ceil())
 }
 
 pub fn bif_floor(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
-    make_float(number_to_f64(*value)?.floor())
+    make_float(context, number_to_f64(*value)?.floor())
 }
 
 pub fn bif_exp(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
-    make_float(number_to_f64(*value)?.exp())
+    make_float(context, number_to_f64(*value)?.exp())
 }
 
 pub fn bif_log(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [value] = args else {
         return Err(badarg());
     };
@@ -38,15 +34,17 @@ pub fn bif_log(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term
     if value <= 0.0 {
         return Err(badarg());
     }
-    make_float(value.ln())
+    make_float(context, value.ln())
 }
 
 pub fn bif_pow(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [base, exponent] = args else {
         return Err(badarg());
     };
-    make_float(number_to_f64(*base)?.powf(number_to_f64(*exponent)?))
+    make_float(
+        context,
+        number_to_f64(*base)?.powf(number_to_f64(*exponent)?),
+    )
 }
 
 fn number_to_f64(term: Term) -> Result<f64, Term> {
@@ -62,12 +60,11 @@ fn number_to_f64(term: Term) -> Result<f64, Term> {
     }
 }
 
-fn make_float(value: f64) -> Result<Term, Term> {
+fn make_float(context: &mut ProcessContext, value: f64) -> Result<Term, Term> {
     if !value.is_finite() {
         return Err(badarg());
     }
-    let heap = Box::leak(Box::new([0u64; 2]));
-    write_float(heap, value).ok_or_else(badarg)
+    context.alloc_float(value)
 }
 
 fn badarg() -> Term {

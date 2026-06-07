@@ -10,7 +10,10 @@ use std::time::Duration;
 use crate::atom::AtomTable;
 use crate::io::{IoSink, NullSink};
 use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
+use crate::process::Process;
 use crate::term::Term;
+use crate::term::binary::{packed_word_count, write_binary};
+use crate::term::boxed::{write_bigint, write_cons, write_float, write_map, write_tuple};
 use crate::timer::{TimerRef, TimerWheel};
 
 use super::code_management_bifs::CodeManagementFacility;
@@ -60,8 +63,10 @@ pub struct SuspendRequest {
     pub timeout_ms: Option<u64>,
 }
 
-pub struct ProcessContext {
+pub struct ProcessContext<'process> {
     pid: Option<u64>,
+    process: Option<&'process mut Process>,
+    live_x: usize,
     timers: Option<Arc<Mutex<TimerWheel>>>,
     atom_table: Option<Arc<AtomTable>>,
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
@@ -76,10 +81,12 @@ pub struct ProcessContext {
     suspend: Option<SuspendRequest>,
 }
 
-impl fmt::Debug for ProcessContext {
+impl fmt::Debug for ProcessContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProcessContext")
             .field("pid", &self.pid)
+            .field("process_heap", &self.process.as_ref().map(|_| ".."))
+            .field("live_x", &self.live_x)
             .field("timers", &self.timers)
             .field("atom_table", &self.atom_table.as_ref().map(|_| ".."))
             .field(
@@ -111,18 +118,20 @@ impl fmt::Debug for ProcessContext {
     }
 }
 
-impl Default for ProcessContext {
+impl Default for ProcessContext<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProcessContext {
+impl<'process> ProcessContext<'process> {
     /// Creates an empty process context.
     #[must_use]
     pub fn new() -> Self {
         Self {
             pid: None,
+            process: None,
+            live_x: 256,
             timers: None,
             atom_table: None,
             spawn_facility: None,
@@ -143,6 +152,8 @@ impl ProcessContext {
     pub fn with_timer_services(pid: u64, timers: Arc<Mutex<TimerWheel>>) -> Self {
         Self {
             pid: Some(pid),
+            process: None,
+            live_x: 256,
             timers: Some(timers),
             atom_table: None,
             spawn_facility: None,
@@ -167,6 +178,33 @@ impl ProcessContext {
     /// Set the calling process id.
     pub fn set_pid(&mut self, pid: Option<u64>) {
         self.pid = pid;
+    }
+
+    /// Attach the calling process for process-heap native result allocation.
+    pub fn attach_process(&mut self, process: &'process mut Process, live_x: usize) {
+        self.pid = Some(process.pid());
+        self.process = Some(process);
+        self.live_x = live_x;
+    }
+
+    /// Detach the calling process before the interpreter resumes using it directly.
+    pub fn detach_process(&mut self) {
+        self.process = None;
+    }
+
+    /// Return the calling process heap, when this context is heap-backed.
+    #[must_use]
+    pub fn process_heap(&self) -> Option<&crate::process::heap::Heap> {
+        self.process.as_ref().map(|process| process.heap())
+    }
+
+    /// Ensure the calling process has at least `words` nursery words available.
+    pub fn ensure_heap_space(&mut self, words: usize) -> Result<(), Term> {
+        let Some(process) = self.process.as_deref_mut() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        crate::gc::ensure_space(process, words, self.live_x)
+            .map_err(|_| Term::atom(crate::atom::Atom::BADARG))
     }
 
     /// Return the spawn facility, if one has been configured.
@@ -222,6 +260,12 @@ impl ProcessContext {
         self.atom_table.as_deref()
     }
 
+    /// Return a shared atom table handle, if one has been configured.
+    #[must_use]
+    pub fn atom_table_arc(&self) -> Option<Arc<AtomTable>> {
+        self.atom_table.clone()
+    }
+
     /// Set the atom table for type conversion BIFs.
     pub fn set_atom_table(&mut self, table: Option<Arc<AtomTable>>) {
         self.atom_table = table;
@@ -268,6 +312,32 @@ impl ProcessContext {
         let mut timers = timers.lock().unwrap_or_else(|error| error.into_inner());
         let reference = timers.reserve_reference();
         timers.schedule_reserved(reference, delay, target_pid, message(reference))
+    }
+
+    /// Reserve a timer reference without scheduling it yet.
+    pub fn reserve_timer_reference(&mut self) -> Option<TimerRef> {
+        let timers = self.timers.as_ref()?;
+        Some(
+            timers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .reserve_reference(),
+        )
+    }
+
+    /// Schedule a message using an already reserved timer reference.
+    pub fn schedule_reserved_timer(
+        &mut self,
+        reference: TimerRef,
+        delay: Duration,
+        target_pid: u64,
+        message: Term,
+    ) -> Option<TimerRef> {
+        let timers = self.timers.as_ref()?;
+        timers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .schedule_reserved(reference, delay, target_pid, message)
     }
 
     /// Cancel a timer via the runtime timer wheel.
@@ -382,25 +452,146 @@ impl ProcessContext {
 
     // --- Heap allocation helpers ---
 
-    /// Allocate a tuple on a leaked heap.
-    ///
-    /// BIFs do not have access to the process heap, so boxed terms are
-    /// allocated via `Box::leak`. These allocations are permanent and will
-    /// not be garbage collected. This is acceptable for selector structures
-    /// which are short-lived configuration data.
-    pub fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> {
-        let words = 1 + elements.len();
-        let heap: &mut [u64] = Box::leak(vec![0u64; words].into_boxed_slice());
-        crate::term::boxed::write_tuple(heap, elements)
-            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    fn alloc_words(&mut self, words: usize) -> Result<&mut [u64], Term> {
+        self.ensure_heap_space(words)?;
+        let Some(process) = self.process.as_deref_mut() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        process
+            .heap_mut()
+            .alloc_slice(words)
+            .map_err(|_| Term::atom(crate::atom::Atom::BADARG))
     }
 
-    /// Allocate a cons cell on a leaked heap.
-    ///
-    /// See [`alloc_tuple`](Self::alloc_tuple) for allocation semantics.
+    /// Allocate a tuple on the calling process heap.
+    pub fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> {
+        let words = 1 + elements.len();
+        let heap = self.alloc_words(words)?;
+        write_tuple(heap, elements).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a cons cell on the calling process heap.
     pub fn alloc_cons(&mut self, head: Term, tail: Term) -> Result<Term, Term> {
-        let heap: &mut [u64] = Box::leak(Box::new([0u64; 2]));
-        crate::term::boxed::write_cons(heap, head, tail)
-            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        let heap = self.alloc_words(2)?;
+        write_cons(heap, head, tail).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a float on the calling process heap.
+    pub fn alloc_float(&mut self, value: f64) -> Result<Term, Term> {
+        let heap = self.alloc_words(2)?;
+        write_float(heap, value).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate an inline binary on the calling process heap.
+    pub fn alloc_binary(&mut self, bytes: &[u8]) -> Result<Term, Term> {
+        let words = 2 + packed_word_count(bytes.len());
+        let heap = self.alloc_words(words)?;
+        write_binary(heap, bytes).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a big integer on the calling process heap.
+    pub fn alloc_bigint(&mut self, negative: bool, limbs: &[u64]) -> Result<Term, Term> {
+        let words = 3 + limbs.len();
+        let heap = self.alloc_words(words)?;
+        write_bigint(heap, negative, limbs).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a proper list on the calling process heap.
+    pub fn alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term> {
+        self.alloc_list_with_tail(elements, Term::NIL)
+    }
+
+    /// Allocate list cells for `elements`, ending in `tail`.
+    pub fn alloc_list_with_tail(
+        &mut self,
+        elements: &[Term],
+        mut tail: Term,
+    ) -> Result<Term, Term> {
+        self.ensure_heap_space(elements.len() * 2)?;
+        for element in elements.iter().rev().copied() {
+            let heap = self.alloc_words(2)?;
+            tail = write_cons(heap, element, tail)
+                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+        }
+        Ok(tail)
+    }
+
+    /// Allocate a flatmap on the calling process heap.
+    pub fn alloc_map(&mut self, keys: &[Term], values: &[Term]) -> Result<Term, Term> {
+        let words = 2 + keys.len() + values.len();
+        let heap = self.alloc_words(words)?;
+        write_map(heap, keys, values).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::atom::Atom;
+    use crate::process::Process;
+    use crate::term::binary::Binary;
+    use crate::term::boxed::{Cons, Float, Map, Tuple};
+
+    fn heap_context(process: &mut Process) -> ProcessContext<'_> {
+        let mut context = ProcessContext::new();
+        context.attach_process(process, 0);
+        context
+    }
+
+    fn assert_on_heap(heap: &crate::process::heap::Heap, term: Term) {
+        let ptr = term.heap_ptr().expect("boxed/list term has heap pointer");
+        assert!(heap.contains(ptr));
+    }
+
+    #[test]
+    fn allocation_helpers_write_valid_terms_on_process_heap() {
+        let mut process = Process::new(1, 32);
+        let tuple = {
+            let mut context = heap_context(&mut process);
+            let float = context.alloc_float(1.5).expect("float allocation");
+            let binary = context.alloc_binary(b"beamr").expect("binary allocation");
+            let list = context
+                .alloc_list(&[Term::small_int(1), Term::small_int(2)])
+                .expect("list allocation");
+            let map = context
+                .alloc_map(&[Term::atom(Atom::OK)], &[binary])
+                .expect("map allocation");
+            let bigint = context
+                .alloc_bigint(false, &[u64::MAX])
+                .expect("bigint allocation");
+            let tuple = context
+                .alloc_tuple(&[float, binary, list, map, bigint])
+                .expect("tuple allocation");
+
+            for term in [float, binary, list, map, bigint, tuple] {
+                assert_on_heap(context.process_heap().expect("process heap"), term);
+            }
+
+            assert_eq!(Float::new(float).expect("float accessor").value(), 1.5);
+            assert_eq!(
+                Binary::new(binary).expect("binary accessor").as_bytes(),
+                b"beamr"
+            );
+            let cons = Cons::new(list).expect("list accessor");
+            assert_eq!(cons.head(), Term::small_int(1));
+            assert_eq!(
+                Map::new(map)
+                    .expect("map accessor")
+                    .get(Term::atom(Atom::OK)),
+                Some(binary)
+            );
+            assert_eq!(Tuple::new(tuple).expect("tuple accessor").arity(), 5);
+            tuple
+        };
+        assert_on_heap(process.heap(), tuple);
+    }
+
+    #[test]
+    fn helpers_fail_without_attached_process() {
+        let mut context = ProcessContext::new();
+        assert_eq!(
+            context.alloc_tuple(&[Term::atom(Atom::OK)]),
+            Err(Term::atom(Atom::BADARG))
+        );
     }
 }

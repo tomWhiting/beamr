@@ -9,7 +9,6 @@ const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub fn bif_binary_encode_hex(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -19,11 +18,10 @@ pub fn bif_binary_encode_hex(args: &[Term], context: &mut ProcessContext) -> Res
         out.push(nibble_to_hex(byte >> 4));
         out.push(nibble_to_hex(byte & 0x0f));
     }
-    make_binary(&out)
+    context.alloc_binary(&out)
 }
 
 pub fn bif_binary_decode_hex(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
@@ -37,7 +35,7 @@ pub fn bif_binary_decode_hex(args: &[Term], context: &mut ProcessContext) -> Res
         let low = hex_value(pair[1])?;
         out.push((high << 4) | low);
     }
-    make_binary(&out)
+    context.alloc_binary(&out)
 }
 
 pub fn bif_base64_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -47,16 +45,15 @@ pub fn bif_base64_encode(args: &[Term], context: &mut ProcessContext) -> Result<
     if atom_name(*alphabet, context)? != "standard" {
         return Err(badarg());
     }
-    make_binary(encode_base64(binary_bytes(*input)?).as_bytes())
+    context.alloc_binary(encode_base64(binary_bytes(*input)?).as_bytes())
 }
 
 pub fn bif_base64_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
     let decoded = decode_base64(binary_bytes(*input)?)?;
-    make_binary(&decoded)
+    context.alloc_binary(&decoded)
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
@@ -145,7 +142,7 @@ fn hex_value(byte: u8) -> Result<u8, Term> {
     }
 }
 
-fn atom_name(term: Term, context: &ProcessContext) -> Result<&str, Term> {
+fn atom_name<'a>(term: Term, context: &'a ProcessContext<'_>) -> Result<&'a str, Term> {
     let atom = term.as_atom().ok_or_else(badarg)?;
     if let Some(name) = context.atom_table().and_then(|table| table.resolve(atom)) {
         return Ok(name);
@@ -165,12 +162,6 @@ fn atom_name(term: Term, context: &ProcessContext) -> Result<&str, Term> {
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
     Binary::new(term).map(Binary::as_bytes).ok_or_else(badarg)
-}
-
-fn make_binary(bytes: &[u8]) -> Result<Term, Term> {
-    let data_words = crate::term::binary::packed_word_count(bytes.len());
-    let heap: &mut [u64] = Box::leak(vec![0u64; 2 + data_words].into_boxed_slice());
-    crate::term::binary::write_binary(heap, bytes).ok_or_else(badarg)
 }
 
 fn badarg() -> Term {

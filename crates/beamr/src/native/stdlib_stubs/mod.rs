@@ -710,10 +710,7 @@ pub fn bif_logger_warning(args: &[Term], _context: &mut ProcessContext) -> Resul
 /// If the input is already a binary, returns it unchanged. If it is a list
 /// of integers, converts code points to UTF-8 bytes and returns a binary.
 /// Returns `{error, Binary, Rest}` on failure via badarg for now.
-pub fn bif_characters_to_binary(
-    args: &[Term],
-    _context: &mut ProcessContext,
-) -> Result<Term, Term> {
+pub fn bif_characters_to_binary(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };
@@ -725,7 +722,7 @@ pub fn bif_characters_to_binary(
 
     // If it's an empty list, return an empty binary.
     if input.is_nil() {
-        return Ok(make_empty_binary());
+        return context.alloc_binary(&[]);
     }
 
     // If it's a list, try to collect integer code points into UTF-8 bytes.
@@ -756,7 +753,7 @@ pub fn bif_characters_to_binary(
             current = cons.tail();
         }
 
-        return Ok(make_leaked_binary(&bytes));
+        return context.alloc_binary(&bytes);
     }
 
     Err(badarg())
@@ -764,9 +761,8 @@ pub fn bif_characters_to_binary(
 
 /// unicode:characters_to_list/1 — converts a binary to a list of code points.
 ///
-/// Accepts a binary and returns a list of integer code points. Since BIFs
-/// lack heap access, cons cells are allocated via leaked boxes.
-pub fn bif_characters_to_list(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+/// Accepts a binary and returns a list of integer code points.
+pub fn bif_characters_to_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };
@@ -774,28 +770,17 @@ pub fn bif_characters_to_list(args: &[Term], _context: &mut ProcessContext) -> R
     let binary = Binary::new(*input).ok_or_else(badarg)?;
     let bytes = binary.as_bytes();
 
-    if bytes.is_empty() {
-        return Ok(Term::NIL);
-    }
-
-    // Decode UTF-8 bytes to code points, build a proper list in reverse.
     let text = std::str::from_utf8(bytes).map_err(|_| badarg())?;
-    let code_points: Vec<i64> = text.chars().map(|ch| i64::from(ch as u32)).collect();
+    let elements: Vec<_> = text
+        .chars()
+        .map(|ch| Term::try_small_int(i64::from(ch as u32)).ok_or_else(badarg))
+        .collect::<Result<_, _>>()?;
 
-    // Build the list from the end (last element first).
-    let mut tail = Term::NIL;
-    for &cp in code_points.iter().rev() {
-        let int_term = Term::try_small_int(cp).ok_or_else(badarg)?;
-        let cell = Box::leak(Box::new([0u64; 2]));
-        tail = crate::term::boxed::write_cons(cell, int_term, tail).ok_or_else(badarg)?;
-    }
-
-    Ok(tail)
+    context.alloc_list(&elements)
 }
 
 /// binary:part/3 — extracts a sub-binary by offset and length.
 pub fn bif_binary_part(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [binary_term, offset_term, length_term] = args else {
         return Err(badarg());
     };
@@ -813,18 +798,16 @@ pub fn bif_binary_part(args: &[Term], context: &mut ProcessContext) -> Result<Te
     if end > bytes.len() {
         return Err(badarg());
     }
-    Ok(make_leaked_binary(&bytes[offset..end]))
+    context.alloc_binary(&bytes[offset..end])
 }
 
 /// rand:uniform/0 — returns a random float in [0.0, 1.0).
 pub fn bif_rand_uniform(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     if !args.is_empty() {
         return Err(badarg());
     }
     let value = rand::rng().random_range(0.0..1.0);
-    let heap = Box::leak(Box::new([0u64; 2]));
-    crate::term::boxed::write_float(heap, value).ok_or_else(badarg)
+    context.alloc_float(value)
 }
 
 /// init:stop/1 — request runtime shutdown and return `ok`.
@@ -863,23 +846,22 @@ pub fn bif_fun_info(args: &[Term], context: &mut ProcessContext) -> Result<Term,
         return Err(badarg());
     };
     let item_atom = item.as_atom().ok_or_else(badarg)?;
-    let at = context.atom_table().ok_or_else(badarg)?;
+    let at = context.atom_table_arc().ok_or_else(badarg)?;
     let item_name = at.resolve(item_atom).unwrap_or("");
     let value = match item_name {
         "arity" => {
             let arity = crate::term::boxed::Closure::new(*fun).map_or(0, |c| i64::from(c.arity()));
             Term::small_int(arity)
         }
-        "module" | "name" | "type" => make_leaked_binary(item_name.as_bytes()),
+        "module" | "name" | "type" => context.alloc_binary(item_name.as_bytes())?,
         "env" => Term::NIL,
         _ => Term::atom(Atom::UNDEFINED),
     };
-    let heap: &mut [u64] = Box::leak(vec![0u64; 3].into_boxed_slice());
-    crate::term::boxed::write_tuple(heap, &[*item, value]).ok_or_else(badarg)
+    context.alloc_tuple(&[*item, value])
 }
 
 /// io_lib_format:fwrite_g/1 — format a float to its shortest representation.
-pub fn bif_fwrite_g(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_fwrite_g(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [float_term] = args else {
         return Err(badarg());
     };
@@ -890,21 +872,7 @@ pub fn bif_fwrite_g(args: &[Term], _context: &mut ProcessContext) -> Result<Term
     } else {
         return Err(badarg());
     };
-    Ok(make_leaked_binary(format!("{f}").as_bytes()))
-}
-
-/// Creates an empty binary term using a leaked heap allocation.
-fn make_empty_binary() -> Term {
-    let heap = Box::leak(Box::new([0u64; 2]));
-    crate::term::binary::write_binary(heap, &[]).unwrap_or(Term::NIL)
-}
-
-/// Creates a binary term from bytes using a leaked heap allocation.
-fn make_leaked_binary(bytes: &[u8]) -> Term {
-    let data_words = crate::term::binary::packed_word_count(bytes.len());
-    let total_words = 2 + data_words;
-    let heap: &mut [u64] = Box::leak(vec![0u64; total_words].into_boxed_slice());
-    crate::term::binary::write_binary(heap, bytes).unwrap_or(Term::NIL)
+    context.alloc_binary(format!("{f}").as_bytes())
 }
 
 fn badarg() -> Term {
@@ -938,7 +906,7 @@ fn bif_json_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     let atom_table = context.atom_table().ok_or_else(badarg)?;
     let json_value = crate::term::json::term_to_value(*input, atom_table).map_err(|_| badarg())?;
     let json_bytes = serde_json::to_vec(&json_value).map_err(|_| badarg())?;
-    Ok(make_leaked_binary(&json_bytes))
+    context.alloc_binary(&json_bytes)
 }
 
 #[cfg(test)]

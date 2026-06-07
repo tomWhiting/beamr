@@ -77,12 +77,11 @@ pub fn bif_os_type(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
 }
 
 /// `io:get_line/1` -- stub returning an empty binary.
-pub fn bif_io_get_line(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_io_get_line(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [_prompt] = args else {
         return Err(badarg());
     };
-    let heap: &mut [u64] = Box::leak(vec![0u64; 2].into_boxed_slice());
-    crate::term::binary::write_binary(heap, b"").ok_or_else(badarg)
+    context.alloc_binary(b"")
 }
 
 /// `code:priv_dir/1` -- stub returning `{error, bad_name}`.
@@ -102,12 +101,11 @@ pub fn bif_connect_node(args: &[Term], _context: &mut ProcessContext) -> Result<
 }
 
 /// `string:split/2` -- stub returning `[Input]`.
-pub fn bif_string_split(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_string_split(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input, _pattern] = args else {
         return Err(badarg());
     };
-    let cell = Box::leak(Box::new([0u64; 2]));
-    crate::term::boxed::write_cons(cell, *input, Term::NIL).ok_or_else(badarg)
+    context.alloc_cons(*input, Term::NIL)
 }
 
 fn badarg() -> Term {
