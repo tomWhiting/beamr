@@ -9,6 +9,7 @@ pub mod binary;
 pub mod binary_ref;
 pub mod boxed;
 pub mod compare;
+pub mod hash;
 #[cfg(feature = "json")]
 pub mod json;
 pub mod shared_binary;

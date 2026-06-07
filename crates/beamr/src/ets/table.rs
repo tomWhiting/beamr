@@ -83,6 +83,7 @@ pub enum EtsError {
         caller_pid: u64,
         operation: AccessOp,
     },
+    Badarg,
     InvalidBoxedTerm,
     AllocationFailed,
 }
@@ -98,6 +99,7 @@ impl fmt::Display for EtsError {
                 f,
                 "ETS access denied: pid {caller_pid} cannot {operation} table {table_id}"
             ),
+            Self::Badarg => f.write_str("bad argument"),
             Self::InvalidBoxedTerm => f.write_str("invalid boxed term for ETS copy"),
             Self::AllocationFailed => f.write_str("failed to allocate memory for ETS term copy"),
         }
