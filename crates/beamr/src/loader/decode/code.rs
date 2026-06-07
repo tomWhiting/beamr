@@ -205,10 +205,10 @@ fn decode_instruction(
             source: operands[0].clone(),
             destination: operands[1].clone(),
         },
-        65 => Instruction::Generic {
-            opcode,
-            name: "get_list",
-            operands,
+        65 => Instruction::GetList {
+            source: operands[0].clone(),
+            head: operands[1].clone(),
+            tail: operands[2].clone(),
         },
         66 => Instruction::GetTupleElement {
             source: operands[0].clone(),
@@ -469,4 +469,34 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, LoadError> {
         .get(offset..offset + 4)
         .ok_or_else(|| LoadError::DecodeError("truncated Code chunk header".into()))?;
     Ok(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_instructions;
+    use crate::loader::decode::{Instruction, Operand};
+
+    #[test]
+    fn opcode_65_decodes_to_get_list() {
+        let instructions = decode_instructions(
+            &[
+                65,   // get_list/3
+                0x03, // X0
+                0x13, // X1
+                0x23, // X2
+            ],
+            &[],
+            &[],
+        )
+        .expect("decode get_list");
+
+        assert_eq!(
+            instructions,
+            vec![Instruction::GetList {
+                source: Operand::X(0),
+                head: Operand::X(1),
+                tail: Operand::X(2),
+            }]
+        );
+    }
 }

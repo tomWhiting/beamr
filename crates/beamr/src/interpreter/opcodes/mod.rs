@@ -211,6 +211,9 @@ fn dispatch_common(
             index,
             destination,
         } => core::get_tuple_element(process, module, source, index, destination),
+        Instruction::GetList { source, head, tail } => {
+            guards::get_list(process, module, source, head, tail)
+        }
         Instruction::GetHd {
             source,
             destination,
@@ -314,6 +317,7 @@ fn dispatch_common(
 
 fn instruction_name(instruction: &Instruction) -> &'static str {
     match instruction {
+        Instruction::GetList { .. } => "get_list",
         Instruction::GetHd { .. } => "get_hd",
         Instruction::GetTl { .. } => "get_tl",
         Instruction::TypeTest { .. } => "type_test",

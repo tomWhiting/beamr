@@ -1,1 +1,1 @@
-harden trim opcode stack-frame trimming coverage
+feat(beamr): implement get_list opcode decoding and execution
