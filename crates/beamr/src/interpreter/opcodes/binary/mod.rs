@@ -14,7 +14,9 @@ use crate::term::boxed::{BoxedHeader, BoxedTag};
 
 use super::core;
 
+#[cfg(test)]
 pub(crate) use construction::{BinaryBuilder, bs_put_binary, bs_put_integer, finalize_builder};
+#[cfg(test)]
 pub(crate) use matching::{Endian, MatchContext, SegmentFlags, decode_integer};
 
 const BUILDER_META_WORDS: usize = 3;

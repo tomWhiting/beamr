@@ -1,1 +1,1 @@
-feat(beamr): add ETF term_to_binary encoder
+fix(beamr): satisfy ETF encoder workspace verification

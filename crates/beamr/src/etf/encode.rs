@@ -1,6 +1,6 @@
 //! Encoder for Erlang's external term format (ETF).
 
-use crate::atom::AtomTable;
+use crate::atom::{Atom, AtomTable};
 use crate::term::binary::Binary;
 use crate::term::boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple};
 use crate::term::{Tag, Term};
@@ -287,7 +287,7 @@ fn encode_closure(
     out.push(tags::EXPORT_EXT);
     let module = closure.module().ok_or(EncodeError::UnsupportedTerm)?;
     encode_atom(module, atom_table, out)?;
-    encode_atom(crate::atom::Atom::new(function_index), atom_table, out)?;
+    encode_atom(Atom::new(function_index), atom_table, out)?;
     encode_integer(i64::from(closure.arity()), out)
 }
 
