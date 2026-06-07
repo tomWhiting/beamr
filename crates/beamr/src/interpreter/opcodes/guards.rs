@@ -99,10 +99,7 @@ pub fn is_tagged_tuple(
 ) -> Result<InstructionOutcome, ExecError> {
     let value = core::read_term(process, module, value)?;
     let expected_arity = core::operand_usize(arity, "tagged tuple arity")?;
-    let Operand::Atom(Some(tag_atom)) = tag else {
-        return Err(ExecError::InvalidOperand("tagged tuple tag"));
-    };
-    let tag = Term::atom(*tag_atom);
+    let tag = Term::atom(core::operand_atom(tag)?);
     let passed = Tuple::new(value).is_some_and(|tuple| {
         tuple.arity() == expected_arity
             && tuple

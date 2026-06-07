@@ -104,9 +104,14 @@ fn decoded_is_tagged_tuple_handler_checks_tuple_arity_and_first_atom() {
         dispatch_is_tagged_tuple(&module, ok, 2, Atom::OK),
         InstructionOutcome::Continue
     );
-    for input in [error, wrong_arity, Term::small_int(7), empty] {
+    for (input, expected_arity) in [
+        (error, 2),
+        (wrong_arity, 2),
+        (Term::small_int(7), 2),
+        (empty, 0),
+    ] {
         assert!(matches!(
-            dispatch_is_tagged_tuple(&module, input, 2, Atom::OK),
+            dispatch_is_tagged_tuple(&module, input, expected_arity, Atom::OK),
             InstructionOutcome::Jump(CodePosition {
                 instruction_pointer: 0,
                 ..

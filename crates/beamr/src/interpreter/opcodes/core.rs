@@ -522,7 +522,7 @@ pub(crate) fn literal_term(module: &Module, literal_index: usize) -> Result<Term
         .ok_or(ExecError::InvalidOperand("literal index"))
 }
 
-fn operand_atom(operand: &Operand) -> Result<crate::atom::Atom, ExecError> {
+pub(crate) fn operand_atom(operand: &Operand) -> Result<crate::atom::Atom, ExecError> {
     match operand {
         Operand::Atom(Some(atom)) => Ok(*atom),
         _ => Err(ExecError::InvalidOperand("atom")),
