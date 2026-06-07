@@ -413,7 +413,6 @@ impl SpawnFacility for SchedulerSpawnFacility {
             namespace_id,
             group_leader,
             priority: Priority::Normal,
-            priority: Priority::Normal,
         });
 
         if let Some(parent_pid) = link_to {
@@ -489,7 +488,6 @@ impl SpawnFacility for SchedulerSpawnFacility {
             namespace_id,
             group_leader,
             priority: Priority::Normal,
-            priority: Priority::Normal,
         });
 
         if let Some(parent_pid) = link_to {
@@ -559,6 +557,7 @@ impl SchedulerSpawnFacility {
             args,
             namespace_id,
             group_leader,
+            priority: Priority::Normal,
         });
 
         Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))
@@ -597,6 +596,7 @@ impl SchedulerSpawnFacility {
             args: Vec::new(),
             namespace_id,
             group_leader,
+            priority: Priority::Normal,
         });
 
         Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))

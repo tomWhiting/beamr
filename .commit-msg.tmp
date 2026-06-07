@@ -1,1 +1,1 @@
-fix(beamr): wire priority helpers through scheduler spawns
+fix(beamr): complete supervision spawn priority wiring
