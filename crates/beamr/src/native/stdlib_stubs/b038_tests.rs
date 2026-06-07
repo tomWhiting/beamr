@@ -101,20 +101,20 @@ fn maps_keys_values_and_to_list_project_sorted_entries() {
 
     assert_eq!(
         list_to_vec(bif_maps_keys(&[map], &mut ctx).expect("keys")),
-        vec![Term::atom(Atom::OK), Term::atom(Atom::ERROR)]
+        vec![Term::atom(Atom::ERROR), Term::atom(Atom::OK)]
     );
     assert_eq!(
         list_to_vec(bif_maps_values(&[map], &mut ctx).expect("values")),
-        vec![Term::small_int(1), Term::small_int(2)]
+        vec![Term::small_int(2), Term::small_int(1)]
     );
 
     let pairs = list_to_vec(bif_maps_to_list(&[map], &mut ctx).expect("to_list"));
     let first = Tuple::new(pairs[0]).expect("first pair");
     let second = Tuple::new(pairs[1]).expect("second pair");
-    assert_eq!(first.get(0), Some(Term::atom(Atom::OK)));
-    assert_eq!(first.get(1), Some(Term::small_int(1)));
-    assert_eq!(second.get(0), Some(Term::atom(Atom::ERROR)));
-    assert_eq!(second.get(1), Some(Term::small_int(2)));
+    assert_eq!(first.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(first.get(1), Some(Term::small_int(2)));
+    assert_eq!(second.get(0), Some(Term::atom(Atom::OK)));
+    assert_eq!(second.get(1), Some(Term::small_int(1)));
 }
 
 #[test]

@@ -488,6 +488,7 @@ fn map_assoc_creates_map_and_get_map_elements_extracts_values() {
                 Operand::Integer(2),
             ]),
         ],
+        None,
     );
     assert_eq!(outcome, Ok(InstructionOutcome::Continue));
     let created = Map::new(process.x_reg(1)).expect("map");
@@ -503,6 +504,7 @@ fn map_assoc_creates_map_and_get_map_elements_extracts_values() {
             Operand::X(1),
             Operand::List(vec![Operand::Atom(Some(Atom::OK)), Operand::X(2)]),
         ],
+        None,
     );
     assert_eq!(outcome, Ok(InstructionOutcome::Continue));
     assert_eq!(process.x_reg(2), Term::small_int(1));
@@ -531,6 +533,7 @@ fn map_tests_and_exact_update_branch_on_missing_keys() {
                 Operand::X(0),
                 Operand::List(vec![Operand::Atom(Some(Atom::OK))]),
             ],
+            None,
         ),
         Ok(InstructionOutcome::Continue)
     );
@@ -545,6 +548,7 @@ fn map_tests_and_exact_update_branch_on_missing_keys() {
                     Operand::X(0),
                     Operand::List(vec![Operand::Atom(Some(Atom::ERROR))]),
                 ],
+                None,
             )
             .expect("missing key branches")
         ),
@@ -561,6 +565,7 @@ fn map_tests_and_exact_update_branch_on_missing_keys() {
                     Operand::X(0),
                     Operand::List(vec![Operand::Atom(Some(Atom::ERROR)), Operand::X(1)]),
                 ],
+                None,
             )
             .expect("missing key branches")
         ),
@@ -580,6 +585,7 @@ fn map_tests_and_exact_update_branch_on_missing_keys() {
                 Operand::Unsigned(0),
                 Operand::List(vec![Operand::Atom(Some(Atom::OK)), Operand::Integer(2)]),
             ],
+            None,
         ),
         Ok(InstructionOutcome::Continue)
     );
@@ -608,6 +614,7 @@ fn map_tests_and_exact_update_branch_on_missing_keys() {
                     Operand::Unsigned(0),
                     Operand::List(vec![Operand::Atom(Some(Atom::ERROR)), Operand::Integer(2)]),
                 ],
+                None,
             )
             .expect("missing exact key branches")
         ),

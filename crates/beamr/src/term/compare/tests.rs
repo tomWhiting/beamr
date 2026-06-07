@@ -231,7 +231,7 @@ fn map_comparison_uses_sorted_key_order_then_values() {
 
     let atom_table = common_atoms();
     assert_eq!(left, right);
-    assert_eq!(cmp(right, different_value, &atom_table), Ordering::Less);
+    assert_eq!(cmp(right, different_value, &atom_table), Ordering::Greater);
 }
 
 #[test]

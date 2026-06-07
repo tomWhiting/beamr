@@ -194,7 +194,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
             ComparisonOp::EqExact,
             &Operand::Label(7),
             &Operand::X(0),
-            &Operand::X(0)
+            &Operand::X(0),
+            None,
         ),
         Ok(InstructionOutcome::Continue)
     );
@@ -206,7 +207,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
                 ComparisonOp::EqExact,
                 &Operand::Label(7),
                 &Operand::X(0),
-                &Operand::X(1)
+                &Operand::X(1),
+                None,
             )
             .expect("jump")
         ),
@@ -220,7 +222,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
                 ComparisonOp::EqExact,
                 &Operand::Label(7),
                 &Operand::X(0),
-                &Operand::X(2)
+                &Operand::X(2),
+                None,
             )
             .expect("jump")
         ),
@@ -233,7 +236,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
             ComparisonOp::NeExact,
             &Operand::Label(7),
             &Operand::X(0),
-            &Operand::X(1)
+            &Operand::X(1),
+            None,
         ),
         Ok(InstructionOutcome::Continue)
     );
@@ -245,7 +249,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
                 ComparisonOp::NeExact,
                 &Operand::Label(7),
                 &Operand::X(0),
-                &Operand::X(0)
+                &Operand::X(0),
+                None,
             )
             .expect("jump")
         ),
@@ -258,7 +263,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
             ComparisonOp::Lt,
             &Operand::Label(7),
             &Operand::X(0),
-            &Operand::X(1)
+            &Operand::X(1),
+            None,
         ),
         Ok(InstructionOutcome::Continue)
     );
@@ -270,7 +276,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
                 ComparisonOp::Lt,
                 &Operand::Label(7),
                 &Operand::X(1),
-                &Operand::X(0)
+                &Operand::X(0),
+                None,
             )
             .expect("jump")
         ),
@@ -283,7 +290,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
             ComparisonOp::Ge,
             &Operand::Label(7),
             &Operand::X(1),
-            &Operand::X(0)
+            &Operand::X(0),
+            None,
         ),
         Ok(InstructionOutcome::Continue)
     );
@@ -295,7 +303,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
                 ComparisonOp::Ge,
                 &Operand::Label(7),
                 &Operand::X(0),
-                &Operand::X(1)
+                &Operand::X(1),
+                None,
             )
             .expect("jump")
         ),
@@ -308,7 +317,8 @@ fn exact_and_ordering_comparisons_branch_with_beam_semantics() {
             ComparisonOp::Lt,
             &Operand::Label(7),
             &Operand::X(0),
-            &Operand::X(3)
+            &Operand::X(3),
+            None,
         ),
         Ok(InstructionOutcome::Continue)
     );
