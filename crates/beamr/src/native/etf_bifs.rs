@@ -150,7 +150,7 @@ mod tests {
 
     use super::{
         bif_binary_to_term, bif_binary_to_term_2, bif_term_to_binary, bif_term_to_binary_2,
-        register_etf_bifs,
+        parse_decode_options, parse_encode_options, register_etf_bifs,
     };
 
     fn badarg() -> Term {
@@ -287,6 +287,85 @@ mod tests {
     }
 
     #[test]
+    fn term_to_binary_2_accepts_minor_version_two_noop() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let minor_version_atom = atom_table.intern("minor_version");
+        let mut process = Process::new(1, 128);
+        let option = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            let tuple = context
+                .alloc_tuple(&[Term::atom(minor_version_atom), Term::small_int(2)])
+                .expect("tuple");
+            context.alloc_list(&[tuple]).expect("options")
+        };
+        let uncompressed = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            bif_term_to_binary(&[Term::small_int(42)], &mut context).expect("uncompressed")
+        };
+        let encoded = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            bif_term_to_binary_2(&[Term::small_int(42), option], &mut context).expect("encoded")
+        };
+        assert_eq!(
+            Binary::new(encoded).expect("encoded").as_bytes(),
+            Binary::new(uncompressed).expect("uncompressed").as_bytes()
+        );
+    }
+
+    #[test]
+    fn term_to_binary_2_rejects_malformed_encode_options() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let compressed_atom = atom_table.intern("compressed");
+        let mut process = Process::new(1, 128);
+        let out_of_range_option = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            let tuple = context
+                .alloc_tuple(&[Term::atom(compressed_atom), Term::small_int(10)])
+                .expect("tuple");
+            context.alloc_list(&[tuple]).expect("options")
+        };
+        let improper_options = {
+            let mut cell = [0_u64; 2];
+            write_cons(&mut cell, Term::atom(compressed_atom), Term::small_int(0))
+                .expect("improper options")
+        };
+
+        for options in [Term::small_int(0), out_of_range_option, improper_options] {
+            let result = {
+                let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+                bif_term_to_binary_2(&[Term::small_int(42), options], &mut context)
+            };
+            assert_eq!(result, Err(badarg()));
+        }
+    }
+
+    #[test]
+    fn parse_decode_options_rejects_non_atoms_and_improper_lists() {
+        let atom_table = AtomTable::with_common_atoms();
+        let safe_atom = atom_table.intern("safe");
+        let mut cell = [0_u64; 2];
+        let improper_options = write_cons(&mut cell, Term::atom(safe_atom), Term::small_int(0))
+            .expect("improper options");
+
+        assert_eq!(
+            parse_decode_options(Term::small_int(0), &atom_table),
+            Err(badarg())
+        );
+        assert_eq!(
+            parse_decode_options(improper_options, &atom_table),
+            Err(badarg())
+        );
+        assert_eq!(
+            parse_decode_options(Term::NIL, &atom_table).expect("empty options"),
+            Default::default()
+        );
+        assert_eq!(
+            parse_encode_options(Term::NIL, &atom_table).expect("empty options"),
+            Default::default()
+        );
+    }
+
+    #[test]
     fn binary_to_term_2_safe_known_atom_succeeds_and_novel_atom_fails() {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let safe_atom = atom_table.intern("safe");
@@ -344,7 +423,7 @@ mod tests {
         let binary = {
             let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
             context
-                .alloc_binary(&[tags::VERSION, tags::SMALL_INTEGER_EXT, 42])
+                .alloc_binary(&[tags::VERSION, tags::SMALL_INTEGER_EXT, 42, 99])
                 .expect("binary")
         };
         let result = {
@@ -354,6 +433,23 @@ mod tests {
         let tuple = Tuple::new(result).expect("used tuple");
         assert_eq!(tuple.get(0), Some(Term::small_int(42)));
         assert_eq!(tuple.get(1), Some(Term::small_int(3)));
+    }
+
+    #[test]
+    fn binary_to_term_1_rejects_trailing_bytes() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let mut process = Process::new(1, 128);
+        let binary = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            context
+                .alloc_binary(&[tags::VERSION, tags::SMALL_INTEGER_EXT, 42, 99])
+                .expect("binary")
+        };
+        let result = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            bif_binary_to_term(&[binary], &mut context)
+        };
+        assert_eq!(result, Err(badarg()));
     }
 
     #[test]

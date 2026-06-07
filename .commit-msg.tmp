@@ -1,1 +1,1 @@
-feat(beamr): add ETF compression and binary_to_term options
+Harden ETF compression/decompression option handling and runtime decoder safety
