@@ -1,0 +1,66 @@
+{
+  "id": "B-137",
+  "cluster": "beamr",
+  "title": "JIT exception handling and stack unwinding",
+  "depends_on": [
+    "B-135"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Compiled code must support try/catch exception handling. When an exception occurs in compiled code, the stack must be unwound to the nearest catch handler, with correct exception class, reason, and stacktrace.",
+  "task": "Implement exception handling in JIT-compiled code using Cranelift's trap and landing pad mechanisms.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Try/catch in compiled code",
+      "spec": "Translate try/try_end/try_case to Cranelift IR with exception handling.",
+      "acceptance": [
+        "try block entry sets up a catch handler",
+        "Exception in try block unwinds to the handler",
+        "try_case receives class, reason, stacktrace in registers",
+        "Test: compiled try/catch catches an error and returns the reason"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Stack unwinding from compiled to interpreted code",
+      "spec": "Exceptions raised in interpreted code called from compiled code must unwind through the compiled frames.",
+      "acceptance": [
+        "Mixed stack: compiled \u2192 interpreted \u2192 exception correctly unwinds",
+        "Compiled frame catch handlers are found during unwinding",
+        "Stacktrace includes both compiled and interpreted frames",
+        "Test: compiled function calls interpreted function that throws \u2014 caught in compiled catch"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement stack traces with source line numbers for compiled code \u2014 opaque frames only",
+    "SHALL NOT implement raise/reraise optimization \u2014 basic unwinding only"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "id": "B-154",
+  "cluster": "beamr",
+  "title": "Structured observability \u2014 process lifecycle events",
+  "depends_on": [
+    "B-152"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Process lifecycle events (spawn, exit, link, monitor, crash) are critical for debugging supervision trees. This brief emits structured events via OpenTelemetry's log API for every lifecycle transition.",
+  "task": "Emit structured lifecycle events for process state transitions.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Lifecycle event emission",
+      "spec": "Emit structured events for process lifecycle transitions.",
+      "acceptance": [
+        "Event: process.spawned \u2014 pid, parent_pid, module, function, arity",
+        "Event: process.exited \u2014 pid, reason, exit_class",
+        "Event: process.linked \u2014 pid_a, pid_b",
+        "Event: process.monitored \u2014 watcher_pid, target_pid, ref",
+        "Event: process.crashed \u2014 pid, exception_class, reason, stacktrace",
+        "Events include timestamps and can be correlated with spans",
+        "Test: spawn, crash, verify events emitted with correct attributes"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/telemetry/lifecycle.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Supervision tree visualization data",
+      "spec": "Emit enough data to reconstruct the supervision tree structure.",
+      "acceptance": [
+        "Events include parent-child relationships (spawner PID)",
+        "Link/monitor events show the graph edges",
+        "A consumer can reconstruct the supervision tree from the event stream",
+        "Test: spawn a supervision-like tree, verify events allow reconstruction"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/telemetry/lifecycle.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement a visualization UI \u2014 events only, consumers render",
+    "SHALL NOT implement event persistence \u2014 events are emitted to the OTel pipeline"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

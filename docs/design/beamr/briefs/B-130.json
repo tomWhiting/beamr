@@ -1,0 +1,90 @@
+{
+  "id": "B-130",
+  "cluster": "beamr",
+  "title": "JIT infrastructure \u2014 Cranelift integration and compilation pipeline",
+  "depends_on": [
+    "B-021"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "The JIT compiler transforms hot BEAM functions into native machine code via Cranelift. This brief sets up the compilation pipeline: Cranelift dependency, IR builder abstraction, and the tiered execution model (interpret first, compile after N calls).",
+  "task": "Add Cranelift as an optional dependency, define the JIT compilation pipeline, and implement the hot function detection mechanism.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Cranelift dependency and feature gate",
+      "spec": "Add cranelift-codegen and cranelift-frontend as optional dependencies behind a 'jit' feature flag.",
+      "acceptance": [
+        "Cargo.toml has cranelift dependencies behind [features] jit",
+        "Feature-gated: jit code compiles only with --features jit",
+        "Non-jit builds are unaffected",
+        "Test: cargo check --features jit passes"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/Cargo.toml"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Compilation pipeline scaffold",
+      "spec": "Define the JitCompiler struct that takes BEAM bytecode and produces native function pointers.",
+      "acceptance": [
+        "JitCompiler::new() creates a compiler instance with Cranelift settings",
+        "JitCompiler::compile(module, function, arity) -> Result<NativeCode, JitError>",
+        "NativeCode wraps a function pointer callable from the interpreter",
+        "JitError enum: UnsupportedOpcode, CompilationFailed(String)",
+        "Test: compile a trivial function (return constant)"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/jit/mod.rs",
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Hot function detection",
+      "spec": "Track function call counts and trigger compilation when a threshold is reached.",
+      "acceptance": [
+        "Per-function call counter (AtomicU32) incremented on call/apply",
+        "Configurable threshold (default: 1000 calls)",
+        "When threshold reached, function is queued for JIT compilation",
+        "Compilation happens on a background thread, not the scheduler thread",
+        "Test: call function 1000 times, verify compilation triggered"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/jit/profiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement any opcode translation in this brief \u2014 only the pipeline scaffold",
+    "SHALL NOT block the scheduler during compilation \u2014 background thread",
+    "SHALL be entirely behind the jit feature flag \u2014 no runtime cost when disabled"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "id": "B-153",
+  "cluster": "beamr",
+  "title": "Structured observability \u2014 metrics and counters",
+  "depends_on": [
+    "B-152"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Beyond tracing spans, operators need metrics: process count, message queue depths, GC frequency, scheduler utilization. This brief adds OpenTelemetry metrics for key VM health indicators.",
+  "task": "Add OpenTelemetry metrics for VM health indicators.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "VM health metrics",
+      "spec": "Emit metrics for core VM state.",
+      "acceptance": [
+        "Gauge: beamr.processes.alive \u2014 current process count",
+        "Gauge: beamr.scheduler.utilization \u2014 fraction of time executing (not idle)",
+        "Counter: beamr.gc.collections \u2014 total GC runs",
+        "Histogram: beamr.gc.duration \u2014 GC duration distribution",
+        "Counter: beamr.messages.sent \u2014 total messages sent",
+        "Gauge: beamr.memory.heap_words \u2014 total heap words allocated",
+        "Test: metrics emitted after running workload"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/telemetry/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Per-process metrics",
+      "spec": "Emit per-process metrics for queue depth and reduction count.",
+      "acceptance": [
+        "Gauge: beamr.process.message_queue_len with pid attribute",
+        "Counter: beamr.process.reductions with pid attribute",
+        "Metrics sampled at configurable interval (not every instruction)",
+        "Test: process with deep mailbox shows high queue_len metric"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/telemetry/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement custom metric exporters \u2014 use standard OTel exporters",
+    "SHALL NOT emit per-instruction metrics \u2014 too expensive"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

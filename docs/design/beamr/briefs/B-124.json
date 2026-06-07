@@ -26,10 +26,11 @@
       ],
       "files": {
         "create": [
-          "crates/beamr/src/distribution/global.rs"
+          "crates/beamr/src/distribution/global.rs",
+          "crates/beamr/src/native/distribution_bifs.rs"
         ],
         "modify": [
-          "crates/beamr/src/native/ets_bifs.rs"
+          "crates/beamr/src/native/distribution_bifs.rs"
         ]
       },
       "checklist": [

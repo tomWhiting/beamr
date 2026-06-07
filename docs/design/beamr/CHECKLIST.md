@@ -40,6 +40,11 @@
 - [ ] **C30** — Validates instruction operands: register indices in range, label targets exist, arities match
 - [ ] **C31** — Stores a successfully loaded module in the module registry by its atom name
 - [ ] **C32** — Loading a .beam file produced by gleam build + erlc succeeds for a pure Gleam module with no external dependencies beyond erlang: built-ins
+- [ ] **C178** — Loader uses a BoundedCursor that validates all element counts against remaining payload bytes before pre-allocating
+- [ ] **C179** — A DecodeBudget (recursion depth, total decoded nodes, total allocated bytes) is threaded through every recursive ETF and chunk decoder
+- [ ] **C180** — Zlib literal decompression is capped upfront via take(limit) — never inflate-then-check
+- [ ] **C181** — Per-load atom budget prevents a single module from interning more than MAX_ATOMS_PER_MODULE atoms into the global table
+- [ ] **C182** — All pre-allocation in the loader routes through an ensure_count helper that rejects counts exceeding remaining bytes or MAX_TABLE_ENTRIES
 
 ## Terms
 
@@ -59,6 +64,7 @@
 - [ ] **C46** — Term equality comparison (== semantics): same-type immediates compare by value, boxed terms compare structurally
 - [ ] **C47** — Term exact equality comparison (=:= semantics): integer 1 and float 1.0 are not equal
 - [ ] **C48** — Term ordering follows the BEAM order: number < atom < reference < fun < port < pid < tuple < map < nil < list < binary
+- [ ] **C177** — Atom term comparison uses name-based (Unicode code-point) ordering, not intern index ordering — ordering is stable across runs regardless of atom interning order
 
 ## Processes
 
@@ -173,6 +179,7 @@
 - [ ] **C142** — unlink(PidA, PidB) removes the bidirectional link; no exit signal is sent after unlink
 - [ ] **C143** — Monitoring a process that has already exited immediately sends a DOWN message
 - [ ] **C144** — Linking to a process that has already exited immediately sends an exit signal
+- [ ] **C183** — Process link and monitor sets use insertion-ordered storage (not HashSet) so exit signal delivery order is deterministic and reproducible across runs
 
 ## Module Registry
 
@@ -192,6 +199,9 @@
 - [ ] **C155** — A native call marked as dirty causes the process to be migrated to the dirty scheduler pool for the duration of the call
 - [ ] **C156** — The set of required native functions is derived from the loader's unresolved-import report, not hardcoded
 - [ ] **C157** — Minimum BIFs for Gate 1: erlang:+/2, erlang:-/2, erlang:*/2, erlang:div/2, erlang:rem/2, erlang:</2, erlang:>=/2, erlang:=:=/2, erlang:=/=/2, erlang:error/1, erlang:display/1
+- [ ] **C184** — Every registered native entry carries a capability class tag: Pure, Clock, Entropy, or ExternalIo
+- [ ] **C185** — The loader evaluates each resolved native import against a host-supplied CapabilityPolicy at link time; denied imports are bound to a undef-trapping stub
+- [ ] **C186** — The default capability policy grants only Pure natives; Clock, Entropy, and ExternalIo require explicit host grants
 
 ## Reduction Boundary Hook
 
@@ -211,6 +221,13 @@
 - [ ] **C168** — erlang:start_timer/3 BIF sends a {timeout, Ref, Msg} tuple after a delay
 - [ ] **C169** — erlang:cancel_timer/1 BIF cancels a pending timer and returns remaining time
 - [ ] **C170** — Timer resolution is millisecond-granularity or better
+
+## Memory Safety
+
+- [ ] **C187** — Non-immediate literals are stored in a per-module constant pool (owned Vec of allocations) freed when the Module is purged — not leaked per materialisation
+- [ ] **C188** — BIF and NIF boxed results are allocated on the calling process's heap via ProcessContext heap allocation — not via Box::leak
+- [ ] **C189** — No Box::leak call exists in crates/beamr/src/ interpreter or native code paths except the legitimate atom-name intern in atom/table.rs
+- [ ] **C190** — A CI-checkable grep gate confirms no new Box::leak is introduced outside atom/table.rs
 
 ## CLI
 

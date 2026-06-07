@@ -1,0 +1,89 @@
+{
+  "id": "B-144",
+  "cluster": "beamr",
+  "title": "WASM target \u2014 core runtime compilation to WebAssembly",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Rust compiles natively to WebAssembly. Compiling beamr to WASM enables running BEAM processes in browsers and edge workers. This brief ensures the core runtime (term representation, heap, interpreter) compiles to wasm32-unknown-unknown without std dependencies.",
+  "task": "Make the beamr core crate compile to wasm32-unknown-unknown target.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "no_std compatibility audit",
+      "spec": "Identify and gate std-dependent code behind feature flags.",
+      "acceptance": [
+        "All std::thread usage gated behind a 'threads' feature (enabled by default)",
+        "All std::net usage gated behind a 'net' feature",
+        "All std::fs usage gated behind a 'fs' feature",
+        "Core term, heap, interpreter code compiles with no_std + alloc",
+        "Test: cargo check --target wasm32-unknown-unknown -p beamr --no-default-features passes"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/Cargo.toml",
+          "crates/beamr/src/lib.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Single-threaded scheduler for WASM",
+      "spec": "A scheduler variant that runs on a single thread for WASM targets.",
+      "acceptance": [
+        "WasmScheduler runs the event loop cooperatively (no OS threads)",
+        "Processes yield via reduction counting (same as normal)",
+        "WasmScheduler::run_until_idle() executes one scheduling round",
+        "Host (JavaScript) calls run_until_idle in requestAnimationFrame or similar",
+        "Test: WasmScheduler executes a simple function to completion"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/scheduler/wasm.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "WASM host bindings",
+      "spec": "Define the FFI surface for JavaScript interop.",
+      "acceptance": [
+        "#[wasm_bindgen] exports: create_vm(), load_module(bytes), spawn(m, f, a), run_step()",
+        "JavaScript can create a VM, load .beam modules, and step execution",
+        "Results are returned as JSON-serialized values",
+        "Test: wasm-pack test passes with a simple Gleam function"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr-wasm/Cargo.toml",
+          "crates/beamr-wasm/src/lib.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement multi-threading in WASM \u2014 SharedArrayBuffer support is a future optimization",
+    "SHALL NOT implement file I/O in WASM \u2014 NIF stubs return errors for unavailable operations",
+    "SHALL NOT implement distribution in WASM \u2014 single-node only"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "id": "B-155",
+  "cluster": "beamr",
+  "title": "Structured observability \u2014 Meridian integration and workflow-level tracing",
+  "depends_on": [
+    "B-153",
+    "B-154"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Connect beamr's telemetry to Meridian's workflow orchestration. Each workflow execution becomes a trace, with BEAM process execution as child spans. This enables end-to-end observability from workflow dispatch through Gleam execution to step completion.",
+  "task": "Bridge beamr telemetry to Meridian's workflow tracing context.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Workflow trace context propagation",
+      "spec": "When Meridian spawns a BEAM process for a workflow step, propagate the workflow's trace context into the process.",
+      "acceptance": [
+        "MeridianRuntime::run_workflow passes OTel context to the spawned process",
+        "BEAM process spans are children of the workflow span",
+        "Step execution spans nest under the process span",
+        "Test: run workflow, verify trace has workflow \u2192 process \u2192 function span hierarchy"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/telemetry/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Workflow-level metrics",
+      "spec": "Aggregate process-level metrics into workflow-level summaries.",
+      "acceptance": [
+        "Counter: beamr.workflow.steps_completed with workflow_id attribute",
+        "Histogram: beamr.workflow.step_duration with step_type attribute",
+        "Gauge: beamr.workflow.active \u2014 concurrent workflow count",
+        "Metrics attributable to specific workflow instances",
+        "Test: run workflow, verify workflow-level metrics emitted"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/telemetry/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement Meridian-specific span processors \u2014 use standard OTel pipeline",
+    "SHALL NOT implement workflow replay from traces \u2014 that's deterministic replay (B-139-B-143)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

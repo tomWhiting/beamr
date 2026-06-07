@@ -1,0 +1,65 @@
+{
+  "id": "B-132",
+  "cluster": "beamr",
+  "title": "JIT IR translation \u2014 type tests and guards",
+  "depends_on": [
+    "B-131"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Guard tests (is_integer, is_atom, is_tuple, test_arity, is_tagged_tuple) are in the hot path of every pattern match. JIT-compiling these avoids the dispatch overhead of the interpreter loop for each guard.",
+  "task": "Translate type test and guard opcodes to Cranelift IR.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Type test IR",
+      "spec": "Translate is_integer, is_atom, is_tuple, is_list, is_binary, is_float, is_pid to native tag checks.",
+      "acceptance": [
+        "Type tests compile to bitwise AND on the Term tag bits + compare",
+        "Branch to fail label on type mismatch",
+        "Test: compiled is_integer correctly distinguishes integers from atoms"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Guard BIF IR",
+      "spec": "Translate test_arity, is_tagged_tuple, and select_val to IR.",
+      "acceptance": [
+        "test_arity compiles to tuple header read + arity compare",
+        "is_tagged_tuple compiles to tuple check + arity check + element 0 compare",
+        "select_val compiles to a jump table or binary search",
+        "Test: compiled pattern match on {ok, Value} works correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement gc_bif guard translation \u2014 those need GC safepoints",
+    "SHALL NOT implement float guard translation \u2014 use interpreter fallback"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

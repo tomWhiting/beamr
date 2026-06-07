@@ -1,0 +1,68 @@
+{
+  "id": "B-140",
+  "cluster": "beamr",
+  "title": "Deterministic replay \u2014 replay driver",
+  "depends_on": [
+    "B-139"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "The replay driver replays a recorded event log by feeding recorded decisions back at each non-deterministic decision point. During replay, selective receive returns the recorded message, timers fire at recorded times, and NIF calls return recorded results.",
+  "task": "Implement the replay driver that replays from a recorded event log.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Replay driver",
+      "spec": "A driver that feeds recorded events back at decision points during replay.",
+      "acceptance": [
+        "ReplayDriver::new(log: ReplayLog) creates a driver",
+        "At each decision point, the driver returns the recorded event instead of the live decision",
+        "Selective receive returns the message at the recorded index",
+        "Timer expiry is replayed at the recorded time",
+        "NIF calls return the recorded result (NIF is NOT re-executed)",
+        "Test: record a run, replay it, verify identical execution trace"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/replay/driver.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Replay mode on scheduler",
+      "spec": "The scheduler can be started in replay mode with a recorded log.",
+      "acceptance": [
+        "Scheduler::new_replay(config, log) creates a replay scheduler",
+        "Replay mode disables real I/O, timers, and random \u2014 all from the log",
+        "Execution is deterministic: same log produces identical behavior every time",
+        "Test: replay same log twice, verify identical outcomes"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement partial replay (replay from a checkpoint) \u2014 full replay only",
+    "SHALL NOT modify the recorded log during replay"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "id": "B-150",
+  "cluster": "beamr",
+  "title": "Capability security \u2014 sandboxed execution environments",
+  "depends_on": [
+    "B-149"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "A sandbox is a pre-configured capability set for common use cases: 'pure' (no I/O, no spawn, no network), 'worker' (network + file, no spawn), 'supervisor' (spawn + link, no direct I/O). Sandboxes make capability security accessible without manual bitfield construction.",
+  "task": "Define standard sandbox profiles and a sandbox API.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Standard sandbox profiles",
+      "spec": "Define named sandbox profiles as CapabilitySet presets.",
+      "acceptance": [
+        "Sandbox::Pure \u2014 no capabilities (pure computation only)",
+        "Sandbox::Worker \u2014 file I/O + network, no spawn",
+        "Sandbox::Supervisor \u2014 spawn + link + monitor, no direct I/O",
+        "Sandbox::Unrestricted \u2014 all capabilities (default)",
+        "Test: each sandbox profile has the documented capability set"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/capability/sandbox.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Sandbox spawn API",
+      "spec": "Ergonomic API for spawning processes in sandboxes.",
+      "acceptance": [
+        "spawn_in_sandbox(sandbox, module, function, args) spawns with the sandbox's capabilities",
+        "Sandbox can be specified in spawn_opt options list",
+        "Test: spawn in Pure sandbox, verify NIF calls are denied"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement dynamic sandbox modification \u2014 fixed at spawn",
+    "SHALL NOT implement sandbox inheritance policies \u2014 children get parent's sandbox unless overridden"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "id": "B-151",
+  "cluster": "beamr",
+  "title": "Capability security \u2014 audit logging and violation reporting",
+  "depends_on": [
+    "B-150"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Capability violations should be observable \u2014 operators need to know when a process attempts an operation it's not allowed to perform. This brief adds audit logging for capability checks and a violation callback.",
+  "task": "Add audit logging for capability enforcement.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Capability audit log",
+      "spec": "Log all capability checks (granted and denied) to an observable channel.",
+      "acceptance": [
+        "CapabilityAuditEvent: { pid, capability, operation, granted: bool }",
+        "Audit events emitted for every NIF capability check",
+        "Audit log is optional (behind a feature flag or runtime toggle)",
+        "Test: enable audit logging, call NIF, verify audit event emitted"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/capability/audit.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Violation callback",
+      "spec": "A configurable callback invoked on capability violations.",
+      "acceptance": [
+        "ViolationHandler trait with on_violation(event: CapabilityAuditEvent)",
+        "Default: log to stderr. Configurable: custom handler",
+        "Handler receives full context: pid, operation, required capability, process capabilities",
+        "Test: custom violation handler collects events, verify on denied NIF call"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/capability/audit.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement audit log persistence \u2014 in-memory or callback only",
+    "SHALL NOT implement real-time alerting \u2014 that's operator tooling built on the callback"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

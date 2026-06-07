@@ -16,6 +16,8 @@
 
 **S7.** As a workflow author, I want to set timeouts on receive expressions so that a step waiting for input does not hang indefinitely if its dependency fails silently.
 
+**S32.** As a workflow author, I want the VM not to leak memory monotonically when my workflow calls BIFs or materialises literals in a loop, so that long-running workflows don't OOM the host.
+
 ## Meridian Runtime — Embedding beamr for Workflow Execution
 
 **S8.** As the Meridian runtime, I want to create a beamr VM instance, load .beam modules, and spawn processes from Rust so that I can embed workflow execution in the server process.
@@ -33,6 +35,8 @@
 **S14.** As the Meridian runtime, I want beamr to have zero dependencies on Meridian, Yggdrasil, or norn crates so that the VM is testable and buildable in isolation.
 
 **S15.** As the Meridian runtime, I want to shut down the VM cleanly, terminating all scheduler threads and processes, so that there are no leaked threads or orphan resources.
+
+**S31.** As the Meridian runtime, I want native function access gated by a capability policy so that untrusted Gleam code cannot reach shell commands or filesystem operations without explicit host authorization.
 
 ## Implementation Agent — Building beamr from Briefs
 
@@ -67,3 +71,5 @@
 **S29.** As a reviewer, I want the exit signal propagation to be tested with multi-level link chains so that I can verify cascading failures propagate correctly through supervision trees.
 
 **S30.** As a reviewer, I want the reduction boundary hook to be tested with a callback that records every yield so that I can verify the hook fires at every yield point and receives correct process metadata.
+
+**S33.** As a reviewer, I want to verify that the loader rejects adversarial .beam files (deep nesting, huge counts, zlib bombs) within bounded resource usage, so that untrusted bytecode cannot crash or OOM the host during decode.

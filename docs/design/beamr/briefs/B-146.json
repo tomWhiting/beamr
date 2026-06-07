@@ -1,0 +1,72 @@
+{
+  "id": "B-146",
+  "cluster": "beamr",
+  "title": "WASM target \u2014 JavaScript interop and term conversion",
+  "depends_on": [
+    "B-145"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Enable bidirectional data flow between JavaScript and BEAM processes. JavaScript values (objects, arrays, strings, numbers) convert to BEAM terms and vice versa.",
+  "task": "JavaScript interop and term conversion",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "JS value to Term conversion",
+      "spec": "Convert JavaScript values to BEAM terms.",
+      "acceptance": [
+        "JS number \u2192 SmallInt or Float",
+        "JS string \u2192 Binary",
+        "JS boolean \u2192 atom(true/false)",
+        "JS null \u2192 atom(nil)",
+        "JS array \u2192 list",
+        "JS object \u2192 map",
+        "Test: convert complex nested JS object to Term"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr-wasm/src/convert.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Term to JS value conversion",
+      "spec": "Convert BEAM terms to JavaScript values.",
+      "acceptance": [
+        "SmallInt/Float \u2192 JS number",
+        "Binary \u2192 JS string (UTF-8) or Uint8Array (non-UTF-8)",
+        "atom \u2192 JS string",
+        "list \u2192 JS array",
+        "map \u2192 JS object",
+        "tuple \u2192 JS array",
+        "Test: convert BEAM term to JS, verify round-trip"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-wasm/src/convert.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement typed array sharing \u2014 copy-based conversion only",
+    "SHALL NOT implement JS object wrapping as opaque terms"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

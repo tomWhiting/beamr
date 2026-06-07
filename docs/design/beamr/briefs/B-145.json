@@ -1,0 +1,66 @@
+{
+  "id": "B-145",
+  "cluster": "beamr",
+  "title": "WASM target \u2014 timer and async I/O integration",
+  "depends_on": [
+    "B-144"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "WASM environments provide timers (setTimeout) and async I/O (fetch) through JavaScript APIs. This brief bridges beamr's timer wheel and NIF calls to browser/worker APIs via wasm-bindgen.",
+  "task": "timer and async I/O integration",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Timer bridge to setTimeout",
+      "spec": "Map beamr timer events to browser setTimeout/setInterval.",
+      "acceptance": [
+        "Timer expiry triggers via JavaScript setTimeout callback",
+        "Timer cancellation calls clearTimeout",
+        "Receive timeouts work correctly in WASM",
+        "Test: process with receive-after timeout fires correctly in WASM"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-wasm/src/lib.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Async NIF bridge",
+      "spec": "NIFs that perform I/O return Promises in WASM; the process suspends until the Promise resolves.",
+      "acceptance": [
+        "NIF returning a Promise suspends the process",
+        "Promise resolution wakes the process with the result",
+        "Promise rejection maps to a NIF error",
+        "Test: fetch URL via async NIF in WASM"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-wasm/src/lib.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement WebSocket distribution \u2014 out of scope",
+    "SHALL NOT implement Web Workers threading \u2014 single-thread only"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

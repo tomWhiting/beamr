@@ -1,0 +1,69 @@
+{
+  "id": "B-141",
+  "cluster": "beamr",
+  "title": "Deterministic replay \u2014 process-level time travel debugging",
+  "depends_on": [
+    "B-140"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Time-travel debugging allows stepping forward and backward through a process's execution during replay. This is the killer feature \u2014 debug a production crash by replaying the event log and inspecting state at any point.",
+  "task": "Implement forward/backward stepping and state inspection during replay.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Execution stepping",
+      "spec": "Step forward and backward through instructions during replay.",
+      "acceptance": [
+        "step_forward() executes one instruction and records the state snapshot",
+        "step_backward() restores the previous state snapshot",
+        "State includes: registers, stack, heap (or heap diff), code position",
+        "Snapshots are taken at configurable granularity (every N instructions)",
+        "Test: step forward 10 instructions, step back 5, verify state at each point"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/replay/debugger.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "State inspection API",
+      "spec": "Inspect process state at any point during replay.",
+      "acceptance": [
+        "inspect_registers() returns current x/y register values as readable terms",
+        "inspect_stack() returns stack frames with function names and local variables",
+        "inspect_heap() returns heap contents summary",
+        "inspect_mailbox() returns current mailbox state",
+        "Test: pause at a specific instruction, inspect state, verify correctness"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/replay/debugger.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement a GUI debugger \u2014 API only (CLI or IDE integration is separate)",
+    "SHALL NOT implement concurrent process debugging \u2014 single process at a time",
+    "SHALL NOT implement heap diffing optimization \u2014 full snapshots first"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

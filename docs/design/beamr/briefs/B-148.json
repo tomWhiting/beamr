@@ -1,0 +1,66 @@
+{
+  "id": "B-148",
+  "cluster": "beamr",
+  "title": "WASM target \u2014 packaging and deployment",
+  "depends_on": [
+    "B-147"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Package a beamr WASM runtime with pre-loaded .beam modules into a deployable unit for browsers and edge workers (Cloudflare Workers, Deno Deploy).",
+  "task": "packaging and deployment",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "WASM bundle builder",
+      "spec": "Package beamr WASM + .beam modules into a single deployable artifact.",
+      "acceptance": [
+        "Bundle contains: beamr.wasm, compiled .beam files, bootstrap JS",
+        "Bootstrap JS initializes the VM and loads modules on startup",
+        "Bundle can be loaded with a single <script> tag or import",
+        "Test: build bundle, load in headless browser, verify execution"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr-wasm/build.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Edge worker deployment",
+      "spec": "Deploy beamr WASM to edge worker platforms.",
+      "acceptance": [
+        "Cloudflare Workers: fetch handler spawns a BEAM process per request",
+        "Request/response conversion via B-146 term conversion",
+        "Cold start under 50ms for pre-compiled bundles",
+        "Test: deploy to miniflare (local CF Workers simulator), verify request handling"
+      ],
+      "files": {
+        "create": [
+          "examples/edge-worker/"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement persistent state across requests \u2014 each request is stateless",
+    "SHALL NOT implement WebSocket upgrade \u2014 HTTP request/response only"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "id": "B-138",
+  "cluster": "beamr",
+  "title": "JIT performance benchmarks and adaptive compilation tuning",
+  "depends_on": [
+    "B-135",
+    "B-136",
+    "B-137"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Validate that JIT compilation provides measurable speedup over interpretation and tune the compilation threshold. This brief adds benchmarks comparing interpreted vs compiled execution for representative workloads.",
+  "task": "Create benchmarks, measure speedup, and tune the compilation threshold based on results.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Benchmark suite",
+      "spec": "Create benchmarks comparing interpreted and JIT-compiled execution for representative functions.",
+      "acceptance": [
+        "Benchmark: fibonacci(30) \u2014 interpreted vs compiled",
+        "Benchmark: list processing (map, filter, fold over 10K elements)",
+        "Benchmark: pattern matching intensive (case with 20 clauses)",
+        "Benchmarks run with criterion crate for statistical rigor",
+        "Results document speedup factor for each workload"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/benches/jit_comparison.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Adaptive compilation threshold",
+      "spec": "Tune the compilation threshold based on benchmark results.",
+      "acceptance": [
+        "Default threshold adjusted based on benchmark data",
+        "Threshold is configurable at runtime via VM config",
+        "Functions below threshold execute faster interpreted (compilation overhead > benefit)",
+        "Test: verify threshold prevents compilation of rarely-called functions"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/profiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement profile-guided optimization (PGO) \u2014 simple call counting only",
+    "SHALL NOT implement tiered compilation (multiple optimization levels) \u2014 single tier"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

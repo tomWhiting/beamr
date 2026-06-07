@@ -14,7 +14,7 @@
       "title": "FdResource boxed term type",
       "spec": "THE SYSTEM SHALL define an FdResource heap layout with a new BoxedTag::FdResource. THE SYSTEM SHALL store the raw file descriptor, owning process PID, resource state, and a shared reference to the FD lifecycle manager.",
       "acceptance": [
-        "BoxedTag::FdResource = 0x19 added to the BoxedTag enum",
+        "BoxedTag::FdResource = 0x1B added to the BoxedTag enum",
         "FdResource heap layout: [header(tag=0x19, size), fd_ptr] where fd_ptr is a pointer to an Arc<FdInner>",
         "FdInner struct: { fd: RawFd, owner_pid: u64, state: AtomicU8 (Open=0, Closing=1, Closed=2) }",
         "write_fd_resource(heap, fd_inner: Arc<FdInner>) -> Option<Term> allocates on process heap",

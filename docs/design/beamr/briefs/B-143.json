@@ -1,0 +1,68 @@
+{
+  "id": "B-143",
+  "cluster": "beamr",
+  "title": "Deterministic replay \u2014 event log persistence and CLI",
+  "depends_on": [
+    "B-142"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Event logs need to be saved to disk and loaded for later replay. A CLI tool allows operators to record production runs and replay them locally for debugging.",
+  "task": "Implement event log persistence and a replay CLI.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Event log file format",
+      "spec": "Persist event logs to a compact binary file format.",
+      "acceptance": [
+        "Save: ReplayLog::save(path) writes the log to disk",
+        "Load: ReplayLog::load(path) reads a log from disk",
+        "Format is versioned (format_version field) for forward compatibility",
+        "Compression optional (zstd or similar)",
+        "Test: save, load, verify identical events"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/replay/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "beamr-cli replay command",
+      "spec": "Add a replay subcommand to beamr-cli.",
+      "acceptance": [
+        "beamr replay <log-file> replays the event log",
+        "beamr record <beam-file> --entry m:f/a --log <output> records a run",
+        "Replay prints the same output as the original run",
+        "Exit code matches the original run",
+        "Test: record a run, replay it, verify identical output"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-cli/src/main.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement log streaming (live recording to remote) \u2014 file-based only",
+    "SHALL NOT implement log merging (combining logs from multiple runs)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

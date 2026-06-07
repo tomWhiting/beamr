@@ -1,0 +1,66 @@
+{
+  "id": "B-133",
+  "cluster": "beamr",
+  "title": "JIT code cache and invalidation",
+  "depends_on": [
+    "B-131"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Compiled native code must be cached and invalidated when modules are hot-reloaded. The code cache maps (module, function, arity, generation) to compiled code. Hot code loading (B-041-B-045) increments the generation, invalidating cached code for the old version.",
+  "task": "Implement the JIT code cache with generation-aware invalidation.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Code cache",
+      "spec": "Cache compiled code keyed by (module, function, arity, generation).",
+      "acceptance": [
+        "JitCache::lookup(module, function, arity, generation) -> Option<NativeCode>",
+        "JitCache::insert(key, code) stores compiled code",
+        "Cache is thread-safe (DashMap or equivalent)",
+        "Test: insert and lookup round-trip"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/jit/cache.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Generation-based invalidation",
+      "spec": "Invalidate cached code when a module is reloaded.",
+      "acceptance": [
+        "hot_load_module triggers cache eviction for the old generation",
+        "New calls to the function compile fresh against the new bytecode",
+        "Old compiled code is deallocated when no longer referenced",
+        "Test: compile function, reload module, verify old code evicted"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/cache.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement code cache size limits \u2014 unbounded for now",
+    "SHALL NOT implement speculative deoptimization \u2014 simple cache invalidation only"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

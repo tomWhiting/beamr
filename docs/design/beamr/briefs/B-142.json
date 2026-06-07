@@ -1,0 +1,67 @@
+{
+  "id": "B-142",
+  "cluster": "beamr",
+  "title": "Deterministic replay \u2014 multi-process causal ordering",
+  "depends_on": [
+    "B-141"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Real workflows involve multiple processes communicating via messages. Deterministic replay of multi-process systems requires capturing the causal ordering of inter-process events (message sends, link signals, monitor notifications) so that replay reproduces the same interleaving.",
+  "task": "Extend the replay infrastructure to capture and reproduce multi-process causal ordering.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Causal event ordering",
+      "spec": "Record the causal order of inter-process events using vector clocks or sequence numbers.",
+      "acceptance": [
+        "Each process maintains a logical clock (sequence number)",
+        "Message sends record sender clock and receiver clock at delivery",
+        "Replay driver enforces the same message delivery ordering",
+        "Test: two processes sending messages to each other \u2014 replay produces same interleaving"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/replay/event.rs",
+          "crates/beamr/src/replay/recorder.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Scheduler determinism in replay",
+      "spec": "The scheduler in replay mode uses the recorded event log to determine process scheduling order, not the normal run queue.",
+      "acceptance": [
+        "Replay scheduler executes processes in the recorded order",
+        "Context switches happen at the same points as the recording",
+        "Reduction budgets match the recording",
+        "Test: replay with 3 processes produces identical scheduling order"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/replay/driver.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement distributed replay (across nodes) \u2014 single-node only",
+    "SHALL NOT implement partial ordering (Lamport clocks) \u2014 use total ordering from recording"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

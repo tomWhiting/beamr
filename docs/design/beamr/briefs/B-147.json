@@ -1,0 +1,65 @@
+{
+  "id": "B-147",
+  "cluster": "beamr",
+  "title": "WASM target \u2014 message passing from JavaScript",
+  "depends_on": [
+    "B-146"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Enable JavaScript code to send messages to BEAM processes and receive messages back, bridging the actor model to the browser event model.",
+  "task": "message passing from JavaScript",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "JS to BEAM message send",
+      "spec": "JavaScript can send a message to a BEAM process by PID.",
+      "acceptance": [
+        "send_message(pid, js_value) converts the JS value to a Term and enqueues in the process mailbox",
+        "Process receives the message via normal selective receive",
+        "Test: JS sends a message, BEAM process receives and processes it"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-wasm/src/lib.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "BEAM to JS callback",
+      "spec": "BEAM processes can invoke JavaScript callbacks via a registered NIF.",
+      "acceptance": [
+        "js_callback NIF calls a registered JavaScript function with converted arguments",
+        "Return value is converted back to a Term",
+        "Async callbacks return Promises (bridged via B-145 R2)",
+        "Test: BEAM process calls JS function, receives result"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr-wasm/src/lib.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement BEAM-to-JS streaming \u2014 single message/callback only",
+    "SHALL NOT implement JS object proxying as BEAM terms"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

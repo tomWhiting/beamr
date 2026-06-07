@@ -1,0 +1,88 @@
+{
+  "id": "B-131",
+  "cluster": "beamr",
+  "title": "JIT IR translation \u2014 arithmetic, comparison, and control flow",
+  "depends_on": [
+    "B-130"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Translate the core BEAM opcodes (move, call, return, arithmetic, comparison, branching) into Cranelift IR. These are the most frequently executed instructions and the highest-value JIT targets.",
+  "task": "Implement IR translation for ~20 core opcodes covering data movement, function calls, arithmetic, and control flow.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Data movement IR",
+      "spec": "Translate move, swap, and register access to Cranelift IR.",
+      "acceptance": [
+        "move generates load/store IR for x/y registers",
+        "swap generates load-load-store-store pattern",
+        "Register file modeled as a memory region in IR",
+        "Test: compiled move produces correct register values"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Arithmetic and comparison IR",
+      "spec": "Translate add, subtract, multiply, div, rem, and comparison opcodes.",
+      "acceptance": [
+        "SmallInt arithmetic compiles to native integer ops with overflow checks",
+        "Comparison opcodes compile to conditional branches",
+        "Overflow falls back to interpreter (deoptimize)",
+        "Test: compiled add(2,3) returns 5"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Control flow IR",
+      "spec": "Translate call, return, label, and branching opcodes.",
+      "acceptance": [
+        "Labels translate to Cranelift blocks",
+        "Intra-module calls translate to direct jumps",
+        "Return translates to function return",
+        "Conditional branches (is_eq, is_ne, etc.) translate to branch instructions",
+        "Test: compiled function with branches executes correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT translate heap-allocating opcodes (put_tuple, put_list) \u2014 those need GC integration (B-134)",
+    "SHALL fall back to interpreter for unsupported opcodes (mixed mode)",
+    "SHALL NOT implement tail call optimization in IR \u2014 basic calls first"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

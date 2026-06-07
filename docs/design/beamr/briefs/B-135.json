@@ -1,0 +1,87 @@
+{
+  "id": "B-135",
+  "cluster": "beamr",
+  "title": "JIT dispatch integration \u2014 interpreter to native transitions",
+  "depends_on": [
+    "B-133",
+    "B-134"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "The interpreter must detect when a function has compiled native code and dispatch to it instead of interpreting bytecode. Conversely, compiled code must be able to call back into the interpreter for functions that haven't been compiled yet.",
+  "task": "Implement the interpreter-to-native and native-to-interpreter transition mechanisms.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Interpreter dispatch to native code",
+      "spec": "When the interpreter encounters a call to a JIT-compiled function, dispatch to the native code instead of interpreting.",
+      "acceptance": [
+        "Call dispatch checks JitCache before interpreting",
+        "If native code exists, call the function pointer directly",
+        "Process state (registers, stack) is consistent between interpreter and native code",
+        "Test: interpret function A which calls JIT-compiled function B \u2014 correct result"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Native to interpreter fallback",
+      "spec": "Compiled code calls back to the interpreter for functions not yet compiled.",
+      "acceptance": [
+        "Runtime helper: jit_call_interpreted(process, module, function, arity, args)",
+        "Compiled code uses this for cross-module calls to non-compiled functions",
+        "Return value is passed back to compiled code correctly",
+        "Test: JIT-compiled function calls interpreted function \u2014 correct result"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Reduction counting in compiled code",
+      "spec": "Compiled code must decrement the reduction counter and yield when exhausted.",
+      "acceptance": [
+        "Each function entry in compiled code decrements the reduction counter",
+        "When counter reaches 0, compiled code returns to the scheduler via a yield point",
+        "Process state is saved correctly at yield",
+        "Test: compiled tight loop yields after reduction budget exhausted"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement inline caching for call targets \u2014 simple cache lookup only",
+    "SHALL NOT optimize cross-module calls \u2014 each is a full dispatch"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

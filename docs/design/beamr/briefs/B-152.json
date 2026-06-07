@@ -1,0 +1,69 @@
+{
+  "id": "B-152",
+  "cluster": "beamr",
+  "title": "Structured observability \u2014 OpenTelemetry span integration",
+  "depends_on": [
+    "B-020"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "beamr's reduction boundary hook (B-020) provides the inspection seam. This brief connects it to OpenTelemetry: each process execution slice becomes a span, with attributes for module/function/arity, reduction count, and execution outcome.",
+  "task": "Integrate OpenTelemetry tracing with the reduction boundary hook.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "OTel span per execution slice",
+      "spec": "Each scheduler execution slice (take \u2192 execute \u2192 store) creates an OpenTelemetry span.",
+      "acceptance": [
+        "Span created at execute_slice entry, closed at exit",
+        "Span attributes: process.pid, code.module, code.function, code.arity, reductions.consumed, outcome (yielded/waiting/exited)",
+        "Spans are children of the workflow's root span (if available via context propagation)",
+        "OTel integration is behind a 'telemetry' feature flag",
+        "Test: execute a process, verify span emitted with correct attributes"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/telemetry/mod.rs",
+          "crates/beamr/src/telemetry/spans.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Message send/receive spans",
+      "spec": "Create spans for message send and receive operations.",
+      "acceptance": [
+        "Send span records: sender PID, receiver PID, message size",
+        "Receive span records: receiver PID, wait duration, message matched",
+        "Context propagation: send injects trace context, receive extracts it",
+        "Test: send message between processes, verify linked spans"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/telemetry/spans.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement custom span processors \u2014 use standard OTel exporters",
+    "SHALL NOT implement metrics (counters, histograms) in this brief \u2014 spans only",
+    "SHALL be zero-cost when disabled (feature flag)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

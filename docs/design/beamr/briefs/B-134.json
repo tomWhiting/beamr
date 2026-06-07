@@ -1,0 +1,67 @@
+{
+  "id": "B-134",
+  "cluster": "beamr",
+  "title": "JIT GC safepoints and heap allocation",
+  "depends_on": [
+    "B-131"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "JIT-compiled code that allocates on the heap (put_tuple, put_list, put_map) must coordinate with the garbage collector. GC safepoints are locations in compiled code where GC can safely interrupt execution, and the stack/register map is known.",
+  "task": "Implement GC safepoint emission in compiled code and heap allocation primitives callable from JIT code.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "GC safepoint emission",
+      "spec": "Emit safepoint metadata at allocation sites in compiled code.",
+      "acceptance": [
+        "Each heap allocation site in compiled code has a safepoint descriptor",
+        "Safepoint records which registers hold live Term values (the root set)",
+        "GC can interrupt at safepoints and relocate heap objects",
+        "Test: compiled function with allocation survives GC"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/jit/safepoint.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Heap allocation from compiled code",
+      "spec": "Compiled code calls into runtime helpers for heap allocation.",
+      "acceptance": [
+        "Runtime helper: jit_alloc_tuple(process, arity) -> *mut u64",
+        "Runtime helper: jit_alloc_cons(process) -> *mut u64",
+        "Helpers trigger GC if heap is full, then retry allocation",
+        "Compiled code calls these via Cranelift's call instruction",
+        "Test: compiled put_tuple allocates correctly on the heap"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement on-stack replacement (OSR) \u2014 compiled code runs from function entry",
+    "SHALL NOT implement escape analysis \u2014 all boxed terms go to the heap"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

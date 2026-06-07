@@ -2,7 +2,7 @@
   "id": "B-089",
   "cluster": "beamr",
   "title": "term_to_iovec — scatter-gather encoding",
-  "depends_on": ["B-086"],
+  "depends_on": ["B-086", "B-088"],
   "blocked_by": [],
   "checklist": ["C150"],
   "stories": [],

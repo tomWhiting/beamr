@@ -1,0 +1,64 @@
+{
+  "id": "B-136",
+  "cluster": "beamr",
+  "title": "JIT IR translation \u2014 tuple and list operations",
+  "depends_on": [
+    "B-134"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Translate heap-allocating opcodes (put_tuple2, put_list, get_tuple_element, get_list, get_hd, get_tl) to Cranelift IR using the GC safepoint infrastructure from B-134.",
+  "task": "Implement IR translation for data construction and destructuring opcodes.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Tuple construction and access IR",
+      "spec": "Translate put_tuple2 and get_tuple_element to IR with heap allocation.",
+      "acceptance": [
+        "put_tuple2 calls jit_alloc_tuple, writes elements, produces tagged Term",
+        "get_tuple_element reads from tuple header + offset",
+        "Test: compiled function constructs and destructures tuples correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "List construction and destructuring IR",
+      "spec": "Translate put_list, get_list, get_hd, get_tl to IR.",
+      "acceptance": [
+        "put_list calls jit_alloc_cons, writes head and tail",
+        "get_list/get_hd/get_tl read from cons cell memory",
+        "Test: compiled function builds and pattern-matches lists correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/jit/compiler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement map construction in JIT \u2014 interpreter fallback",
+    "SHALL NOT implement binary construction in JIT \u2014 interpreter fallback"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

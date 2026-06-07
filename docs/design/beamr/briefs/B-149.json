@@ -1,0 +1,87 @@
+{
+  "id": "B-149",
+  "cluster": "beamr",
+  "title": "Capability security \u2014 per-process capability tokens",
+  "depends_on": [
+    "B-049"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "B-049 established capability-gated imports at the module level. This brief extends capabilities to the process level \u2014 each process has a set of capability tokens that determine what operations it can perform. A supervisor can spawn a child with restricted capabilities (no file I/O, no network, no spawn).",
+  "task": "Add per-process capability sets and enforcement at NIF call boundaries.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "CapabilitySet on Process",
+      "spec": "Each process carries a set of capabilities that gate what operations it can perform.",
+      "acceptance": [
+        "Process gains capabilities: CapabilitySet field",
+        "CapabilitySet is a bitfield or HashSet<Capability>",
+        "Default capabilities: all enabled (backward compatible)",
+        "spawn/spawn_link/spawn_opt accept a capabilities option to restrict child",
+        "Test: spawn child with restricted capabilities, verify restrictions apply"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "NIF capability enforcement",
+      "spec": "NIF calls check the calling process's capabilities before execution.",
+      "acceptance": [
+        "Each NativeEntry has a required_capability field",
+        "Before NIF execution, check process.capabilities.contains(required)",
+        "Missing capability returns {error, capability_denied} not badarg",
+        "Test: call file:read with FileIO capability denied \u2192 capability_denied error"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs",
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Capability attenuation (never escalate)",
+      "spec": "A process can only grant capabilities it has \u2014 capabilities can be attenuated (reduced) but never escalated.",
+      "acceptance": [
+        "spawn with capabilities checks caller has all requested capabilities",
+        "Attempting to grant a capability the caller doesn't have returns badarg",
+        "Test: process with {net, file} spawns child with {file} only \u2014 allowed. Spawns child with {net, file, spawn} \u2014 denied (spawn not in parent set)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement capability revocation after spawn \u2014 capabilities are fixed at creation",
+    "SHALL NOT implement capability delegation to other processes \u2014 only parent-to-child at spawn"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}
