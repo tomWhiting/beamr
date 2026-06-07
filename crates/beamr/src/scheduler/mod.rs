@@ -192,6 +192,29 @@ pub struct Scheduler {
     worker_names: Vec<String>,
 }
 impl Scheduler {
+    /// Allocate and register an ETS table owned by a process.
+    ///
+    /// The provided metadata's `id` field is overwritten with the allocated,
+    /// monotonically increasing table ID before the table is inserted.
+    pub fn create_ets_table(&self, metadata: EtsTableMetadata) -> EtsTableId {
+        self.shared.create_table(metadata)
+    }
+
+    /// Look up a registered ETS table by ID.
+    pub fn lookup_ets_table(&self, id: EtsTableId) -> Option<Arc<dyn EtsTable>> {
+        self.shared.lookup_table(id)
+    }
+
+    /// Look up a named ETS table by atom.
+    pub fn lookup_ets_table_by_name(&self, name: crate::atom::Atom) -> Option<EtsTableId> {
+        self.shared.lookup_table_by_name(name)
+    }
+
+    /// Delete a registered ETS table by ID.
+    pub fn delete_ets_table(&self, id: EtsTableId) -> bool {
+        self.shared.delete_table(id)
+    }
+
     pub fn new(
         config: SchedulerConfig,
         module_registry: Arc<ModuleRegistry>,

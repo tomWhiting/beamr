@@ -1,1 +1,1 @@
-feat(beamr): add ets registry metadata and lifecycle model
+feat(beamr): expose ets registry lifecycle through scheduler
