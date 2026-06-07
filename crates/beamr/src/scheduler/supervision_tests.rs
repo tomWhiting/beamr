@@ -8,7 +8,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use dashmap::DashMap;
 
 use super::*;
+use crate::atom::Atom;
+use crate::process::ProcessStatus;
 use crate::process::registry::ProcessTable;
+use crate::scheduler::execution::{
+    cleanup_exited_process, cleanup_if_tombstoned_after_store, store_runnable_process,
+};
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
 use crate::term::boxed::{self, Tuple};
@@ -115,7 +120,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
         ProcessSlot::Present(ScheduledProcess(process)) => {
             let metadata = ProcessMetadata {
                 namespace_id: process.namespace_id(),
-                links: process.links().iter().copied().collect(),
+                links: process.links().to_vec(),
                 trap_exit: process.trap_exit(),
                 pending_exit_messages: Vec::new(),
             };

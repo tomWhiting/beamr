@@ -7,14 +7,20 @@ use std::sync::{
 use dashmap::DashMap;
 
 use super::*;
-use crate::atom::AtomTable;
+use crate::atom::{Atom, AtomTable};
 use crate::hook::{Hook, HookDecision};
 use crate::io::NullSink;
 use crate::loader::Instruction;
 use crate::loader::decode::compact::Operand;
 use crate::mailbox::Mailbox;
-use crate::process::heap::Heap;
+use crate::module::Module;
+use crate::process::CodePosition;
+use crate::process::heap::{DEFAULT_HEAP_SIZE, Heap};
 use crate::process::registry::ProcessTable;
+use crate::scheduler::execution::{
+    SliceOutcome, cleanup_if_tombstoned_after_store, execute_slice, store_runnable_process,
+    take_runnable_process,
+};
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
 use crate::term::boxed;
