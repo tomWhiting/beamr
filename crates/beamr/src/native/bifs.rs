@@ -317,7 +317,7 @@ mod tests {
         numeric_not_equal, register_gate1_bifs, rem, send_after, start_timer, subtract,
     };
     use crate::atom::{Atom, AtomTable};
-    use crate::native::{BifRegistryImpl, ProcessContext};
+    use crate::native::{BifRegistryImpl, Capability, ProcessContext};
     use crate::process::Process;
     use crate::term::Term;
     use crate::term::boxed::{Tuple, write_cons, write_float, write_map, write_tuple};
@@ -461,6 +461,9 @@ mod tests {
             less_equal(&[one_float, small_int(1)], &mut context),
             Ok(Term::atom(Atom::TRUE))
         );
+
+        let mut one_float_heap = [0_u64; 2];
+        let one_float = write_float(&mut one_float_heap, 1.0).expect("float should fit");
         assert_eq!(
             numeric_equal(&[small_int(1), one_float], &mut context),
             Ok(Term::atom(Atom::TRUE))
@@ -469,6 +472,8 @@ mod tests {
             numeric_equal(&[small_int(1), small_int(2)], &mut context),
             Ok(Term::atom(Atom::FALSE))
         );
+        let mut one_float_heap = [0_u64; 2];
+        let one_float = write_float(&mut one_float_heap, 1.0).expect("float should fit");
         assert_eq!(
             numeric_not_equal(&[small_int(1), one_float], &mut context),
             Ok(Term::atom(Atom::FALSE))
@@ -632,37 +637,40 @@ mod tests {
         register_gate1_bifs(&registry, &atom_table).expect("gate 1 BIF registration");
 
         let erlang = atom_table.intern("erlang");
-        for (name, arity) in [
-            ("+", 2),
-            ("-", 2),
-            ("*", 2),
-            ("div", 2),
-            ("rem", 2),
-            ("<", 2),
-            (">", 2),
-            ("=<", 2),
-            (">=", 2),
-            ("==", 2),
-            ("/=", 2),
-            ("=:=", 2),
-            ("=/=", 2),
-            ("error", 1),
-            ("display", 1),
-            ("get_module_info", 1),
-            ("get_module_info", 2),
-            ("send_after", 3),
-            ("start_timer", 3),
-            ("cancel_timer", 1),
-            ("load_module", 2),
-            ("purge_module", 1),
-            ("delete_module", 1),
-            ("check_old_code", 1),
-            ("check_process_code", 2),
+        for (name, arity, expected_capability) in [
+            ("+", 2, Capability::Pure),
+            ("-", 2, Capability::Pure),
+            ("*", 2, Capability::Pure),
+            ("div", 2, Capability::Pure),
+            ("rem", 2, Capability::Pure),
+            ("<", 2, Capability::Pure),
+            (">", 2, Capability::Pure),
+            ("=<", 2, Capability::Pure),
+            (">=", 2, Capability::Pure),
+            ("==", 2, Capability::Pure),
+            ("/=", 2, Capability::Pure),
+            ("=:=", 2, Capability::Pure),
+            ("=/=", 2, Capability::Pure),
+            ("error", 1, Capability::Pure),
+            ("display", 1, Capability::ExternalIo),
+            ("get_module_info", 1, Capability::Pure),
+            ("get_module_info", 2, Capability::Pure),
+            ("send_after", 3, Capability::Clock),
+            ("start_timer", 3, Capability::Clock),
+            ("cancel_timer", 1, Capability::Clock),
+            ("load_module", 2, Capability::Pure),
+            ("purge_module", 1, Capability::Pure),
+            ("delete_module", 1, Capability::Pure),
+            ("check_old_code", 1, Capability::Pure),
+            ("check_process_code", 2, Capability::Pure),
         ] {
             let function = atom_table.intern(name);
-            assert!(
-                registry.lookup(erlang, function, arity).is_some(),
-                "missing erlang:{name}/{arity}"
+            let entry = registry
+                .lookup(erlang, function, arity)
+                .expect("registered Gate 1 BIF should be present");
+            assert_eq!(
+                entry.capability, expected_capability,
+                "wrong capability for erlang:{name}/{arity}"
             );
         }
     }

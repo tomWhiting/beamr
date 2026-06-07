@@ -1,1 +1,1 @@
-feat(beamr): register numeric comparison BIFs
+Harden B-066 comparison BIF registration and de-duplicate /=

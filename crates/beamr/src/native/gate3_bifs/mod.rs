@@ -68,7 +68,6 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("iolist_size", 1, Capability::Pure, bif_iolist_size),
     ("++", 2, Capability::Pure, bif_list_append),
     ("not", 1, Capability::Pure, bif_not),
-    ("/=", 2, Capability::Pure, bif_not_equal),
     ("length", 1, Capability::Pure, bif_length),
     ("round", 1, Capability::Pure, bif_round),
     ("trunc", 1, Capability::Pure, bif_trunc),
@@ -401,18 +400,6 @@ pub fn bif_not(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Ter
     } else {
         Err(badarg())
     }
-}
-
-/// erlang:/=/2 — not-equal comparison (structural, not exact).
-///
-/// Returns `true` if the two terms are structurally different, `false`
-/// if they are equal. This is the `/=` operator (non-exact inequality).
-/// For the subset of types beamr supports, this is equivalent to `=/=`.
-pub fn bif_not_equal(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    let [left, right] = args else {
-        return Err(badarg());
-    };
-    Ok(bool_term(left != right))
 }
 
 /// erlang:length/1 — returns the length of a proper list.
