@@ -16,10 +16,8 @@ use crate::supervision::link;
 use crate::supervision::monitor;
 use crate::term::Term;
 
-use super::{
-    ProcessSlot, ScheduledProcess, SharedState, cleanup_exited_process, lock_or_recover,
-    namespace_registry, wake_process,
-};
+use super::execution::{cleanup_exited_process, wake_process};
+use super::{ProcessSlot, ScheduledProcess, SharedState, lock_or_recover, namespace_registry};
 
 /// Propagate exit signals through links and deliver DOWN messages through
 /// monitors when a process exits. Uses a worklist pattern to handle cascade
@@ -252,7 +250,7 @@ pub(super) fn build_native_services(
             shared: Arc::clone(shared),
         });
     let code_management: Arc<dyn crate::native::CodeManagementFacility> =
-        Arc::new(super::SchedulerCodeManagementFacility {
+        Arc::new(super::module_management::SchedulerCodeManagementFacility {
             shared: Arc::clone(shared),
         });
     crate::interpreter::NativeServices {
@@ -301,7 +299,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(child_pid);
 
-        let mut child = super::build_process(super::SpawnRequest {
+        let mut child = super::spawning::build_process(super::spawning::SpawnRequest {
             pid: child_pid,
             module: entry.module.name,
             module_version: Arc::clone(&entry.module),
@@ -363,7 +361,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(child_pid);
 
-        let mut child = super::build_process(super::SpawnRequest {
+        let mut child = super::spawning::build_process(super::spawning::SpawnRequest {
             pid: child_pid,
             module: loaded.name,
             module_version: Arc::clone(&loaded),
