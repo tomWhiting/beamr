@@ -257,6 +257,10 @@ pub(super) fn build_native_services(
         Arc::new(SchedulerSupervisionFacility {
             shared: Arc::clone(shared),
         });
+    let process_info: Arc<dyn crate::native::ProcessInfoFacility> =
+        Arc::new(SchedulerProcessInfoFacility {
+            shared: Arc::clone(shared),
+        });
     let code_management: Arc<dyn crate::native::CodeManagementFacility> =
         Arc::new(super::module_management::SchedulerCodeManagementFacility {
             shared: Arc::clone(shared),
@@ -267,12 +271,28 @@ pub(super) fn build_native_services(
         spawn_facility: Some(spawn),
         link_facility: Some(link),
         supervision_facility: Some(supervision),
+        process_info_facility: Some(process_info),
         io_sink: Some(Arc::clone(&lock_or_recover(&shared.output_sink))),
         code_management_facility: Some(code_management),
     }
 }
 
 // ── Facility implementations ────────────────────────────────────────────────
+
+/// Real `ProcessInfoFacility` backed by the scheduler's shared state.
+pub(super) struct SchedulerProcessInfoFacility {
+    pub(super) shared: Arc<SharedState>,
+}
+
+impl crate::native::ProcessInfoFacility for SchedulerProcessInfoFacility {
+    fn process_info(
+        &self,
+        pid: u64,
+        item: crate::native::ProcessInfoItem,
+    ) -> Option<crate::native::ProcessInfoValue> {
+        self.shared.process_info(pid, item)
+    }
+}
 
 /// Real `SpawnFacility` backed by the scheduler's shared state.
 pub(super) struct SchedulerSpawnFacility {

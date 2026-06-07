@@ -16,9 +16,12 @@ use crate::hook::Hook;
 use crate::io::{IoSink, NullSink};
 use crate::module::ModuleRegistry;
 use crate::namespace::NamespaceId;
-use crate::native::{AllCapabilitiesPolicy, BifRegistryImpl, CapabilityPolicy};
+use crate::native::{
+    AllCapabilitiesPolicy, BifRegistryImpl, CapabilityPolicy, ProcessInfoItem, ProcessInfoStatus,
+    ProcessInfoValue, ProcessMonitorInfo,
+};
 use crate::process::registry::ProcessTable;
-use crate::process::{ExitReason, Process};
+use crate::process::{ExitReason, Process, ProcessStatus};
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
 use crate::term::Term;
@@ -300,6 +303,86 @@ fn process_links_contain(shared: &SharedState, pid: u64, linked_pid: u64) -> boo
         ProcessSlot::Absent => false,
     }
 }
+
+impl SharedState {
+    pub(super) fn process_info(&self, pid: u64, item: ProcessInfoItem) -> Option<ProcessInfoValue> {
+        self.process_table.get(pid)?;
+        let entry = self.process_bodies.get(&pid)?;
+        match &*lock_or_recover(&entry) {
+            ProcessSlot::Present(scheduled) => process_info_from_process(&scheduled.0, item),
+            ProcessSlot::Executing(metadata) => process_info_from_metadata(metadata, item),
+            ProcessSlot::Absent => None,
+        }
+    }
+}
+
+fn process_info_from_process(process: &Process, item: ProcessInfoItem) -> Option<ProcessInfoValue> {
+    if matches!(process.status(), ProcessStatus::Exited(_)) {
+        return None;
+    }
+    Some(match item {
+        ProcessInfoItem::CurrentFunction => {
+            ProcessInfoValue::CurrentFunction(process.current_mfa())
+        }
+        ProcessInfoItem::HeapSize => ProcessInfoValue::HeapSize(process.heap().total_used()),
+        ProcessInfoItem::MessageQueueLen => {
+            ProcessInfoValue::MessageQueueLen(process.mailbox().message_count())
+        }
+        ProcessInfoItem::RegisteredName => ProcessInfoValue::RegisteredName(None),
+        ProcessInfoItem::Status => ProcessInfoValue::Status(status_from_process(process.status())?),
+        ProcessInfoItem::TrapExit => ProcessInfoValue::TrapExit(process.trap_exit()),
+        ProcessInfoItem::Links => ProcessInfoValue::Links(process.links().to_vec()),
+        ProcessInfoItem::Monitors => ProcessInfoValue::Monitors(
+            process
+                .monitors()
+                .iter()
+                .map(|monitor| ProcessMonitorInfo {
+                    watcher: monitor.watcher(),
+                    target: monitor.target(),
+                })
+                .collect(),
+        ),
+    })
+}
+
+fn process_info_from_metadata(
+    metadata: &ProcessMetadata,
+    item: ProcessInfoItem,
+) -> Option<ProcessInfoValue> {
+    Some(match item {
+        ProcessInfoItem::CurrentFunction => ProcessInfoValue::CurrentFunction(metadata.current_mfa),
+        ProcessInfoItem::HeapSize => ProcessInfoValue::HeapSize(metadata.heap_size),
+        ProcessInfoItem::MessageQueueLen => {
+            ProcessInfoValue::MessageQueueLen(metadata.message_queue_len)
+        }
+        ProcessInfoItem::RegisteredName => ProcessInfoValue::RegisteredName(None),
+        ProcessInfoItem::Status => ProcessInfoValue::Status(ProcessInfoStatus::Running),
+        ProcessInfoItem::TrapExit => ProcessInfoValue::TrapExit(metadata.trap_exit),
+        ProcessInfoItem::Links => ProcessInfoValue::Links(metadata.links.clone()),
+        ProcessInfoItem::Monitors => ProcessInfoValue::Monitors(
+            metadata
+                .monitors
+                .iter()
+                .map(|monitor| ProcessMonitorInfo {
+                    watcher: monitor.watcher(),
+                    target: monitor.target(),
+                })
+                .collect(),
+        ),
+    })
+}
+
+fn status_from_process(status: ProcessStatus) -> Option<ProcessInfoStatus> {
+    match status {
+        ProcessStatus::New | ProcessStatus::Running | ProcessStatus::Yielded => {
+            Some(ProcessInfoStatus::Running)
+        }
+        ProcessStatus::Waiting => Some(ProcessInfoStatus::Waiting),
+        ProcessStatus::Suspended => Some(ProcessInfoStatus::Suspended),
+        ProcessStatus::Exited(_) => None,
+    }
+}
+
 pub(super) fn namespace_registry(
     shared: &SharedState,
     namespace: NamespaceId,

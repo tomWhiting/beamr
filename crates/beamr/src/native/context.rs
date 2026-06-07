@@ -21,6 +21,7 @@ use crate::timer::{TimerRef, TimerWheel};
 
 use super::code_management_bifs::CodeManagementFacility;
 use super::links::LinkFacility;
+use super::process_info_bifs::ProcessInfoFacility;
 use super::registry::RegistryFacility;
 use super::select::SelectFacility;
 use super::spawn::SpawnFacility;
@@ -87,6 +88,7 @@ pub struct ProcessContext<'process> {
     link_facility: Option<Arc<dyn LinkFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
     code_management_facility: Option<Arc<dyn CodeManagementFacility>>,
+    process_info_facility: Option<Arc<dyn ProcessInfoFacility>>,
     registry_facility: Option<Arc<dyn RegistryFacility>>,
     select_facility: Option<Arc<dyn SelectFacility>>,
     io_sink: Arc<dyn IoSink>,
@@ -117,6 +119,10 @@ impl fmt::Debug for ProcessContext<'_> {
             .field(
                 "code_management_facility",
                 &self.code_management_facility.as_ref().map(|_| ".."),
+            )
+            .field(
+                "process_info_facility",
+                &self.process_info_facility.as_ref().map(|_| ".."),
             )
             .field(
                 "registry_facility",
@@ -157,6 +163,7 @@ impl<'process> ProcessContext<'process> {
             link_facility: None,
             supervision_facility: None,
             code_management_facility: None,
+            process_info_facility: None,
             registry_facility: None,
             select_facility: None,
             io_sink: Arc::new(NullSink),
@@ -181,6 +188,7 @@ impl<'process> ProcessContext<'process> {
             link_facility: None,
             supervision_facility: None,
             code_management_facility: None,
+            process_info_facility: None,
             registry_facility: None,
             select_facility: None,
             io_sink: Arc::new(NullSink),
@@ -304,6 +312,17 @@ impl<'process> ProcessContext<'process> {
     /// Set the atom table for type conversion BIFs.
     pub fn set_atom_table(&mut self, table: Option<Arc<AtomTable>>) {
         self.atom_table = table;
+    }
+
+    /// Return the process-info facility, if one has been configured.
+    #[must_use]
+    pub fn process_info_facility(&self) -> Option<&dyn ProcessInfoFacility> {
+        self.process_info_facility.as_deref()
+    }
+
+    /// Set the process-info facility for process introspection BIFs.
+    pub fn set_process_info_facility(&mut self, facility: Option<Arc<dyn ProcessInfoFacility>>) {
+        self.process_info_facility = facility;
     }
 
     /// Return the registry facility, if one has been configured.

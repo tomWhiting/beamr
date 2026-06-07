@@ -123,6 +123,9 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
                 links: process.links().to_vec(),
                 monitors: process.monitors().to_vec(),
                 trap_exit: process.trap_exit(),
+                current_mfa: process.current_mfa(),
+                heap_size: process.heap().total_used(),
+                message_queue_len: process.mailbox().message_count(),
                 pending_exit_messages: Vec::new(),
                 pending_down_messages: Vec::new(),
             };

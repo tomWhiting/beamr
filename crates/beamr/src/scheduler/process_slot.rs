@@ -8,6 +8,9 @@ pub(super) struct ProcessMetadata {
     pub(super) links: Vec<u64>,
     pub(super) monitors: Vec<Monitor>,
     pub(super) trap_exit: bool,
+    pub(super) current_mfa: Option<(crate::atom::Atom, crate::atom::Atom, u8)>,
+    pub(super) heap_size: usize,
+    pub(super) message_queue_len: usize,
     pub(super) pending_exit_messages: Vec<(u64, ExitReason)>,
     pub(super) pending_down_messages: Vec<(u64, u64, ExitReason)>,
 }
