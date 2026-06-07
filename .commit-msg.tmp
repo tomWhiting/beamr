@@ -1,1 +1,1 @@
-feat(beamr): construct stacktraces from raw raise context
+Harden B-061 stacktrace construction review coverage

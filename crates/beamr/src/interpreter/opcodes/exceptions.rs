@@ -417,39 +417,62 @@ mod tests {
     fn raw_stacktrace_captures_current_and_return_frames_before_unwind() {
         let code = label20_module();
         let module_version = Arc::new(code.clone());
+        let catch_module_version = Arc::new(code.clone());
         let mut process = Process::new(1, 64);
+
         set_current_location(&mut process, Arc::clone(&module_version), 99);
-        process
-            .stack_mut()
-            .push_frame(Atom::OK, 10, Arc::clone(&module_version), 1)
-            .expect("oldest frame");
-        process
-            .stack_mut()
-            .push_frame(Atom::OK, 20, Arc::clone(&module_version), 1)
-            .expect("middle frame");
-        process
-            .stack_mut()
-            .push_frame(Atom::OK, 30, Arc::clone(&module_version), 1)
-            .expect("newest frame");
+        push_three_frames(&mut process, &module_version);
         try_(&mut process, &code, &Operand::X(0), &Operand::Label(20)).expect("try");
 
         raise_exception(
             &mut process,
             exception(Atom::ERROR, Term::atom(Atom::BADARG), Term::NIL),
         )
-        .expect("caught");
+        .expect("try caught");
 
+        assert_raw_trace(&process, &module_version, 99);
+
+        let mut process = Process::new(2, 64);
+        set_current_location(&mut process, Arc::clone(&catch_module_version), 99);
+        push_three_frames(&mut process, &catch_module_version);
+        catch_(&mut process, &code, &Operand::Y(0), &Operand::Label(20)).expect("catch");
+
+        raise_exception(
+            &mut process,
+            exception(Atom::THROW, Term::atom(Atom::BADARG), Term::NIL),
+        )
+        .expect("catch caught");
+
+        assert_raw_trace(&process, &catch_module_version, 99);
+    }
+
+    fn push_three_frames(process: &mut Process, module_version: &Arc<Module>) {
+        process
+            .stack_mut()
+            .push_frame(Atom::OK, 10, Arc::clone(module_version), 1)
+            .expect("oldest frame");
+        process
+            .stack_mut()
+            .push_frame(Atom::OK, 20, Arc::clone(module_version), 1)
+            .expect("middle frame");
+        process
+            .stack_mut()
+            .push_frame(Atom::OK, 30, Arc::clone(module_version), 1)
+            .expect("newest frame");
+    }
+
+    fn assert_raw_trace(process: &Process, module_version: &Arc<Module>, current_ip: usize) {
         let raw = process.raw_stacktrace();
         assert_eq!(raw.len(), 4);
-        assert!(Arc::ptr_eq(&raw[0].module, &module_version));
-        assert_eq!(raw[0].ip, 99);
+        assert!(Arc::ptr_eq(&raw[0].module, module_version));
+        assert_eq!(raw[0].ip, current_ip);
         assert_eq!(raw[0].mfa, Some((Atom::OK, Atom::BADARG, 1)));
         assert_eq!(raw[1].ip, 30);
         assert_eq!(raw[2].ip, 20);
         assert_eq!(raw[3].ip, 10);
         assert!(
             raw.iter()
-                .all(|entry| Arc::ptr_eq(&entry.module, &module_version))
+                .all(|entry| Arc::ptr_eq(&entry.module, module_version))
         );
     }
 
@@ -498,12 +521,19 @@ mod tests {
     #[test]
     fn build_stacktrace_resolves_mfa_and_line_info() {
         let mut code = label20_module();
-        code.function_table = vec![(0, Atom::FLUSH, 2)];
-        code.line_table = vec![(0, 0)];
-        code.line_info = vec![LineInfo { file: 0, line: 123 }];
+        code.function_table = vec![(0, Atom::BADARG, 1), (10, Atom::FLUSH, 2)];
+        code.line_table = vec![(0, 0), (10, 1)];
+        code.line_info = vec![
+            LineInfo { file: 0, line: 123 },
+            LineInfo { file: 0, line: 456 },
+        ];
         let module_version = Arc::new(code.clone());
-        let mut process = Process::new(1, 64);
+        let mut process = Process::new(1, 128);
         set_current_location(&mut process, Arc::clone(&module_version), 0);
+        process
+            .stack_mut()
+            .push_frame(Atom::OK, 10, Arc::clone(&module_version), 1)
+            .expect("return frame");
         raise_exception(
             &mut process,
             exception(Atom::ERROR, Term::atom(Atom::BADARG), Term::NIL),
@@ -513,18 +543,36 @@ mod tests {
         build_stacktrace(&mut process).expect("stacktrace builds");
 
         let cons = Cons::new(process.x_reg(0)).expect("stacktrace cons");
-        assert_eq!(cons.tail(), Term::NIL);
-        let frame = Tuple::new(cons.head()).expect("stacktrace frame tuple");
+        assert_stacktrace_frame(cons.head(), Atom::OK, Atom::BADARG, 1, 123);
+        let tail = Cons::new(cons.tail()).expect("stacktrace tail cons");
+        assert_eq!(tail.tail(), Term::NIL);
+        assert_stacktrace_frame(tail.head(), Atom::OK, Atom::FLUSH, 2, 456);
+        assert!(!process.raw_stacktrace().is_empty());
+    }
+
+    #[test]
+    fn build_stacktrace_dispatch_is_supported() {
+        let code = label20_module();
+        let mut process = Process::new(1, 16);
+
+        assert_eq!(
+            dispatch(&mut process, &code, &Instruction::BuildStacktrace, 1, None),
+            Ok(InstructionOutcome::Continue)
+        );
+        assert_eq!(process.x_reg(0), Term::NIL);
+    }
+
+    fn assert_stacktrace_frame(term: Term, module: Atom, function: Atom, arity: u8, line: i64) {
+        let frame = Tuple::new(term).expect("stacktrace frame tuple");
         assert_eq!(frame.arity(), 4);
-        assert_eq!(frame.get(0), Some(Term::atom(Atom::OK)));
-        assert_eq!(frame.get(1), Some(Term::atom(Atom::BADARG)));
-        assert_eq!(frame.get(2), Some(Term::small_int(1)));
+        assert_eq!(frame.get(0), Some(Term::atom(module)));
+        assert_eq!(frame.get(1), Some(Term::atom(function)));
+        assert_eq!(frame.get(2), Some(Term::small_int(i64::from(arity))));
         let info = Cons::new(frame.get(3).expect("info list")).expect("line info cons");
         assert_eq!(info.tail(), Term::NIL);
         let line = Tuple::new(info.head()).expect("line tuple");
         assert_eq!(line.get(0), Some(Term::atom(Atom::LINE)));
-        assert_eq!(line.get(1), Some(Term::small_int(123)));
-        assert!(!process.raw_stacktrace().is_empty());
+        assert_eq!(line.get(1), Some(Term::small_int(line)));
     }
 
     #[test]

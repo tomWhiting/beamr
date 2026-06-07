@@ -763,6 +763,18 @@ mod tests {
         let exported = atoms.intern("exported");
         let private = atoms.intern("private");
         let parsed = ParsedModule {
+            exports: vec![
+                ExportEntry {
+                    function: exported,
+                    arity: 0,
+                    label: 1,
+                },
+                ExportEntry {
+                    function: atoms.intern("also_exported"),
+                    arity: 2,
+                    label: 2,
+                },
+            ],
             instructions: vec![
                 Instruction::FuncInfo {
                     module: Operand::Atom(Some(module_atom)),
@@ -797,6 +809,7 @@ mod tests {
             vec![(0, exported, 0), (3, private, 1)]
         );
         assert_eq!(module.function_at_ip(2), Some((exported, 0)));
+        assert_eq!(module.function_at_ip(3), Some((private, 1)));
         assert_eq!(module.function_at_ip(4), Some((private, 1)));
         assert_eq!(module.line_table, vec![(1, 0), (4, 1)]);
         assert_eq!(module.line_at_ip(0), None);
