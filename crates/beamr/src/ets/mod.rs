@@ -56,11 +56,11 @@ impl EtsRegistry {
             EtsTableType::Set => Arc::new(EtsSet::new(metadata)),
             _ => Arc::new(EtsSet::new(metadata)),
         };
-        if let Some(previous_table) = self.tables.insert(id, table) {
-            if let Some(previous_name) = previous_table.metadata().name {
-                self.names
-                    .remove_if(&previous_name, |_, table_id| *table_id == id);
-            }
+        if let Some(previous_table) = self.tables.insert(id, table)
+            && let Some(previous_name) = previous_table.metadata().name
+        {
+            self.names
+                .remove_if(&previous_name, |_, table_id| *table_id == id);
         }
         if let Some(name) = name {
             self.names.insert(name, id);
