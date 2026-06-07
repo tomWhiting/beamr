@@ -1,1 +1,1 @@
-Harden B-051 process-heap native allocation tests
+feat(beamr): implement update_record opcode

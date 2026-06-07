@@ -209,6 +209,7 @@ fn dispatch_common(
             index,
             destination,
         } => core::get_tuple_element(process, module, source, index, destination),
+        Instruction::UpdateRecord { operands } => core::update_record(process, module, operands),
         Instruction::GetHd {
             source,
             destination,
