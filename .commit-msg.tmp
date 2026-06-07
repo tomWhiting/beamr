@@ -1,1 +1,1 @@
-Harden process dictionary BIF GC-safety during result construction
+harden(beamr): review float arithmetic opcode implementation

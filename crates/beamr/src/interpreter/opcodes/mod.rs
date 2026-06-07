@@ -8,6 +8,7 @@ pub mod binary;
 pub mod closures;
 pub mod core;
 pub mod exceptions;
+pub mod floats;
 pub mod guards;
 pub mod messaging;
 pub mod trampoline;
@@ -142,6 +143,37 @@ fn dispatch_common(
             source,
             destination,
         } => core::move_(process, module, source, destination),
+        Instruction::Fmove { source, dest } => floats::fmove(process, module, source, dest),
+        Instruction::Fconv { source, dest } => floats::fconv(process, module, source, dest),
+        Instruction::Fadd {
+            fail: _,
+            left,
+            right,
+            dest,
+        } => floats::fadd(process, left, right, dest),
+        Instruction::Fsub {
+            fail: _,
+            left,
+            right,
+            dest,
+        } => floats::fsub(process, left, right, dest),
+        Instruction::Fmul {
+            fail: _,
+            left,
+            right,
+            dest,
+        } => floats::fmul(process, left, right, dest),
+        Instruction::Fdiv {
+            fail: _,
+            left,
+            right,
+            dest,
+        } => floats::fdiv(process, left, right, dest),
+        Instruction::Fnegate {
+            fail: _,
+            source,
+            dest,
+        } => floats::fnegate(process, source, dest),
         Instruction::Swap { left, right } => core::swap(process, module, left, right),
         Instruction::Call { arity, label } => {
             core::call(process, module, arity, label, next_ip, true)
@@ -333,6 +365,13 @@ fn instruction_name(instruction: &Instruction) -> &'static str {
         Instruction::GetList { .. } => "get_list",
         Instruction::GetHd { .. } => "get_hd",
         Instruction::GetTl { .. } => "get_tl",
+        Instruction::Fmove { .. } => "fmove",
+        Instruction::Fconv { .. } => "fconv",
+        Instruction::Fadd { .. } => "fadd",
+        Instruction::Fsub { .. } => "fsub",
+        Instruction::Fmul { .. } => "fmul",
+        Instruction::Fdiv { .. } => "fdiv",
+        Instruction::Fnegate { .. } => "fnegate",
         Instruction::TypeTest { .. } => "type_test",
         Instruction::Comparison { .. } => "comparison",
         Instruction::TestArity { .. } => "test_arity",
@@ -389,7 +428,7 @@ mod tests {
     use crate::module::Module;
     use crate::process::Process;
     use crate::term::Term;
-    use crate::term::boxed::write_tuple;
+    use crate::term::boxed::{Float, write_tuple};
 
     use super::*;
 
@@ -441,5 +480,58 @@ mod tests {
             dispatch(&mut process, &module, &instruction, 1, None),
             Ok(InstructionOutcome::Continue)
         );
+    }
+
+    #[test]
+    fn dispatch_handles_float_instructions_without_unknown_opcode() {
+        let mut process = Process::new(1, 16);
+        process.set_x_reg(0, Term::small_int(41));
+        process.set_float_reg(1, 1.0).expect("valid float register");
+        let module = module(Vec::new());
+
+        assert_eq!(
+            dispatch(
+                &mut process,
+                &module,
+                &Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                1,
+                None,
+            ),
+            Ok(InstructionOutcome::Continue)
+        );
+        assert_eq!(
+            dispatch(
+                &mut process,
+                &module,
+                &Instruction::Fadd {
+                    fail: Operand::Label(0),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                2,
+                None,
+            ),
+            Ok(InstructionOutcome::Continue)
+        );
+        assert_eq!(
+            dispatch(
+                &mut process,
+                &module,
+                &Instruction::Fmove {
+                    source: Operand::FloatRegister(2),
+                    dest: Operand::X(0),
+                },
+                3,
+                None,
+            ),
+            Ok(InstructionOutcome::Continue)
+        );
+
+        let float = Float::new(process.x_reg(0)).expect("boxed float result");
+        assert_eq!(float.value(), 42.0);
     }
 }
