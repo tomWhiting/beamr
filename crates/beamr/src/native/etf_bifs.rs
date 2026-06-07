@@ -195,6 +195,7 @@ mod tests {
     use crate::native::{BifRegistryImpl, Capability, ProcessContext};
     use crate::process::Process;
     use crate::term::Term;
+    use crate::term::boxed::Cons;
     use crate::term::binary::{Binary, packed_word_count, write_binary};
     use crate::term::binary_ref::BinaryRef;
     use crate::term::boxed::{Tuple, write_cons, write_tuple};

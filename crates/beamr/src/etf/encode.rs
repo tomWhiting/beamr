@@ -490,7 +490,6 @@ fn encode_binary_iovec(
         return encode_binary(binary, out.bytes());
     }
 
-    out.flush();
     out.bytes().push(tags::BINARY_EXT);
     out.bytes().extend_from_slice(&length.to_be_bytes());
     out.flush();
