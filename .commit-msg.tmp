@@ -1,1 +1,1 @@
-harden(beamr): finalize is_tagged_tuple guard review
+feat(beamr): expand binary opcode matching handlers
