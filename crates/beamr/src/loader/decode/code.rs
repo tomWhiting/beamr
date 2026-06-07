@@ -342,7 +342,12 @@ fn decode_instruction(
         156 => type_test(TypeTestOp::IsMap, operands),
         157 => map_op(MapOp::HasMapFields, operands),
         158 => map_op(MapOp::GetMapElements, operands),
-        159 => type_test4(TypeTestOp::IsTaggedTuple, operands),
+        159 => Instruction::IsTaggedTuple {
+            fail: operands[0].clone(),
+            value: operands[1].clone(),
+            arity: operands[2].clone(),
+            tag: operands[3].clone(),
+        },
         160 => Instruction::BuildStacktrace,
         161 => Instruction::RawRaise,
         162 => Instruction::GetHd {
@@ -429,20 +434,6 @@ fn type_test(op: TypeTestOp, operands: Vec<Operand>) -> Instruction {
     }
 }
 
-fn type_test4(op: TypeTestOp, operands: Vec<Operand>) -> Instruction {
-    Instruction::Generic {
-        opcode: 159,
-        name: "is_tagged_tuple",
-        operands: vec![
-            Operand::Unsigned(op as u64),
-            operands[0].clone(),
-            operands[1].clone(),
-            operands[2].clone(),
-            operands[3].clone(),
-        ],
-    }
-}
-
 fn binary_op(op: BinaryOp, operands: Vec<Operand>) -> Instruction {
     Instruction::BinaryOp { op, operands }
 }
@@ -469,4 +460,26 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, LoadError> {
         .get(offset..offset + 4)
         .ok_or_else(|| LoadError::DecodeError("truncated Code chunk header".into()))?;
     Ok(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opcode_159_decodes_to_is_tagged_tuple() {
+        let atoms = [Atom::OK];
+        let instructions = decode_instructions(&[159, 0x75, 0x03, 0x20, 0x12], &atoms, &[])
+            .expect("decode is_tagged_tuple");
+
+        assert_eq!(
+            instructions,
+            vec![Instruction::IsTaggedTuple {
+                fail: Operand::Label(7),
+                value: Operand::X(0),
+                arity: Operand::Unsigned(2),
+                tag: Operand::Atom(Some(Atom::OK)),
+            }]
+        );
+    }
 }

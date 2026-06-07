@@ -99,6 +99,12 @@ pub enum Instruction {
         tuple: Operand,
         arity: Operand,
     },
+    IsTaggedTuple {
+        fail: Operand,
+        value: Operand,
+        arity: Operand,
+        tag: Operand,
+    },
     SelectVal {
         value: Operand,
         fail: Operand,
@@ -240,7 +246,6 @@ pub enum TypeTestOp {
     IsFunction2,
     IsBitstr,
     IsMap,
-    IsTaggedTuple,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +311,7 @@ pub(crate) fn instruction_opcode(instruction: &Instruction) -> Option<u8> {
         Instruction::CallExt { .. } => Some(7),
         Instruction::CallExtLast { .. } => Some(8),
         Instruction::CallExtOnly { .. } => Some(78),
+        Instruction::IsTaggedTuple { .. } => Some(159),
         Instruction::Generic { opcode, .. } => Some(*opcode),
         _ => None,
     }

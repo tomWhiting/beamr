@@ -229,6 +229,12 @@ fn dispatch_common(
         Instruction::TestArity { fail, tuple, arity } => {
             guards::test_arity(process, module, fail, tuple, arity)
         }
+        Instruction::IsTaggedTuple {
+            fail,
+            value,
+            arity,
+            tag,
+        } => guards::is_tagged_tuple(process, module, fail, value, arity, tag),
         Instruction::SelectVal { value, fail, list } => {
             guards::select_val(process, module, value, fail, list)
         }
@@ -317,6 +323,7 @@ fn instruction_name(instruction: &Instruction) -> &'static str {
         Instruction::TypeTest { .. } => "type_test",
         Instruction::Comparison { .. } => "comparison",
         Instruction::TestArity { .. } => "test_arity",
+        Instruction::IsTaggedTuple { .. } => "is_tagged_tuple",
         Instruction::SelectVal { .. } => "select_val",
         Instruction::SelectTupleArity { .. } => "select_tuple_arity",
         Instruction::Jump { .. } => "jump",
@@ -356,5 +363,70 @@ fn instruction_name(instruction: &Instruction) -> &'static str {
         Instruction::NifStart => "nif_start",
         Instruction::UpdateRecord { .. } => "update_record",
         _ => "implemented_core_opcode",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::atom::Atom;
+    use crate::interpreter::InstructionOutcome;
+    use crate::loader::decode::Operand;
+    use crate::module::Module;
+    use crate::process::Process;
+    use crate::term::Term;
+    use crate::term::boxed::write_tuple;
+
+    use super::*;
+
+    fn module(code: Vec<Instruction>) -> Module {
+        let label_index = code
+            .iter()
+            .enumerate()
+            .filter_map(|(ip, instruction)| match instruction {
+                Instruction::Label { label } => Some((*label, ip)),
+                _ => None,
+            })
+            .collect();
+        Module {
+            name: Atom::OK,
+            generation: 0,
+            exports: HashMap::new(),
+            label_index,
+            code,
+            literals: Vec::new(),
+            constant_pool: Default::default(),
+            resolved_imports: Vec::new(),
+            lambdas: Vec::new(),
+            string_table: Vec::new(),
+            line_info: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn dispatch_handles_is_tagged_tuple_without_unknown_opcode() {
+        let mut process = Process::new(1, 16);
+        let mut tuple_words = [0_u64; 3];
+        process.set_x_reg(
+            0,
+            write_tuple(
+                &mut tuple_words,
+                &[Term::atom(Atom::OK), Term::small_int(1)],
+            )
+            .expect("tuple"),
+        );
+        let module = module(vec![Instruction::Label { label: 9 }]);
+        let instruction = Instruction::IsTaggedTuple {
+            fail: Operand::Label(9),
+            value: Operand::X(0),
+            arity: Operand::Unsigned(2),
+            tag: Operand::Atom(Some(Atom::OK)),
+        };
+
+        assert_eq!(
+            dispatch(&mut process, &module, &instruction, 1, None),
+            Ok(InstructionOutcome::Continue)
+        );
     }
 }

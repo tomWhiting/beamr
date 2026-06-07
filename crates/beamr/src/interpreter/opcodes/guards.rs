@@ -89,6 +89,29 @@ pub fn test_arity(
     branch_if_false(module, fail, passed)
 }
 
+pub fn is_tagged_tuple(
+    process: &Process,
+    module: &Module,
+    fail: &Operand,
+    value: &Operand,
+    arity: &Operand,
+    tag: &Operand,
+) -> Result<InstructionOutcome, ExecError> {
+    let value = core::read_term(process, module, value)?;
+    let expected_arity = core::operand_usize(arity, "tagged tuple arity")?;
+    let Operand::Atom(Some(tag_atom)) = tag else {
+        return Err(ExecError::InvalidOperand("tagged tuple tag"));
+    };
+    let tag = Term::atom(*tag_atom);
+    let passed = Tuple::new(value).is_some_and(|tuple| {
+        tuple.arity() == expected_arity
+            && tuple
+                .get(0)
+                .is_some_and(|candidate| compare::exact_eq(candidate, tag))
+    });
+    branch_if_false(module, fail, passed)
+}
+
 pub fn select_val(
     process: &Process,
     module: &Module,
@@ -247,7 +270,6 @@ fn matches_type(op: TypeTestOp, value: Term, arity: Option<usize>) -> Result<boo
                 .is_some_and(|closure| usize::from(closure.arity()) == expected_arity)
         }
         TypeTestOp::IsMap => Map::new(value).is_some(),
-        TypeTestOp::IsTaggedTuple => false,
     };
     Ok(matched)
 }

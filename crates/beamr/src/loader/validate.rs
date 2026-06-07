@@ -179,6 +179,7 @@ fn validate_control_flow(
         Instruction::TypeTest { fail, .. }
         | Instruction::Comparison { fail, .. }
         | Instruction::TestArity { fail, .. }
+        | Instruction::IsTaggedTuple { fail, .. }
         | Instruction::SelectVal { fail, .. }
         | Instruction::SelectTupleArity { fail, .. }
         | Instruction::LoopRec { fail, .. }
@@ -378,6 +379,12 @@ fn instruction_operands(instruction: &Instruction) -> Vec<&Operand> {
             fail, left, right, ..
         } => vec![fail, left, right],
         Instruction::TestArity { fail, tuple, arity } => vec![fail, tuple, arity],
+        Instruction::IsTaggedTuple {
+            fail,
+            value,
+            arity,
+            tag,
+        } => vec![fail, value, arity, tag],
         Instruction::SelectVal { value, fail, list }
         | Instruction::SelectTupleArity { value, fail, list } => vec![value, fail, list],
         Instruction::Jump { target } => vec![target],
