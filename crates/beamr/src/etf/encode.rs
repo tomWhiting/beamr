@@ -4,6 +4,9 @@ use crate::atom::{Atom, AtomTable};
 use crate::term::binary::Binary;
 use crate::term::boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple};
 use crate::term::{Tag, Term};
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
+use std::io::Write;
 
 use super::tags;
 
@@ -15,12 +18,53 @@ pub enum EncodeError {
     UnsupportedTerm,
     AtomResolveFailed,
     TooDeep,
+    CompressionFailed,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct EncodeOptions {
+    pub compression_level: Option<u32>,
 }
 
 pub fn encode_term(term: Term, atom_table: &AtomTable) -> Result<Vec<u8>, EncodeError> {
     let mut out = vec![tags::VERSION];
     encode_term_inner(term, atom_table, &mut out, 0)?;
     Ok(out)
+}
+
+pub fn encode_term_with_options(
+    term: Term,
+    atom_table: &AtomTable,
+    options: EncodeOptions,
+) -> Result<Vec<u8>, EncodeError> {
+    let uncompressed = encode_term(term, atom_table)?;
+    let Some(level) = options.compression_level else {
+        return Ok(uncompressed);
+    };
+    if level == 0 {
+        return Ok(uncompressed);
+    }
+
+    let payload = uncompressed.get(1..).ok_or(EncodeError::UnsupportedTerm)?;
+    let uncompressed_size =
+        u32::try_from(payload.len()).map_err(|_| EncodeError::UnsupportedTerm)?;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(level));
+    encoder
+        .write_all(payload)
+        .map_err(|_| EncodeError::CompressionFailed)?;
+    let compressed_payload = encoder
+        .finish()
+        .map_err(|_| EncodeError::CompressionFailed)?;
+    let mut compressed = Vec::with_capacity(6 + compressed_payload.len());
+    compressed.push(tags::VERSION);
+    compressed.push(tags::COMPRESSED_EXT);
+    compressed.extend_from_slice(&uncompressed_size.to_be_bytes());
+    compressed.extend_from_slice(&compressed_payload);
+    if compressed.len() < uncompressed.len() {
+        Ok(compressed)
+    } else {
+        Ok(uncompressed)
+    }
 }
 
 fn encode_term_inner(
@@ -308,6 +352,8 @@ mod tests {
     use crate::atom::Atom;
     use crate::term::binary::write_binary;
     use crate::term::boxed::{write_bigint, write_cons, write_float, write_map, write_tuple};
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
 
     fn atoms() -> AtomTable {
         AtomTable::with_common_atoms()
@@ -471,6 +517,67 @@ mod tests {
             encode_term(binary, &atoms()),
             Ok(vec![tags::VERSION, tags::BINARY_EXT, 0, 0, 0, 3, 1, 2, 3])
         );
+    }
+
+    #[test]
+    fn compression_wraps_payload_when_smaller() {
+        let table = AtomTable::with_common_atoms();
+        let mut cells = vec![[0_u64; 2]; 512];
+        let mut list = Term::NIL;
+        for cell in cells.iter_mut().rev() {
+            list = write_cons(cell, Term::small_int(0), list).expect("cons");
+        }
+        let uncompressed = encode_term(list, &table).expect("uncompressed");
+        let compressed = encode_term_with_options(
+            list,
+            &table,
+            EncodeOptions {
+                compression_level: Some(6),
+            },
+        )
+        .expect("compressed");
+
+        assert!(compressed.len() < uncompressed.len());
+        assert_eq!(compressed[0], tags::VERSION);
+        assert_eq!(compressed[1], tags::COMPRESSED_EXT);
+        let declared =
+            u32::from_be_bytes([compressed[2], compressed[3], compressed[4], compressed[5]])
+                as usize;
+        assert_eq!(declared, uncompressed.len() - 1);
+        let mut decoder = ZlibDecoder::new(&compressed[6..]);
+        let mut inflated = Vec::new();
+        decoder.read_to_end(&mut inflated).expect("inflate");
+        assert_eq!(inflated, uncompressed[1..]);
+    }
+
+    #[test]
+    fn compression_level_zero_returns_uncompressed() {
+        let table = AtomTable::with_common_atoms();
+        let uncompressed = encode_term(Term::small_int(42), &table).expect("uncompressed");
+        let encoded = encode_term_with_options(
+            Term::small_int(42),
+            &table,
+            EncodeOptions {
+                compression_level: Some(0),
+            },
+        )
+        .expect("encoded");
+        assert_eq!(encoded, uncompressed);
+    }
+
+    #[test]
+    fn compression_does_not_expand_small_terms() {
+        let table = AtomTable::with_common_atoms();
+        let uncompressed = encode_term(Term::atom(Atom::OK), &table).expect("uncompressed");
+        let encoded = encode_term_with_options(
+            Term::atom(Atom::OK),
+            &table,
+            EncodeOptions {
+                compression_level: Some(6),
+            },
+        )
+        .expect("encoded");
+        assert_eq!(encoded, uncompressed);
     }
 
     #[test]
