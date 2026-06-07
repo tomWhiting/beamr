@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use crate::{
     gc::{
         ForwardingMap, GcError, GcStats, finish_stats, new_stats, object_size,
-        rewrite_copied_object, term_from_ptr_like,
+        release_proc_bins_in_young, rewrite_copied_object, term_from_ptr_like,
     },
     process::{Process, gc::root_set},
     term::Term,
@@ -32,6 +32,7 @@ pub(crate) fn collect(process: &mut Process, live_x: usize) -> Result<GcStats, G
         })?;
     }
 
+    release_proc_bins_in_young(process, |addr| forwarding.contains_key(&addr));
     process.heap_mut().reset_young();
     finish_stats(&mut stats, process);
     Ok(stats)

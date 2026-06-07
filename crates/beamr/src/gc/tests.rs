@@ -75,7 +75,9 @@ pub(crate) fn alloc_proc_bin(process: &mut Process, shared: &SharedBinary) -> Te
     let ptr = alloc(process, 3).expect("proc bin allocation via GC should fit");
     // SAFETY: GC allocation returned three writable words.
     let words = unsafe { std::slice::from_raw_parts_mut(ptr, 3) };
-    write_proc_bin(words, shared).expect("proc bin writer should fit allocated words")
+    let term = write_proc_bin(words, shared).expect("proc bin writer should fit allocated words");
+    process.increase_virtual_binary_heap(shared.len());
+    term
 }
 
 pub(crate) fn snapshot(term: Term) -> Snapshot {
@@ -313,13 +315,98 @@ fn proc_bin_survives_minor_gc_as_leaf_with_shared_bytes() {
 
     collect_minor(&mut process).expect("minor GC succeeds");
 
-    // B-072's GC stub retains the copied ProcBin's Arc reference; the source
-    // nursery reference is intentionally leaked until B-075 adds ProcBin sweep.
-    assert_eq!(shared.ref_count(), 3);
+    assert_eq!(shared.ref_count(), 2);
+    assert_eq!(process.virtual_binary_heap(), 100 * 1024);
     let proc_bin = ProcBin::new(process.x_reg(0)).expect("proc bin root");
     assert_eq!(proc_bin.len(), 100 * 1024);
     assert_eq!(proc_bin.as_bytes(), shared.as_bytes());
     assert_no_term_pointer_into_young(&process, process.x_reg(0));
+}
+
+#[test]
+fn unreachable_young_proc_bin_releases_shared_bytes_after_minor_gc() {
+    let shared = SharedBinary::new(vec![0xAA; 64 * 1024]);
+    let mut process = Process::new(1, 32);
+    let _unreachable = alloc_proc_bin(&mut process, &shared);
+    assert_eq!(shared.ref_count(), 2);
+    assert_eq!(process.virtual_binary_heap(), 64 * 1024);
+
+    collect_minor(&mut process).expect("minor GC succeeds");
+
+    assert_eq!(shared.ref_count(), 1);
+    assert_eq!(process.virtual_binary_heap(), 0);
+    assert_eq!(process.heap().young_used(), 0);
+}
+
+#[test]
+fn shared_proc_bin_bytes_survive_when_parent_reference_remains_after_minor_gc() {
+    let shared = SharedBinary::new(vec![0xBB; 32 * 1024]);
+    let observer = shared.clone();
+    let mut process = Process::new(1, 32);
+    let _unreachable = alloc_proc_bin(&mut process, &shared);
+    assert_eq!(shared.ref_count(), 3);
+
+    collect_minor(&mut process).expect("minor GC succeeds");
+
+    assert_eq!(shared.ref_count(), 2);
+    assert_eq!(observer.as_bytes(), shared.as_bytes());
+    assert_eq!(process.virtual_binary_heap(), 0);
+}
+
+#[test]
+fn major_gc_releases_unreachable_proc_bins_from_young_and_old_sources() {
+    let old_shared = SharedBinary::new(vec![0xCC; 8 * 1024]);
+    let young_shared = SharedBinary::new(vec![0xDD; 16 * 1024]);
+    let mut process = Process::new(1, 64);
+    let old_proc_bin = alloc_proc_bin(&mut process, &old_shared);
+    process.set_x_reg(0, old_proc_bin);
+    collect_minor(&mut process).expect("promote old proc bin");
+    process.set_x_reg(0, Term::NIL);
+    let _young_proc_bin = alloc_proc_bin(&mut process, &young_shared);
+    assert_eq!(old_shared.ref_count(), 2);
+    assert_eq!(young_shared.ref_count(), 2);
+    assert_eq!(process.virtual_binary_heap(), 24 * 1024);
+
+    collect_major(&mut process).expect("major GC succeeds");
+
+    assert_eq!(old_shared.ref_count(), 1);
+    assert_eq!(young_shared.ref_count(), 1);
+    assert_eq!(process.virtual_binary_heap(), 0);
+    assert_eq!(process.heap().young_used(), 0);
+    assert_eq!(process.heap().old_used(), 0);
+}
+
+#[test]
+fn surviving_proc_bin_has_stable_ref_count_after_major_gc() {
+    let shared = SharedBinary::new(vec![0xEE; 12 * 1024]);
+    let mut process = Process::new(1, 32);
+    let proc_bin = alloc_proc_bin(&mut process, &shared);
+    process.set_x_reg(0, proc_bin);
+    assert_eq!(shared.ref_count(), 2);
+
+    collect_major(&mut process).expect("major GC succeeds");
+
+    assert_eq!(shared.ref_count(), 2);
+    assert_eq!(process.virtual_binary_heap(), 12 * 1024);
+    let proc_bin = ProcBin::new(process.x_reg(0)).expect("proc bin root");
+    assert_eq!(proc_bin.as_bytes(), shared.as_bytes());
+}
+
+#[test]
+fn virtual_binary_pressure_triggers_minor_gc_even_with_nursery_space() {
+    let shared = SharedBinary::new(vec![0xEF; 1024]);
+    let mut process = Process::new(1, 233);
+    let _unreachable = alloc_proc_bin(&mut process, &shared);
+    let used_before = process.heap().young_used();
+    assert!(process.heap().available() > 1);
+    assert_eq!(shared.ref_count(), 2);
+
+    let _ptr = alloc(&mut process, 1).expect("allocation under binary pressure succeeds");
+
+    assert_eq!(process.heap().young_used(), 1);
+    assert!(used_before > process.heap().young_used());
+    assert_eq!(shared.ref_count(), 1);
+    assert_eq!(process.virtual_binary_heap(), 0);
 }
 
 #[test]

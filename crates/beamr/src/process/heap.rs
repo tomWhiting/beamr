@@ -8,6 +8,8 @@
 
 use std::fmt;
 
+use crate::term::boxed::{BoxedHeader, BoxedTag};
+
 /// Default per-process heap capacity, in machine words.
 pub const DEFAULT_HEAP_SIZE: usize = 233;
 
@@ -62,6 +64,7 @@ impl std::error::Error for HeapFull {}
 #[derive(Debug)]
 pub(crate) struct HeapRegion {
     words: Vec<u64>,
+    allocations: Vec<(usize, usize)>,
     used: usize,
     high_water_mark: usize,
 }
@@ -70,6 +73,7 @@ impl HeapRegion {
     fn new(capacity: usize) -> Self {
         Self {
             words: vec![0; capacity],
+            allocations: Vec::new(),
             used: 0,
             high_water_mark: 0,
         }
@@ -88,6 +92,7 @@ impl HeapRegion {
         let ptr = self.words.as_mut_ptr().wrapping_add(start);
         self.used = end;
         self.high_water_mark = self.high_water_mark.max(self.used);
+        self.allocations.push((start, words));
         Ok(ptr)
     }
 
@@ -103,6 +108,7 @@ impl HeapRegion {
         let start = self.used;
         self.used = end;
         self.high_water_mark = self.high_water_mark.max(self.used);
+        self.allocations.push((start, words));
         Ok(&mut self.words[start..end])
     }
 
@@ -124,6 +130,7 @@ impl HeapRegion {
 
     fn reset(&mut self) {
         self.words[..self.used].fill(0);
+        self.allocations.clear();
         self.used = 0;
     }
 
@@ -132,6 +139,22 @@ impl HeapRegion {
         let end = start.saturating_add(self.capacity() * std::mem::size_of::<u64>());
         let addr = ptr.addr();
         addr >= start && addr < end
+    }
+
+    pub(crate) fn visit_allocated_boxed_objects(
+        &self,
+        mut visit: impl FnMut(*const u64, BoxedTag, usize),
+    ) {
+        for (offset, allocation_words) in &self.allocations {
+            let ptr = self.words.as_ptr().wrapping_add(*offset);
+            let header = self.words[*offset];
+            if let Some(tag) = BoxedHeader::tag(header) {
+                let object_words = 1 + BoxedHeader::size(header);
+                if object_words <= *allocation_words {
+                    visit(ptr, tag, object_words);
+                }
+            }
+        }
     }
 }
 
@@ -297,6 +320,19 @@ impl Heap {
     #[must_use]
     pub fn contains(&self, ptr: *const u64) -> bool {
         self.young_contains(ptr) || self.old_contains(ptr)
+    }
+
+    pub(crate) fn visit_young_boxed_objects(&self, visit: impl FnMut(*const u64, BoxedTag, usize)) {
+        self.young.visit_allocated_boxed_objects(visit);
+    }
+
+    pub(crate) fn visit_old_boxed_objects(&self, visit: impl FnMut(*const u64, BoxedTag, usize)) {
+        self.old.visit_allocated_boxed_objects(visit);
+    }
+
+    pub(crate) fn visit_boxed_objects(&self, mut visit: impl FnMut(*const u64, BoxedTag, usize)) {
+        self.young.visit_allocated_boxed_objects(&mut visit);
+        self.old.visit_allocated_boxed_objects(visit);
     }
 
     /// Reclaim the nursery wholesale after all live young objects are promoted.
