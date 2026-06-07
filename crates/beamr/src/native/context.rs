@@ -244,6 +244,11 @@ impl<'process> ProcessContext<'process> {
         self.process.as_ref().map(|process| process.heap())
     }
 
+    /// Return the attached calling process for native operations that must use process APIs.
+    pub fn process_mut(&mut self) -> Option<&mut Process> {
+        self.process.as_deref_mut()
+    }
+
     /// Enqueue a message to the attached calling process when `target` is its pid.
     pub fn send_to_attached_self(&mut self, target: u64, message: Term) -> bool {
         let Some(process) = self.process.as_deref_mut() else {
