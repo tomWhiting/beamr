@@ -362,14 +362,16 @@ fn call_external_target(
             let shutdown_requested = context.take_shutdown_request();
             let suspend = context.take_suspend();
             let trampoline_req = context.take_trampoline();
+            let exception_class = context.take_exception_class();
+            let exception_stacktrace = context.take_exception_stacktrace();
             context.detach_process();
             let result = match call_result {
                 Ok(value) => value,
                 Err(reason) => {
                     let exception = crate::process::Exception {
-                        class: Term::atom(crate::atom::Atom::ERROR),
+                        class: exception_class,
                         reason,
-                        stacktrace: Term::NIL,
+                        stacktrace: exception_stacktrace,
                     };
                     return super::messaging::raise_exception(process, exception);
                 }

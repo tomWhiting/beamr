@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::atom::AtomTable;
+use crate::atom::{Atom, AtomTable};
 use crate::io::{IoSink, NullSink};
 use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
 use crate::process::Process;
@@ -79,6 +79,8 @@ pub struct ProcessContext<'process> {
     shutdown_requested: bool,
     trampoline: Option<TrampolineRequest>,
     suspend: Option<SuspendRequest>,
+    exception_class: Term,
+    exception_stacktrace: Term,
 }
 
 impl fmt::Debug for ProcessContext<'_> {
@@ -114,6 +116,8 @@ impl fmt::Debug for ProcessContext<'_> {
             .field("shutdown_requested", &self.shutdown_requested)
             .field("trampoline", &self.trampoline)
             .field("suspend", &self.suspend)
+            .field("exception_class", &self.exception_class)
+            .field("exception_stacktrace", &self.exception_stacktrace)
             .finish()
     }
 }
@@ -144,6 +148,8 @@ impl<'process> ProcessContext<'process> {
             trampoline: None,
             suspend: None,
             shutdown_requested: false,
+            exception_class: Term::atom(Atom::ERROR),
+            exception_stacktrace: Term::NIL,
         }
     }
 
@@ -166,6 +172,8 @@ impl<'process> ProcessContext<'process> {
             trampoline: None,
             suspend: None,
             shutdown_requested: false,
+            exception_class: Term::atom(Atom::ERROR),
+            exception_stacktrace: Term::NIL,
         }
     }
 
@@ -448,6 +456,32 @@ impl<'process> ProcessContext<'process> {
     /// Take the suspend request, clearing it from the context.
     pub fn take_suspend(&mut self) -> Option<SuspendRequest> {
         self.suspend.take()
+    }
+
+    // --- Exception metadata ---
+
+    /// Set the class to use if the current BIF returns `Err(reason)`.
+    pub fn set_exception_class(&mut self, class: Term) {
+        self.exception_class = class;
+    }
+
+    /// Take the pending exception class, resetting subsequent BIF errors to `error`.
+    pub fn take_exception_class(&mut self) -> Term {
+        let class = self.exception_class;
+        self.exception_class = Term::atom(Atom::ERROR);
+        class
+    }
+
+    /// Set the stacktrace to use if the current BIF returns `Err(reason)`.
+    pub fn set_exception_stacktrace(&mut self, trace: Term) {
+        self.exception_stacktrace = trace;
+    }
+
+    /// Take the pending exception stacktrace, resetting subsequent BIF errors to `[]`.
+    pub fn take_exception_stacktrace(&mut self) -> Term {
+        let stacktrace = self.exception_stacktrace;
+        self.exception_stacktrace = Term::NIL;
+        stacktrace
     }
 
     // --- Heap allocation helpers ---

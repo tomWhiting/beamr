@@ -9,6 +9,7 @@ pub mod bifs;
 pub mod capability;
 pub mod code_management_bifs;
 mod context;
+pub mod exception_bifs;
 pub mod gate3_bifs;
 pub mod gleam_ffi;
 pub mod links;

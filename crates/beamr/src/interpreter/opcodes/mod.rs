@@ -257,6 +257,7 @@ fn dispatch_common(
         Instruction::Raise { stacktrace, reason } => {
             messaging::raise(process, module, stacktrace, reason)
         }
+        Instruction::RawRaise => messaging::raw_raise(process),
         Instruction::Badmatch { value } => messaging::badmatch(process, module, value),
         Instruction::CaseEnd { value } => messaging::case_end(process, module, value),
         Instruction::IfEnd => messaging::if_end(process),

@@ -821,6 +821,60 @@ fn unknown_opcode_reports_opcode_number() {
 }
 
 #[test]
+fn call_ext_bif_error_preserves_exception_class_and_stacktrace() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Try {
+                destination: Operand::X(10),
+                label: Operand::Label(20),
+            },
+            Instruction::Move {
+                source: Operand::Atom(Some(Atom::THROW)),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Atom(Some(Atom::BADMATCH)),
+                destination: Operand::X(1),
+            },
+            Instruction::Move {
+                source: Operand::Integer(321),
+                destination: Operand::X(2),
+            },
+            Instruction::CallExt {
+                arity: Operand::Unsigned(3),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+            Instruction::Label { label: 20 },
+            Instruction::TryCase {
+                source: Operand::X(10),
+            },
+            Instruction::Return,
+        ],
+    );
+    module.resolved_imports.push(ResolvedImport {
+        module: Atom::OK,
+        function: Atom::OK,
+        arity: 3,
+        target: ResolvedImportTarget::Native(NativeEntry {
+            function: crate::native::exception_bifs::bif_raise_3,
+            is_dirty: false,
+            capability: Capability::Pure,
+        }),
+    });
+    let mut process = Process::new(1, 64);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::atom(Atom::THROW));
+    assert_eq!(process.x_reg(1), Term::atom(Atom::BADMATCH));
+    assert_eq!(process.x_reg(2), Term::small_int(321));
+}
+
+#[test]
 fn proof_of_life_load_spawn_execute_exit_pipeline_fixture() {
     let atoms = AtomTable::new();
     let module_atom = atoms.intern("gleam_fib_fixture");
