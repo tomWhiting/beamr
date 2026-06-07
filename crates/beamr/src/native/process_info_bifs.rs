@@ -31,7 +31,7 @@ const PROCESS_INFO_BIFS: &[ProcessInfoBif] = &[
 ];
 
 /// Process-info item understood by the scheduler-backed introspection facility.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ProcessInfoItem {
     /// `current_function` → `{Module, Function, Arity}`.
     CurrentFunction,
@@ -339,7 +339,7 @@ mod tests {
 
     fn tuple_elements(term: Term) -> Vec<Term> {
         let tuple = Tuple::new(term).expect("tuple term");
-        (0..tuple.arity()).map(|index| tuple.get(index)).collect()
+        (0..tuple.arity()).filter_map(|index| tuple.get(index)).collect()
     }
 
     fn list_elements(mut term: Term) -> Vec<Term> {

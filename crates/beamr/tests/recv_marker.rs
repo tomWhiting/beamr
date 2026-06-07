@@ -68,6 +68,7 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
         supervision_facility: None,
         io_sink: None,
         code_management_facility: None,
+        process_info_facility: None,
     };
 
     assert_eq!(
