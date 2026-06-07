@@ -8,10 +8,11 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::links::LinkError;
 use crate::native::{
     BifRegistryImpl, Capability, ExceptionClass, NativeFn, NativeRegistrationError, ProcessContext,
+    SpawnOptions,
 };
 use crate::process::{ExitReason, Priority};
 use crate::term::Term;
-use crate::term::boxed::{Closure, Cons};
+use crate::term::boxed::{Closure, Cons, Tuple};
 
 type Gate2Bif = (&'static str, u8, Capability, NativeFn);
 
@@ -21,6 +22,8 @@ const GATE2_BIFS: &[Gate2Bif] = &[
     ("spawn_link", 3, Capability::Pure, bif_spawn_link),
     ("spawn_monitor", 1, Capability::Pure, bif_spawn_monitor_1),
     ("spawn_monitor", 3, Capability::Pure, bif_spawn_monitor_3),
+    ("spawn_opt", 2, Capability::Pure, bif_spawn_opt_2),
+    ("spawn_opt", 4, Capability::Pure, bif_spawn_opt_4),
     ("link", 1, Capability::Pure, bif_link),
     ("unlink", 1, Capability::Pure, bif_unlink),
     ("process_flag", 2, Capability::Pure, bif_process_flag),
@@ -72,6 +75,16 @@ pub fn bif_spawn_monitor_1(args: &[Term], context: &mut ProcessContext) -> Resul
 /// erlang:spawn_monitor/3 — creates and monitors a new process atomically.
 pub fn bif_spawn_monitor_3(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     spawn_monitor_mfa_impl(args, context)
+}
+
+/// erlang:spawn_opt/2 — creates a process from a zero-arity fun with options.
+pub fn bif_spawn_opt_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    spawn_opt_fun_impl(args, context)
+}
+
+/// erlang:spawn_opt/4 — creates a process executing Module:Function(Args) with options.
+pub fn bif_spawn_opt_4(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    spawn_opt_mfa_impl(args, context)
 }
 
 /// erlang:link/1 — establishes a bidirectional link to the target process.
@@ -286,6 +299,53 @@ fn spawn_monitor_fun_impl(args: &[Term], context: &mut ProcessContext) -> Result
     spawn_monitor_tuple(result.pid, result.reference, context)
 }
 
+fn spawn_opt_mfa_impl(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [module_term, function_term, args_term, options_term] = args else {
+        return Err(badarg());
+    };
+    let module = module_term.as_atom().ok_or_else(badarg)?;
+    let function = function_term.as_atom().ok_or_else(badarg)?;
+    let spawn_args = list_to_vec(*args_term)?;
+    let options = parse_spawn_options(*options_term, context)?;
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let facility = context.spawn_facility().ok_or_else(badarg)?;
+    let result = facility
+        .spawn_with_options(caller_pid, module, function, spawn_args, options)
+        .map_err(|_| badarg())?;
+    spawn_opt_result(result.pid, result.reference, context)
+}
+
+fn spawn_opt_fun_impl(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [fun_term, options_term] = args else {
+        return Err(badarg());
+    };
+    let closure = Closure::new(*fun_term).ok_or_else(badarg)?;
+    if closure.arity() != 0 || closure.num_free() != 0 {
+        return Err(badarg());
+    }
+    let module = closure.module().ok_or_else(badarg)?;
+    let lambda_index = closure.function_index() as u32;
+    let options = parse_spawn_options(*options_term, context)?;
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let facility = context.spawn_facility().ok_or_else(badarg)?;
+    let result = facility
+        .spawn_lambda_with_options(caller_pid, module, lambda_index, options)
+        .map_err(|_| badarg())?;
+    spawn_opt_result(result.pid, result.reference, context)
+}
+
+fn spawn_opt_result(
+    child_pid: u64,
+    reference: Option<u64>,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    if let Some(reference) = reference {
+        spawn_monitor_tuple(child_pid, reference, context)
+    } else {
+        Term::try_pid(child_pid).ok_or_else(badarg)
+    }
+}
+
 fn spawn_monitor_tuple(
     child_pid: u64,
     reference: u64,
@@ -307,6 +367,41 @@ fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
         elements.push(cons.head());
         current = cons.tail();
     }
+}
+
+fn parse_spawn_options(term: Term, context: &ProcessContext) -> Result<SpawnOptions, Term> {
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let link_atom = atom_table.intern("link");
+    let monitor_atom = atom_table.intern("monitor");
+    let priority_atom = atom_table.intern("priority");
+    let min_heap_size_atom = atom_table.intern("min_heap_size");
+    let mut options = SpawnOptions::default();
+    for option in list_to_vec(term)? {
+        if option.as_atom() == Some(link_atom) {
+            options.link = true;
+        } else if option.as_atom() == Some(monitor_atom) {
+            options.monitor = true;
+        } else if let Some(tuple) = Tuple::new(option) {
+            if tuple.get(0) == Some(Term::atom(priority_atom)) {
+                if tuple.arity() != 2 {
+                    return Err(badarg());
+                }
+                let level = tuple.get(1).ok_or_else(badarg)?;
+                options.priority = Some(atom_to_priority(context, level)?);
+            } else if tuple.get(0) == Some(Term::atom(min_heap_size_atom)) {
+                if tuple.arity() != 2 {
+                    return Err(badarg());
+                }
+                let value = tuple.get(1).ok_or_else(badarg)?;
+                let size = value.as_small_int().ok_or_else(badarg)?;
+                if size < 0 {
+                    return Err(badarg());
+                }
+                options.min_heap_size = Some(size as usize);
+            }
+        }
+    }
+    Ok(options)
 }
 
 fn atom_to_bool(term: Term) -> Option<bool> {

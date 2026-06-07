@@ -8,6 +8,7 @@
 use std::fmt;
 
 use crate::atom::Atom;
+use crate::process::Priority;
 use crate::term::Term;
 
 /// Error returned when a spawn request fails.
@@ -80,6 +81,43 @@ pub trait SpawnFacility: Send + Sync {
         module: Atom,
         lambda_index: u32,
     ) -> Result<SpawnMonitorResult, SpawnError>;
+
+    /// Request creation of a new process with spawn options applied atomically
+    /// before the child can execute.
+    fn spawn_with_options(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        function: Atom,
+        args: Vec<Term>,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError>;
+
+    /// Spawn a process from a lambda with spawn options applied atomically
+    /// before the child can execute.
+    fn spawn_lambda_with_options(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        lambda_index: u32,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError>;
+}
+
+/// Options accepted by `erlang:spawn_opt/2,4`.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SpawnOptions {
+    pub link: bool,
+    pub monitor: bool,
+    pub priority: Option<Priority>,
+    pub min_heap_size: Option<usize>,
+}
+
+/// Successful spawn result that may include a monitor reference.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SpawnOptionsResult {
+    pub pid: u64,
+    pub reference: Option<u64>,
 }
 
 /// Successful atomic spawn-monitor result.

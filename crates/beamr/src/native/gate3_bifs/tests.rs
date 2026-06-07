@@ -1,6 +1,8 @@
 use super::*;
 use crate::atom::{Atom, AtomTable};
-use crate::native::spawn::{SpawnError, SpawnFacility, SpawnMonitorResult, SpawnRecord};
+use crate::native::spawn::{
+    SpawnError, SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult, SpawnRecord,
+};
 use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
@@ -583,6 +585,40 @@ impl SpawnFacility for MockSpawnFacility {
         Ok(SpawnMonitorResult {
             pid: self.next_pid,
             reference: 0,
+        })
+    }
+
+    fn spawn_with_options(
+        &self,
+        _caller_pid: u64,
+        _module: Atom,
+        _function: Atom,
+        _args: Vec<Term>,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError> {
+        Ok(SpawnOptionsResult {
+            pid: self.next_pid,
+            reference: options.monitor.then_some(0),
+        })
+    }
+
+    fn spawn_lambda_with_options(
+        &self,
+        caller_pid: u64,
+        _module: Atom,
+        _lambda_index: u32,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError> {
+        self.lambda_records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(LambdaSpawnRecord {
+                caller_pid,
+                link_to: options.link.then_some(caller_pid),
+            });
+        Ok(SpawnOptionsResult {
+            pid: self.next_pid,
+            reference: options.monitor.then_some(0),
         })
     }
 }

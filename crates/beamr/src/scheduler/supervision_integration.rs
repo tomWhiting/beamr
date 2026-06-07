@@ -9,14 +9,18 @@ use std::{collections::VecDeque, sync::Arc};
 use crate::atom::Atom;
 use crate::namespace::NamespaceId;
 use crate::native::links::{LinkError, LinkFacility};
-use crate::native::spawn::{SpawnError, SpawnFacility, SpawnMonitorResult};
+use crate::native::spawn::{
+    SpawnError, SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult,
+};
 use crate::native::supervision::{MonitorResult, SupervisionError, SupervisionFacility};
-use crate::process::{ExitReason, Priority, ProcessStatus};
+use crate::process::heap::DEFAULT_HEAP_SIZE;
+use crate::process::{ExitReason, Priority, Process, ProcessStatus};
 use crate::supervision::link;
 use crate::supervision::monitor;
 use crate::term::Term;
 
 use super::execution::{cleanup_exited_process, wake_process};
+use super::spawning::SpawnRequest;
 use super::{ProcessSlot, ScheduledProcess, SharedState, lock_or_recover, namespace_registry};
 
 /// Propagate exit signals through links and deliver DOWN messages through
@@ -413,6 +417,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             namespace_id,
             group_leader,
             priority: Priority::Normal,
+            heap_size: DEFAULT_HEAP_SIZE,
         });
 
         if let Some(parent_pid) = link_to {
@@ -488,6 +493,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             namespace_id,
             group_leader,
             priority: Priority::Normal,
+            heap_size: DEFAULT_HEAP_SIZE,
         });
 
         if let Some(parent_pid) = link_to {
@@ -519,6 +525,27 @@ impl SpawnFacility for SchedulerSpawnFacility {
         lambda_index: u32,
     ) -> Result<SpawnMonitorResult, SpawnError> {
         self.spawn_lambda_with_monitor(caller_pid, module, lambda_index)
+    }
+
+    fn spawn_with_options(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        function: Atom,
+        args: Vec<Term>,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError> {
+        self.spawn_mfa_with_options(caller_pid, module, function, args, options)
+    }
+
+    fn spawn_lambda_with_options(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        lambda_index: u32,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError> {
+        self.spawn_lambda_with_options_impl(caller_pid, module, lambda_index, options)
     }
 }
 
@@ -558,9 +585,115 @@ impl SchedulerSpawnFacility {
             namespace_id,
             group_leader,
             priority: Priority::Normal,
+            heap_size: DEFAULT_HEAP_SIZE,
         });
 
         Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))
+    }
+
+    fn spawn_mfa_with_options(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        function: Atom,
+        args: Vec<Term>,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError> {
+        let namespace_id = self.caller_namespace(caller_pid);
+        let group_leader = self.caller_group_leader(caller_pid);
+        let registry = namespace_registry(&self.shared, namespace_id)
+            .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
+        let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
+        let entry = registry
+            .lookup_mfa(module, function, arity)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
+        let ip = entry
+            .module
+            .label_ip(entry.label)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
+
+        let request = SpawnRequest {
+            pid: self.next_child_pid(),
+            module: entry.module.name,
+            module_version: Arc::clone(&entry.module),
+            instruction_pointer: ip,
+            args,
+            namespace_id,
+            group_leader,
+            priority: options.priority.unwrap_or(Priority::Normal),
+            heap_size: options.min_heap_size.unwrap_or(DEFAULT_HEAP_SIZE),
+        };
+        Ok(self.insert_options_child(caller_pid, request, options))
+    }
+
+    fn spawn_lambda_with_options_impl(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        lambda_index: u32,
+        options: SpawnOptions,
+    ) -> Result<SpawnOptionsResult, SpawnError> {
+        let namespace_id = self.caller_namespace(caller_pid);
+        let group_leader = self.caller_group_leader(caller_pid);
+        let registry = namespace_registry(&self.shared, namespace_id)
+            .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
+        let loaded = registry.lookup(module).ok_or(SpawnError::UnresolvedMfa)?;
+        let lambda = loaded
+            .lambdas
+            .get(lambda_index as usize)
+            .ok_or(SpawnError::UnresolvedMfa)?;
+        let ip = loaded
+            .label_ip(lambda.label)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
+
+        let request = SpawnRequest {
+            pid: self.next_child_pid(),
+            module: loaded.name,
+            module_version: Arc::clone(&loaded),
+            instruction_pointer: ip,
+            args: Vec::new(),
+            namespace_id,
+            group_leader,
+            priority: options.priority.unwrap_or(Priority::Normal),
+            heap_size: options.min_heap_size.unwrap_or(DEFAULT_HEAP_SIZE),
+        };
+        Ok(self.insert_options_child(caller_pid, request, options))
+    }
+
+    fn next_child_pid(&self) -> u64 {
+        let child_pid = self
+            .shared
+            .next_pid
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.shared.process_table.spawn_with_pid(child_pid);
+        child_pid
+    }
+
+    fn insert_options_child(
+        &self,
+        caller_pid: u64,
+        request: SpawnRequest,
+        options: SpawnOptions,
+    ) -> SpawnOptionsResult {
+        let child_pid = request.pid;
+        let mut child = super::spawning::build_process(request);
+        if options.link {
+            child.add_link(caller_pid);
+            add_link_to_slot(&self.shared, caller_pid, child_pid);
+        }
+        if options.monitor {
+            let result = self.register_monitor_insert_and_wake(caller_pid, child_pid, child);
+            SpawnOptionsResult {
+                pid: result.pid,
+                reference: Some(result.reference),
+            }
+        } else {
+            self.insert_and_wake(child_pid, child);
+            SpawnOptionsResult {
+                pid: child_pid,
+                reference: None,
+            }
+        }
     }
 
     fn spawn_lambda_with_monitor(
@@ -597,6 +730,7 @@ impl SchedulerSpawnFacility {
             namespace_id,
             group_leader,
             priority: Priority::Normal,
+            heap_size: DEFAULT_HEAP_SIZE,
         });
 
         Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))
@@ -619,11 +753,19 @@ impl SchedulerSpawnFacility {
             reference
         };
 
+        self.insert_and_wake(child_pid, child);
+
+        SpawnMonitorResult {
+            pid: child_pid,
+            reference,
+        }
+    }
+
+    fn insert_and_wake(&self, child_pid: u64, child: Process) {
         self.shared.process_bodies.insert(
             child_pid,
             std::sync::Mutex::new(ProcessSlot::Present(ScheduledProcess(child))),
         );
-
         self.shared
             .spawn_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -632,11 +774,6 @@ impl SchedulerSpawnFacility {
             ws.woken.push((child_pid, 0));
         }
         self.shared.wake_condvar.notify_all();
-
-        SpawnMonitorResult {
-            pid: child_pid,
-            reference,
-        }
     }
 
     fn caller_namespace(&self, caller_pid: u64) -> NamespaceId {

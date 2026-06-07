@@ -52,7 +52,7 @@ pub use process_info_bifs::{
 };
 pub use registry::RegistryFacility;
 pub use select::SelectFacility;
-pub use spawn::{SpawnFacility, SpawnMonitorResult};
+pub use spawn::{SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult};
 pub use supervision::SupervisionFacility;
 pub use system_info_bifs::SystemInfoFacility;
 
