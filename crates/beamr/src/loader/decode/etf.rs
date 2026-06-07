@@ -1,27 +1,23 @@
 //! External Term Format (ETF) literal decoder for `LitT` chunk entries.
 //!
 //! Extracted from `chunks.rs` so the recursive decoder and its hardening
-//! helpers live in one focused unit. Every recursive descent is depth-bounded
-//! (`MAX_ETF_DEPTH`) and every length-prefixed preallocation is validated
-//! against the remaining input before any `Vec::with_capacity`, so a crafted
-//! `.beam` literal table cannot stack-overflow or OOM the loader.
+//! helpers live in one focused unit. Recursive descent, decoded nodes, and
+//! allocations are budgeted so a crafted `.beam` literal table cannot
+//! stack-overflow or OOM the loader.
 
-use super::chunks::{Cursor, Literal};
-use super::{MAX_ETF_DEPTH, MAX_TABLE_ENTRIES};
+use super::bounded::BoundedCursor;
+use super::budget::DecodeBudget;
+use super::chunks::Literal;
 use crate::atom::AtomTable;
 use crate::error::LoadError;
 
-/// Decode one ETF term starting at the cursor. `depth` is the current nesting
-/// level; recursive arms increment it and reject once `MAX_ETF_DEPTH` is
-/// exceeded.
+/// Decode one ETF term starting at the cursor.
 pub(super) fn decode_external_term(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedCursor<'_>,
     atom_table: &AtomTable,
-    depth: usize,
+    budget: &mut DecodeBudget,
 ) -> Result<Literal, LoadError> {
-    if depth > MAX_ETF_DEPTH {
-        return Err(nesting_limit_error());
-    }
+    budget.charge_node()?;
     let tag = cursor.read_u8()?;
     match tag {
         70 => {
@@ -44,57 +40,81 @@ pub(super) fn decode_external_term(
         }
         104 => {
             let arity = usize::from(cursor.read_u8()?);
-            decode_tuple(cursor, arity, atom_table, depth)
+            decode_tuple(cursor, arity, atom_table, budget)
         }
         105 => {
             let arity = cursor.read_u32()? as usize;
-            decode_tuple(cursor, arity, atom_table, depth)
+            decode_tuple(cursor, arity, atom_table, budget)
         }
         106 => Ok(Literal::Nil),
         107 => {
             let len = usize::from(cursor.read_u16()?);
+            budget.charge_bytes(len)?;
             Ok(Literal::String(cursor.read_bytes(len)?.to_vec()))
         }
         108 => {
             let len = cursor.read_u32()? as usize;
             // Each list element is at least one tag byte, so a count larger
             // than the remaining input is impossible — reject before allocating.
-            ensure_count(len, cursor.remaining().len(), "ETF list length")?;
-            let child_depth = next_depth(depth)?;
-            let mut elements = Vec::with_capacity(len);
-            for _ in 0..len {
-                elements.push(decode_external_term(cursor, atom_table, child_depth)?);
-            }
-            let tail = decode_external_term(cursor, atom_table, child_depth)?;
-            Ok(Literal::List(elements, Box::new(tail)))
+            cursor.ensure_count(len, 1, "ETF list length")?;
+            budget.charge_bytes(len.checked_mul(std::mem::size_of::<Literal>()).ok_or_else(
+                || LoadError::DecodeError("ETF list allocation size overflow".into()),
+            )?)?;
+            budget.descend()?;
+            let result = (|| {
+                let mut elements = Vec::with_capacity(len);
+                for _ in 0..len {
+                    elements.push(decode_external_term(cursor, atom_table, budget)?);
+                }
+                let tail = decode_external_term(cursor, atom_table, budget)?;
+                Ok(Literal::List(elements, Box::new(tail)))
+            })();
+            budget.ascend();
+            result
         }
         109 => {
             let len = cursor.read_u32()? as usize;
+            budget.charge_bytes(len)?;
             Ok(Literal::Binary(cursor.read_bytes(len)?.to_vec()))
         }
-        110 | 111 => decode_big_integer(cursor, tag),
+        110 | 111 => decode_big_integer(cursor, tag, budget),
         113 => {
             // EXPORT_EXT: fun Module:Function/Arity encoded as
             // tag(113) + Module(atom_ext) + Function(atom_ext) + Arity(small_integer_ext).
             // Decoded as a 3-tuple {Module, Function, Arity}.
-            let child_depth = next_depth(depth)?;
-            let module = decode_external_term(cursor, atom_table, child_depth)?;
-            let function = decode_external_term(cursor, atom_table, child_depth)?;
-            let arity = decode_external_term(cursor, atom_table, child_depth)?;
-            Ok(Literal::Tuple(vec![module, function, arity]))
+            budget.descend()?;
+            let result = (|| {
+                let module = decode_external_term(cursor, atom_table, budget)?;
+                let function = decode_external_term(cursor, atom_table, budget)?;
+                let arity = decode_external_term(cursor, atom_table, budget)?;
+                budget.charge_bytes(3 * std::mem::size_of::<Literal>())?;
+                Ok(Literal::Tuple(vec![module, function, arity]))
+            })();
+            budget.ascend();
+            result
         }
         116 => {
             let len = cursor.read_u32()? as usize;
             // Each map entry is at least two tag bytes (key + value).
-            ensure_count(len, cursor.remaining().len() / 2, "ETF map size")?;
-            let child_depth = next_depth(depth)?;
-            let mut pairs = Vec::with_capacity(len);
-            for _ in 0..len {
-                let key = decode_external_term(cursor, atom_table, child_depth)?;
-                let value = decode_external_term(cursor, atom_table, child_depth)?;
-                pairs.push((key, value));
-            }
-            Ok(Literal::Map(pairs))
+            cursor.ensure_count(len, 2, "ETF map size")?;
+            budget.charge_bytes(
+                len.checked_mul(std::mem::size_of::<(Literal, Literal)>())
+                    .ok_or_else(|| {
+                        LoadError::DecodeError("ETF map allocation size overflow".into())
+                    })?,
+            )?;
+            budget.descend()?;
+            let result = (|| {
+                let mut pairs = Vec::with_capacity(len);
+                for _ in 0..len {
+                    let key = decode_external_term(cursor, atom_table, budget)?;
+                    let value = decode_external_term(cursor, atom_table, budget)?;
+                    pairs.push((key, value));
+                }
+                Ok(Literal::Map(pairs))
+            })();
+            budget.ascend();
+            result
         }
         other => Err(LoadError::DecodeError(format!(
             "unsupported ETF literal tag {other}"
@@ -109,22 +129,35 @@ fn decode_atom_literal(bytes: &[u8], atom_table: &AtomTable) -> Result<Literal, 
 }
 
 fn decode_tuple(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedCursor<'_>,
     arity: usize,
     atom_table: &AtomTable,
-    depth: usize,
+    budget: &mut DecodeBudget,
 ) -> Result<Literal, LoadError> {
     // Each element is at least one tag byte.
-    ensure_count(arity, cursor.remaining().len(), "ETF tuple arity")?;
-    let child_depth = next_depth(depth)?;
-    let mut elements = Vec::with_capacity(arity);
-    for _ in 0..arity {
-        elements.push(decode_external_term(cursor, atom_table, child_depth)?);
-    }
-    Ok(Literal::Tuple(elements))
+    cursor.ensure_count(arity, 1, "ETF tuple arity")?;
+    budget.charge_bytes(
+        arity
+            .checked_mul(std::mem::size_of::<Literal>())
+            .ok_or_else(|| LoadError::DecodeError("ETF tuple allocation size overflow".into()))?,
+    )?;
+    budget.descend()?;
+    let result = (|| {
+        let mut elements = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            elements.push(decode_external_term(cursor, atom_table, budget)?);
+        }
+        Ok(Literal::Tuple(elements))
+    })();
+    budget.ascend();
+    result
 }
 
-fn decode_big_integer(cursor: &mut Cursor<'_>, tag: u8) -> Result<Literal, LoadError> {
+fn decode_big_integer(
+    cursor: &mut BoundedCursor<'_>,
+    tag: u8,
+    budget: &mut DecodeBudget,
+) -> Result<Literal, LoadError> {
     let len = if tag == 110 {
         usize::from(cursor.read_u8()?)
     } else {
@@ -148,38 +181,15 @@ fn decode_big_integer(cursor: &mut Cursor<'_>, tag: u8) -> Result<Literal, LoadE
             .map(Literal::Integer)
             .map_err(|_| LoadError::DecodeError(format!("ETF bignum {value} is outside i64 range")))
     } else {
-        let mut out = Vec::with_capacity(len + 1);
+        let capacity = len
+            .checked_add(1)
+            .ok_or_else(|| LoadError::DecodeError("ETF bignum allocation size overflow".into()))?;
+        budget.charge_bytes(capacity)?;
+        let mut out = Vec::with_capacity(capacity);
         out.push(sign);
         out.extend_from_slice(bytes);
         Ok(Literal::BigInteger(out))
     }
-}
-
-/// Increment a recursion depth, refusing once it would exceed `MAX_ETF_DEPTH`.
-fn next_depth(depth: usize) -> Result<usize, LoadError> {
-    if depth >= MAX_ETF_DEPTH {
-        return Err(nesting_limit_error());
-    }
-    Ok(depth + 1)
-}
-
-/// Validate a length-prefixed count read from untrusted bytes before it is used
-/// to preallocate. `feasible` is the maximum number of elements the remaining
-/// input could possibly contain (remaining bytes / min bytes-per-element).
-fn ensure_count(count: usize, feasible: usize, label: &str) -> Result<(), LoadError> {
-    if count > MAX_TABLE_ENTRIES {
-        return Err(LoadError::DecodeError(format!("{label} exceeds limit")));
-    }
-    if count > feasible {
-        return Err(LoadError::DecodeError(format!(
-            "{label} impossible for payload size"
-        )));
-    }
-    Ok(())
-}
-
-fn nesting_limit_error() -> LoadError {
-    LoadError::DecodeError("ETF nesting exceeds limit".into())
 }
 
 #[cfg(test)]
@@ -187,9 +197,14 @@ mod tests {
     use super::*;
 
     fn decode(bytes: &[u8]) -> Result<Literal, LoadError> {
+        let mut budget = DecodeBudget::default();
+        decode_with_budget(bytes, &mut budget)
+    }
+
+    fn decode_with_budget(bytes: &[u8], budget: &mut DecodeBudget) -> Result<Literal, LoadError> {
         let atoms = AtomTable::with_common_atoms();
-        let mut cursor = Cursor::new(bytes);
-        decode_external_term(&mut cursor, &atoms, 0)
+        let mut cursor = BoundedCursor::new(bytes);
+        decode_external_term(&mut cursor, &atoms, budget)
     }
 
     /// Build a term that nests single-element lists `levels` deep, terminated
@@ -209,7 +224,7 @@ mod tests {
     #[test]
     fn deeply_nested_list_rejected_not_stack_overflow() {
         // Far past the depth limit: a 2-byte-per-level overflow attempt.
-        let bytes = nested_single_element_lists(MAX_ETF_DEPTH + 16);
+        let bytes = nested_single_element_lists(super::super::budget::MAX_ETF_DEPTH + 16);
         match decode(&bytes) {
             Err(LoadError::DecodeError(message)) => {
                 assert!(
@@ -260,5 +275,35 @@ mod tests {
     fn map_size_impossible_for_payload_rejected_before_alloc() {
         let bytes = [116u8, 0xFF, 0xFF, 0xFF, 0xFF];
         assert!(matches!(decode(&bytes), Err(LoadError::DecodeError(_))));
+    }
+
+    #[test]
+    fn wide_flat_list_rejected_by_node_budget() {
+        let bytes = [108u8, 0, 0, 0, 3, 97, 1, 97, 2, 97, 3, 106];
+        let mut budget = DecodeBudget::new(16, 3, 4096, 16);
+        match decode_with_budget(&bytes, &mut budget) {
+            Err(LoadError::DecodeError(message)) => {
+                assert!(
+                    message.contains("node budget"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected node-budget DecodeError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deeply_nested_list_rejected_by_small_custom_budget() {
+        let bytes = nested_single_element_lists(3);
+        let mut budget = DecodeBudget::new(1, 32, 4096, 16);
+        match decode_with_budget(&bytes, &mut budget) {
+            Err(LoadError::DecodeError(message)) => {
+                assert!(
+                    message.contains("nesting exceeds limit"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected nesting DecodeError, got {other:?}"),
+        }
     }
 }

@@ -1,0 +1,1 @@
+feat(loader): add bounded decode cursor and per-load budgets
