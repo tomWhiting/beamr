@@ -260,7 +260,7 @@ fn expect_label_operand(
             ));
         }
     };
-    if labels.contains(&label) {
+    if label == 0 || labels.contains(&label) {
         Ok(label)
     } else {
         Err(validation_error(
