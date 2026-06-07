@@ -18,6 +18,7 @@ crossbeam-deque = "0.8.6"
 crossbeam-queue = "0.3.12"
 dashmap = "6.1.0"
 flate2 = "1.1.9"
+libc = "0.2.186"
 num_cpus = "1.17.0"
 rand = "0.10.1"
 serde_json = { version = "1.0.150", optional = true }

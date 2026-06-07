@@ -855,7 +855,7 @@ impl Process {
     /// heap terms alive after process death.
     pub fn terminate(&mut self, reason: ExitReason) {
         self.status = ProcessStatus::Exited(reason);
-        crate::gc::release_all_proc_bins(self);
+        crate::gc::release_all_refcounted_resources(self);
         self.virtual_binary_heap = 0;
         self.heap = Heap::new(1);
         self.stack = Stack::new();

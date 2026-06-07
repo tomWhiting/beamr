@@ -7,6 +7,7 @@
 
 mod accessors;
 
+pub use crate::io::resource::FdResource;
 pub use accessors::{BigInt, Closure, Cons, Float, Map, ProcBin, Reference, SubBinary, Tuple};
 
 use crate::{atom::Atom, term::Term};
@@ -30,6 +31,7 @@ pub enum BoxedTag {
     MatchContext = 0x18,
     ProcBin = 0x19,
     SubBinary = 0x1A,
+    FdResource = 0x1B,
 }
 
 impl BoxedTag {
@@ -46,6 +48,7 @@ impl BoxedTag {
             bits if bits == Self::MatchContext as u64 => Some(Self::MatchContext),
             bits if bits == Self::ProcBin as u64 => Some(Self::ProcBin),
             bits if bits == Self::SubBinary as u64 => Some(Self::SubBinary),
+            bits if bits == Self::FdResource as u64 => Some(Self::FdResource),
             _ => None,
         }
     }
@@ -207,6 +210,7 @@ mod tests {
             BoxedTag::MatchContext,
             BoxedTag::ProcBin,
             BoxedTag::SubBinary,
+            BoxedTag::FdResource,
         ];
 
         for (index, tag) in tags.iter().copied().enumerate() {

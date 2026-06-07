@@ -2,6 +2,7 @@
 //! DOWN message delivery, and cascade deaths work correctly through the
 //! scheduler's cleanup_exited_process path.
 
+use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
@@ -9,6 +10,7 @@ use dashmap::DashMap;
 
 use super::*;
 use crate::atom::Atom;
+use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, write_fd_resource};
 use crate::process::ProcessStatus;
 use crate::process::registry::ProcessTable;
 use crate::scheduler::execution::{
@@ -141,6 +143,44 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
     }
 }
 
+fn allocate_fd_resource_for_process(shared: &SharedState, pid: u64, inner: Arc<FdInner>) -> RawFd {
+    let fd = inner.fd();
+    let entry = shared
+        .process_bodies
+        .get(&pid)
+        .expect("process body exists");
+    let mut slot = lock_or_recover(&entry);
+    let ProcessSlot::Present(ScheduledProcess(process)) = &mut *slot else {
+        panic!("process {pid} is present");
+    };
+    let ptr = process
+        .heap_mut()
+        .alloc(FD_RESOURCE_WORDS)
+        .expect("fd resource allocation fits");
+    // SAFETY: heap allocation returned the fixed FdResource word count.
+    let words = unsafe { std::slice::from_raw_parts_mut(ptr, FD_RESOURCE_WORDS) };
+    let term = write_fd_resource(words, inner).expect("fd resource writer fits");
+    process.set_x_reg(0, term);
+    fd
+}
+
+fn pipe_read_fd() -> RawFd {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` points to two valid RawFd slots for libc to initialize.
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    assert_eq!(rc, 0);
+    // SAFETY: close the write end so tests only manage the read end.
+    let _closed = unsafe { libc::close(fds[1]) };
+    fds[0]
+}
+
+fn fd_is_closed(fd: RawFd) -> bool {
+    let mut byte = [0_u8; 1];
+    // SAFETY: `byte` is a valid writable buffer for one-byte read attempts.
+    let rc = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), 1) };
+    rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+}
+
 fn make_shared_state() -> Arc<SharedState> {
     let module_registry = Arc::new(ModuleRegistry::new());
     let namespace_store = DashMap::new();
@@ -176,6 +216,32 @@ fn make_shared_state() -> Arc<SharedState> {
         idle_parks: AtomicUsize::new(0),
         dirty_results: DashMap::new(),
     })
+}
+
+#[test]
+fn cleanup_exited_process_closes_fd_resources_owned_by_process() {
+    let shared = make_shared_state();
+    let pid = insert_process(&shared, 1);
+    let fd = pipe_read_fd();
+    let fd = allocate_fd_resource_for_process(&shared, pid, Arc::new(FdInner::new(fd, pid)));
+
+    cleanup_exited_process(&shared, pid, ExitReason::Normal);
+
+    assert!(fd_is_closed(fd));
+}
+
+#[test]
+fn cleanup_exited_process_does_not_explicitly_close_fd_resources_owned_elsewhere() {
+    let shared = make_shared_state();
+    let pid = insert_process(&shared, 1);
+    let inner = Arc::new(FdInner::new(pipe_read_fd(), 999));
+    let fd = allocate_fd_resource_for_process(&shared, pid, Arc::clone(&inner));
+
+    cleanup_exited_process(&shared, pid, ExitReason::Normal);
+
+    assert!(!fd_is_closed(fd));
+    drop(inner);
+    assert!(fd_is_closed(fd));
 }
 
 #[test]

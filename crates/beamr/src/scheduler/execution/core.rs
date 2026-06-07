@@ -1,13 +1,15 @@
 //! Private process time-slice execution helpers.
 
 use crate::atom::Atom;
+use crate::gc::release_all_refcounted_resources;
 use crate::hook::HookDecision;
 use crate::interpreter::{self, ExecutionResult};
+use crate::io::resource::close_owned_resource_at;
 use crate::native::{ExceptionClass, NativeEntry, ProcessContext};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
 use crate::scheduler::dirty::{DirtyJob, DirtyResult, DirtySchedulerKind, oneshot};
-use crate::term::Term;
+use crate::term::{Term, boxed::BoxedTag};
 use std::sync::Arc;
 
 use crate::scheduler::{
@@ -444,11 +446,29 @@ pub(in crate::scheduler) fn cleanup_exited_process(
 ) {
     shared.exit_tombstones.insert(pid, reason);
     supervision_integration::propagate_exit(shared, pid, reason);
+    close_owned_fd_resources_on_exit(shared, pid);
     let _removed = shared.process_table.remove(pid);
     let _removed_body = shared.process_bodies.remove(&pid);
     let mut wait_set = lock_or_recover(&shared.wait_set);
     wait_set.waiting.remove(&pid);
     wait_set.woken.retain(|(woken_pid, _)| *woken_pid != pid);
+}
+
+fn close_owned_fd_resources_on_exit(shared: &SharedState, pid: u64) {
+    let Some(entry) = shared.process_bodies.get(&pid) else {
+        return;
+    };
+    let mut slot = lock_or_recover(&entry);
+    let ProcessSlot::Present(ScheduledProcess(process)) = &mut *slot else {
+        return;
+    };
+
+    process.heap().visit_boxed_objects(|ptr, tag, _words| {
+        if tag == BoxedTag::FdResource {
+            close_owned_resource_at(ptr, pid);
+        }
+    });
+    release_all_refcounted_resources(process);
 }
 
 fn take_process(process: &mut Process) -> Process {

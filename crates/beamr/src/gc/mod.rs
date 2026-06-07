@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 const WORD_BYTES: usize = std::mem::size_of::<u64>();
 
+use crate::io::resource::{release_fd_inner_arc, retain_fd_inner_arc};
 use crate::process::{Process, heap::HeapFull};
 use crate::term::{
     Term,
@@ -233,7 +234,7 @@ pub(crate) fn rewrite_copied_object(
         }
         BoxedTag::MatchContext => rewrite_word(ptr, 3, work_queue, &mut copy_term)?,
         BoxedTag::SubBinary => rewrite_word(ptr, 1, work_queue, &mut copy_term)?,
-        BoxedTag::ProcBin => {}
+        BoxedTag::ProcBin | BoxedTag::FdResource => {}
         BoxedTag::Float
         | BoxedTag::BigInt
         | BoxedTag::Reference
@@ -258,51 +259,66 @@ fn rewrite_word(
     Ok(())
 }
 
-pub(crate) fn release_proc_bins_in_young(
+pub(crate) fn release_refcounted_resources_in_young(
     process: &mut Process,
     is_forwarded: impl Fn(usize) -> bool,
 ) {
-    if process.virtual_binary_heap() == 0 {
-        return;
-    }
     let mut unreachable_bytes = 0_usize;
     process
         .heap()
-        .visit_young_boxed_objects(|ptr, tag, _words| {
-            if tag == BoxedTag::ProcBin {
+        .visit_young_boxed_objects(|ptr, tag, _words| match tag {
+            BoxedTag::ProcBin => {
                 let bytes = release_proc_bin_arc(ptr);
                 if !is_forwarded(ptr.addr()) {
                     unreachable_bytes = unreachable_bytes.saturating_add(bytes);
                 }
             }
+            BoxedTag::FdResource => release_fd_inner_arc(ptr),
+            _ => {}
         });
     process.decrease_virtual_binary_heap(unreachable_bytes);
 }
 
-pub(crate) fn release_all_proc_bins(process: &mut Process) {
+pub(crate) fn release_all_refcounted_resources(process: &mut Process) {
     let mut released_bytes = 0_usize;
-    process.heap().visit_boxed_objects(|ptr, tag, _words| {
-        if tag == BoxedTag::ProcBin {
-            released_bytes = released_bytes.saturating_add(release_proc_bin_arc(ptr));
-        }
-    });
+    process
+        .heap()
+        .visit_boxed_objects(|ptr, tag, _words| match tag {
+            BoxedTag::ProcBin => {
+                released_bytes = released_bytes.saturating_add(release_proc_bin_arc(ptr));
+            }
+            BoxedTag::FdResource => release_fd_inner_arc(ptr),
+            _ => {}
+        });
     process.decrease_virtual_binary_heap(released_bytes);
 }
 
-pub(crate) fn release_all_proc_bins_in_compacted_sources(
+pub(crate) fn release_all_refcounted_resources_in_compacted_sources(
     process: &mut Process,
     is_forwarded: impl Fn(usize) -> bool,
 ) {
     let mut unreachable_bytes = 0_usize;
-    process.heap().visit_boxed_objects(|ptr, tag, _words| {
-        if tag == BoxedTag::ProcBin {
-            let bytes = release_proc_bin_arc(ptr);
-            if !is_forwarded(ptr.addr()) {
-                unreachable_bytes = unreachable_bytes.saturating_add(bytes);
+    process
+        .heap()
+        .visit_boxed_objects(|ptr, tag, _words| match tag {
+            BoxedTag::ProcBin => {
+                let bytes = release_proc_bin_arc(ptr);
+                if !is_forwarded(ptr.addr()) {
+                    unreachable_bytes = unreachable_bytes.saturating_add(bytes);
+                }
             }
-        }
-    });
+            BoxedTag::FdResource => release_fd_inner_arc(ptr),
+            _ => {}
+        });
     process.decrease_virtual_binary_heap(unreachable_bytes);
+}
+
+pub(crate) fn retain_refcounted_resource_arc(ptr: *const u64) {
+    match BoxedHeader::tag(read_raw_word(ptr, 0)) {
+        Some(BoxedTag::ProcBin) => retain_proc_bin_arc(ptr),
+        Some(BoxedTag::FdResource) => retain_fd_inner_arc(ptr),
+        _ => {}
+    }
 }
 
 pub(crate) fn retain_proc_bin_arc(ptr: *const u64) {

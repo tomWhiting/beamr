@@ -9,13 +9,11 @@ use std::collections::VecDeque;
 use crate::{
     gc::{
         ForwardingMap, GcError, GcStats, finish_stats, new_stats, object_size,
-        release_proc_bins_in_young, retain_proc_bin_arc, rewrite_copied_object, term_from_ptr_like,
+        release_refcounted_resources_in_young, retain_refcounted_resource_arc,
+        rewrite_copied_object, term_from_ptr_like,
     },
     process::{Process, gc::root_set},
-    term::{
-        Term,
-        boxed::{BoxedHeader, BoxedTag},
-    },
+    term::Term,
 };
 
 pub(crate) fn collect(process: &mut Process, live_x: usize) -> Result<GcStats, GcError> {
@@ -35,7 +33,7 @@ pub(crate) fn collect(process: &mut Process, live_x: usize) -> Result<GcStats, G
         })?;
     }
 
-    release_proc_bins_in_young(process, |addr| forwarding.contains_key(&addr));
+    release_refcounted_resources_in_young(process, |addr| forwarding.contains_key(&addr));
     process.heap_mut().reset_young();
     finish_stats(&mut stats, process);
     Ok(stats)
@@ -72,8 +70,8 @@ fn copy_young_term(
     let dst = process.heap_mut().alloc_old(words)?;
     crate::process::heap::Heap::write_words(dst, &copied_words);
     let copied = term_from_ptr_like(term, dst.cast_const());
-    if term.is_boxed() && BoxedHeader::tag(copied_words[0]) == Some(BoxedTag::ProcBin) {
-        retain_proc_bin_arc(dst.cast_const());
+    if term.is_boxed() {
+        retain_refcounted_resource_arc(dst.cast_const());
     }
     forwarding.insert(src.addr(), copied);
     work_queue.push_back(copied);

@@ -36,6 +36,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "flate2",
+ "libc",
  "num_cpus",
  "proptest",
  "rand 0.10.1",

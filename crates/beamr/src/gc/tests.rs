@@ -7,6 +7,7 @@ use super::*;
 use crate::{
     atom::Atom,
     constant_pool::materialise_literals,
+    io::resource::{FD_RESOURCE_WORDS, FdInner, FdResource, write_fd_resource},
     loader::{Instruction, Literal},
     module::Module,
     term::{
@@ -79,6 +80,13 @@ pub(crate) fn alloc_proc_bin(process: &mut Process, shared: &SharedBinary) -> Te
     let term = write_proc_bin(words, shared).expect("proc bin writer should fit allocated words");
     process.increase_virtual_binary_heap(shared.len());
     term
+}
+
+pub(crate) fn alloc_fd_resource(process: &mut Process, inner: Arc<FdInner>) -> Term {
+    let ptr = alloc(process, FD_RESOURCE_WORDS).expect("fd resource allocation via GC should fit");
+    // SAFETY: GC allocation returned the fixed FdResource word count.
+    let words = unsafe { std::slice::from_raw_parts_mut(ptr, FD_RESOURCE_WORDS) };
+    write_fd_resource(words, inner).expect("fd resource writer should fit allocated words")
 }
 
 pub(crate) fn snapshot(term: Term) -> Snapshot {
@@ -423,6 +431,45 @@ fn surviving_proc_bin_has_stable_ref_count_after_major_gc() {
     assert_eq!(process.virtual_binary_heap(), 12 * 1024);
     let proc_bin = ProcBin::new(process.x_reg(0)).expect("proc bin root");
     assert_eq!(proc_bin.as_bytes(), shared.as_bytes());
+}
+
+#[test]
+fn fd_resource_survives_minor_and_major_gc_with_stable_ref_count() {
+    let inner = Arc::new(FdInner::new(-1, 77));
+    let mut process = Process::new(77, 32);
+    let resource = alloc_fd_resource(&mut process, Arc::clone(&inner));
+    process.set_x_reg(0, resource);
+    assert_eq!(Arc::strong_count(&inner), 2);
+
+    collect_minor(&mut process).expect("minor GC succeeds");
+
+    assert_eq!(Arc::strong_count(&inner), 2);
+    let resource = FdResource::new(process.x_reg(0)).expect("fd resource after minor");
+    assert_eq!(resource.fd(), -1);
+    assert_eq!(resource.owner_pid(), 77);
+    assert_no_term_pointer_into_young(&process, process.x_reg(0));
+
+    collect_major(&mut process).expect("major GC succeeds");
+
+    assert_eq!(Arc::strong_count(&inner), 2);
+    let resource = FdResource::new(process.x_reg(0)).expect("fd resource after major");
+    assert_eq!(resource.fd(), -1);
+    assert_eq!(resource.owner_pid(), 77);
+    release_all_refcounted_resources(&mut process);
+    assert_eq!(Arc::strong_count(&inner), 1);
+}
+
+#[test]
+fn unreachable_fd_resource_releases_heap_arc_after_minor_gc() {
+    let inner = Arc::new(FdInner::new(-1, 77));
+    let mut process = Process::new(77, 32);
+    let _unreachable = alloc_fd_resource(&mut process, Arc::clone(&inner));
+    assert_eq!(Arc::strong_count(&inner), 2);
+
+    collect_minor(&mut process).expect("minor GC succeeds");
+
+    assert_eq!(Arc::strong_count(&inner), 1);
+    assert_eq!(process.heap().young_used(), 0);
 }
 
 #[test]
