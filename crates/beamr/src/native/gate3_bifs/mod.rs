@@ -12,7 +12,9 @@ mod type_conversion;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::atom::{Atom, AtomTable};
-use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
+use crate::native::{
+    BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
+};
 use crate::term::Term;
 use crate::term::binary::Binary;
 use crate::term::boxed::{Cons, Tuple};
@@ -27,45 +29,55 @@ pub use type_conversion::{
     bif_map_get,
 };
 
-type Gate3Bif = (&'static str, u8, NativeFn);
+type Gate3Bif = (&'static str, u8, Capability, NativeFn);
 
 const GATE3_BIFS: &[Gate3Bif] = &[
-    ("element", 2, bif_element),
-    ("send", 2, bif_send),
-    ("tuple_size", 1, bif_tuple_size),
-    ("make_ref", 0, bif_make_ref),
-    ("is_process_alive", 1, bif_is_process_alive),
-    ("spawn", 1, bif_spawn_1),
-    ("spawn_link", 1, bif_spawn_link_1),
+    ("element", 2, Capability::Pure, bif_element),
+    ("send", 2, Capability::Pure, bif_send),
+    ("tuple_size", 1, Capability::Pure, bif_tuple_size),
+    ("make_ref", 0, Capability::Pure, bif_make_ref),
+    (
+        "is_process_alive",
+        1,
+        Capability::Pure,
+        bif_is_process_alive,
+    ),
+    ("spawn", 1, Capability::Pure, bif_spawn_1),
+    ("spawn_link", 1, Capability::Pure, bif_spawn_link_1),
     // Type conversion BIFs (R1)
-    ("atom_to_binary", 2, bif_atom_to_binary),
-    ("binary_to_existing_atom", 1, bif_binary_to_existing_atom),
-    ("binary_to_list", 1, bif_binary_to_list),
-    ("list_to_binary", 1, bif_list_to_binary),
-    ("map_get", 2, bif_map_get),
+    ("atom_to_binary", 2, Capability::Pure, bif_atom_to_binary),
+    (
+        "binary_to_existing_atom",
+        1,
+        Capability::Pure,
+        bif_binary_to_existing_atom,
+    ),
+    ("binary_to_list", 1, Capability::Pure, bif_binary_to_list),
+    ("list_to_binary", 1, Capability::Pure, bif_list_to_binary),
+    ("map_get", 2, Capability::Pure, bif_map_get),
     // Process registry BIFs (R2)
-    ("register", 2, bif_register),
-    ("unregister", 1, bif_unregister),
-    ("whereis", 1, bif_whereis),
+    ("register", 2, Capability::Pure, bif_register),
+    ("unregister", 1, Capability::Pure, bif_unregister),
+    ("whereis", 1, Capability::Pure, bif_whereis),
     // demonitor/2 (R3)
-    ("demonitor", 2, bif_demonitor_2),
+    ("demonitor", 2, Capability::Pure, bif_demonitor_2),
     // OTP support BIFs (B-032)
-    ("get", 0, bif_get),
-    ("pid_to_list", 1, bif_pid_to_list),
-    ("byte_size", 1, bif_byte_size),
-    ("iolist_size", 1, bif_iolist_size),
-    ("++", 2, bif_list_append),
-    ("not", 1, bif_not),
-    ("/=", 2, bif_not_equal),
-    ("length", 1, bif_length),
-    ("round", 1, bif_round),
-    ("trunc", 1, bif_trunc),
-    ("is_bitstring", 1, bif_is_bitstring),
-    ("is_map_key", 2, bif_is_map_key),
-    ("map_size", 1, bif_map_size),
-    ("binary_part", 3, bif_binary_part),
-    ("bit_size", 1, bif_bit_size),
-    ("-", 1, bif_unary_minus),
+    ("get", 0, Capability::Pure, bif_get),
+    ("pid_to_list", 1, Capability::Pure, bif_pid_to_list),
+    ("byte_size", 1, Capability::Pure, bif_byte_size),
+    ("iolist_size", 1, Capability::Pure, bif_iolist_size),
+    ("++", 2, Capability::Pure, bif_list_append),
+    ("not", 1, Capability::Pure, bif_not),
+    ("/=", 2, Capability::Pure, bif_not_equal),
+    ("length", 1, Capability::Pure, bif_length),
+    ("round", 1, Capability::Pure, bif_round),
+    ("trunc", 1, Capability::Pure, bif_trunc),
+    ("is_bitstring", 1, Capability::Pure, bif_is_bitstring),
+    ("is_map_key", 2, Capability::Pure, bif_is_map_key),
+    ("map_size", 1, Capability::Pure, bif_map_size),
+    ("binary_part", 3, Capability::Pure, bif_binary_part),
+    ("bit_size", 1, Capability::Pure, bif_bit_size),
+    ("-", 1, Capability::Pure, bif_unary_minus),
 ];
 
 /// Global monotonic counter for make_ref/0.
@@ -78,9 +90,9 @@ pub fn register_gate3_bifs(
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");
 
-    for &(function_name, arity, native_function) in GATE3_BIFS {
+    for &(function_name, arity, capability, native_function) in GATE3_BIFS {
         let function = atom_table.intern(function_name);
-        registry.register(erlang, function, arity, native_function)?;
+        registry.register(erlang, function, arity, native_function, capability)?;
     }
 
     Ok(())

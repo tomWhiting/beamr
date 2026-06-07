@@ -5,7 +5,7 @@ use crate::loader::decode::BinaryOp;
 use crate::loader::decode::compact::Operand;
 use crate::loader::{Instruction, Literal};
 use crate::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
-use crate::native::{NativeEntry, ProcessContext};
+use crate::native::{Capability, NativeEntry, ProcessContext};
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Cons, Tuple};
@@ -359,6 +359,7 @@ fn call_ext_invokes_registered_native_and_tail_call_deallocates() {
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add_one,
             is_dirty: false,
+            capability: Capability::Pure,
         }),
     };
     let mut module = module(
@@ -513,6 +514,35 @@ fn call_ext_unresolved_target_returns_undef() {
             function,
             arity: 0,
         }) if module == target_atom && function == missing_atom
+    ));
+}
+
+#[test]
+fn call_ext_denial_stub_target_returns_mfa_rich_undef() {
+    let atoms = AtomTable::new();
+    let caller_atom = atoms.intern("caller");
+    let target_atom = atoms.intern("meridian_ffi");
+    let run_cmd_atom = atoms.intern("run_cmd");
+    let registry = ModuleRegistry::new();
+    let caller = registry.insert(call_ext_caller(
+        caller_atom,
+        target_atom,
+        run_cmd_atom,
+        ResolvedImportTarget::Native(NativeEntry {
+            function: crate::native::denial_stub,
+            is_dirty: false,
+            capability: Capability::ExternalIo,
+        }),
+    ));
+    let mut process = Process::new(1, 32);
+
+    assert!(matches!(
+        run_with_registry(&mut process, &caller, &registry),
+        Err(ExecError::Undef {
+            module,
+            function,
+            arity: 0,
+        }) if module == target_atom && function == run_cmd_atom
     ));
 }
 
@@ -757,6 +787,7 @@ fn guard_bif_failure_branches_without_exiting_process() {
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add,
             is_dirty: false,
+            capability: Capability::Pure,
         }),
     });
     let mut process = Process::new(1, 16);

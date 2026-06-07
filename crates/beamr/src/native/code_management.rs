@@ -6,7 +6,9 @@
 use crate::atom::{Atom, AtomTable};
 use crate::error::LoadError;
 use crate::module::PurgeError;
-use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
+use crate::native::{
+    BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
+};
 use crate::scheduler::{HotLoadResult, PurgeResult};
 use crate::term::Term;
 use crate::term::binary::Binary;
@@ -29,14 +31,19 @@ pub trait CodeManagementFacility: Send + Sync {
     fn check_process_code(&self, pid: u64, module: Atom) -> bool;
 }
 
-type CodeBif = (&'static str, u8, NativeFn);
+type CodeBif = (&'static str, u8, Capability, NativeFn);
 
 const CODE_BIFS: &[CodeBif] = &[
-    ("load_module", 2, load_module),
-    ("purge_module", 1, purge_module),
-    ("delete_module", 1, delete_module),
-    ("check_old_code", 1, check_old_code),
-    ("check_process_code", 2, check_process_code),
+    ("load_module", 2, Capability::ExternalIo, load_module),
+    ("purge_module", 1, Capability::ExternalIo, purge_module),
+    ("delete_module", 1, Capability::ExternalIo, delete_module),
+    ("check_old_code", 1, Capability::ExternalIo, check_old_code),
+    (
+        "check_process_code",
+        2,
+        Capability::ExternalIo,
+        check_process_code,
+    ),
 ];
 
 /// Registers code-management BIFs under the `erlang` module.
@@ -45,9 +52,9 @@ pub fn register_code_management_bifs(
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");
-    for &(function_name, arity, native_function) in CODE_BIFS {
+    for &(function_name, arity, capability, native_function) in CODE_BIFS {
         let function = atom_table.intern(function_name);
-        registry.register(erlang, function, arity, native_function)?;
+        registry.register(erlang, function, arity, native_function, capability)?;
     }
     Ok(())
 }

@@ -27,7 +27,9 @@ use crate::loader::{self, Instruction};
 use crate::module::PurgeError;
 use crate::module::{Module, ModuleRegistry};
 use crate::namespace::NamespaceId;
-use crate::native::{BifRegistryImpl, CodeManagementFacility};
+use crate::native::{
+    AllCapabilitiesPolicy, BifRegistryImpl, CapabilityPolicy, CodeManagementFacility,
+};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
@@ -56,6 +58,7 @@ pub(super) struct SharedState {
     next_namespace_id: AtomicU64,
     atom_table: Arc<AtomTable>,
     bif_registry: Arc<BifRegistryImpl>,
+    capability_policy: Arc<dyn CapabilityPolicy>,
     spawn_counter: AtomicUsize,
     thread_count: usize,
     next_pid: AtomicU64,
@@ -146,6 +149,23 @@ impl Scheduler {
         atom_table: Arc<AtomTable>,
         bif_registry: Arc<BifRegistryImpl>,
     ) -> Result<Self, String> {
+        Self::with_code_server_and_policy(
+            config,
+            module_registry,
+            atom_table,
+            bif_registry,
+            Arc::new(AllCapabilitiesPolicy),
+        )
+    }
+
+    /// Create and start a scheduler with explicit code-server state and native capability policy.
+    pub fn with_code_server_and_policy(
+        config: SchedulerConfig,
+        module_registry: Arc<ModuleRegistry>,
+        atom_table: Arc<AtomTable>,
+        bif_registry: Arc<BifRegistryImpl>,
+        capability_policy: Arc<dyn CapabilityPolicy>,
+    ) -> Result<Self, String> {
         let thread_count = configured_thread_count(config.thread_count);
         let namespace_store = DashMap::new();
         namespace_store.insert(NamespaceId::DEFAULT, Arc::clone(&module_registry));
@@ -157,6 +177,7 @@ impl Scheduler {
             next_namespace_id: AtomicU64::new(1),
             atom_table,
             bif_registry,
+            capability_policy,
             spawn_counter: AtomicUsize::new(0),
             thread_count,
             next_pid: AtomicU64::new(0),
@@ -1095,11 +1116,12 @@ fn hot_load_module_in_shared(
     registry: &Arc<ModuleRegistry>,
     bytes: &[u8],
 ) -> Result<HotLoadResult, LoadError> {
-    let (staged, _report) = loader::prepare_module(
+    let (staged, _report) = loader::prepare_module_with_policy(
         bytes,
         &shared.atom_table,
         registry,
         shared.bif_registry.as_ref(),
+        shared.capability_policy.as_ref(),
     )?;
     let module_name = staged.name;
     if registry.lookup_old(module_name).is_some() {

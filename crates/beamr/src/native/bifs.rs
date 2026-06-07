@@ -9,31 +9,33 @@ use std::cmp::Ordering;
 use std::time::Duration;
 
 use crate::atom::{Atom, AtomTable};
-use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
+use crate::native::{
+    BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
+};
 use crate::term::Term;
 use crate::term::boxed::write_tuple;
 use crate::term::compare;
 use crate::timer::TimerRef;
 
-type Gate1Bif = (&'static str, u8, NativeFn);
+type Gate1Bif = (&'static str, u8, Capability, NativeFn);
 
 const GATE1_BIFS: &[Gate1Bif] = &[
-    ("+", 2, add),
-    ("-", 2, subtract),
-    ("*", 2, multiply),
-    ("div", 2, div),
-    ("rem", 2, rem),
-    ("<", 2, less_than),
-    (">=", 2, greater_equal),
-    ("=:=", 2, exact_equal),
-    ("=/=", 2, exact_not_equal),
-    ("error", 1, error),
-    ("display", 1, display),
-    ("get_module_info", 1, get_module_info_1),
-    ("get_module_info", 2, get_module_info_2),
-    ("send_after", 3, send_after),
-    ("start_timer", 3, start_timer),
-    ("cancel_timer", 1, cancel_timer),
+    ("+", 2, Capability::Pure, add),
+    ("-", 2, Capability::Pure, subtract),
+    ("*", 2, Capability::Pure, multiply),
+    ("div", 2, Capability::Pure, div),
+    ("rem", 2, Capability::Pure, rem),
+    ("<", 2, Capability::Pure, less_than),
+    (">=", 2, Capability::Pure, greater_equal),
+    ("=:=", 2, Capability::Pure, exact_equal),
+    ("=/=", 2, Capability::Pure, exact_not_equal),
+    ("error", 1, Capability::Pure, error),
+    ("display", 1, Capability::ExternalIo, display),
+    ("get_module_info", 1, Capability::Pure, get_module_info_1),
+    ("get_module_info", 2, Capability::Pure, get_module_info_2),
+    ("send_after", 3, Capability::Clock, send_after),
+    ("start_timer", 3, Capability::Clock, start_timer),
+    ("cancel_timer", 1, Capability::Clock, cancel_timer),
 ];
 
 /// Registers all Gate 1 BIFs into the VM-owned BIF registry.
@@ -43,9 +45,9 @@ pub fn register_gate1_bifs(
 ) -> Result<(), NativeRegistrationError> {
     let erlang = atom_table.intern("erlang");
 
-    for &(function_name, arity, native_function) in GATE1_BIFS {
+    for &(function_name, arity, capability, native_function) in GATE1_BIFS {
         let function = atom_table.intern(function_name);
-        registry.register(erlang, function, arity, native_function)?;
+        registry.register(erlang, function, arity, native_function, capability)?;
     }
 
     crate::native::code_management_bifs::register_code_management_bifs(registry, atom_table)?;

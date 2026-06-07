@@ -11,28 +11,45 @@
 use std::time::Duration;
 
 use crate::atom::{Atom, AtomTable};
-use crate::native::{BifRegistryImpl, NativeFn, NativeRegistrationError, ProcessContext};
+use crate::native::{
+    BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
+};
 use crate::term::Term;
 
 /// The Gleam `nil` atom, distinct from the BEAM empty list (`Term::NIL`).
 const GLEAM_NIL: Term = Term::atom(Atom::NIL);
 
-type GleamBif = (&'static str, u8, NativeFn);
+type GleamBif = (&'static str, u8, Capability, NativeFn);
 
 const GLEAM_PROCESS_BIFS: &[GleamBif] = &[
     // R1: Process flag and link wrappers
-    ("trap_exits", 1, bif_trap_exits),
-    ("link", 1, bif_gleam_link),
-    ("demonitor", 1, bif_gleam_demonitor),
+    ("trap_exits", 1, Capability::Pure, bif_trap_exits),
+    ("link", 1, Capability::Pure, bif_gleam_link),
+    ("demonitor", 1, Capability::Pure, bif_gleam_demonitor),
     // R2: Sleep, flush, registry wrappers
-    ("sleep", 1, bif_sleep),
-    ("sleep_forever", 0, bif_sleep_forever),
-    ("flush_messages", 0, bif_flush_messages),
-    ("register_process", 2, bif_register_process),
-    ("unregister_process", 1, bif_unregister_process),
-    ("process_named", 1, bif_process_named),
+    ("sleep", 1, Capability::Clock, bif_sleep),
+    ("sleep_forever", 0, Capability::Clock, bif_sleep_forever),
+    ("flush_messages", 0, Capability::Pure, bif_flush_messages),
+    (
+        "register_process",
+        2,
+        Capability::Pure,
+        bif_register_process,
+    ),
+    (
+        "unregister_process",
+        1,
+        Capability::Pure,
+        bif_unregister_process,
+    ),
+    ("process_named", 1, Capability::Pure, bif_process_named),
     // R3: pid_from_dynamic
-    ("pid_from_dynamic", 1, bif_pid_from_dynamic),
+    (
+        "pid_from_dynamic",
+        1,
+        Capability::Pure,
+        bif_pid_from_dynamic,
+    ),
 ];
 
 /// Registers all gleam_erlang_ffi process utility BIFs.
@@ -45,9 +62,9 @@ pub fn register_gleam_ffi_bifs(
 ) -> Result<(), NativeRegistrationError> {
     let module = atom_table.intern("gleam_erlang_ffi");
 
-    for &(function_name, arity, native_function) in GLEAM_PROCESS_BIFS {
+    for &(function_name, arity, capability, native_function) in GLEAM_PROCESS_BIFS {
         let function = atom_table.intern(function_name);
-        registry.register(module, function, arity, native_function)?;
+        registry.register(module, function, arity, native_function, capability)?;
     }
 
     Ok(())

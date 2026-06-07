@@ -13,7 +13,8 @@ pub use decode::{
     ExportEntry, ImportEntry, Instruction, LambdaEntry, LineInfo, Literal, decode_instructions,
 };
 pub use load::{
-    ParsedModule, UnresolvedImport, UnresolvedImportEntry, UnresolvedImportReport,
-    lambda_unique_id, load_beam_chunks, load_module, prepare_module,
+    DeniedImportEntry, ParsedModule, UnresolvedImport, UnresolvedImportEntry,
+    UnresolvedImportReport, lambda_unique_id, load_beam_chunks, load_module,
+    load_module_with_policy, prepare_module, prepare_module_with_policy, resolve_imports,
 };
 pub use parser::{FourCC, parse_beam_chunks};

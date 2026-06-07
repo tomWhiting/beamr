@@ -6,7 +6,9 @@ use std::sync::Arc;
 use crate::atom::{Atom, AtomTable};
 use crate::error::LoadError;
 use crate::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
-use crate::native::BifRegistry;
+use crate::native::{
+    AllCapabilitiesPolicy, BifRegistry, Capability, CapabilityPolicy, NativeEntry, denial_stub,
+};
 
 use super::decode::budget::DecodeBudget;
 use super::decode::{
@@ -53,6 +55,32 @@ impl UnresolvedImportEntry {
     }
 }
 
+/// One native import denied by the active capability policy.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DeniedImportEntry {
+    /// Imported module atom.
+    pub module: Atom,
+    /// Imported function atom.
+    pub function: Atom,
+    /// Imported arity.
+    pub arity: u8,
+    /// Capability required by the denied native import.
+    pub capability: Capability,
+}
+
+impl DeniedImportEntry {
+    /// Creates a denied import entry.
+    #[must_use]
+    pub const fn new(module: Atom, function: Atom, arity: u8, capability: Capability) -> Self {
+        Self {
+            module,
+            function,
+            arity,
+            capability,
+        }
+    }
+}
+
 /// Backward-compatible alias for native coverage helpers.
 pub type UnresolvedImport = UnresolvedImportEntry;
 
@@ -61,6 +89,7 @@ pub type UnresolvedImport = UnresolvedImportEntry;
 pub struct UnresolvedImportReport {
     entries_by_module: HashMap<Atom, Vec<UnresolvedImportEntry>>,
     deferred_by_module: HashMap<Atom, Vec<UnresolvedImportEntry>>,
+    denied_by_module: HashMap<Atom, Vec<DeniedImportEntry>>,
 }
 
 impl UnresolvedImportReport {
@@ -90,12 +119,21 @@ impl UnresolvedImportReport {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries_by_module.values().all(Vec::is_empty)
+            && self.denied_by_module.values().all(Vec::is_empty)
     }
 
     /// Returns true when at least one import was deferred until call time.
     #[must_use]
     pub fn has_deferred(&self) -> bool {
         self.deferred_by_module
+            .values()
+            .any(|entries| !entries.is_empty())
+    }
+
+    /// Returns true when at least one native import was denied by policy.
+    #[must_use]
+    pub fn has_denied(&self) -> bool {
+        self.denied_by_module
             .values()
             .any(|entries| !entries.is_empty())
     }
@@ -152,6 +190,26 @@ impl UnresolvedImportReport {
             .collect()
     }
 
+    /// Returns denied entries for one imported module.
+    #[must_use]
+    pub fn denied_for(&self, module: Atom) -> &[DeniedImportEntry] {
+        self.denied_by_module
+            .get(&module)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Returns all denied imports in deterministic module-bucket order.
+    #[must_use]
+    pub fn denied_imports(&self) -> Vec<DeniedImportEntry> {
+        let mut modules: Vec<_> = self.denied_by_module.keys().copied().collect();
+        modules.sort_by_key(|atom| atom.index());
+        modules
+            .into_iter()
+            .flat_map(|module| self.denied_for(module).iter().copied())
+            .collect()
+    }
+
     fn push(&mut self, entry: UnresolvedImportEntry) {
         self.entries_by_module
             .entry(entry.module)
@@ -161,6 +219,13 @@ impl UnresolvedImportReport {
 
     fn push_deferred(&mut self, entry: UnresolvedImportEntry) {
         self.deferred_by_module
+            .entry(entry.module)
+            .or_default()
+            .push(entry);
+    }
+
+    fn push_denied(&mut self, entry: DeniedImportEntry) {
+        self.denied_by_module
             .entry(entry.module)
             .or_default()
             .push(entry);
@@ -204,6 +269,30 @@ impl fmt::Display for UnresolvedImportReport {
                         formatter.write_str(", ")?;
                     }
                     write!(formatter, "{:?}/{}", entry.function, entry.arity)?;
+                }
+            }
+        }
+        if !self.denied_by_module.is_empty() {
+            if !modules.is_empty() || !self.deferred_by_module.is_empty() {
+                formatter.write_str("; ")?;
+            }
+            formatter.write_str("capability denied: ")?;
+            let mut denied_modules: Vec<_> = self.denied_by_module.keys().copied().collect();
+            denied_modules.sort_by_key(|atom| atom.index());
+            for (module_index, module) in denied_modules.into_iter().enumerate() {
+                if module_index > 0 {
+                    formatter.write_str("; ")?;
+                }
+                write!(formatter, "{module:?}: ")?;
+                for (entry_index, entry) in self.denied_for(module).iter().enumerate() {
+                    if entry_index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(
+                        formatter,
+                        "{:?}/{} ({:?}, capability denied)",
+                        entry.function, entry.arity, entry.capability
+                    )?;
                 }
             }
         }
@@ -272,6 +361,10 @@ pub fn load_beam_chunks(bytes: &[u8], atom_table: &AtomTable) -> Result<ParsedMo
 }
 
 /// Parses, resolves, validates, registers, and returns a BEAM module.
+///
+/// This compatibility wrapper grants all native capabilities, matching the
+/// pre-policy loader behavior for existing embedders. Use
+/// [`load_module_with_policy`] to opt into deny-by-default loading.
 pub fn load_module(
     bytes: &[u8],
     atom_table: &AtomTable,
@@ -283,31 +376,89 @@ pub fn load_module(
     Ok((module, report))
 }
 
+/// Parses, resolves with an explicit capability policy, validates, registers, and returns a BEAM module.
+pub fn load_module_with_policy(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &impl BifRegistry,
+    capability_policy: &dyn CapabilityPolicy,
+) -> Result<(Arc<Module>, UnresolvedImportReport), LoadError> {
+    let (module, report) = prepare_module_with_policy(
+        bytes,
+        atom_table,
+        module_registry,
+        bif_registry,
+        capability_policy,
+    )?;
+    let module = module_registry.insert(module);
+    Ok((module, report))
+}
+
 /// Parses, resolves, and validates a BEAM module without registering it.
+///
+/// This compatibility wrapper grants all native capabilities, matching the
+/// pre-policy loader behavior for existing embedders. Use
+/// [`prepare_module_with_policy`] to opt into deny-by-default loading.
 pub fn prepare_module(
     bytes: &[u8],
     atom_table: &AtomTable,
     module_registry: &ModuleRegistry,
     bif_registry: &impl BifRegistry,
 ) -> Result<(Module, UnresolvedImportReport), LoadError> {
+    prepare_module_with_policy(
+        bytes,
+        atom_table,
+        module_registry,
+        bif_registry,
+        &AllCapabilitiesPolicy,
+    )
+}
+
+/// Parses, resolves with an explicit capability policy, and validates a BEAM module without registering it.
+pub fn prepare_module_with_policy(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &impl BifRegistry,
+    capability_policy: &dyn CapabilityPolicy,
+) -> Result<(Module, UnresolvedImportReport), LoadError> {
     let parsed = load_beam_chunks(bytes, atom_table)?;
-    let (resolved_by_index, report) = resolve_imports(&parsed, module_registry, bif_registry);
+    let (resolved_by_index, report) =
+        resolve_imports(&parsed, module_registry, bif_registry, capability_policy);
     validate_module(&parsed, &resolved_by_index)?;
     let module = module_from_parsed(parsed, resolved_by_index.into_iter().flatten().collect());
     Ok((module, report))
 }
 
-fn resolve_imports(
+pub fn resolve_imports(
     parsed: &ParsedModule,
     module_registry: &ModuleRegistry,
     bif_registry: &impl BifRegistry,
+    capability_policy: &dyn CapabilityPolicy,
 ) -> (Vec<Option<ResolvedImport>>, UnresolvedImportReport) {
     let mut resolved = Vec::with_capacity(parsed.imports.len());
     let mut unresolved = Vec::new();
     let mut deferred = Vec::new();
+    let mut denied = Vec::new();
 
     for import in &parsed.imports {
         if let Some(entry) = bif_registry.lookup(import.module, import.function, import.arity) {
+            let entry = if capability_policy.is_granted(entry.capability) {
+                entry
+            } else {
+                denied.push(DeniedImportEntry::new(
+                    import.module,
+                    import.function,
+                    import.arity,
+                    entry.capability,
+                ));
+                NativeEntry {
+                    function: denial_stub,
+                    is_dirty: false,
+                    capability: entry.capability,
+                }
+            };
             resolved.push(Some(ResolvedImport {
                 module: import.module,
                 function: import.function,
@@ -372,10 +523,12 @@ fn resolve_imports(
         }
     }
 
-    (
-        resolved,
-        UnresolvedImportReport::with_deferred(unresolved, deferred),
-    )
+    let mut report = UnresolvedImportReport::with_deferred(unresolved, deferred);
+    for entry in denied {
+        report.push_denied(entry);
+    }
+
+    (resolved, report)
 }
 
 fn module_from_parsed(parsed: ParsedModule, resolved_imports: Vec<ResolvedImport>) -> Module {
@@ -494,7 +647,10 @@ mod tests {
     use crate::error::LoadError;
     use crate::loader::load_beam_chunks;
     use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
-    use crate::native::{BifRegistry, NativeEntry, ProcessContext};
+    use crate::native::{
+        AllCapabilitiesPolicy, BifRegistry, Capability, LeastAuthorityPolicy, NativeEntry,
+        ProcessContext,
+    };
     use crate::term::Term;
 
     use super::{UnresolvedImportEntry, UnresolvedImportReport, load_module};
@@ -511,6 +667,7 @@ mod tests {
         module: Atom,
         function: Atom,
         arity: u8,
+        capability: Capability,
     }
 
     impl BifRegistry for OneBif {
@@ -519,6 +676,7 @@ mod tests {
                 NativeEntry {
                     function: native_ok,
                     is_dirty: false,
+                    capability: self.capability,
                 },
             )
         }
@@ -604,7 +762,8 @@ mod tests {
             arity: 0,
         }];
 
-        let (resolved, report) = super::resolve_imports(&parsed, &registry, &EmptyBifs);
+        let (resolved, report) =
+            super::resolve_imports(&parsed, &registry, &EmptyBifs, &AllCapabilitiesPolicy);
 
         assert!(report.is_empty());
         assert!(report.deferred_imports().is_empty());
@@ -615,6 +774,30 @@ mod tests {
                 .map(|entry| entry.target),
             Some(ResolvedImportTarget::Code { label: 42, .. })
         ));
+    }
+
+    #[test]
+    fn load_module_defaults_to_all_capabilities_for_compatibility() {
+        let atoms = AtomTable::new();
+        let erlang = atoms.intern("erlang");
+        let now = atoms.intern("now");
+        let registry = ModuleRegistry::new();
+        let bytes = include_bytes!("../../tests/fixtures/hello.beam");
+
+        let (_module, report) = load_module(
+            bytes,
+            &atoms,
+            &registry,
+            &OneBif {
+                module: erlang,
+                function: now,
+                arity: 0,
+                capability: Capability::ExternalIo,
+            },
+        )
+        .expect("fixture loads with default all-capabilities policy");
+
+        assert!(!report.has_denied());
     }
 
     #[test]
@@ -639,7 +822,9 @@ mod tests {
                 module: erlang,
                 function: now,
                 arity: 0,
+                capability: Capability::Pure,
             },
+            &AllCapabilitiesPolicy,
         );
 
         assert!(report.is_empty());
@@ -650,6 +835,61 @@ mod tests {
                 .map(|entry| entry.target),
             Some(ResolvedImportTarget::Native(_))
         ));
+    }
+
+    #[test]
+    fn denied_bif_import_is_bound_to_denial_stub_and_reported() {
+        let atoms = AtomTable::new();
+        let erlang = atoms.intern("erlang");
+        let now = atoms.intern("now");
+        let registry = ModuleRegistry::new();
+        let mut parsed =
+            load_beam_chunks(include_bytes!("../../tests/fixtures/hello.beam"), &atoms)
+                .expect("fixture parses");
+        parsed.imports = vec![crate::loader::ImportEntry {
+            module: erlang,
+            function: now,
+            arity: 0,
+        }];
+
+        struct ClockBif {
+            module: Atom,
+            function: Atom,
+        }
+
+        impl BifRegistry for ClockBif {
+            fn lookup(&self, module: Atom, function: Atom, arity: u8) -> Option<NativeEntry> {
+                (module == self.module && function == self.function && arity == 0).then_some(
+                    NativeEntry {
+                        function: native_ok,
+                        is_dirty: false,
+                        capability: Capability::Clock,
+                    },
+                )
+            }
+        }
+
+        let (resolved, report) = super::resolve_imports(
+            &parsed,
+            &registry,
+            &ClockBif {
+                module: erlang,
+                function: now,
+            },
+            &LeastAuthorityPolicy,
+        );
+
+        assert!(report.has_denied());
+        assert_eq!(report.denied_imports().len(), 1);
+        assert!(report.to_string().contains("capability denied"));
+        let Some(ResolvedImportTarget::Native(entry)) = resolved
+            .first()
+            .and_then(|entry| entry.as_ref())
+            .map(|entry| entry.target)
+        else {
+            panic!("denied native should still occupy import slot");
+        };
+        assert_eq!(entry.function as usize, crate::native::denial_stub as usize);
     }
 
     #[test]
@@ -679,7 +919,8 @@ mod tests {
             arity: 0,
         }];
 
-        let (resolved, report) = super::resolve_imports(&parsed, &registry, &EmptyBifs);
+        let (resolved, report) =
+            super::resolve_imports(&parsed, &registry, &EmptyBifs, &AllCapabilitiesPolicy);
 
         assert!(matches!(
             resolved
@@ -711,7 +952,8 @@ mod tests {
             arity: 0,
         }];
 
-        let (resolved, report) = super::resolve_imports(&parsed, &registry, &EmptyBifs);
+        let (resolved, report) =
+            super::resolve_imports(&parsed, &registry, &EmptyBifs, &AllCapabilitiesPolicy);
 
         assert!(report.imports().is_empty());
         assert!(report.is_empty());

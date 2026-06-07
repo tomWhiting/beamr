@@ -1,7 +1,7 @@
 use super::*;
 use crate::loader::Instruction;
 use crate::module::ResolvedImport;
-use crate::native::NativeEntry;
+use crate::native::{Capability, NativeEntry};
 use crate::term::boxed::{write_closure, write_float, write_tuple};
 use std::collections::HashMap;
 
@@ -431,6 +431,7 @@ fn guard_bif_success_writes_result_and_failure_branches() {
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add,
             is_dirty: false,
+            capability: Capability::Pure,
         }),
     };
     let mut module = module(vec![Instruction::Label { label: 9 }]);

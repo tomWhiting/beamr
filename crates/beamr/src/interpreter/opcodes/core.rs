@@ -311,6 +311,14 @@ fn call_external_target(
             arity,
         }),
         ResolvedImportTarget::Native(entry) => {
+            if entry.function as usize == crate::native::denial_stub as usize {
+                return Err(ExecError::Undef {
+                    module: resolved.module,
+                    function: resolved.function,
+                    arity: resolved.arity,
+                });
+            }
+
             let mut args = Vec::with_capacity(usize::from(arity));
             for register in 0..arity {
                 args.push(process.x_reg(register.into()));

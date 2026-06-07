@@ -1,0 +1,146 @@
+//! Capability metadata and policies for native imports.
+//!
+//! Native functions are tagged with the authority they need. Import resolution
+//! checks those tags once, then either binds the real native entry or a small
+//! undef-returning denial stub.
+
+use crate::atom::Atom;
+use crate::native::ProcessContext;
+use crate::term::Term;
+
+/// Authority required by a native function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Capability {
+    /// No side effects, no external I/O, and no nondeterminism.
+    ///
+    /// Arithmetic, comparisons, type checks, and pure collection operations are
+    /// in this class.
+    Pure,
+    /// Reads wall-clock time or otherwise waits on timers.
+    Clock,
+    /// Consumes randomness or cryptographic entropy.
+    Entropy,
+    /// Talks to the outside world: shell commands, filesystem, network, or the
+    /// process environment.
+    ExternalIo,
+}
+
+/// Policy consulted by import resolution before binding a native function.
+pub trait CapabilityPolicy: Send + Sync {
+    /// Returns true when `capability` is granted by this policy.
+    fn is_granted(&self, capability: Capability) -> bool;
+}
+
+/// Deny-by-default policy: only pure natives are granted.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LeastAuthorityPolicy;
+
+impl CapabilityPolicy for LeastAuthorityPolicy {
+    fn is_granted(&self, capability: Capability) -> bool {
+        capability == Capability::Pure
+    }
+}
+
+/// Backwards-compatible policy for trusted embedders: all natives are granted.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AllCapabilitiesPolicy;
+
+impl CapabilityPolicy for AllCapabilitiesPolicy {
+    fn is_granted(&self, _capability: Capability) -> bool {
+        true
+    }
+}
+
+/// Small custom capability policy built from an explicit allow-list.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct CapabilitySet {
+    grants: Vec<Capability>,
+}
+
+impl CapabilitySet {
+    /// Builds a custom policy from a slice of granted capabilities.
+    #[must_use]
+    pub fn from_slice(capabilities: &[Capability]) -> Self {
+        let mut grants = Vec::new();
+        for capability in capabilities {
+            if !grants.contains(capability) {
+                grants.push(*capability);
+            }
+        }
+        Self { grants }
+    }
+
+    /// Returns true when `capability` is in this set.
+    #[must_use]
+    pub fn grants(&self, capability: Capability) -> bool {
+        self.grants.contains(&capability)
+    }
+}
+
+impl CapabilityPolicy for CapabilitySet {
+    fn is_granted(&self, capability: Capability) -> bool {
+        self.grants(capability)
+    }
+}
+
+/// Current denied-import binding behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DenialMode {
+    /// Bind denied native imports to a native stub that raises `undef`.
+    Undef,
+}
+
+/// Native stub used for denied imports.
+///
+/// The surrounding resolved import table preserves the import slot and arity;
+/// this function has the same signature as every native and returns `undef`
+/// when invoked.
+pub fn denial_stub(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    Err(Term::atom(Atom::UNDEF))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AllCapabilitiesPolicy, Capability, CapabilityPolicy, CapabilitySet, LeastAuthorityPolicy,
+        denial_stub,
+    };
+    use crate::native::ProcessContext;
+    use crate::term::Term;
+
+    #[test]
+    fn least_authority_grants_only_pure() {
+        let policy = LeastAuthorityPolicy;
+        assert!(policy.is_granted(Capability::Pure));
+        assert!(!policy.is_granted(Capability::Clock));
+        assert!(!policy.is_granted(Capability::Entropy));
+        assert!(!policy.is_granted(Capability::ExternalIo));
+    }
+
+    #[test]
+    fn all_capabilities_grants_everything() {
+        let policy = AllCapabilitiesPolicy;
+        assert!(policy.is_granted(Capability::Pure));
+        assert!(policy.is_granted(Capability::Clock));
+        assert!(policy.is_granted(Capability::Entropy));
+        assert!(policy.is_granted(Capability::ExternalIo));
+    }
+
+    #[test]
+    fn capability_set_grants_exact_members() {
+        let policy = CapabilitySet::from_slice(&[Capability::Pure, Capability::Clock]);
+        assert!(policy.grants(Capability::Pure));
+        assert!(policy.grants(Capability::Clock));
+        assert!(!policy.grants(Capability::Entropy));
+        assert!(!policy.grants(Capability::ExternalIo));
+    }
+
+    #[test]
+    fn denial_stub_returns_undef() {
+        let mut context = ProcessContext::new();
+        assert_eq!(
+            denial_stub(&[Term::small_int(1)], &mut context),
+            Err(Term::atom(crate::atom::Atom::UNDEF))
+        );
+    }
+}
