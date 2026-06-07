@@ -472,6 +472,7 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atom::Atom;
     use crate::etf::encode::{EncodeOptions, encode_term_with_options};
     use crate::process::Process;
     use crate::term::binary::Binary;

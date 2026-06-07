@@ -146,6 +146,7 @@ mod tests {
     use crate::process::Process;
     use crate::term::Term;
     use crate::term::binary::Binary;
+    use crate::term::binary_ref::BinaryRef;
     use crate::term::boxed::{Tuple, write_cons, write_tuple};
 
     use super::{
@@ -243,10 +244,10 @@ mod tests {
             let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
             bif_term_to_binary_2(&[list, option], &mut context).expect("compressed")
         };
-        let uncompressed_bytes = Binary::new(uncompressed)
+        let uncompressed_bytes = BinaryRef::new(uncompressed)
             .expect("uncompressed binary")
             .as_bytes();
-        let compressed_bytes = Binary::new(compressed)
+        let compressed_bytes = BinaryRef::new(compressed)
             .expect("compressed binary")
             .as_bytes();
         assert!(compressed_bytes.len() < uncompressed_bytes.len());

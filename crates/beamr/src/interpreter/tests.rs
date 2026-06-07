@@ -892,6 +892,11 @@ fn native_import(function: crate::native::NativeFn) -> ResolvedImport {
     }
 }
 
+fn native_increment(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let value = args[0].as_small_int().unwrap_or(0);
+    Ok(Term::small_int(value + 1))
+}
+
 #[test]
 fn dirty_native_returns_dirty_call_without_inline_execution() {
     let mut module = module(

@@ -174,6 +174,7 @@ fn make_shared_state() -> Arc<SharedState> {
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
+        dirty_results: DashMap::new(),
     })
 }
 
