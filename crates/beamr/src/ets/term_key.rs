@@ -1,6 +1,6 @@
 //! Ordered ETS key wrapper for BEAM term ordering.
 
-use std::{cmp::Ordering, sync::Arc};
+use std::{cmp::Ordering, fmt, sync::Arc};
 
 use crate::{
     atom::AtomTable,
@@ -51,6 +51,16 @@ impl PartialEq for TermKey {
 
 impl Eq for TermKey {}
 
+impl fmt::Debug for TermKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TermKey")
+            .field("term", &self.term)
+            .field("has_atom_table", &self.atom_table.is_some())
+            .finish()
+    }
+}
+
 impl PartialOrd for TermKey {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -88,5 +98,17 @@ mod tests {
         let atom_a = Term::atom(atom_table.intern("a"));
 
         assert!(TermKey::new(Term::small_int(1)) < TermKey::with_atom_table(atom_a, atom_table));
+    }
+
+    #[test]
+    fn debug_does_not_require_debug_atom_table() {
+        let atom_table = Arc::new(AtomTable::new());
+        let debug = format!(
+            "{:?}",
+            TermKey::with_atom_table(Term::atom(atom_table.intern("a")), atom_table)
+        );
+
+        assert!(debug.contains("TermKey"));
+        assert!(debug.contains("has_atom_table: true"));
     }
 }

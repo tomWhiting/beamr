@@ -1,1 +1,1 @@
-feat(beamr): add BTreeMap-backed ETS ordered_set
+harden(beamr): restore TermKey debug support without AtomTable Debug bound
