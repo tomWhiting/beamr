@@ -1,1 +1,1 @@
-Harden binary threshold promotion by accepting ProcBin inputs across stdlib binary consumers
+Harden SubBinary views and matching edge cases

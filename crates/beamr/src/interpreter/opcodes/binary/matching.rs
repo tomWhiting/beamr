@@ -8,8 +8,9 @@ use crate::module::Module;
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::{BoxedHeader, BoxedTag, write_float};
+use crate::term::boxed::{BoxedHeader, BoxedTag, ProcBin, write_float};
 use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
+use crate::term::sub_binary::{SUB_BINARY_WORDS, write_sub_binary};
 type GetOperands<'a> = (
     &'a Operand,
     &'a Operand,
@@ -32,6 +33,10 @@ pub(super) fn bs_start_match(
     let Some(binary) = BinaryRef::new(source) else {
         return jump_label(module, fail);
     };
+    let total_bits = binary
+        .len()
+        .checked_mul(u8::BITS as usize)
+        .ok_or(ExecError::Badarg)?;
     let ptr = process
         .heap_mut()
         .alloc(MATCH_CONTEXT_WORDS)
@@ -39,7 +44,7 @@ pub(super) fn bs_start_match(
     let heap = heap_slice(ptr, MATCH_CONTEXT_WORDS);
     heap[0] = BoxedHeader::new(BoxedTag::MatchContext, MATCH_CONTEXT_WORDS - 1);
     heap[1] = 0;
-    heap[2] = (binary.len() * u8::BITS as usize) as u64;
+    heap[2] = total_bits as u64;
     heap[3] = source.raw();
     core::write_term(process, destination, Term::boxed_ptr(heap.as_ptr()))?;
     Ok(InstructionOutcome::Continue)
@@ -97,7 +102,7 @@ pub(super) fn bs_get_binary(
     let context = read_context(process, module, context)?;
     match get_binary_bytes(context, size, unit, flags)? {
         Some((bytes, bits)) => {
-            let binary = allocate_binary(process, bytes)?;
+            let binary = allocate_extracted_binary(process, context, bytes, bits)?;
             core::write_term(process, destination, binary)?;
             context.set_position_bits(context.position_bits() + bits);
             Ok(InstructionOutcome::Continue)
@@ -375,7 +380,7 @@ fn run_command_args(
             let Some((bytes, bits)) = get_binary_bytes(context, size, unit, flags)? else {
                 return Ok(false);
             };
-            let binary = allocate_binary(process, bytes)?;
+            let binary = allocate_extracted_binary(process, context, bytes, bits)?;
             core::write_term(process, dst, binary)?;
             context.set_position_bits(context.position_bits() + bits);
             Ok(true)
@@ -499,6 +504,32 @@ fn allocate_binary(process: &mut Process, bytes: &[u8]) -> Result<Term, ExecErro
     let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
     alloc_binary(heap_slice(ptr, words), bytes).ok_or(ExecError::Badarg)
 }
+fn allocate_extracted_binary(
+    process: &mut Process,
+    context: MatchContext,
+    bytes: &[u8],
+    bits: usize,
+) -> Result<Term, ExecError> {
+    let source = context.source_term();
+    if ProcBin::new(source).is_some() {
+        let start = context.position_bits() / u8::BITS as usize;
+        let length = bits / u8::BITS as usize;
+        if process.heap().available() < SUB_BINARY_WORDS {
+            return Err(ExecError::GcNeeded {
+                requested: SUB_BINARY_WORDS,
+                available: process.heap().available(),
+            });
+        }
+        let ptr = process
+            .heap_mut()
+            .alloc(SUB_BINARY_WORDS)
+            .map_err(ExecError::from)?;
+        return write_sub_binary(heap_slice(ptr, SUB_BINARY_WORDS), source, start, length)
+            .ok_or(ExecError::Badarg);
+    }
+
+    allocate_binary(process, bytes)
+}
 fn read_context(
     process: &Process,
     module: &Module,
@@ -540,9 +571,10 @@ fn literal_bytes<'a>(
         },
         offset => {
             let offset = core::operand_usize(offset, "string table offset")?;
+            let end = offset.checked_add(byte_len).ok_or(ExecError::Badarg)?;
             module
                 .string_table
-                .get(offset..offset + byte_len)
+                .get(offset..end)
                 .ok_or(ExecError::Badarg)
         }
     }
@@ -575,8 +607,11 @@ impl MatchContext {
     pub(crate) fn total_bits(self) -> usize {
         read_word(self.ptr, 2) as usize
     }
+    fn source_term(self) -> Term {
+        Term::from_raw(read_word(self.ptr, 3))
+    }
     fn source(self) -> Option<BinaryRef> {
-        BinaryRef::new(Term::from_raw(read_word(self.ptr, 3)))
+        BinaryRef::new(self.source_term())
     }
     pub(crate) fn remaining_bits(self) -> usize {
         self.total_bits().saturating_sub(self.position_bits())
@@ -594,7 +629,8 @@ impl MatchContext {
         }
         let start = self.position_bits() / u8::BITS as usize;
         let len = bits / u8::BITS as usize;
-        self.source()?.as_bytes().get(start..start + len)
+        let end = start.checked_add(len)?;
+        self.source()?.as_bytes().get(start..end)
     }
 }
 #[derive(Copy, Clone)]

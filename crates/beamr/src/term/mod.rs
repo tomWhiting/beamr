@@ -12,6 +12,7 @@ pub mod compare;
 #[cfg(feature = "json")]
 pub mod json;
 pub mod shared_binary;
+pub mod sub_binary;
 
 use crate::atom::Atom;
 

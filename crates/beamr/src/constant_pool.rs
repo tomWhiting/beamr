@@ -216,6 +216,11 @@ fn rebase_boxed_block_terms(block: &mut [u64], mappings: &[(*const u64, *const u
                 rebase_term_word(word, mappings);
             }
         }
+        Some(BoxedTag::SubBinary) => {
+            if let Some(word) = payload.first_mut() {
+                rebase_term_word(word, mappings);
+            }
+        }
         Some(
             BoxedTag::Float
             | BoxedTag::BigInt

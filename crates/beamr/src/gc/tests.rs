@@ -12,6 +12,7 @@ use crate::{
     term::{
         boxed::{Closure, Cons, ProcBin, Tuple, write_closure, write_cons, write_tuple},
         shared_binary::{SharedBinary, write_proc_bin},
+        sub_binary::{SUB_BINARY_WORDS, write_sub_binary},
     },
 };
 
@@ -143,6 +144,8 @@ pub(crate) fn assert_no_term_pointer_into_young(process: &Process, term: Term) {
                         stack.push(free_var);
                     }
                 }
+            } else if let Some(sub_binary) = crate::term::boxed::SubBinary::new(current) {
+                stack.push(sub_binary.parent());
             }
         }
     }
@@ -300,6 +303,36 @@ fn closure_metadata_and_free_vars_survive_minor_gc() {
     assert_eq!(closure.unique_id(), 0x1234_5678);
     let free_var = closure.free_var(0).expect("captured term");
     assert_eq!(snapshot(free_var), Snapshot::Tuple(vec![Snapshot::Int(42)]));
+    assert_no_term_pointer_into_young(&process, process.x_reg(0));
+}
+
+#[test]
+fn sub_binary_traces_proc_bin_parent_across_minor_gc() {
+    let data: Vec<u8> = (0..64).collect();
+    let shared = SharedBinary::new(data);
+    let mut process = Process::new(1, 32);
+    let parent = alloc_proc_bin(&mut process, &shared);
+    let ptr = process
+        .heap_mut()
+        .alloc(SUB_BINARY_WORDS)
+        .expect("sub binary allocation fits");
+    let sub_binary = write_sub_binary(
+        crate::interpreter::opcodes::core::heap_slice(ptr, SUB_BINARY_WORDS),
+        parent,
+        10,
+        12,
+    )
+    .expect("sub binary writer fits");
+    process.set_x_reg(0, sub_binary);
+    assert_eq!(shared.ref_count(), 2);
+
+    collect_minor(&mut process).expect("minor GC succeeds");
+
+    let sub_binary = crate::term::boxed::SubBinary::new(process.x_reg(0)).expect("sub binary root");
+    assert_eq!(sub_binary.as_bytes(), &shared.as_bytes()[10..22]);
+    let parent = sub_binary.parent();
+    let parent_ptr = parent.heap_ptr().expect("rewritten parent pointer");
+    assert!(!process.heap().young_contains(parent_ptr));
     assert_no_term_pointer_into_young(&process, process.x_reg(0));
 }
 

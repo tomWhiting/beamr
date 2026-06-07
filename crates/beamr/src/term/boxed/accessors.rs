@@ -1,7 +1,7 @@
 //! Borrowed accessor structs for reading boxed term layouts.
 
 use crate::atom::Atom;
-use crate::term::{Term, shared_binary::SharedBinary};
+use crate::term::{Term, binary::Binary, shared_binary::SharedBinary};
 
 use super::{BoxedHeader, BoxedTag};
 
@@ -283,6 +283,67 @@ impl ProcBin {
         // SAFETY: ProcBin payload word two stores the raw `Arc<Vec<u8>>` pointer.
         unsafe { *self.ptr.add(2) }
     }
+}
+
+/// Borrowed accessor for a sub-binary view into an inline Binary or ProcBin.
+#[derive(Copy, Clone, Debug)]
+pub struct SubBinary {
+    ptr: *const u64,
+}
+
+impl SubBinary {
+    pub fn new(term: Term) -> Option<Self> {
+        let ptr = header_ptr(term, BoxedTag::SubBinary)?;
+        // SAFETY: `header_ptr` returned a boxed SubBinary header pointer.
+        let header = unsafe { *ptr };
+        if BoxedHeader::size(header) != 4 {
+            return None;
+        }
+
+        let sub_binary = Self { ptr };
+        let parent_bytes = parent_bytes(sub_binary.parent())?;
+        let end = sub_binary.offset().checked_add(sub_binary.len())?;
+        if end > parent_bytes.len() {
+            return None;
+        }
+
+        Some(sub_binary)
+    }
+
+    pub fn parent(self) -> Term {
+        Term::from_raw(self.word(1))
+    }
+
+    pub fn len(self) -> usize {
+        self.word(3) as usize
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn as_bytes(self) -> &'static [u8] {
+        let bytes = parent_bytes(self.parent()).unwrap_or(&[]);
+        let start = self.offset();
+        let end = start.checked_add(self.len()).unwrap_or(start);
+        bytes.get(start..end).unwrap_or(&[])
+    }
+
+    fn offset(self) -> usize {
+        self.word(2) as usize
+    }
+
+    fn word(self, offset: usize) -> u64 {
+        // SAFETY: validated SubBinary layout contains fixed payload words.
+        unsafe { *self.ptr.add(offset) }
+    }
+}
+
+fn parent_bytes(parent: Term) -> Option<&'static [u8]> {
+    if let Some(binary) = Binary::new(parent) {
+        return Some(binary.as_bytes());
+    }
+    ProcBin::new(parent).map(ProcBin::as_bytes)
 }
 
 /// Borrowed accessor for a boxed reference.

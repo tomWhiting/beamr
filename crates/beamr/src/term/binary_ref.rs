@@ -1,21 +1,29 @@
 //! Unified accessor for inline and off-heap binaries.
 
-use crate::term::{Term, binary::Binary, boxed::ProcBin};
+use crate::term::{
+    Term,
+    binary::Binary,
+    boxed::{ProcBin, SubBinary},
+};
 
 /// Borrowed binary accessor that hides whether bytes are inline or off-heap.
 #[derive(Copy, Clone, Debug)]
 pub enum BinaryRef {
     Inline(Binary),
     Refc(ProcBin),
+    Sub(SubBinary),
 }
 
 impl BinaryRef {
-    /// Creates a binary accessor for either inline binaries or ProcBins.
+    /// Creates a binary accessor for inline binaries, ProcBins, or SubBinaries.
     pub fn new(term: Term) -> Option<Self> {
         if let Some(binary) = Binary::new(term) {
             return Some(Self::Inline(binary));
         }
-        ProcBin::new(term).map(Self::Refc)
+        if let Some(proc_bin) = ProcBin::new(term) {
+            return Some(Self::Refc(proc_bin));
+        }
+        SubBinary::new(term).map(Self::Sub)
     }
 
     /// Returns binary bytes without copying the backing storage.
@@ -23,6 +31,7 @@ impl BinaryRef {
         match self {
             Self::Inline(binary) => binary.as_bytes(),
             Self::Refc(proc_bin) => proc_bin.as_bytes(),
+            Self::Sub(sub_binary) => sub_binary.as_bytes(),
         }
     }
 
@@ -31,6 +40,7 @@ impl BinaryRef {
         match self {
             Self::Inline(binary) => binary.len(),
             Self::Refc(proc_bin) => proc_bin.len(),
+            Self::Sub(sub_binary) => sub_binary.len(),
         }
     }
 
@@ -46,6 +56,7 @@ mod tests {
     use crate::term::{
         binary::write_binary,
         shared_binary::{SharedBinary, write_proc_bin},
+        sub_binary::write_sub_binary,
     };
 
     #[test]
@@ -69,6 +80,20 @@ mod tests {
         assert!(matches!(binary, BinaryRef::Refc(_)));
         assert_eq!(binary.len(), 8);
         assert_eq!(binary.as_bytes(), b"off-heap");
+    }
+
+    #[test]
+    fn binary_ref_wraps_sub_binary() {
+        let shared = SharedBinary::new(b"0123456789abcdef".to_vec());
+        let mut proc_heap = [0_u64; 3];
+        let parent = write_proc_bin(&mut proc_heap, &shared).expect("proc bin fits");
+        let mut sub_heap = [0_u64; 5];
+        let term = write_sub_binary(&mut sub_heap, parent, 4, 6).expect("sub binary fits");
+        let binary = BinaryRef::new(term).expect("binary ref");
+
+        assert!(matches!(binary, BinaryRef::Sub(_)));
+        assert_eq!(binary.len(), 6);
+        assert_eq!(binary.as_bytes(), b"456789");
     }
 
     #[test]
