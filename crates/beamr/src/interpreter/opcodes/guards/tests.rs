@@ -78,6 +78,98 @@ fn get_hd_and_get_tl_decompose_cons_cells_without_allocating() {
 }
 
 #[test]
+fn get_list_decomposes_multi_element_list_into_head_and_tail() {
+    let mut process = Process::new(1, 32);
+    let module = module(vec![]);
+
+    core::put_list(
+        &mut process,
+        &module,
+        &Operand::Integer(3),
+        &Operand::Atom(None),
+        &Operand::X(0),
+    )
+    .expect("put list tail");
+    core::put_list(
+        &mut process,
+        &module,
+        &Operand::Integer(2),
+        &Operand::X(0),
+        &Operand::X(0),
+    )
+    .expect("put list middle");
+    core::put_list(
+        &mut process,
+        &module,
+        &Operand::Integer(1),
+        &Operand::X(0),
+        &Operand::X(0),
+    )
+    .expect("put list head");
+
+    get_list(
+        &mut process,
+        &module,
+        &Operand::X(0),
+        &Operand::X(1),
+        &Operand::X(2),
+    )
+    .expect("get_list");
+
+    assert_eq!(process.x_reg(1), Term::small_int(1));
+    let second = Cons::new(process.x_reg(2)).expect("tail is [2, 3]");
+    assert_eq!(second.head(), Term::small_int(2));
+    let third = Cons::new(second.tail()).expect("tail is [3]");
+    assert_eq!(third.head(), Term::small_int(3));
+    assert_eq!(third.tail(), Term::NIL);
+}
+
+#[test]
+fn get_list_decomposes_single_element_list_to_nil_tail_and_writes_y_registers() {
+    let mut process = Process::new(1, 32);
+    let module = module(vec![]);
+
+    core::allocate(&mut process, &module, &Operand::Unsigned(2)).expect("allocate Y registers");
+    core::put_list(
+        &mut process,
+        &module,
+        &Operand::Integer(42),
+        &Operand::Atom(None),
+        &Operand::X(0),
+    )
+    .expect("put single-element list");
+
+    get_list(
+        &mut process,
+        &module,
+        &Operand::X(0),
+        &Operand::Y(0),
+        &Operand::Y(1),
+    )
+    .expect("get_list");
+
+    assert_eq!(process.stack().y_reg(0), Ok(Term::small_int(42)));
+    assert_eq!(process.stack().y_reg(1), Ok(Term::NIL));
+}
+
+#[test]
+fn get_list_on_nil_raises_badarg() {
+    let mut process = Process::new(1, 16);
+    let module = module(vec![]);
+
+    assert_eq!(
+        get_list(
+            &mut process,
+            &module,
+            &Operand::Atom(None),
+            &Operand::X(0),
+            &Operand::X(1)
+        ),
+        Err(ExecError::Badarg)
+    );
+}
+
+#[test]
 fn type_tests_fall_through_or_jump_to_fail_label() {
     let mut process = Process::new(1, 32);
     let mut tuple_words = [0_u64; 2];

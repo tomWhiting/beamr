@@ -75,6 +75,11 @@ pub enum Instruction {
         index: Operand,
         destination: Operand,
     },
+    GetList {
+        source: Operand,
+        head: Operand,
+        tail: Operand,
+    },
     GetHd {
         source: Operand,
         destination: Operand,

@@ -26,6 +26,19 @@ pub fn get_hd(
     Ok(InstructionOutcome::Continue)
 }
 
+pub fn get_list(
+    process: &mut Process,
+    module: &Module,
+    source: &Operand,
+    head_dest: &Operand,
+    tail_dest: &Operand,
+) -> Result<InstructionOutcome, ExecError> {
+    let cons = Cons::new(core::read_term(process, module, source)?).ok_or(ExecError::Badarg)?;
+    core::write_term(process, head_dest, cons.head())?;
+    core::write_term(process, tail_dest, cons.tail())?;
+    Ok(InstructionOutcome::Continue)
+}
+
 pub fn get_tl(
     process: &mut Process,
     module: &Module,

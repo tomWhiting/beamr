@@ -365,6 +365,7 @@ fn instruction_operands(instruction: &Instruction) -> Vec<&Operand> {
             index,
             destination,
         } => vec![source, index, destination],
+        Instruction::GetList { source, head, tail } => vec![source, head, tail],
         Instruction::GetHd {
             source,
             destination,
