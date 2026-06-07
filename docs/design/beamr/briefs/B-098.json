@@ -1,0 +1,90 @@
+{
+  "id": "B-098",
+  "cluster": "beamr",
+  "title": "ETS concurrent access \u2014 read/write concurrency",
+  "depends_on": [
+    "B-094"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "By default, ETS tables are protected by a single RwLock. The `{read_concurrency, true}` and `{write_concurrency, true}` options enable fine-grained concurrency for tables with skewed read/write patterns. Read concurrency optimizes for many readers by using read-biased locks. Write concurrency uses striped locks (sharding) to allow concurrent writes to different keys.",
+  "task": "Implement the `read_concurrency` and `write_concurrency` table options with appropriate locking strategies.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "read_concurrency option parsing",
+      "spec": "read_concurrency option parsing",
+      "acceptance": [
+        "`{read_concurrency, true}` parsed from ets:new options",
+        "Stored in EtsTableMetadata",
+        "For DashMap-based tables (set/bag): no-op (DashMap already supports concurrent reads)",
+        "For ordered_set: switches from Mutex<BTreeMap> to RwLock<BTreeMap> allowing concurrent reads",
+        "Test: create table with read_concurrency, multiple concurrent readers don't block"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/ordered_set.rs",
+          "crates/beamr/src/ets/mod.rs (option parsing)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "write_concurrency for ordered_set",
+      "spec": "write_concurrency for ordered_set",
+      "acceptance": [
+        "`{write_concurrency, true}` parsed from ets:new options",
+        "For ordered_set: use a sharded approach (multiple BTreeMaps partitioned by key hash) to allow concurrent writes to different shards",
+        "For set/bag: no-op (DashMap is already sharded)",
+        "Test: concurrent writes to different keys don't block each other"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/ordered_set.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Concurrency option interaction",
+      "spec": "Concurrency option interaction",
+      "acceptance": [
+        "Both options can be set simultaneously: `[ordered_set, {read_concurrency, true}, {write_concurrency, true}]`",
+        "Default (no options): single lock per table",
+        "read_concurrency without write_concurrency: readers don't block each other, writers are exclusive",
+        "write_concurrency without read_concurrency: writers to different shards don't block, readers may block",
+        "Test: verify option combinations produce expected behavior under concurrent load"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement `{write_concurrency, auto}` (OTP 25+ auto-tuning) \u2014 use explicit boolean only",
+    "SHALL NOT change the DashMap-based set implementation (DashMap already provides sharded write concurrency)",
+    "SHALL focus on ordered_set which currently uses a single Mutex<BTreeMap>"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

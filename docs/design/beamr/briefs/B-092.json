@@ -1,0 +1,85 @@
+{
+  "id": "B-092",
+  "cluster": "beamr",
+  "title": "ETS bag and duplicate_bag table types",
+  "depends_on": [
+    "B-091"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "`bag` tables allow multiple tuples with the same key but reject exact duplicates. `duplicate_bag` allows fully duplicate tuples. Both are used in OTP for multi-value indexes (e.g., process group membership, event handlers).",
+  "task": "Implement `EtsBag` and `EtsDuplicateBag` as EtsTable implementations using `DashMap<Term, Vec<Term>>` (key \u2192 list of tuples).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "EtsBag implementation",
+      "spec": "EtsBag implementation",
+      "acceptance": [
+        "`insert(tuple)`: adds tuple to the key's list. If exact duplicate exists, no-op (bag rejects exact duplicates)",
+        "`lookup(key)`: returns all tuples with that key",
+        "`delete_key(key)`: removes all tuples with that key",
+        "Test: insert {a,1}, insert {a,2} \u2192 lookup a returns [{a,1},{a,2}]",
+        "Test: insert {a,1} twice \u2192 lookup a returns [{a,1}] (duplicate rejected)"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/bag.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "EtsDuplicateBag implementation",
+      "spec": "EtsDuplicateBag implementation",
+      "acceptance": [
+        "`insert(tuple)`: always adds, even if exact duplicate exists",
+        "`lookup(key)`: returns all tuples including duplicates",
+        "Test: insert {a,1} twice \u2192 lookup a returns [{a,1},{a,1}]"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/bag.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Wire bag types into table creation",
+      "spec": "Wire bag types into table creation",
+      "acceptance": [
+        "`EtsTableType::Bag` instantiates EtsBag",
+        "`EtsTableType::DuplicateBag` instantiates EtsDuplicateBag",
+        "Test: create bag table, insert duplicates, verify correct semantics"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement ordered iteration \u2014 bags are unordered like sets",
+    "SHALL NOT implement match specifications \u2014 that's B-096/B-097"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

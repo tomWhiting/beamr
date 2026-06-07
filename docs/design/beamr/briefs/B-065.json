@@ -1,0 +1,111 @@
+{
+  "id": "B-065",
+  "cluster": "beamr",
+  "title": "update_record opcode \u2014 record update syntax",
+  "depends_on": [
+    "B-009"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C73"
+  ],
+  "stories": [],
+  "purpose": "The `update_record` opcode (opcode 181) is emitted by the OTP 26+ compiler for record update syntax (`Record#record_name{field = NewValue}`). It copies a tuple and updates specific elements in the copy, avoiding the need for a full tuple deconstruction and reconstruction. Without it, any Erlang code using record updates (which is most OTP code) hits `UnsupportedOpcode(181)`. Gleam compiles record updates to this opcode as well.",
+  "task": "Wire the existing `Instruction::UpdateRecord` variant (already decoded by the loader with a dedicated variant) into the opcode dispatch table and implement the handler. The handler allocates a new tuple on the heap, copies all elements from the source, then overwrites the specified elements with new values.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Opcode dispatch wiring",
+      "spec": "Add `Instruction::UpdateRecord` to the dispatch table in `opcodes/mod.rs`, routing to a handler.",
+      "acceptance": [
+        "`Instruction::UpdateRecord { operands }` is matched in the dispatch table",
+        "No `UnsupportedOpcode(181)` error when executing modules containing `update_record`"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Operand parsing",
+      "spec": "The `update_record` operand list has a variable-length encoding. Parse the operands into: hint (atom), arity (unsigned), source (register), destination (register), followed by pairs of (index, value) for each update.",
+      "acceptance": [
+        "Operand list is parsed into structured fields: hint, arity, source, dest, update_pairs",
+        "Each update pair contains: element index (unsigned) and new value (register/literal)",
+        "The number of update pairs is derived from (operand_count - 4) / 2",
+        "Invalid operand counts raise an error",
+        "Test: operand list for `update_record(copy, 3, X0, X1, 1, X2)` parses as: source=X0, dest=X1, updates=[(index 1, value X2)]"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "update_record handler implementation",
+      "spec": "Implement the handler. Allocate a new tuple on the heap with the same arity as the source, copy all elements from the source tuple, then overwrite the specified elements with the update values.",
+      "acceptance": [
+        "Source term must be a tuple of the declared arity (badarg otherwise)",
+        "A new tuple is allocated on the process heap via `process.heap_mut().alloc()`",
+        "All elements from the source are copied to the new tuple",
+        "Update pairs overwrite specific elements in the new tuple (1-based indexing matching BEAM convention)",
+        "The new tuple term is written to the destination register",
+        "Test: `update_record({ok, 1, 2}, dest, [(2, 99)])` produces `{ok, 99, 2}` in dest",
+        "Test: `update_record({a, b, c}, dest, [(1, x), (3, z)])` produces `{x, b, z}` in dest",
+        "Test: `update_record(not_a_tuple, ...)` raises badarg",
+        "Test: update with no pairs produces an identical copy"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Heap allocation and GC safety",
+      "spec": "The new tuple allocation must be GC-safe. If the heap is full, GC should be triggered before allocation.",
+      "acceptance": [
+        "Heap allocation follows the same pattern as `put_tuple2` (test_heap or alloc with GC fallback)",
+        "Source tuple elements survive GC if collection is triggered mid-allocation",
+        "Test: update_record after heavy allocation verifies correct result after potential GC"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the tuple heap representation \u2014 use existing `write_tuple()` and `Tuple` accessors",
+    "SHALL NOT implement in-place mutation \u2014 record update always creates a new tuple (immutable data)",
+    "SHALL NOT implement record field access by name \u2014 the compiler resolves names to indices",
+    "Note: core.rs is at 583 lines (over 500-line guideline). Consider placing handler in core.rs alongside put_tuple2/get_tuple_element (same semantic family) \u2014 adds ~40 lines."
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

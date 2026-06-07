@@ -1,0 +1,111 @@
+{
+  "id": "B-075",
+  "cluster": "beamr",
+  "title": "GC integration for refc binaries \u2014 ProcBin sweep and virtual binary heap",
+  "depends_on": [
+    "B-072",
+    "B-074"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "B-072 added a GC stub that copies ProcBin terms and increments Arc ref counts. But it doesn't decrement ref counts when ProcBins become unreachable, and it doesn't account for off-heap binary memory in GC scheduling decisions. Without proper ref count management, SharedBinary data leaks. Without virtual binary heap accounting, a process holding 100MB of refc binary data but only 233 words of heap terms never triggers GC \u2014 the GC only sees the small heap.",
+  "task": "Implement proper ProcBin lifecycle in the GC: decrement ref counts for unreachable ProcBins, add virtual binary heap accounting to GC trigger decisions, and sweep unreferenced SharedBinary data.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ProcBin ref count decrement on collection",
+      "spec": "When a ProcBin is unreachable (not copied during GC), its SharedBinary Arc must be decremented. If the ref count reaches zero, the off-heap data is freed.",
+      "acceptance": [
+        "After minor GC, unreachable ProcBins in young space have their Arc decremented",
+        "After major GC, unreachable ProcBins in both spaces have their Arc decremented",
+        "When Arc strong_count reaches 0, the SharedBinary Vec is deallocated",
+        "Test: create ProcBin, make it unreachable, trigger GC \u2014 SharedBinary is freed (verify via Arc::strong_count on a clone)",
+        "Test: create ProcBin shared between parent ref and heap, make heap ref unreachable, trigger GC \u2014 SharedBinary survives (ref count still > 0)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/gc/minor.rs",
+          "crates/beamr/src/gc/major.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Virtual binary heap accounting",
+      "spec": "Add a `virtual_binary_heap` counter to the Process that tracks the total byte size of off-heap binaries referenced by the process. This counter influences GC scheduling decisions.",
+      "acceptance": [
+        "Process gains `virtual_binary_heap: usize` field (bytes of off-heap binary data)",
+        "Creating a ProcBin increments virtual_binary_heap by the SharedBinary's byte length",
+        "GC decrements virtual_binary_heap for unreachable ProcBins",
+        "The GC trigger check considers `heap_used + virtual_binary_heap` against the threshold, not just heap_used",
+        "Test: process with small heap but 1MB of refc binaries triggers GC sooner than a process with same heap but no binaries"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/mod.rs (virtual_binary_heap field)",
+          "crates/beamr/src/process/heap.rs (GC trigger calculation)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "ProcBin copy increments ref count",
+      "spec": "When GC copies a ProcBin from young to old space (or during major compaction), the Arc ref count must be incremented to reflect the new copy.",
+      "acceptance": [
+        "copy_young_term / copy_any_term for ProcBin increments Arc::clone (ref count +1)",
+        "After copy, the old ProcBin's ref count is decremented (R1) and the new copy's is correct",
+        "Net effect: ref count stays the same if the ProcBin survives collection",
+        "Test: ProcBin survives minor GC \u2014 ref count unchanged after collection"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/gc/mod.rs (rewrite_copied_object for ProcBin)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Process exit decrements all ProcBin refs",
+      "spec": "When a process exits, all ProcBins on its heap must have their Arc ref counts decremented. This ensures SharedBinary data is freed when the last process referencing it exits.",
+      "acceptance": [
+        "Process cleanup (deallocation) walks the heap and decrements Arc for every ProcBin found",
+        "SharedBinaries with no remaining references are freed",
+        "Test: spawn process, send it a large binary (ProcBin), process exits \u2014 SharedBinary freed if no other references"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/mod.rs (cleanup/deallocation path)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement a separate binary GC pass \u2014 integrate into the existing minor/major collection cycle",
+    "SHALL NOT change the GC algorithm (generational copying) \u2014 only add ref count bookkeeping",
+    "SHALL NOT implement binary defragmentation or compaction"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

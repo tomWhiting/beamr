@@ -1,0 +1,90 @@
+{
+  "id": "B-057",
+  "cluster": "beamr",
+  "title": "trim opcode \u2014 stack frame trimming in tail calls",
+  "depends_on": [
+    "B-014"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C67"
+  ],
+  "stories": [],
+  "purpose": "The `trim` opcode (opcode 136) removes N words from the top of the current stack frame's Y-register slots while keeping the remaining slots alive. The compiler emits `trim` before tail calls when some Y-registers are dead but the frame cannot be fully deallocated yet (e.g., a try/catch is still active). Without `trim`, any compiled code using this optimization hits `UnsupportedOpcode(136)`. This is common in OTP 25+ compiled code with nested function calls inside try/catch blocks.",
+  "task": "Wire the existing `Instruction::Trim { words, remaining }` variant (already decoded by the loader) into the opcode dispatch table and implement the handler in `core.rs`.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Opcode dispatch wiring",
+      "spec": "Add `Instruction::Trim` to the dispatch table in `opcodes/mod.rs`, routing to a handler in `core.rs`.",
+      "acceptance": [
+        "`Instruction::Trim { words, remaining }` is matched in the dispatch table",
+        "Dispatch routes to `core::trim()`",
+        "No `UnsupportedOpcode(136)` error when executing modules containing `trim`"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C67"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "trim handler implementation",
+      "spec": "Implement `trim` in `core.rs`. The instruction removes `words` Y-register slots from the current frame, keeping `remaining` live slots. The live slots are the lowest-numbered Y-registers (Y0, Y1, ..., Y_{remaining-1}).",
+      "acceptance": [
+        "`trim(process, words, remaining)` shrinks the current frame's Y-register slots",
+        "After trim, the frame has exactly `remaining` Y-register slots",
+        "The kept slots retain their values (Y0..Y_{remaining-1} are unchanged)",
+        "`words + remaining` SHALL equal the frame's current Y-slot count (badarg otherwise)",
+        "Test: allocate frame with 5 Y-regs, set Y0=10, Y1=20, Y2=30, Y3=40, Y4=50. trim(2, 3). Frame now has 3 Y-regs: Y0=10, Y1=20, Y2=30.",
+        "Test: trim(0, N) is a no-op \u2014 frame unchanged",
+        "Test: trim on empty stack raises an error"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": [
+        "C67"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Stack frame y_regs truncation",
+      "spec": "Add a method to `StackFrame` (or use direct Vec truncation) that supports removing the highest-numbered Y-register slots.",
+      "acceptance": [
+        "`StackFrame` supports shrinking `y_regs` to `remaining` slots",
+        "`y_slots` field is updated to match the new count",
+        "Truncated values are dropped (no leak)",
+        "Test: unit test on StackFrame directly verifying slot count and values after trim"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/stack.rs"
+        ]
+      },
+      "checklist": [
+        "C67"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the stack frame structure \u2014 trim operates within the existing `StackFrame::y_regs` Vec",
+    "SHALL NOT deallocate the frame \u2014 trim only shrinks it; deallocate is a separate instruction",
+    "SHALL NOT touch the return address or any other frame metadata \u2014 only Y-register slots are affected",
+    "Note: core.rs is at 583 lines (over 500-line guideline). trim adds ~20 lines. Full core.rs split is a separate concern."
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

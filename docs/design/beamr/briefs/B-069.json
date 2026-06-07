@@ -1,0 +1,87 @@
+{
+  "id": "B-069",
+  "cluster": "beamr",
+  "title": "Tail-call BIF return fix \u2014 call_ext_only with Native target",
+  "depends_on": [
+    "B-013"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C65"
+  ],
+  "stories": [],
+  "purpose": "`call_ext_only` is a tail call \u2014 the current function's frame is already deallocated and the callee's result IS the caller's result. When the target is a BEAM function, this works correctly (the IP jumps and never returns). But when the target is a Native BIF, `call_external_target()` executes the BIF, stores the result in x(0), and returns `InstructionOutcome::Continue` \u2014 which falls through to the next instruction in the code stream. This is wrong: there IS no next instruction after a tail call. The code that happens to follow is the beginning of the next function in the module.\n\nThis bug is masked by flat code layouts where the next function starts with `func_info` (which raises a function_clause error, killing the process \"normally\"). But it causes silent corruption when code layout differs, and it always wastes cycles executing dead code.",
+  "task": "Fix `call_external_target()` to handle the tail-call case for Native BIF targets. When `save_return` is false (tail call), after executing the BIF, perform a return instead of continuing.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Detect tail-call context in Native BIF dispatch",
+      "spec": "The `call_external_target()` function receives a `save_return: bool` parameter. When `save_return` is false and the target is `ResolvedImportTarget::Native`, the BIF result must be returned to the caller, not continued past.",
+      "acceptance": [
+        "When `save_return=false` and target is Native: after executing the BIF and storing result in x(0), perform a return (pop the return address from the stack and jump to it)",
+        "When `save_return=true` and target is Native: existing behavior unchanged (Continue)",
+        "The return uses the same mechanism as the `return` opcode (pop frame, jump to return IP)",
+        "If the stack is empty (initial call frame), return `Exited(Normal)` \u2014 the BIF result was the process's final value",
+        "Test: `call_ext_only` to a BIF that returns 42 \u2014 x(0) is 42 and execution returns to the caller, not falls through"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs (call_external_target, around lines 318-399)"
+        ]
+      },
+      "checklist": [
+        "C65"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "call_ext_last with Native BIF",
+      "spec": "`call_ext_last` deallocates N stack slots then jumps (tail call with deallocation). Verify this variant also handles Native BIFs correctly after the R1 fix.",
+      "acceptance": [
+        "`call_ext_last` with a Native BIF target: deallocates the frame, executes the BIF, stores result in x(0), returns to caller",
+        "Stack frame is deallocated BEFORE the BIF executes (matching BEAM semantics \u2014 the BIF runs in the caller's context)",
+        "Test: function with local variables calls a BIF via `call_ext_last` \u2014 frame is deallocated, BIF result returned correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": [
+        "C65"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Regression test with known-broken pattern",
+      "spec": "Create a test that specifically exercises the bug pattern: a function whose last instruction is `call_ext_only` to a BIF, followed by a different function in the same module.",
+      "acceptance": [
+        "Test: module with `foo() -> erlang:'+' (1, 2)` (compiles to call_ext_only to +/2) followed by `bar() -> 99`. Call foo() \u2014 returns 3, not 99 or function_clause error.",
+        "Test: module where foo() tail-calls a BIF and the process exits normally with the correct return value",
+        "Test: nested tail calls \u2014 foo() tail-calls bar() which tail-calls a BIF \u2014 correct result propagates"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs (test section)"
+        ]
+      },
+      "checklist": [
+        "C65"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the non-tail-call path \u2014 `call_ext` with `save_return=true` correctly pushes a return address and continues",
+    "SHALL NOT change the BEAM function (Code target) path \u2014 that already handles tail calls correctly",
+    "SHALL NOT change the `NativeFn` signature or return type",
+    "SHALL fix all three tail-call variants: `call_ext_only`, `call_ext_last`, and any apply variant that is a tail call"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

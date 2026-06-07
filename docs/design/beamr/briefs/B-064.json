@@ -1,0 +1,140 @@
+{
+  "id": "B-064",
+  "cluster": "beamr",
+  "title": "Float arithmetic instructions \u2014 opcodes 96-102",
+  "depends_on": [
+    "B-026"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C73"
+  ],
+  "stories": [],
+  "purpose": "The BEAM compiler emits dedicated float arithmetic instructions (fmove, fconv, fadd, fsub, fmul, fdiv, fnegate) for floating-point operations. These use a separate set of float registers (fr0-fr15) that hold raw f64 values, avoiding the overhead of boxing/unboxing Float terms on every operation. Without these 7 opcodes, any Gleam or Erlang code using float arithmetic hits `UnsupportedOpcode`. This blocks math-heavy workflows and any code that the compiler optimizes to use float registers.",
+  "task": "Add float registers to the Process struct, decode all 7 float opcodes from Generic to dedicated Instruction variants, wire them into dispatch, and implement handlers in a new `opcodes/floats.rs` file.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Float registers in Process",
+      "spec": "Add a float register array to the Process struct. BEAM defines 16 float registers (fr0-fr15) holding raw f64 values.",
+      "acceptance": [
+        "Process gains `float_regs: [f64; 16]` field, initialized to 0.0",
+        "`Process::get_float_reg(index: u16) -> f64` accessor",
+        "`Process::set_float_reg(index: u16, value: f64)` mutator",
+        "Index out of bounds (>= 16) returns an error, not a panic",
+        "Float registers are independent of X and Y registers",
+        "Test: set fr0=3.14, get fr0 returns 3.14"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Loader decode \u2014 dedicated Instruction variants",
+      "spec": "Replace the Generic decode paths for opcodes 96-102 with dedicated Instruction variants. Float register operands use the existing `Operand::FloatRegister(u32)` type (compact.rs:18, decoded at compact.rs:101).",
+      "acceptance": [
+        "`Instruction::Fmove { source, dest }` (opcode 96)",
+        "`Instruction::Fconv { source, dest }` (opcode 97)",
+        "`Instruction::Fadd { fail, left, right, dest }` (opcode 98)",
+        "`Instruction::Fsub { fail, left, right, dest }` (opcode 99)",
+        "`Instruction::Fmul { fail, left, right, dest }` (opcode 100)",
+        "`Instruction::Fdiv { fail, left, right, dest }` (opcode 101)",
+        "`Instruction::Fnegate { fail, source, dest }` (opcode 102)",
+        "Float register operands correctly decoded from the compact term format",
+        "Existing .beam files with float instructions load without errors"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/loader/decode/code.rs",
+          "crates/beamr/src/loader/decode/instruction.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Float opcode handlers",
+      "spec": "Implement all 7 float arithmetic handlers in a new `opcodes/floats.rs` file.",
+      "acceptance": [
+        "fmove from x(0) containing boxed Float(3.14) to fr0: fr0 = 3.14",
+        "fmove from fr0 to x(0): x(0) = boxed Float(3.14) (heap-allocated)",
+        "fconv from x(0) containing integer 42 to fr0: fr0 = 42.0",
+        "fadd(fr0=1.5, fr1=2.5, fr2): fr2 = 4.0",
+        "fdiv(fr0=10.0, fr1=0.0, fr2): badarith error",
+        "fnegate(fr0=3.14, fr1): fr1 = -3.14",
+        "All arithmetic operations handle NaN and infinity per IEEE 754",
+        "Tests cover each opcode with normal and edge cases"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/interpreter/opcodes/floats.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Dispatch wiring and module registration",
+      "spec": "Wire all 7 float instructions into the dispatch table and register the new floats module.",
+      "acceptance": [
+        "All 7 Instruction variants matched in the dispatch table in mod.rs",
+        "`pub mod floats;` added to the opcodes module",
+        "No UnsupportedOpcode errors for opcodes 96-102",
+        "Test: a compiled module using `X + 1.0` (which compiles to fconv + fadd + fmove) executes correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "GC awareness for fmove heap allocation",
+      "spec": "fmove from a float register to an x/y register allocates a boxed Float on the process heap. This allocation must be GC-safe.",
+      "acceptance": [
+        "fmove to x/y register uses `process.heap_mut().alloc()` + `write_float()`",
+        "If heap is full, GC is triggered (same pattern as put_tuple2)",
+        "Float registers are NOT part of the GC root set (they hold raw f64, not Term pointers)",
+        "Test: fmove after heavy allocation triggers GC and produces correct Float term"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/floats.rs"
+        ]
+      },
+      "checklist": [
+        "C73"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement fclearerror/fcheckerror (different opcodes, separate brief if needed)",
+    "SHALL NOT change the Float term boxing format \u2014 float registers hold raw f64, conversion to/from boxed Float terms happens in fmove",
+    "SHALL NOT implement float comparison instructions \u2014 those are separate opcodes",
+    "Float registers are process-local (no shared state)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

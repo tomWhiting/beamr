@@ -1,0 +1,131 @@
+{
+  "id": "B-060",
+  "cluster": "beamr",
+  "title": "erlang:throw/1 \u2014 throw exception type",
+  "depends_on": [
+    "B-015"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150",
+    "C86",
+    "C87"
+  ],
+  "stories": [],
+  "purpose": "Erlang has three exception classes: `error` (from `erlang:error/1`), `throw` (from `erlang:throw/1`), and `exit` (from `erlang:exit/1`). beamr implements `error` and `exit` but not `throw`. The `throw` class is used by Gleam's `rescue` and by OTP's `gen_server` for non-local returns. Without it, any code calling `erlang:throw/1` gets an unresolved import error, and `try/catch` blocks that match on `throw:Reason` never fire.\n\nThe key challenge: the current BIF error path always wraps `Err(reason)` as `Exception { class: atom(error), ... }`. For `throw`, the exception class must be `atom(throw)`.",
+  "task": "Register `erlang:throw/1` as a BIF and add a mechanism for BIFs to specify the exception class. The simplest approach: add an `exception_class` field to `ProcessContext` that BIFs can set before returning `Err`. The interpreter reads this field when constructing the `Exception`, then resets it to `error`.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ProcessContext exception class field",
+      "spec": "Add an `exception_class` field to `ProcessContext` that defaults to `ExceptionClass::Error`. BIFs can set it to `ExceptionClass::Throw` before returning `Err`.",
+      "acceptance": [
+        "`ProcessContext` gains `exception_class: ExceptionClass` field (default: `Error`)",
+        "`ExceptionClass` enum with variants: `Error`, `Throw`, `Exit`",
+        "`ProcessContext::set_exception_class(class)` setter",
+        "`ProcessContext::take_exception_class() -> ExceptionClass` reads and resets to `Error`",
+        "Existing BIFs (error/1, exit/2) do not set this field and continue to work unchanged"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/context.rs"
+        ]
+      },
+      "checklist": [
+        "C86"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Interpreter reads exception class from ProcessContext",
+      "spec": "Modify the BIF error handling path in the interpreter to read `ProcessContext::take_exception_class()` instead of hardcoding `atom(error)` as the exception class.",
+      "acceptance": [
+        "When a BIF returns `Err(reason)`, the interpreter constructs `Exception { class: atom(take_exception_class()), reason, stacktrace }`",
+        "If no BIF set the exception class, `take_exception_class()` returns `Error` (backward compatible)",
+        "The exception class atom is correctly mapped: `Error` \u2192 `atom(error)`, `Throw` \u2192 `atom(throw)`, `Exit` \u2192 `atom(exit)`",
+        "Test: a BIF returning `Err` without setting exception class produces `Exception { class: atom(error) }` (existing behavior preserved)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs (BIF call error handling path)"
+        ]
+      },
+      "checklist": [
+        "C86"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "erlang:throw/1 BIF registration",
+      "spec": "Register `erlang:throw/1` as a BIF. The implementation sets `exception_class` to `Throw` on ProcessContext, then returns `Err(reason)`.",
+      "acceptance": [
+        "`throw/1` registered in the BIF registry under the `erlang` module",
+        "Implementation: `context.set_exception_class(ExceptionClass::Throw); Err(*reason)`",
+        "Import resolution resolves `erlang:throw/1` without unresolved-import errors",
+        "Test: calling `throw(hello)` produces `Exception { class: atom(throw), reason: atom(hello) }`"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/bifs.rs (bifs.rs at 625 lines \u2014 add ~10 lines for throw/1 registration and handler)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "try/catch correctly dispatches throw class",
+      "spec": "Verify that the existing `try_case` handler correctly matches `throw` class exceptions. In BEAM semantics, `try_case` writes `(class, reason, stacktrace)` to X registers. The `class` must be `atom(throw)` for thrown exceptions, not `atom(error)`.",
+      "acceptance": [
+        "A `try/catch` block that catches `throw:Reason` matches when `erlang:throw(Reason)` is called inside the try",
+        "A `try/catch` block that only catches `error:Reason` does NOT match a `throw` exception",
+        "Test: `try throw(42) catch throw:V -> V end` returns `42`",
+        "Test: `try throw(42) catch error:V -> V end` does not catch \u2014 exception propagates"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/messaging.rs (only if changes needed \u2014 may just need tests)"
+        ]
+      },
+      "checklist": [
+        "C86",
+        "C87"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "erlang:exit/1 uses ExceptionClass::Exit",
+      "spec": "While we're adding the exception class mechanism, wire `erlang:exit/1` (self-exit, different from `exit/2` which sends to another process) through the same path for consistency.",
+      "acceptance": [
+        "`erlang:exit/1` sets `ExceptionClass::Exit` on ProcessContext before returning `Err`",
+        "`try exit(reason) catch exit:R -> R end` returns `reason`",
+        "Existing exit/2 behavior (sending exit signals to other processes) is unchanged"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the `NativeFn` return type \u2014 BIFs still return `Result<Term, Term>`",
+    "SHALL NOT implement `erlang:error/2` (error with args) \u2014 that's a separate brief",
+    "SHALL NOT modify the exception propagation path (try/catch/raise) \u2014 only the exception construction at the BIF\u2192interpreter boundary",
+    "SHALL verify that existing `try/catch` dispatch correctly matches `throw` class exceptions"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

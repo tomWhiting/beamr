@@ -1,0 +1,89 @@
+{
+  "id": "B-093",
+  "cluster": "beamr",
+  "title": "ETS ordered_set table type \u2014 B-tree based",
+  "depends_on": [
+    "B-090",
+    "B-007"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "`ordered_set` tables maintain entries sorted by key using Erlang's term ordering. Unlike hash-based sets, ordered_set supports range queries and ordered iteration (first/next/last/prev). It's backed by a B-tree for O(log n) operations. OTP uses ordered_set for time-ordered indexes and priority queues.",
+  "task": "Implement `EtsOrderedSet` using a `BTreeMap<Term, Term>` wrapped with appropriate concurrency control.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "EtsOrderedSet implementation",
+      "spec": "EtsOrderedSet implementation",
+      "acceptance": [
+        "`EtsOrderedSet` wraps `Mutex<BTreeMap<TermKey, Term>>` where `TermKey` implements `Ord` using term comparison",
+        "`insert`, `lookup`, `delete_key`, `tab2list` all work with ordered semantics",
+        "`tab2list()` returns tuples in key order",
+        "Test: insert {3,c}, {1,a}, {2,b} \u2192 tab2list returns [{1,a},{2,b},{3,c}]"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/ordered_set.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "TermKey wrapper for Ord",
+      "spec": "Create a wrapper that implements `Ord` for Term using the existing term comparison infrastructure.",
+      "acceptance": [
+        "`TermKey(Term)` implements `Eq`, `PartialEq`, `Ord`, `PartialOrd`",
+        "Ordering matches Erlang's term ordering: number < atom < reference < fun < port < pid < tuple < map < nil < list < binary",
+        "Test: TermKey(atom(a)) < TermKey(atom(b)), TermKey(1) < TermKey(atom(a))"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/term_key.rs (or add to ets/mod.rs)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Ordered iteration \u2014 first/next/last/prev",
+      "spec": "Add ordered traversal methods to EtsOrderedSet that B-095 will expose as BIFs.",
+      "acceptance": [
+        "`first() -> Option<Term>` returns the smallest key",
+        "`next(key) -> Option<Term>` returns the next key after the given key",
+        "`last() -> Option<Term>` returns the largest key",
+        "`prev(key) -> Option<Term>` returns the previous key before the given key",
+        "Returns None at the boundaries (no next after last, no prev before first)",
+        "Test: insert 3 entries, verify first/next/last/prev traversal"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/ordered_set.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement concurrent read/write access in this brief \u2014 that's B-098",
+    "SHALL use standard library BTreeMap with a Mutex for thread safety (B-098 adds fine-grained locking later)",
+    "SHALL reuse the existing term ordering from B-007"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

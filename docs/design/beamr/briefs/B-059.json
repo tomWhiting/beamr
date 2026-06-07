@@ -1,0 +1,150 @@
+{
+  "id": "B-059",
+  "cluster": "beamr",
+  "title": "catch/catch_end — traditional exception handling",
+  "depends_on": ["B-015"],
+  "blocked_by": [],
+  "checklist": ["C86"],
+  "stories": [],
+  "purpose": "BEAM has two exception handling mechanisms. The modern try/try_end/try_case family (landed in B-015) gives the catch clause access to the exception class, reason, and stacktrace as separate values. The traditional catch/catch_end mechanism (opcodes 62/63) is the older form used by Erlang's catch Expr expression — it wraps the exception into a single value in x(0) with different wrapping per class: throw:Value passes through unchanged, error:Reason becomes {'EXIT', {Reason, Stacktrace}}, exit:Reason becomes {'EXIT', Reason}. Both mechanisms push handlers onto the same ExceptionHandler stack on Process; the difference is entirely in how raise_exception delivers the caught value. The Instruction::Catch and Instruction::CatchEnd variants already decode correctly but fall through to UnsupportedOpcode. A second latent issue affects both try and catch: raise_exception does not unwind intermediate stack frames on exception, causing Y-register corruption at the handler label. This brief also extracts exception-handling code from messaging.rs (685 lines) into a focused exceptions.rs submodule.",
+  "task": "Add a HandlerKind discriminant (Try/Catch) and stack_depth field to ExceptionHandler. Modify raise_exception to wrap values for Catch handlers according to exception class, truncate the stack to handler depth for both handler kinds, and dispatch to the handler label. Implement catch (opcode 62) and catch_end (opcode 63) handlers. Add common atoms for throw and exit exception classes. Extract all exception-handling functions from messaging.rs into a new exceptions.rs submodule.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "HandlerKind discriminant and stack depth on ExceptionHandler",
+      "spec": "THE SYSTEM SHALL define a HandlerKind enum with variants Try and Catch. THE SYSTEM SHALL add kind: HandlerKind and stack_depth: usize fields to ExceptionHandler. WHEN the existing try_ handler pushes a handler, THE SYSTEM SHALL pass kind: HandlerKind::Try and stack_depth: process.stack().len().",
+      "acceptance": [
+        "HandlerKind enum { Try, Catch } defined in process/mod.rs",
+        "ExceptionHandler gains kind: HandlerKind and stack_depth: usize",
+        "ExceptionHandler derives remain (Copy, Clone, Debug, Eq, PartialEq)",
+        "Existing try_ handler passes kind: HandlerKind::Try and stack_depth: process.stack().len()",
+        "All existing tests compile and pass with the new fields"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/process/mod.rs"]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "New common atoms for exception classes",
+      "spec": "THE SYSTEM SHALL add Atom::THROW with string 'throw' at index 30 and Atom::EXIT_CLASS with string 'exit' at index 31 to the common atoms table, distinguished from Atom::EXIT which is uppercase 'EXIT' used in message tuples.",
+      "acceptance": [
+        "Atom::THROW added as common atom with string 'throw' at index 30",
+        "Atom::EXIT_CLASS added as common atom with string 'exit' at index 31",
+        "Both added to COMMON_ATOMS array after Atom::MODULE (index 29)",
+        "Existing Atom::EXIT (uppercase 'EXIT') unchanged"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/atom/table.rs"]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Catch-aware exception dispatch and stack unwinding",
+      "spec": "WHEN raise_exception dispatches an exception, THE SYSTEM SHALL truncate the process stack to handler.stack_depth before delivering the exception. WHEN the handler kind is Try, THE SYSTEM SHALL set current_exception, write exception.reason to handler.destination register, and jump to handler.catch_position. WHEN the handler kind is Catch, THE SYSTEM SHALL set current_exception, wrap the value based on exception class (throw: bare reason, error: {'EXIT', {Reason, Stacktrace}}, exit: {'EXIT', Reason}), write the wrapped value to x(0), and jump to handler.catch_position.",
+      "acceptance": [
+        "Stack::truncate(len: usize) added — delegates to Vec::truncate on the internal frames vector",
+        "raise_exception truncates process stack to handler.stack_depth for BOTH handler kinds",
+        "HandlerKind::Try: existing behaviour preserved (set exception, write reason to dest, jump)",
+        "HandlerKind::Catch with throw class: x(0) = exception.reason (no allocation)",
+        "HandlerKind::Catch with error class: x(0) = {'EXIT', {reason, stacktrace}} (two tuple allocations)",
+        "HandlerKind::Catch with exit class: x(0) = {'EXIT', reason} (one tuple allocation)",
+        "Unknown class treated as error (defensive)",
+        "Tuple construction uses Atom::EXIT (uppercase) for the 'EXIT' key",
+        "Test: Try handler preserves existing behaviour with stack truncation",
+        "Test: Catch handler with error class wraps correctly",
+        "Test: Catch handler with throw class passes reason through",
+        "Test: Catch handler with exit class wraps correctly",
+        "Test: exception in nested call unwinds intermediate stack frames"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/stack.rs",
+          "crates/beamr/src/interpreter/opcodes/messaging.rs"
+        ]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "catch opcode handler (opcode 62)",
+      "spec": "WHEN the interpreter encounters Instruction::Catch, THE SYSTEM SHALL push an ExceptionHandler with kind: HandlerKind::Catch, stack_depth: process.stack().len(), catch_position resolved from the label operand, and destination from the Y-register operand.",
+      "acceptance": [
+        "catch_(process, module, destination, label) pushes ExceptionHandler with kind=Catch and stack_depth",
+        "Instruction::Catch dispatched in opcodes/mod.rs to the new handler",
+        "No UnsupportedOpcode error when executing modules containing opcode 62",
+        "Test: push catch handler, verify handler count increments and kind is Catch"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs",
+          "crates/beamr/src/interpreter/opcodes/messaging.rs"
+        ]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "catch_end opcode handler (opcode 63)",
+      "spec": "WHEN the interpreter encounters Instruction::CatchEnd, THE SYSTEM SHALL pop the topmost exception handler, clear current_exception, and write Term::NIL to the Y-register referenced by the source operand. THE SYSTEM SHALL NOT modify x(0).",
+      "acceptance": [
+        "catch_end(process, source) pops the topmost exception handler and clears current_exception",
+        "Instruction::CatchEnd dispatched in opcodes/mod.rs to the new handler",
+        "Y-register referenced by source cleared to Term::NIL",
+        "Test: normal path — push catch handler, run catch_end, verify handler popped and x(0) unchanged",
+        "Test: exception path — raise with catch handler, verify catch_end clears exception state"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs",
+          "crates/beamr/src/interpreter/opcodes/messaging.rs"
+        ]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Extract exception module from messaging.rs",
+      "spec": "THE SYSTEM SHALL create a new exceptions.rs submodule under interpreter/opcodes/ and move all exception-handling functions from messaging.rs into it. THE SYSTEM SHALL update the dispatch table to route exception instructions to exceptions:: instead of messaging::.",
+      "acceptance": [
+        "New file crates/beamr/src/interpreter/opcodes/exceptions.rs created",
+        "Functions moved: try_, try_end, try_case, try_case_end, raise, raise_exception, badmatch, case_end, if_end, two_tuple helper, Exception::error impl, catch_, catch_end",
+        "messaging.rs retains: send, loop_rec, loop_rec_end, remove_message, wait, wait_timeout, timeout and helpers",
+        "Dispatch table updated: exception instructions route to exceptions::",
+        "messaging.rs drops from ~685 to ~460 lines",
+        "exceptions.rs is ~230 lines",
+        "Exception tests move to exceptions.rs test module",
+        "All tests pass after the move"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/interpreter/opcodes/exceptions.rs"],
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs",
+          "crates/beamr/src/interpreter/opcodes/messaging.rs"
+        ]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement erlang:throw/1 or erlang:exit/1 BIFs — those create throw/exit-class exceptions (B-060)",
+    "SHALL NOT implement build_stacktrace (B-061) or raw_raise (B-062)",
+    "SHALL NOT change the Exception struct — it already supports all three classes via the class: Term field"
+  ],
+  "verification": [
+    "cargo test passes with all existing tests plus new catch/catch_end tests",
+    "Opcode 62 (catch) no longer returns UnsupportedOpcode",
+    "Opcode 63 (catch_end) no longer returns UnsupportedOpcode",
+    "Exception inside nested function call correctly unwinds stack frames for both Try and Catch handlers",
+    "messaging.rs is under 500 lines after extraction",
+    "exceptions.rs contains all exception-handling code and is under 500 lines"
+  ]
+}

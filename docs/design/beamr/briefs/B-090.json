@@ -1,0 +1,121 @@
+{
+  "id": "B-090",
+  "cluster": "beamr",
+  "title": "ETS table registry and ownership model",
+  "depends_on": [
+    "B-032"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "ETS (Erlang Term Storage) provides shared mutable tables accessible by multiple processes. Every other ETS brief builds on this one \u2014 the table registry, table IDs, ownership model, and access protection levels are the foundation. A table is owned by a process; when the owner dies, the table is deleted (unless an heir is configured \u2014 B-099). Access protection determines which processes can read/write.",
+  "task": "Define the ETS table registry in SharedState, the `EtsTable` trait, table metadata (name, ID, type, protection, owner), and the table ID allocation scheme.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "EtsTableId and table registry in SharedState",
+      "spec": "Add a table registry to SharedState that maps table IDs to table instances.",
+      "acceptance": [
+        "`EtsTableId` is a unique u64, monotonically increasing (never reused)",
+        "`SharedState` gains `ets_tables: DashMap<EtsTableId, Arc<dyn EtsTable>>`",
+        "`SharedState::create_table(metadata) -> EtsTableId` allocates an ID and inserts the table",
+        "`SharedState::lookup_table(id) -> Option<Arc<dyn EtsTable>>` retrieves a table",
+        "`SharedState::delete_table(id) -> bool` removes a table from the registry",
+        "Named tables can also be looked up by atom: `SharedState::lookup_table_by_name(name: Atom) -> Option<EtsTableId>`",
+        "Test: create table, look up by ID, delete, verify gone"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/mod.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs (SharedState)",
+          "crates/beamr/src/lib.rs (add pub mod ets)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "EtsTable trait and table metadata",
+      "spec": "Define the trait that all table types implement, plus the metadata struct.",
+      "acceptance": [
+        "`EtsTableMetadata` struct: `name: Option<Atom>`, `id: EtsTableId`, `table_type: EtsTableType`, `protection: Protection`, `owner: u64` (PID), `keypos: usize` (1-based element position for key, default 1)",
+        "`EtsTableType` enum: `Set`, `OrderedSet`, `Bag`, `DuplicateBag`",
+        "`Protection` enum: `Public` (any process R/W), `Protected` (owner W, any R), `Private` (owner only)",
+        "`EtsTable` trait with methods: `metadata(&self) -> &EtsTableMetadata`, `insert(&self, tuple: Term) -> Result<(), EtsError>`, `lookup(&self, key: Term) -> Vec<Term>`, `delete_key(&self, key: Term) -> bool`, `tab2list(&self) -> Vec<Term>`",
+        "Test: create metadata, verify all fields accessible"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/mod.rs",
+          "crates/beamr/src/ets/table.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Access control enforcement",
+      "spec": "Implement protection level checks that gate read/write access based on the calling process's PID and the table's protection level.",
+      "acceptance": [
+        "`EtsTable::check_access(caller_pid: u64, operation: AccessOp) -> Result<(), EtsError>` where AccessOp is Read or Write",
+        "Public: any PID can read or write",
+        "Protected: any PID can read, only owner can write",
+        "Private: only owner can read or write",
+        "`EtsError::AccessDenied { table_id, caller_pid, operation }` for violations",
+        "Test: private table rejects non-owner read and write",
+        "Test: protected table allows non-owner read but rejects non-owner write",
+        "Test: public table allows everything"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/table.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Owner death cleanup",
+      "spec": "When a process dies, all ETS tables it owns are deleted from the registry (unless heir is configured \u2014 B-099 adds that; for now, always delete).",
+      "acceptance": [
+        "Process cleanup path (supervision exit signal propagation) checks for owned tables",
+        "All tables owned by the dying process are removed from the registry",
+        "Table data is dropped (Arc ref count goes to 0 if no other references)",
+        "Test: create table, kill owner process, verify table is deleted"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs (cleanup_exited_process)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement any table type (set, bag, ordered_set) \u2014 those are B-091 through B-093",
+    "SHALL NOT implement any ETS BIFs \u2014 those are B-094+",
+    "SHALL NOT implement heir or give_away \u2014 that's B-099",
+    "SHALL implement the registry, ownership, protection model, and table lifecycle only"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

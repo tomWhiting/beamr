@@ -1,0 +1,114 @@
+{
+  "id": "B-077",
+  "cluster": "beamr",
+  "title": "Dirty scheduler thread pools \u2014 CPU and IO pools",
+  "depends_on": [
+    "B-032"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Normal scheduler threads run BEAM code with preemptive reduction counting \u2014 each process gets a fixed reduction budget, then yields. Long-running native calls (file I/O, crypto, JSON parsing) block the scheduler thread for their entire duration, starving other processes. BEAM solves this with dirty schedulers: separate thread pools dedicated to running long native calls. When a native call is marked dirty, the calling process migrates to a dirty thread, freeing the normal scheduler thread immediately.\n\nBEAM has two dirty pools: CPU (compute-bound, N threads = CPU cores) and IO (I/O-bound, 10 threads by default, expandable). This brief creates both pools and the infrastructure to submit work to them.",
+  "task": "Implement `DirtyPool` in `scheduler/dirty.rs` (currently a scaffold stub). Each pool owns a set of OS threads and a work queue. The pool accepts `DirtyJob` submissions and executes them on its threads.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "DirtyPool struct and thread management",
+      "spec": "Replace the scaffold stub in `scheduler/dirty.rs` with a `DirtyPool` that owns a configurable number of OS threads.",
+      "acceptance": [
+        "`DirtyPool::new(name: &str, thread_count: usize) -> DirtyPool` creates the pool",
+        "Pool spawns `thread_count` OS threads that wait for work",
+        "`DirtyPool::shutdown(&self)` signals all threads to stop and joins them",
+        "Threads are named (e.g., `dirty-cpu-0`, `dirty-io-1`) for debugging",
+        "Default CPU pool: `num_cpus::get()` threads. Default IO pool: 10 threads.",
+        "Test: create pool with 4 threads, verify 4 threads running, shutdown cleanly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/dirty.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "DirtyJob submission and execution",
+      "spec": "Define a `DirtyJob` that encapsulates a native function call to be executed on a dirty thread. The pool accepts jobs and executes them.",
+      "acceptance": [
+        "`DirtyJob` struct: `{ pid: u64, function: NativeFn, args: Vec<Term>, context: ProcessContext, result_sender: oneshot::Sender<Result<Term, Term>> }`",
+        "`DirtyPool::submit(&self, job: DirtyJob)` enqueues the job for a worker thread",
+        "Worker threads dequeue jobs, execute `(job.function)(&job.args, &mut job.context)`, and send the result back via `result_sender`",
+        "Job queue is bounded (configurable max depth, default 1024) \u2014 submit blocks if queue is full",
+        "Test: submit a job that returns 42, receive the result on the channel"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/dirty.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Scheduler owns CPU and IO pools",
+      "spec": "Integrate the dirty pools into the Scheduler's lifecycle. The Scheduler creates both pools at startup and shuts them down on exit.",
+      "acceptance": [
+        "`SharedState` gains `dirty_cpu: DirtyPool` and `dirty_io: DirtyPool` fields",
+        "`Scheduler::new()` creates both pools with configurable thread counts",
+        "`Scheduler::shutdown()` shuts down both dirty pools before stopping normal workers",
+        "Dirty pools are accessible from scheduler workers via SharedState",
+        "Test: create Scheduler, verify dirty pools exist, shutdown cleanly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "DirtySchedulerKind enum",
+      "spec": "Define the enum that distinguishes CPU-bound from IO-bound dirty work, matching BEAM's two-pool model.",
+      "acceptance": [
+        "`DirtySchedulerKind` enum: `Cpu`, `Io`",
+        "`NativeEntry::dirty_kind` field: `Option<DirtySchedulerKind>` (None = normal scheduler, Some(Cpu) = dirty CPU, Some(Io) = dirty IO)",
+        "Replaces the existing `is_dirty: bool` field with the more expressive enum",
+        "Existing code that checks `is_dirty` is updated to check `dirty_kind.is_some()`",
+        "Test: NativeEntry with dirty_kind=Some(Cpu) reports as dirty"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/mod.rs (NativeEntry)",
+          "crates/beamr/src/scheduler/dirty.rs (DirtySchedulerKind)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT modify the normal scheduler's run loop \u2014 dirty pools are separate thread pools",
+    "SHALL NOT implement process migration in this brief \u2014 that's B-078",
+    "SHALL NOT implement NIF registration as dirty \u2014 that's B-079",
+    "SHALL implement the pool infrastructure only: thread management, job queue, result channel"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

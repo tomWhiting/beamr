@@ -1,0 +1,92 @@
+{
+  "id": "B-080",
+  "cluster": "beamr",
+  "title": "process_info/1,2 BIF \u2014 process introspection",
+  "depends_on": [
+    "B-016"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "`erlang:process_info/1` and `erlang:process_info/2` are the primary process introspection BIFs in BEAM. They return information about a running process: its current function, heap size, message queue length, registered name, status, and more. OTP libraries (gen_server, supervisor) use these for diagnostics, and Gleam's process module wraps them. Without them, any OTP code that calls process_info fails with an unresolved import error.",
+  "task": "Implement process_info/1 (all info) and process_info/2 (specific item or list of items) as BIFs. Start with the subset of info items needed by OTP: current_function, heap_size, message_queue_len, registered_name, status, trap_exit, links, monitors.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "process_info/2 \u2014 single item query",
+      "spec": "Register `erlang:process_info/2` as a BIF. Accepts (Pid, Item) where Item is an atom. Returns `{Item, Value}` or `undefined` if the process doesn't exist.",
+      "acceptance": [
+        "Supported items: `current_function` \u2192 `{M, F, A}` tuple, `heap_size` \u2192 word count, `message_queue_len` \u2192 integer, `registered_name` \u2192 atom or `[]`, `status` \u2192 atom (running/waiting/suspended), `trap_exit` \u2192 boolean, `links` \u2192 list of PIDs, `monitors` \u2192 list of monitor info",
+        "Non-existent PID returns `undefined`",
+        "Unknown item returns badarg",
+        "Test: spawn a process, query each supported item, verify return format"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/native/process_info_bifs.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "process_info/1 \u2014 all items query",
+      "spec": "Register `erlang:process_info/1` as a BIF. Accepts (Pid) and returns a list of `{Item, Value}` tuples for all default items.",
+      "acceptance": [
+        "Returns a list containing tuples for all supported items",
+        "Order matches BEAM convention (or is at least deterministic)",
+        "Non-existent PID returns `undefined`",
+        "Test: spawn a process, call process_info/1, verify list contains expected items"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_info_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Process state access via SharedState",
+      "spec": "The BIF needs to read process state from the process table. Add accessor methods that safely read process properties without requiring exclusive ownership.",
+      "acceptance": [
+        "SharedState provides `process_info(pid, item) -> Option<Term>` that reads from the process table",
+        "Handles the ProcessSlot states correctly (Present, Executing, Absent)",
+        "For Executing processes: returns metadata from ProcessMetadata (current_function, status=running)",
+        "For Present processes: reads from the Process struct directly",
+        "No deadlocks \u2014 does not hold process mutex while allocating terms",
+        "Test: query process_info on a running process (Executing state) returns current_function"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs (SharedState accessor)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement all ~30 process_info items \u2014 only the subset needed by OTP stdlib and Gleam",
+    "SHALL NOT return sensitive internal data (heap pointers, raw stack frames) \u2014 only safe observable properties",
+    "SHALL NOT block the calling process to inspect the target \u2014 read from SharedState/process table"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

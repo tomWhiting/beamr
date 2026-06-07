@@ -1,0 +1,70 @@
+{
+  "id": "B-082",
+  "cluster": "beamr",
+  "title": "Group leader read/write BIFs",
+  "depends_on": [
+    "B-016"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Every BEAM process has a group leader \u2014 a PID that receives I/O output. `io:format` sends messages to the group leader rather than writing to stdout directly. OTP's `init` and `application` modules read and set group leaders during startup. Without these BIFs, OTP code that manages I/O routing fails.",
+  "task": "Add a group_leader field to Process and implement the `erlang:group_leader/0` and `erlang:group_leader/2` BIFs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Group leader field on Process",
+      "spec": "Add a `group_leader: Term` field to Process, defaulting to the process's own PID.",
+      "acceptance": [
+        "Process gains `group_leader: Term` field",
+        "Default group_leader is the process's own PID (set at spawn)",
+        "Spawned processes inherit the parent's group_leader",
+        "Test: spawn process, verify group_leader is parent's PID"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "group_leader/0 and group_leader/2 BIFs",
+      "spec": "Register `erlang:group_leader/0` (returns current group leader) and `erlang:group_leader/2` (sets group leader for a process).",
+      "acceptance": [
+        "`group_leader()` returns the calling process's group_leader PID",
+        "`group_leader(NewLeader, Pid)` sets the group leader for Pid, returns true",
+        "Setting group leader for a non-existent PID returns badarg",
+        "Test: get default group leader, set a new one, verify the change"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/native/process_info_bifs.rs (add to existing if B-080 creates it, otherwise create)"
+        ],
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement full I/O protocol message routing \u2014 group_leader is stored but not used for I/O dispatch (beamr uses IoSink from B-039)",
+    "SHALL NOT implement group leader inheritance across spawn \u2014 spawned processes get the parent's group leader (simple copy)",
+    "SHALL return the process's own PID as default group leader if none is set"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

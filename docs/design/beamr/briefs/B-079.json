@@ -1,0 +1,94 @@
+{
+  "id": "B-079",
+  "cluster": "beamr",
+  "title": "Dirty NIF registration API and scheduling wrapper",
+  "depends_on": [
+    "B-078"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "B-077 created the dirty thread pools and B-078 wired the interpreter to use them. This brief provides the public API for registering NIFs as dirty and adds the wrapper that host programs (beamr-cli, beamr-meridian) use to declare dirty NIFs. It also identifies the existing BIFs that should be marked dirty (file I/O, shell commands, timer:sleep) and re-registers them.",
+  "task": "Add a `register_dirty` API to the BIF registry, create a scheduling wrapper type for ergonomic dirty NIF declaration, and mark existing I/O-bound BIFs as dirty.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "register_dirty API on BifRegistryImpl",
+      "spec": "Add a registration variant that accepts a `DirtySchedulerKind` parameter.",
+      "acceptance": [
+        "`BifRegistryImpl::register_dirty(module, function, arity, native_fn, kind: DirtySchedulerKind)` registers a NIF with dirty scheduling",
+        "The resulting `NativeEntry` has `dirty_kind = Some(kind)`",
+        "Existing `register()` continues to produce `dirty_kind = None`",
+        "Import resolution returns the correct dirty_kind when looking up the NIF",
+        "Test: register a dirty NIF, look it up, verify dirty_kind is Some(Cpu)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Re-register I/O-bound BIFs as dirty",
+      "spec": "Identify existing BIFs that perform blocking I/O and re-register them as dirty IO. These include file operations, shell command execution, and sleep.",
+      "acceptance": [
+        "`meridian_ffi:read_file/1` \u2192 dirty IO",
+        "`meridian_ffi:write_file/2` \u2192 dirty IO",
+        "`meridian_ffi:run_cmd/1` \u2192 dirty IO",
+        "`timer:sleep/1` \u2192 dirty IO (or CPU \u2014 debatable, but IO matches BEAM convention)",
+        "`gleam_erlang_ffi:sleep/1` \u2192 dirty IO",
+        "All re-registered BIFs continue to produce correct results",
+        "Test: calling read_file executes on a dirty IO thread (verify via thread name or pool metrics)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/meridian_ffi.rs",
+          "crates/beamr/src/native/stdlib_stubs/mod.rs",
+          "crates/beamr/src/native/gleam_ffi.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "DirtyNif wrapper type for host programs",
+      "spec": "Provide an ergonomic wrapper that host programs use to declare dirty NIFs without manually constructing NativeEntry.",
+      "acceptance": [
+        "`DirtyNif::cpu(function: NativeFn) -> NativeEntry` creates a CPU-dirty entry",
+        "`DirtyNif::io(function: NativeFn) -> NativeEntry` creates an IO-dirty entry",
+        "Host programs (beamr-meridian) can use this API when registering custom NIFs",
+        "Test: DirtyNif::cpu produces NativeEntry with dirty_kind=Some(Cpu)",
+        "Test: DirtyNif::io produces NativeEntry with dirty_kind=Some(Io)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change existing NIF function signatures \u2014 dirty is a scheduling annotation, not a code change",
+    "SHALL NOT make all NIFs dirty by default \u2014 only explicitly marked NIFs run on dirty threads",
+    "SHALL NOT implement dirty NIF cancellation or timeout \u2014 dirty calls run to completion"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

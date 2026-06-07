@@ -1,0 +1,116 @@
+{
+  "id": "B-078",
+  "cluster": "beamr",
+  "title": "Dirty NIF dispatch and process migration",
+  "depends_on": [
+    "B-077"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "With dirty thread pools in place (B-077), the interpreter needs to detect dirty NIF calls and route them correctly. When `call_external_target` encounters a `NativeEntry` with `dirty_kind = Some(Cpu|Io)`, the process must be suspended on the normal scheduler, the NIF executed on a dirty thread, and the process resumed on a normal thread with the result.\n\nThe ProcessSlot migration infrastructure (Present \u2192 Executing \u2192 Present) already enables hand-off between threads. This brief wires the interpreter to the dirty pool through that mechanism.",
+  "task": "Modify `call_external_target` to detect dirty NIFs, suspend the process, submit a DirtyJob, and handle the async result. The normal scheduler thread is freed immediately \u2014 it does not block waiting for the dirty call.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Interpreter detects dirty NIF and yields",
+      "spec": "When `call_external_target` resolves a `ResolvedImportTarget::Native(entry)` with `dirty_kind.is_some()`, return a new `InstructionOutcome::DirtyCall` instead of executing the NIF inline.",
+      "acceptance": [
+        "New `InstructionOutcome::DirtyCall { entry: NativeEntry, args: Vec<Term>, kind: DirtySchedulerKind }` variant",
+        "`call_external_target` checks `entry.dirty_kind` before executing the NIF",
+        "If dirty: stores args, returns DirtyCall outcome (process yields to scheduler)",
+        "If not dirty: existing inline execution (unchanged)",
+        "Test: calling a dirty NIF returns DirtyCall outcome, not Continue"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs (call_external_target)",
+          "crates/beamr/src/interpreter/mod.rs (InstructionOutcome)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Scheduler handles DirtyCall outcome",
+      "spec": "When the scheduler's execute_slice receives a DirtyCall outcome, it submits the job to the appropriate dirty pool and marks the process as waiting for the dirty result.",
+      "acceptance": [
+        "execute_slice matches DirtyCall, constructs a DirtyJob, submits to dirty_cpu or dirty_io pool based on kind",
+        "The process is NOT placed back on a run queue \u2014 it waits for the dirty result",
+        "The normal scheduler thread returns to its work loop (freed immediately)",
+        "ProcessSlot transitions to a waiting-for-dirty state (or uses existing Executing metadata)",
+        "Test: submit a dirty call, verify the normal thread is free to execute other processes"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs (execute_slice)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Dirty result handling and process resumption",
+      "spec": "When the dirty thread completes the NIF call, the result must be delivered back and the process resumed on a normal scheduler thread.",
+      "acceptance": [
+        "The DirtyJob's result_sender delivers the NIF result (Ok or Err) back to the scheduler",
+        "A background task or waker moves the completed process from dirty-waiting back to a normal run queue",
+        "The BIF result is stored in x(0) (same as normal NIF execution)",
+        "If the NIF returned Err, the exception is raised on the process (same as normal NIF error path)",
+        "The process resumes execution on the next normal scheduler tick",
+        "Test: dirty NIF returns 42 \u2192 process resumes with x(0)=42",
+        "Test: dirty NIF returns Err(badarg) \u2192 process raises exception"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs",
+          "crates/beamr/src/scheduler/dirty.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Integration test \u2014 dirty NIF round-trip",
+      "spec": "End-to-end test that registers a dirty NIF, calls it from BEAM code, and verifies the result.",
+      "acceptance": [
+        "Test registers a NIF with dirty_kind=Some(Cpu) that sleeps for 10ms then returns a value",
+        "A BEAM process calls the dirty NIF",
+        "The normal scheduler thread is NOT blocked for the 10ms (other processes can run)",
+        "The calling process receives the correct result after the dirty call completes",
+        "Test: concurrent dirty and normal execution \u2014 normal process makes progress while dirty NIF runs"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/tests/dirty_scheduler.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT run dirty calls on normal scheduler threads \u2014 the whole point is freeing the normal thread",
+    "SHALL NOT change the NativeFn signature \u2014 dirty NIFs use the same function signature as normal ones",
+    "SHALL NOT implement dirty NIF preemption \u2014 dirty calls run to completion (no reduction counting on dirty threads)",
+    "SHALL handle the case where the dirty NIF raises an exception (Err result)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

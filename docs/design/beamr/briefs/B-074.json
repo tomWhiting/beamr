@@ -1,0 +1,135 @@
+{
+  "id": "B-074",
+  "cluster": "beamr",
+  "title": "Sub-binary term type \u2014 offset+length views into parent binaries",
+  "depends_on": [
+    "B-072"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "When BEAM pattern-matches a binary (`<<Prefix:3/binary, Rest/binary>>`), it currently creates a full copy of `Rest` as a new inline binary. For a 1MB binary split at byte 3, this copies 999,997 bytes. A sub-binary is a lightweight view: it stores an offset and length into a parent binary without copying data. Combined with refc binaries (B-072), extracting a sub-binary from a ProcBin creates a 5-word heap term instead of copying potentially megabytes.",
+  "task": "Add a SubBinary on-heap term type (BoxedTag 0x1A) that references a parent binary (inline or ProcBin) with an offset and length. Modify binary pattern matching to produce sub-binaries instead of copies for refc parents.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "SubBinary heap layout",
+      "spec": "Define the SubBinary on-heap term with BoxedTag 0x1A.",
+      "acceptance": [
+        "SubBinary heap layout: `[header(tag=0x1A, size=4)] [parent_term: u64] [offset_bytes: u64] [length_bytes: u64] [flags: u64]`",
+        "`write_sub_binary(heap, parent_term, offset, length) -> Option<Term>` writes the SubBinary",
+        "SubBinary is always 5 words regardless of the view size",
+        "Parent term can be either an inline Binary or a ProcBin",
+        "Test: create SubBinary viewing bytes 10..20 of a ProcBin \u2014 5 heap words used"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/term/sub_binary.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/term/boxed/mod.rs (add BoxedTag::SubBinary = 0x1A)",
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "SubBinary accessor",
+      "spec": "Add a `SubBinary` accessor struct that resolves the parent and returns the correct byte slice.",
+      "acceptance": [
+        "`SubBinary::new(term: Term) -> Option<Self>` validates BoxedTag::SubBinary",
+        "`SubBinary::as_bytes(self) -> &[u8]` returns `parent.as_bytes()[offset..offset+length]`",
+        "`SubBinary::len(self) -> usize` returns the view length",
+        "`SubBinary::parent(self) -> Term` returns the parent term",
+        "Handles both inline Binary and ProcBin parents",
+        "Test: SubBinary of ProcBin returns correct byte slice"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/boxed/accessors.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Update BinaryRef for sub-binaries",
+      "spec": "Extend the `BinaryRef` accessor (from B-072 R4) to handle SubBinary terms as a third variant.",
+      "acceptance": [
+        "`BinaryRef::new(term)` returns `BinaryRef::Sub(SubBinary)` for SubBinary terms",
+        "`BinaryRef::as_bytes()` works transparently for sub-binary views",
+        "All code using BinaryRef automatically supports sub-binaries",
+        "Test: BinaryRef on a SubBinary returns the correct byte slice"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/binary_ref.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Binary matching produces sub-binaries for refc parents",
+      "spec": "Modify `bs_get_binary()` to produce a SubBinary when the match context's source is a ProcBin, instead of copying bytes into a new inline binary.",
+      "acceptance": [
+        "`bs_get_binary()` extracting from a ProcBin source creates a SubBinary (5 heap words, no byte copy)",
+        "`bs_get_binary()` extracting from an inline Binary continues to create an inline copy (existing behavior)",
+        "The extracted sub-binary is readable via BinaryRef",
+        "Test: match 10 bytes from a 1MB ProcBin \u2014 SubBinary created, parent's ref count unchanged",
+        "Test: match bytes from an inline binary \u2014 inline copy created (existing behavior preserved)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/binary.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "GC and object_size for SubBinary",
+      "spec": "Add SubBinary to the GC's object_size and rewrite functions. SubBinary contains a parent Term pointer that must be traced during collection.",
+      "acceptance": [
+        "`object_size()` returns 5 for BoxedTag::SubBinary",
+        "`rewrite_copied_object()` traces the parent_term field (word at offset 1) \u2014 this IS a Term pointer that may need updating",
+        "After GC, the SubBinary's parent pointer correctly references the moved parent",
+        "Test: SubBinary with ProcBin parent survives GC with correct byte access"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/gc/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement writable sub-binaries \u2014 sub-binaries are read-only views",
+    "SHALL NOT modify inline binary extraction for small binaries \u2014 only refc parent binaries produce sub-binaries",
+    "SHALL NOT implement sub-binary-of-sub-binary flattening in this brief \u2014 that's an optimization for later"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

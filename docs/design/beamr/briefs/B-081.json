@@ -1,0 +1,78 @@
+{
+  "id": "B-081",
+  "cluster": "beamr",
+  "title": "system_info/1 BIF \u2014 VM introspection",
+  "depends_on": [
+    "B-032"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "`erlang:system_info/1` returns information about the running VM \u2014 scheduler count, process count, word size, OTP version, etc. OTP's `init`, `code`, and `application` modules call it during startup. Without it, loading OTP modules that query VM properties fails.",
+  "task": "Implement system_info/1 as a BIF with the subset of items needed by OTP libraries.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "system_info/1 BIF with core items",
+      "spec": "Register `erlang:system_info/1`. Returns a value based on the item atom.",
+      "acceptance": [
+        "`system_info(schedulers)` \u2192 number of normal scheduler threads",
+        "`system_info(process_count)` \u2192 number of alive processes",
+        "`system_info(process_limit)` \u2192 maximum process count (configurable, default 262144)",
+        "`system_info(wordsize)` \u2192 8 (64-bit)",
+        "`system_info(otp_release)` \u2192 binary string \"27\" (compatibility claim)",
+        "`system_info(version)` \u2192 binary string with beamr version",
+        "`system_info(system_architecture)` \u2192 binary string (e.g., \"x86_64-apple-darwin\")",
+        "`system_info(atom_count)` \u2192 current atom table size",
+        "`system_info(atom_limit)` \u2192 maximum atom count",
+        "Unknown item returns badarg",
+        "Test: each supported item returns the expected type"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/native/system_info_bifs.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Scheduler and process count access",
+      "spec": "system_info needs access to scheduler and process table metrics. Add accessors to SharedState.",
+      "acceptance": [
+        "`SharedState::process_count() -> usize` returns alive process count",
+        "`SharedState::scheduler_count() -> usize` returns normal scheduler thread count",
+        "`SharedState::atom_count() -> usize` returns current atom table size",
+        "These are read-only, lock-free where possible (use existing DashMap::len() etc.)",
+        "Test: verify counts match expected values"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement all ~60 system_info items \u2014 only the subset needed by OTP stdlib",
+    "SHALL return beamr-specific values where appropriate (e.g., otp_release returns a beamr version string, not an Erlang version)",
+    "SHALL NOT implement runtime-modifiable system flags \u2014 read-only queries only"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

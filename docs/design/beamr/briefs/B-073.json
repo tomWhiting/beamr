@@ -1,0 +1,112 @@
+{
+  "id": "B-073",
+  "cluster": "beamr",
+  "title": "Binary size threshold and automatic promotion to refc",
+  "depends_on": [
+    "B-072"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "With ProcBin available (B-072), the system needs a decision point: when should a binary be stored inline vs. off-heap? BEAM uses 64 bytes as the threshold \u2014 binaries <= 64 bytes are heap binaries, > 64 bytes become refc binaries. This brief implements that threshold at every binary creation point: `write_binary()`, BinaryBuilder finalization, and BIF results that produce binaries.",
+  "task": "Add a configurable size threshold. Modify all binary creation paths to check the threshold and route to either inline `write_binary()` or `write_proc_bin()`.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Configurable threshold constant",
+      "spec": "Define the binary size threshold as a configurable constant.",
+      "acceptance": [
+        "`const REFC_BINARY_THRESHOLD: usize = 64` defined in term/binary.rs or term/shared_binary.rs",
+        "Binaries with `len <= REFC_BINARY_THRESHOLD` are stored inline",
+        "Binaries with `len > REFC_BINARY_THRESHOLD` are stored as ProcBin",
+        "The threshold is documented"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/shared_binary.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Smart binary allocation function",
+      "spec": "Create a single entry point that decides inline vs. refc based on the threshold.",
+      "acceptance": [
+        "`alloc_binary(heap, bytes) -> Option<Term>` checks byte length against threshold",
+        "If `<= threshold`: calls existing `write_binary(heap, bytes)` (inline)",
+        "If `> threshold`: creates SharedBinary, calls `write_proc_bin(heap, shared)` (refc)",
+        "Returns the same `Term` type regardless of storage strategy",
+        "All callers get transparent inline/refc selection",
+        "Test: 64-byte binary \u2192 inline (Binary tag 0x16)",
+        "Test: 65-byte binary \u2192 refc (ProcBin tag 0x19)",
+        "Test: 0-byte binary \u2192 inline"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/shared_binary.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "BinaryBuilder finalization uses threshold",
+      "spec": "Modify `finalize_builder()` to route through `alloc_binary()` so large constructed binaries automatically become refc.",
+      "acceptance": [
+        "BinaryBuilder producing <= 64 bytes finalizes to inline Binary",
+        "BinaryBuilder producing > 64 bytes finalizes to ProcBin",
+        "Existing bs_init/bs_put/finalize pipeline works unchanged",
+        "Test: build a 100-byte binary via bs_put instructions \u2192 result is ProcBin"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/binary.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "BIF binary results use threshold",
+      "spec": "Modify BIF helpers that produce binary results (make_leaked_binary, iodata_append, string operations) to use the threshold.",
+      "acceptance": [
+        "BIF results that produce binaries > 64 bytes automatically become ProcBin",
+        "Small BIF results remain inline",
+        "Existing BIF tests continue to pass",
+        "Test: `iodata_append` producing > 64 bytes returns ProcBin"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/stdlib_stubs/mod.rs (make_leaked_binary)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the threshold at runtime \u2014 it is set at VM creation and fixed",
+    "SHALL NOT modify the inline Binary format \u2014 small binaries are unchanged",
+    "SHALL NOT implement sub-binary promotion \u2014 that's B-074",
+    "The default threshold SHALL be 64 bytes (matching BEAM)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

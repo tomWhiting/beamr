@@ -1,0 +1,116 @@
+{
+  "id": "B-094",
+  "cluster": "beamr",
+  "title": "Core ETS BIFs \u2014 new, insert, lookup, delete, member, info",
+  "depends_on": [
+    "B-091",
+    "B-093"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "This brief registers the fundamental ETS BIFs that create tables, insert data, look up entries, and query table metadata. Every OTP module that uses ETS calls these functions. Without them, `ets:new`, `ets:insert`, and `ets:lookup` are unresolved imports.",
+  "task": "Implement 8 core ETS BIFs in a new `native/ets_bifs.rs` file.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ets:new/2",
+      "spec": "Register `ets:new/2`. Accepts (Name, Options). Returns table ID (or Name atom for named tables).",
+      "acceptance": [
+        "Options list parsed: type (set/ordered_set/bag/duplicate_bag, default set), access (public/protected/private, default protected), named_table, {keypos, N}",
+        "Creates table in registry, sets calling process as owner",
+        "Named tables: name atom is returned and used for subsequent lookups",
+        "Unnamed tables: integer table ID returned",
+        "Duplicate named table returns badarg",
+        "Test: `ets:new(my_table, [set, public, named_table])` creates a public set table"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "ets:insert/2 and ets:lookup/2",
+      "spec": "ets:insert/2 and ets:lookup/2",
+      "acceptance": [
+        "`ets:insert(Tab, Tuple)` inserts a single tuple, returns true",
+        "`ets:insert(Tab, [Tuple1, Tuple2, ...])` inserts multiple tuples, returns true",
+        "`ets:lookup(Tab, Key)` returns list of matching tuples (empty list if none)",
+        "Access control enforced (protection level)",
+        "Test: insert and lookup round-trip for set, bag, ordered_set"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "ets:delete/1, ets:delete/2, ets:member/2",
+      "spec": "ets:delete/1, ets:delete/2, ets:member/2",
+      "acceptance": [
+        "`ets:delete(Tab)` deletes the entire table, returns true. Only owner can delete.",
+        "`ets:delete(Tab, Key)` deletes all entries with key, returns true",
+        "`ets:member(Tab, Key)` returns true/false",
+        "Test: insert, member returns true, delete key, member returns false"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "ets:info/1, ets:info/2",
+      "spec": "ets:info/1, ets:info/2",
+      "acceptance": [
+        "`ets:info(Tab)` returns a proplist of all table metadata: name, type, size, keypos, protection, owner, memory",
+        "`ets:info(Tab, Item)` returns a single info item value",
+        "`size` returns current entry count",
+        "`memory` returns approximate word count",
+        "Non-existent table returns `undefined`",
+        "Test: create table, insert entries, verify info(size) matches"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement ets:match or ets:select \u2014 those need match specs (B-096/B-097)",
+    "SHALL NOT implement ets:tab2list or ets:foldl \u2014 those are B-095",
+    "SHALL NOT implement ets:give_away or heir \u2014 that's B-099"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

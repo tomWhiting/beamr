@@ -1,0 +1,106 @@
+{
+  "id": "B-097",
+  "cluster": "beamr",
+  "title": "ets:match and ets:select \u2014 pattern-based queries",
+  "depends_on": [
+    "B-096"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "`ets:match` and `ets:select` are the pattern-based query BIFs for ETS tables. `match/2` uses a simplified pattern (no guards, returns bound variables). `select/2` uses full match specifications (pattern + guards + body). Both support continuation-based pagination via `/3` variants.",
+  "task": "Implement match/2, match/3, select/2, select/3, match_object/2, and match_delete/2 BIFs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ets:match/2 and ets:match_object/2",
+      "spec": "ets:match/2 and ets:match_object/2",
+      "acceptance": [
+        "`ets:match(Tab, Pattern)` scans table, returns list of bound variable lists for matching entries",
+        "`ets:match_object(Tab, Pattern)` returns the full matching tuples (not just bound variables)",
+        "Pattern uses `'_'` for don't-care and `'$N'` for binding",
+        "Test: table with {a,1},{b,2},{c,3}, match({_, '$1'}) \u2192 [[1],[2],[3]]"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "ets:select/2",
+      "spec": "ets:select/2",
+      "acceptance": [
+        "`ets:select(Tab, MatchSpec)` runs a compiled match spec against all table entries",
+        "Returns list of results from the match spec body for all matching entries",
+        "Test: select with guard `[{{'$1','$2'},[{'>','$1',1}],['$2']}]` on table {1,a},{2,b},{3,c} \u2192 [b, c]"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Continuation-based pagination",
+      "spec": "Continuation-based pagination",
+      "acceptance": [
+        "`ets:match(Tab, Pattern, Limit)` returns `{Results, Continuation}` or `'$end_of_table'`",
+        "`ets:match(Continuation)` resumes from where the previous call left off",
+        "Same for `ets:select/3` and `ets:select/1`",
+        "Continuations are opaque terms (tuples encoding table ID, position, pattern/spec)",
+        "Test: table with 100 entries, match with limit 10 \u2192 10 results + continuation, call 10 times \u2192 all 100"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs",
+          "crates/beamr/src/ets/match_spec.rs (continuation state)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "ets:match_delete/2",
+      "spec": "ets:match_delete/2",
+      "acceptance": [
+        "`ets:match_delete(Tab, Pattern)` deletes all entries matching the pattern, returns true",
+        "Uses the same pattern matching as ets:match",
+        "Test: match_delete({_, 1}) removes all entries with 1 as second element"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement ets:fun2ms (that's a parse transform, not a runtime function)",
+    "SHALL implement continuation-based pagination for match/3 and select/3"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

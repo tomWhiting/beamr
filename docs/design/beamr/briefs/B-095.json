@@ -1,0 +1,89 @@
+{
+  "id": "B-095",
+  "cluster": "beamr",
+  "title": "ETS iteration and folding",
+  "depends_on": [
+    "B-094"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "ETS tables need to be iterable \u2014 `tab2list/1` dumps all entries, `foldl/3` accumulates over entries, and `first/next/last/prev` provide cursor-based traversal for ordered_set tables. OTP uses these for diagnostics, serialization, and ordered iteration.",
+  "task": "Implement iteration and folding BIFs for all table types.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ets:tab2list/1",
+      "spec": "ets:tab2list/1",
+      "acceptance": [
+        "Returns a list of all tuples in the table",
+        "Set/bag: unordered. Ordered_set: sorted by key.",
+        "Empty table returns empty list",
+        "Test: insert 3 entries, tab2list returns all 3"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "ets:foldl/3",
+      "spec": "ets:foldl/3",
+      "acceptance": [
+        "`ets:foldl(Fun, Acc0, Tab)` folds over all entries with a function",
+        "Fun receives (Element, AccIn) and returns AccOut",
+        "Uses the trampoline calling convention (B-038 R3) for closure invocation",
+        "Test: foldl to sum values in a table"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "ets:first/1, ets:next/2, ets:last/1, ets:prev/2",
+      "spec": "ets:first/1, ets:next/2, ets:last/1, ets:prev/2",
+      "acceptance": [
+        "`first(Tab)` returns smallest key (ordered_set) or any key (set/bag)",
+        "`next(Tab, Key)` returns next key, or `'$end_of_table'` atom at end",
+        "`last(Tab)` returns largest key (ordered_set)",
+        "`prev(Tab, Key)` returns previous key",
+        "For non-ordered tables: first/next provide arbitrary-but-complete traversal",
+        "Test: ordered_set traversal via first/next visits all keys in order"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement safe iteration under concurrent modification \u2014 iteration sees a snapshot (or documents the caveat)",
+    "SHALL NOT implement ets:match_object or ets:select \u2014 those need match specs (B-097)",
+    "SHALL NOT implement continuation-based iteration in this brief"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

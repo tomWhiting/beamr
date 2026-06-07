@@ -1,0 +1,90 @@
+{
+  "id": "B-083",
+  "cluster": "beamr",
+  "title": "Process priorities \u2014 low/normal/high/max scheduling",
+  "depends_on": [
+    "B-032"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "BEAM processes have four priority levels: low, normal, high, and max. Higher-priority processes are scheduled before lower-priority ones. The scheduler dequeues from max first, then high, then normal, then low. This is used by OTP for time-critical processes (e.g., net_kernel, code_server). Without priorities, all processes compete equally \u2014 which is fine for most workflows but blocks OTP modules that set process priorities.",
+  "task": "Add a priority field to Process, implement priority-aware run queue dequeuing, and register the `erlang:process_flag(priority, Level)` BIF extension.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Priority field and enum",
+      "spec": "Add a `Priority` enum and a `priority` field to Process.",
+      "acceptance": [
+        "`Priority` enum: `Low`, `Normal`, `High`, `Max` (matching BEAM)",
+        "Process gains `priority: Priority` field, default `Normal`",
+        "Priority is settable at spawn and via process_flag",
+        "Test: new process has Normal priority"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Priority-aware run queue dequeuing",
+      "spec": "Modify the run queue to dequeue higher-priority processes first.",
+      "acceptance": [
+        "Run queue maintains separate internal queues per priority level (or uses priority-based ordering)",
+        "Dequeue order: Max \u2192 High \u2192 Normal \u2192 Low",
+        "Low-priority processes run at least once every N scheduling rounds (anti-starvation, N configurable, default 8)",
+        "Test: enqueue max and normal processes, verify max dequeues first",
+        "Test: low-priority process makes progress alongside high-priority processes"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/run_queue.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "process_flag(priority, Level) BIF extension",
+      "spec": "Extend the existing `erlang:process_flag/2` BIF to handle the `priority` flag.",
+      "acceptance": [
+        "`process_flag(priority, max)` sets the process priority to Max, returns previous priority",
+        "`process_flag(priority, high)` sets High",
+        "`process_flag(priority, normal)` sets Normal",
+        "`process_flag(priority, low)` sets Low",
+        "Invalid priority atom returns badarg",
+        "Test: set priority to high, verify process_info(priority) returns high"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs (process_flag handler)"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement priority inheritance or priority inversion prevention",
+    "SHALL NOT starve low-priority processes indefinitely \u2014 guarantee progress within a bounded window",
+    "SHALL NOT change the work-stealing algorithm \u2014 priorities are per-queue, not per-steal"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

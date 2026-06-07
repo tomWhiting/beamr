@@ -1,0 +1,68 @@
+{
+  "id": "B-084",
+  "cluster": "beamr",
+  "title": "spawn_monitor/1,3 \u2014 atomic spawn with monitor",
+  "depends_on": [
+    "B-021"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "`erlang:spawn_monitor/1` and `erlang:spawn_monitor/3` atomically spawn a process and establish a monitor \u2014 there is no window where the child runs without the monitor. This is the recommended way to spawn monitored processes in OTP. Without it, code must call `spawn` then `monitor` separately, which has a race condition: the child could crash between spawn and monitor, and the DOWN message would be lost.",
+  "task": "Implement spawn_monitor/1 (fun) and spawn_monitor/3 (MFA) as BIFs that atomically spawn + monitor.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "erlang:spawn_monitor/3",
+      "spec": "Register `erlang:spawn_monitor/3` accepting (Module, Function, Args). Returns `{Pid, Ref}` tuple.",
+      "acceptance": [
+        "Atomically spawns a new process and establishes a monitor from caller to child",
+        "Returns a 2-tuple `{ChildPid, MonitorRef}`",
+        "The monitor is established BEFORE the child executes any instructions",
+        "If the child crashes, the caller receives `{DOWN, Ref, process, Pid, Reason}`",
+        "Test: spawn_monitor a process that crashes \u2014 DOWN received with correct Ref"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs",
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "erlang:spawn_monitor/1",
+      "spec": "Register `erlang:spawn_monitor/1` accepting a fun (zero-arity closure or MFA export). Returns `{Pid, Ref}`.",
+      "acceptance": [
+        "Accepts a fun term (closure or MFA export)",
+        "Spawns and monitors atomically, same semantics as spawn_monitor/3",
+        "Test: spawn_monitor with a closure \u2014 returns {Pid, Ref}, DOWN received on crash"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement spawn_monitor/4 (with options) \u2014 that's spawn_opt territory (B-085)",
+    "SHALL NOT allow any execution of the child before the monitor is established",
+    "SHALL reuse existing spawn and monitor infrastructure"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

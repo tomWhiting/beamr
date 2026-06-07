@@ -1,0 +1,93 @@
+{
+  "id": "B-085",
+  "cluster": "beamr",
+  "title": "spawn_opt/2,4 \u2014 spawn with options",
+  "depends_on": [
+    "B-084",
+    "B-083"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "`erlang:spawn_opt/2` and `erlang:spawn_opt/4` spawn a process with a list of options: `link`, `monitor`, `{priority, Level}`, `{min_heap_size, Words}`, `{fullsweep_after, N}`. OTP supervisors use spawn_opt to configure child processes at spawn time. Without it, supervisor modules that pass spawn options fail.",
+  "task": "Implement spawn_opt/2 (fun + options) and spawn_opt/4 (MFA + options) as BIFs that parse the option list and configure the spawned process accordingly.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Option list parsing",
+      "spec": "Parse the spawn options list into a `SpawnOptions` struct.",
+      "acceptance": [
+        "`SpawnOptions` struct with fields: `link: bool`, `monitor: bool`, `priority: Option<Priority>`, `min_heap_size: Option<usize>`",
+        "Parse function extracts known options from a proper list, ignoring unknown atoms (BEAM silently ignores unknown options)",
+        "`link` atom in list \u2192 link=true",
+        "`monitor` atom in list \u2192 monitor=true",
+        "`{priority, Level}` tuple \u2192 priority=Some(Level)",
+        "`{min_heap_size, N}` tuple \u2192 min_heap_size=Some(N)",
+        "Test: parse `[link, monitor, {priority, high}]` \u2192 correct SpawnOptions"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "erlang:spawn_opt/4",
+      "spec": "Register `erlang:spawn_opt/4` accepting (Module, Function, Args, Options). Returns Pid or {Pid, Ref} depending on monitor option.",
+      "acceptance": [
+        "Without monitor option: returns Pid (same as spawn/3)",
+        "With monitor option: returns {Pid, Ref} (same as spawn_monitor/3)",
+        "With link option: link established atomically (same as spawn_link/3)",
+        "With priority option: child process starts with specified priority",
+        "With min_heap_size option: child process heap starts at specified size",
+        "Test: spawn_opt with [link, {priority, high}] \u2192 child is linked and high-priority"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "erlang:spawn_opt/2",
+      "spec": "Register `erlang:spawn_opt/2` accepting (Fun, Options). Same semantics as spawn_opt/4 but with a fun.",
+      "acceptance": [
+        "Accepts a fun term + options list",
+        "Applies all options from R1",
+        "Return type depends on monitor option (Pid or {Pid, Ref})",
+        "Test: spawn_opt with a closure and [monitor] \u2192 returns {Pid, Ref}"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement all spawn_opt options \u2014 only: link, monitor, {priority, Level}, {min_heap_size, Words}",
+    "SHALL NOT implement {fullsweep_after, N} \u2014 GC tuning is out of scope for now",
+    "SHALL NOT implement {message_queue_data, off_heap} \u2014 message queue optimization is out of scope"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

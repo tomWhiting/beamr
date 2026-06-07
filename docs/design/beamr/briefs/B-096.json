@@ -1,0 +1,90 @@
+{
+  "id": "B-096",
+  "cluster": "beamr",
+  "title": "Match specification compiler",
+  "depends_on": [
+    "B-094"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Match specifications are the query language of ETS. A match spec is a list of `{MatchHead, Guards, Body}` tuples that describe patterns to match, guard conditions to filter, and result transformations. The compiler converts this Erlang term representation into an executable form. OTP uses match specs extensively in `ets:select`, `ets:match`, trace patterns, and `dbg`.",
+  "task": "Implement a match specification compiler that takes the term representation and produces an executable `CompiledMatchSpec` that can be evaluated against table entries.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Match spec parsing",
+      "spec": "Parse the term representation `[{MatchHead, Guards, Body}]` into a structured `MatchSpec`.",
+      "acceptance": [
+        "`MatchHead` is a tuple pattern with variables ($1, $2, ... as atoms or special terms) and literals",
+        "`_` matches anything (don't-care)",
+        "`'$_'` in body returns the entire matched object",
+        "`'$$'` in body returns all bound variables as a list",
+        "Guards are nested lists of guard function calls: `[{'>',  '$1', 10}]`",
+        "Test: parse `[{{'$1','$2'}, [{'>', '$1', 10}], ['$2']}]` \u2014 matches 2-tuples where element 1 > 10, returns element 2"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/match_spec.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Match spec evaluation",
+      "spec": "Evaluate a compiled match spec against a tuple, returning the result or no-match.",
+      "acceptance": [
+        "`CompiledMatchSpec::eval(tuple: Term) -> Option<Term>` tests the pattern, checks guards, produces result",
+        "Variables bind to corresponding tuple positions",
+        "Guards are evaluated with bound variables",
+        "Body constructs the result term from bound variables and literals",
+        "Test: spec `[{{'$1','$2'}, [{'>', '$1', 0}], [{{'$2', '$1'}}]}]` against `{5, hello}` \u2192 returns `{hello, 5}`",
+        "Test: same spec against `{-1, hello}` \u2192 no match (guard fails)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/match_spec.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "ets:match_spec_compile/1 and ets:match_spec_run/2",
+      "spec": "Register BIFs for explicit match spec compilation and execution (used by OTP tracing).",
+      "acceptance": [
+        "`ets:match_spec_compile(Spec)` compiles a match spec term, returns a compiled reference",
+        "`ets:match_spec_run(List, CompiledSpec)` runs the spec against each element, returns matching results",
+        "Test: compile + run against a list of tuples produces correct matches"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the full match spec guard BIF set \u2014 start with comparison guards (==, /=, <, >, =<, >=) and type tests (is_atom, is_integer, is_binary, is_tuple, is_list)",
+    "SHALL NOT implement trace match specs \u2014 only ETS match specs",
+    "SHALL NOT implement ets:match_spec_compile/1 as a BIF in this brief \u2014 the compiler is internal infrastructure"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

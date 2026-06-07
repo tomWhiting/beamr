@@ -1,0 +1,100 @@
+{
+  "id": "B-091",
+  "cluster": "beamr",
+  "title": "ETS set table type \u2014 hash-based storage",
+  "depends_on": [
+    "B-090"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "The `set` table type is the default and most common ETS table. It stores tuples keyed by a specified element position (default: first element). Keys are unique \u2014 inserting a tuple with an existing key overwrites the previous entry. Lookup is O(1) via hashing. This is the foundation that bag, duplicate_bag, and most ETS BIFs build on.",
+  "task": "Implement `EtsSet` as a concrete implementation of the `EtsTable` trait using a `DashMap` for concurrent hash-based storage.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "EtsSet implementation",
+      "spec": "Implement `EtsSet` as a struct wrapping `DashMap<Term, Term>` (key \u2192 full tuple) with the EtsTable trait.",
+      "acceptance": [
+        "`EtsSet::new(metadata: EtsTableMetadata) -> EtsSet`",
+        "`insert(tuple)`: extracts key at `keypos`, inserts/overwrites in DashMap",
+        "`lookup(key)`: returns vec of 0 or 1 matching tuples (set = unique keys)",
+        "`delete_key(key)`: removes entry, returns true if existed",
+        "`tab2list()`: returns all tuples (unordered)",
+        "Key extraction uses `keypos` from metadata (1-based \u2192 0-based index into tuple elements)",
+        "Non-tuple insert returns EtsError::Badarg",
+        "Test: insert {a, 1}, lookup a \u2192 [{a, 1}]. Insert {a, 2}, lookup a \u2192 [{a, 2}] (overwritten)"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/set.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Term hashing for ETS keys",
+      "spec": "ETS keys are arbitrary terms. Implement term hashing that is consistent with term equality \u2014 equal terms must hash to the same value.",
+      "acceptance": [
+        "`term_hash(term: Term) -> u64` produces a deterministic hash",
+        "Atoms hash by atom index",
+        "Integers hash by value",
+        "Binaries hash by content",
+        "Tuples hash by recursive element hashing",
+        "Lists hash by recursive element hashing",
+        "Equal terms (per term comparison) produce equal hashes",
+        "Test: term_hash(atom(ok)) == term_hash(atom(ok))",
+        "Test: term_hash(42) == term_hash(42)",
+        "Test: different terms produce different hashes (probabilistic, test a variety)"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/term/hash.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/term/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "EtsSet registered as table type",
+      "spec": "Wire EtsSet into the table creation path so `ets:new(Name, [set])` produces an EtsSet.",
+      "acceptance": [
+        "Table creation with `EtsTableType::Set` instantiates an `EtsSet`",
+        "The EtsSet is wrapped in `Arc<dyn EtsTable>` and stored in the registry",
+        "Test: create set table, insert, lookup \u2014 round-trips correctly through the registry"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/ets/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement bag or duplicate_bag semantics \u2014 those are B-092",
+    "SHALL NOT implement ordered iteration \u2014 that's ordered_set in B-093",
+    "SHALL NOT implement match specifications \u2014 that's B-096/B-097",
+    "SHALL use DashMap (already in Cargo.toml) for the underlying storage"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

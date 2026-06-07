@@ -1,0 +1,69 @@
+{
+  "id": "B-058",
+  "cluster": "beamr",
+  "title": "swap opcode \u2014 register swap (OTP 27+)",
+  "depends_on": [
+    "B-007"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C62"
+  ],
+  "stories": [],
+  "purpose": "The `swap` opcode (opcode 169) atomically exchanges the values of two registers. The OTP 27+ compiler emits `swap` frequently as an optimization \u2014 it replaces a 3-instruction `move` sequence (A\u2192tmp, B\u2192A, tmp\u2192B) with a single instruction. Without `swap`, any code compiled with OTP 27+ hits `UnsupportedOpcode(169)`. Since beamr targets OTP 27 bytecode, this is critical.",
+  "task": "Wire the existing `Instruction::Swap { left, right }` variant (already decoded by the loader) into the opcode dispatch table and implement the handler in `core.rs`.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Opcode dispatch wiring",
+      "spec": "Add `Instruction::Swap` to the dispatch table in `opcodes/mod.rs`, routing to a handler in `core.rs`.",
+      "acceptance": [
+        "`Instruction::Swap { left, right }` is matched in the dispatch table",
+        "Dispatch routes to `core::swap()`",
+        "No `UnsupportedOpcode(169)` error when executing modules containing `swap`"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C62"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "swap handler implementation",
+      "spec": "Implement `swap` in `core.rs`. The instruction reads both operands, then writes each value to the other's location.",
+      "acceptance": [
+        "`swap(process, module, left, right)` exchanges the values of two registers",
+        "Both operands are read via `core::read_term()` before either write",
+        "Both values are written via `core::write_term()` after both reads (no clobber)",
+        "Works for X-X, Y-Y, and X-Y register combinations",
+        "Test: X0=42, X1=99. swap(X0, X1). X0=99, X1=42.",
+        "Test: Y0=atom(hello), X0=atom(world). swap(Y0, X0). Y0=atom(world), X0=atom(hello).",
+        "Test: swap(X0, X0) is a no-op (same register)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/core.rs"
+        ]
+      },
+      "checklist": [
+        "C62"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT allocate heap space \u2014 swap copies 64-bit Term values only (same as move)",
+    "SHALL NOT add a temporary register \u2014 read both values, then write both",
+    "Note: core.rs is at 583 lines (over 500-line guideline). swap adds ~15 lines. Full core.rs split is a separate concern."
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}
