@@ -1136,6 +1136,168 @@ fn add(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     Ok(Term::small_int(left + right))
 }
 
+fn native_add_import() -> ResolvedImport {
+    ResolvedImport {
+        module: Atom::OK,
+        function: Atom::OK,
+        arity: 2,
+        target: ResolvedImportTarget::Native(NativeEntry {
+            function: add,
+            is_dirty: false,
+            capability: Capability::Pure,
+        }),
+    }
+}
+
+#[test]
+fn call_ext_only_native_tail_call_exits_with_bif_result() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(40),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(2),
+                destination: Operand::X(1),
+            },
+            Instruction::CallExtOnly {
+                arity: Operand::Unsigned(2),
+                import: Operand::Unsigned(0),
+            },
+        ],
+    );
+    module.resolved_imports.push(native_add_import());
+    let mut process = Process::new(1, 32);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(42));
+    assert_eq!(process.stack().len(), 0);
+}
+
+#[test]
+fn call_ext_only_native_tail_call_does_not_fall_through_to_next_function() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(1),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(2),
+                destination: Operand::X(1),
+            },
+            Instruction::CallExtOnly {
+                arity: Operand::Unsigned(2),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Label { label: 99 },
+            Instruction::Move {
+                source: Operand::Integer(99),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    module.resolved_imports.push(native_add_import());
+    let mut process = Process::new(1, 32);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(3));
+}
+
+#[test]
+fn nested_tail_calls_propagate_native_bif_result() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(20),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(22),
+                destination: Operand::X(1),
+            },
+            Instruction::CallOnly {
+                arity: Operand::Unsigned(2),
+                label: Operand::Label(10),
+            },
+            Instruction::Label { label: 10 },
+            Instruction::CallExtOnly {
+                arity: Operand::Unsigned(2),
+                import: Operand::Unsigned(0),
+            },
+        ],
+    );
+    module.resolved_imports.push(native_add_import());
+    let mut process = Process::new(1, 32);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(42));
+}
+
+#[test]
+fn call_ext_last_native_tail_call_deallocates_then_returns_to_caller() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Call {
+                arity: Operand::Unsigned(0),
+                label: Operand::Label(10),
+            },
+            Instruction::Move {
+                source: Operand::Integer(7),
+                destination: Operand::X(1),
+            },
+            Instruction::Return,
+            Instruction::Label { label: 10 },
+            Instruction::Allocate {
+                stack_need: Operand::Unsigned(1),
+                live: Operand::Unsigned(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(40),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(2),
+                destination: Operand::X(1),
+            },
+            Instruction::CallExtLast {
+                arity: Operand::Unsigned(2),
+                import: Operand::Unsigned(0),
+                deallocate: Operand::Unsigned(1),
+            },
+            Instruction::Move {
+                source: Operand::Integer(99),
+                destination: Operand::X(0),
+            },
+        ],
+    );
+    module.resolved_imports.push(native_add_import());
+    let mut process = Process::new(1, 32);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(42));
+    assert_eq!(process.x_reg(1), Term::small_int(7));
+    assert_eq!(process.stack().len(), 0);
+}
+
 #[test]
 fn branching_opcode_sequence_dispatches_like_case_expression() {
     let module = module(

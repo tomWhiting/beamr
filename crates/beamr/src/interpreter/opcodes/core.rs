@@ -531,7 +531,11 @@ fn call_external_target(
                 return Ok(InstructionOutcome::Exit(crate::process::ExitReason::Normal));
             }
             charge_reduction(process)?;
-            Ok(InstructionOutcome::Continue)
+            if save_return {
+                Ok(InstructionOutcome::Continue)
+            } else {
+                return_(process)
+            }
         }
     }
 }

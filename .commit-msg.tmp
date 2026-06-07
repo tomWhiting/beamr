@@ -1,1 +1,1 @@
-Harden B-066 comparison BIF registration and de-duplicate /=
+fix(beamr): return after native tail-call BIFs
