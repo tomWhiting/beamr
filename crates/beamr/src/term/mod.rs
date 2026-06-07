@@ -6,10 +6,12 @@
 //! integers, closures, maps, references) are tagged pointers into
 //! the process-local heap.
 pub mod binary;
+pub mod binary_ref;
 pub mod boxed;
 pub mod compare;
 #[cfg(feature = "json")]
 pub mod json;
+pub mod shared_binary;
 
 use crate::atom::Atom;
 

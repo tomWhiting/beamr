@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 use super::{
     Term,
-    binary::Binary,
+    binary_ref::BinaryRef,
     boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple},
 };
 use crate::atom::AtomTable;
@@ -109,7 +109,7 @@ fn rank(term: Term) -> TermRank {
         TermRank::Nil
     } else if term.is_list() {
         TermRank::List
-    } else if Binary::new(term).is_some() {
+    } else if BinaryRef::new(term).is_some() {
         TermRank::Binary
     } else {
         TermRank::OtherBoxed
@@ -225,7 +225,7 @@ fn exact_kind(term: Term) -> ExactKind {
         ExactKind::Map
     } else if Reference::new(term).is_some() {
         ExactKind::Reference
-    } else if Binary::new(term).is_some() {
+    } else if BinaryRef::new(term).is_some() {
         ExactKind::Binary
     } else if term.is_list() {
         ExactKind::List
@@ -288,7 +288,7 @@ fn reference_id(term: Term) -> Option<u64> {
 }
 
 fn binary_bytes(term: Term) -> &'static [u8] {
-    Binary::new(term).map_or(&[], Binary::as_bytes)
+    BinaryRef::new(term).map_or(&[], |binary| binary.as_bytes())
 }
 
 fn compare_bigints(left: Term, right: Term) -> Ordering {

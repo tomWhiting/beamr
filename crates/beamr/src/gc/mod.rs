@@ -9,6 +9,7 @@ pub mod minor;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::sync::Arc;
 
 use crate::process::{Process, heap::HeapFull};
 use crate::term::{
@@ -221,6 +222,7 @@ pub(crate) fn rewrite_copied_object(
             }
         }
         BoxedTag::MatchContext => rewrite_word(ptr, 3, work_queue, &mut copy_term)?,
+        BoxedTag::ProcBin => retain_proc_bin_arc(ptr),
         BoxedTag::Float
         | BoxedTag::BigInt
         | BoxedTag::Reference
@@ -243,6 +245,20 @@ fn rewrite_word(
         write_raw_word(ptr, offset, rewritten.raw());
     }
     Ok(())
+}
+
+fn retain_proc_bin_arc(ptr: *const u64) {
+    let raw = read_raw_word(ptr, 2);
+    let arc_ptr = raw as *const Vec<u8>;
+    // SAFETY: ProcBin word two stores a raw `Arc<Vec<u8>>` pointer created by
+    // `Arc::into_raw`. Rebuild the source strong reference temporarily, clone it
+    // for the copied ProcBin, then put both strong references back into raw form
+    // so the two heap objects own independent Arc counts.
+    let source = unsafe { Arc::from_raw(arc_ptr) };
+    let copied = Arc::clone(&source);
+    let _source_raw = Arc::into_raw(source);
+    let copied_raw = Arc::into_raw(copied);
+    write_raw_word(ptr, 2, copied_raw as u64);
 }
 
 fn read_raw_word(ptr: *const u64, offset: usize) -> u64 {

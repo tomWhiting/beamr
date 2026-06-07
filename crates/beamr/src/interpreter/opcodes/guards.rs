@@ -11,7 +11,7 @@ use crate::module::{Module, ResolvedImportTarget};
 use crate::native::ProcessContext;
 use crate::process::{CodePosition, Process};
 use crate::term::boxed::{Closure, Cons, Float, Map, Reference, Tuple};
-use crate::term::{Term, binary::Binary, compare};
+use crate::term::{Term, binary_ref::BinaryRef, compare};
 
 use super::core;
 
@@ -266,7 +266,7 @@ fn matches_type(op: TypeTestOp, value: Term, arity: Option<usize>) -> Result<boo
         TypeTestOp::IsReference => Reference::new(value).is_some(),
         TypeTestOp::IsPort => false,
         TypeTestOp::IsNil => value.is_nil(),
-        TypeTestOp::IsBinary | TypeTestOp::IsBitstr => Binary::new(value).is_some(),
+        TypeTestOp::IsBinary | TypeTestOp::IsBitstr => BinaryRef::new(value).is_some(),
         TypeTestOp::IsList => value.is_list() || value.is_nil(),
         TypeTestOp::IsNonemptyList => value.is_list(),
         TypeTestOp::IsTuple => Tuple::new(value).is_some(),

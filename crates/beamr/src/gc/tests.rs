@@ -9,7 +9,10 @@ use crate::{
     constant_pool::materialise_literals,
     loader::{Instruction, Literal},
     module::Module,
-    term::boxed::{Closure, Cons, Tuple, write_closure, write_cons, write_tuple},
+    term::{
+        boxed::{Closure, Cons, ProcBin, Tuple, write_closure, write_cons, write_tuple},
+        shared_binary::{SharedBinary, write_proc_bin},
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +69,13 @@ pub(crate) fn alloc_closure(
     let words = unsafe { std::slice::from_raw_parts_mut(ptr, words_count) };
     write_closure(words, Atom::OK, 0, 0, generation, unique_id, free_vars)
         .expect("closure writer should fit allocated words")
+}
+
+pub(crate) fn alloc_proc_bin(process: &mut Process, shared: &SharedBinary) -> Term {
+    let ptr = alloc(process, 3).expect("proc bin allocation via GC should fit");
+    // SAFETY: GC allocation returned three writable words.
+    let words = unsafe { std::slice::from_raw_parts_mut(ptr, 3) };
+    write_proc_bin(words, shared).expect("proc bin writer should fit allocated words")
 }
 
 pub(crate) fn snapshot(term: Term) -> Snapshot {
@@ -290,6 +300,21 @@ fn closure_metadata_and_free_vars_survive_minor_gc() {
     assert_eq!(closure.unique_id(), 0x1234_5678);
     let free_var = closure.free_var(0).expect("captured term");
     assert_eq!(snapshot(free_var), Snapshot::Tuple(vec![Snapshot::Int(42)]));
+    assert_no_term_pointer_into_young(&process, process.x_reg(0));
+}
+
+#[test]
+fn proc_bin_survives_minor_gc_as_leaf_with_shared_bytes() {
+    let shared = SharedBinary::new(vec![0xCD; 100 * 1024]);
+    let mut process = Process::new(1, 32);
+    let proc_bin = alloc_proc_bin(&mut process, &shared);
+    process.set_x_reg(0, proc_bin);
+
+    collect_minor(&mut process).expect("minor GC succeeds");
+
+    let proc_bin = ProcBin::new(process.x_reg(0)).expect("proc bin root");
+    assert_eq!(proc_bin.len(), 100 * 1024);
+    assert_eq!(proc_bin.as_bytes(), shared.as_bytes());
     assert_no_term_pointer_into_young(&process, process.x_reg(0));
 }
 
