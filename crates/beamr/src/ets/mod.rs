@@ -1,5 +1,6 @@
 //! Erlang Term Storage registry, metadata, and lifecycle support.
 
+pub mod bag;
 pub mod copy;
 pub mod set;
 pub mod table;
@@ -10,12 +11,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::DashMap;
 
 use crate::atom::Atom;
+use crate::term::Term;
+use crate::term::boxed::Tuple;
 
+pub use bag::{EtsBag, EtsDuplicateBag};
 pub use copy::{OwnedTerm, copy_term_to_ets, copy_term_to_heap};
 pub use set::EtsSet;
 pub use table::{
     AccessOp, EtsError, EtsTable, EtsTableId, EtsTableMetadata, EtsTableType, Protection,
 };
+
+pub(crate) fn tuple_key(tuple_term: Term, keypos: usize) -> Result<Term, EtsError> {
+    let tuple = Tuple::new(tuple_term).ok_or(EtsError::Badarg)?;
+    let key_index = keypos.checked_sub(1).ok_or(EtsError::Badarg)?;
+    tuple.get(key_index).ok_or(EtsError::Badarg)
+}
 
 /// Concurrent ETS table registry shared by schedulers.
 pub struct EtsRegistry {
