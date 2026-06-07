@@ -49,6 +49,7 @@ fn scheduler(atom_table: Arc<AtomTable>) -> (Scheduler, Arc<ModuleRegistry>) {
     let scheduler = Scheduler::with_code_server(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&registry),
         atom_table,

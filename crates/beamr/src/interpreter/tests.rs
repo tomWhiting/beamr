@@ -885,7 +885,7 @@ fn native_import(function: crate::native::NativeFn) -> ResolvedImport {
         arity: 1,
         target: ResolvedImportTarget::Native(NativeEntry {
             function,
-            is_dirty: false,
+            dirty_kind: None,
             capability: Capability::Pure,
         }),
     }
@@ -952,7 +952,7 @@ fn call_ext_invokes_registered_native_and_tail_call_deallocates() {
         arity: 1,
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add_one,
-            is_dirty: false,
+            dirty_kind: None,
             capability: Capability::Pure,
         }),
     };
@@ -1192,7 +1192,7 @@ fn call_ext_denial_stub_target_returns_mfa_rich_undef() {
         run_cmd_atom,
         ResolvedImportTarget::Native(NativeEntry {
             function: crate::native::denial_stub,
-            is_dirty: false,
+            dirty_kind: None,
             capability: Capability::ExternalIo,
         }),
     ));
@@ -1303,7 +1303,7 @@ fn native_add_import() -> ResolvedImport {
         arity: 2,
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add,
-            is_dirty: false,
+            dirty_kind: None,
             capability: Capability::Pure,
         }),
     }
@@ -1610,7 +1610,7 @@ fn guard_bif_failure_branches_without_exiting_process() {
         arity: 2,
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add,
-            is_dirty: false,
+            dirty_kind: None,
             capability: Capability::Pure,
         }),
     });
@@ -1678,7 +1678,7 @@ fn call_ext_bif_error_preserves_exception_class_and_stacktrace() {
         arity: 3,
         target: ResolvedImportTarget::Native(NativeEntry {
             function: crate::native::exception_bifs::bif_raise_3,
-            is_dirty: false,
+            dirty_kind: None,
             capability: Capability::Pure,
         }),
     });

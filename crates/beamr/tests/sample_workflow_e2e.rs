@@ -66,6 +66,7 @@ fn sample_workflow_run_completes_end_to_end() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&module_registry),
     )

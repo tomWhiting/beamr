@@ -537,7 +537,7 @@ fn guard_bif_success_writes_result_and_failure_branches() {
         arity: 2,
         target: ResolvedImportTarget::Native(NativeEntry {
             function: add,
-            is_dirty: false,
+            dirty_kind: None,
             capability: Capability::Pure,
         }),
     };

@@ -98,6 +98,7 @@ fn process_exits_normally_and_is_removed() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&registry),
     )
@@ -121,6 +122,7 @@ fn unlinked_process_survives_normal_exit() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&registry),
     )
@@ -153,6 +155,7 @@ fn multiple_processes_exit_independently() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(2),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&registry),
     )
@@ -177,6 +180,7 @@ fn scheduler_initializes_supervision_data_structures() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         registry,
     )
@@ -291,6 +295,7 @@ fn waiting_process_stays_alive_without_exit_signal() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&registry),
     )

@@ -122,6 +122,7 @@ fn scheduler_policy_can_deny_external_io_at_load_time() {
     let scheduler = Scheduler::with_code_server_and_policy(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         modules,
         atoms.clone(),

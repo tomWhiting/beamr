@@ -35,6 +35,8 @@ impl Scheduler {
 
     /// Shut down all worker threads after their current time slice.
     pub fn shutdown(&self) {
+        self.shared.dirty_cpu.shutdown();
+        self.shared.dirty_io.shutdown();
         self.shared.shutdown.store(true, Ordering::Release);
         self.shared.wake_condvar.notify_all();
         let mut threads = lock_or_recover(&self.threads);

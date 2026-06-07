@@ -290,6 +290,7 @@ fn run_module(
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&registry),
     )
@@ -326,8 +327,7 @@ fn load_context(path: &Path, dirs: &[PathBuf]) -> Result<LoadContext, CliError> 
     register_gate3_bifs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_stdlib_stubs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_selector_bifs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
-    register_gleam_ffi_bifs(&bif_registry, &atom_table)
-        .map_err(CliError::NativeRegistration)?;
+    register_gleam_ffi_bifs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     register_meridian_ffi(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;
     init_otp_atoms(&atom_table);
     register_otp_stubs(&bif_registry, &atom_table).map_err(CliError::NativeRegistration)?;

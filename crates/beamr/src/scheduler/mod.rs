@@ -8,6 +8,7 @@ pub mod steal;
 mod supervision_integration;
 mod test_helpers;
 mod timer_integration;
+use self::dirty::DirtyPool;
 use self::execution::scheduler_loop;
 use self::spawning::SpawnRequest;
 use crate::atom::AtomTable;
@@ -36,6 +37,9 @@ pub const DEFAULT_REDUCTION_BUDGET: u32 = crate::process::DEFAULT_REDUCTION_BUDG
 #[derive(Clone, Debug, Default)]
 pub struct SchedulerConfig {
     pub thread_count: Option<usize>,
+    pub dirty_cpu_threads: Option<usize>,
+    pub dirty_io_threads: Option<usize>,
+    pub dirty_queue_depth: Option<usize>,
 }
 pub(super) struct SharedState {
     shutdown: AtomicBool,
@@ -48,6 +52,8 @@ pub(super) struct SharedState {
     capability_policy: Arc<dyn CapabilityPolicy>,
     spawn_counter: AtomicUsize,
     thread_count: usize,
+    pub(super) dirty_cpu: DirtyPool,
+    pub(super) dirty_io: DirtyPool,
     next_pid: AtomicU64,
     wait_set: Mutex<WaitSet>,
     wake_condvar: Condvar,
@@ -115,6 +121,21 @@ impl Scheduler {
         capability_policy: Arc<dyn CapabilityPolicy>,
     ) -> Result<Self, String> {
         let thread_count = configured_thread_count(config.thread_count);
+        let dirty_queue_depth = config
+            .dirty_queue_depth
+            .unwrap_or(dirty::DEFAULT_DIRTY_QUEUE_DEPTH);
+        let dirty_cpu = DirtyPool::with_queue_depth(
+            "dirty-cpu",
+            config.dirty_cpu_threads.unwrap_or_else(num_cpus::get),
+            dirty_queue_depth,
+        );
+        let dirty_io = DirtyPool::with_queue_depth(
+            "dirty-io",
+            config
+                .dirty_io_threads
+                .unwrap_or(dirty::DEFAULT_DIRTY_IO_THREADS),
+            dirty_queue_depth,
+        );
         let namespace_store = DashMap::new();
         namespace_store.insert(NamespaceId::DEFAULT, Arc::clone(&module_registry));
         let shared = Arc::new(SharedState {
@@ -128,6 +149,8 @@ impl Scheduler {
             capability_policy,
             spawn_counter: AtomicUsize::new(0),
             thread_count,
+            dirty_cpu,
+            dirty_io,
             next_pid: AtomicU64::new(0),
             wait_set: Mutex::new(WaitSet::default()),
             wake_condvar: Condvar::new(),
@@ -245,6 +268,14 @@ impl Scheduler {
     #[must_use]
     pub fn worker_names(&self) -> &[String] {
         &self.worker_names
+    }
+    #[must_use]
+    pub fn dirty_cpu_pool(&self) -> &DirtyPool {
+        &self.shared.dirty_cpu
+    }
+    #[must_use]
+    pub fn dirty_io_pool(&self) -> &DirtyPool {
+        &self.shared.dirty_io
     }
     #[must_use]
     pub fn hook(&self) -> &Hook {

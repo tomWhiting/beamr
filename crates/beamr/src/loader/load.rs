@@ -460,7 +460,7 @@ pub fn resolve_imports(
                 ));
                 NativeEntry {
                     function: denial_stub,
-                    is_dirty: false,
+                    dirty_kind: None,
                     capability: entry.capability,
                 }
             };
@@ -732,7 +732,7 @@ mod tests {
             (module == self.module && function == self.function && arity == self.arity).then_some(
                 NativeEntry {
                     function: native_ok,
-                    is_dirty: false,
+                    dirty_kind: None,
                     capability: self.capability,
                 },
             )
@@ -997,7 +997,7 @@ mod tests {
                 (module == self.module && function == self.function && arity == 0).then_some(
                     NativeEntry {
                         function: native_ok,
-                        is_dirty: false,
+                        dirty_kind: None,
                         capability: Capability::Clock,
                     },
                 )

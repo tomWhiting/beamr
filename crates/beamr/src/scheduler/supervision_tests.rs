@@ -149,6 +149,8 @@ fn make_shared_state() -> Arc<SharedState> {
         next_namespace_id: AtomicU64::new(1),
         spawn_counter: AtomicUsize::new(0),
         thread_count: 1,
+        dirty_cpu: dirty::DirtyPool::with_queue_depth("dirty-test-cpu", 1, 1),
+        dirty_io: dirty::DirtyPool::with_queue_depth("dirty-test-io", 1, 1),
         next_pid: AtomicU64::new(100),
         wait_set: std::sync::Mutex::new(WaitSet::default()),
         wake_condvar: std::sync::Condvar::new(),
