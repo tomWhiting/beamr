@@ -387,7 +387,7 @@ fn run_command_args(
             context.set_position_bits(context.position_bits() + bits);
             Ok(true)
         }
-        ("get_tail", [_live, dst]) | ("get_tail", [_live, _src, dst]) => {
+        ("get_tail", [_live, dst]) | ("get_tail", [_live, _, dst]) => {
             if !context.position_bits().is_multiple_of(u8::BITS as usize) {
                 return Ok(false);
             }

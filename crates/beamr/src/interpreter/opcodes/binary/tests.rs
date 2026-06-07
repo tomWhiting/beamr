@@ -2,8 +2,10 @@ use super::*;
 use crate::atom::Atom;
 use crate::loader::{Instruction, Literal};
 use crate::module::Module;
-use crate::term::binary::{Binary, write_binary};
-use crate::term::boxed::accessors::Float;
+use crate::process::Process;
+use crate::term::Term;
+use crate::term::binary::{Binary, packed_word_count, write_binary};
+use crate::term::boxed::Float;
 use std::collections::HashMap;
 
 fn module(code: Vec<Instruction>) -> Module {
@@ -597,7 +599,7 @@ fn utf_get_and_skip_decode_valid_sequences_and_branch_on_invalid() {
             ],
         )
         .expect("utf8");
-        assert_eq!(process.x_reg(reg).as_small_int(), Some(expected));
+        assert_eq!(process.x_reg(reg as u16).as_small_int(), Some(expected));
     }
 
     let mut process = Process::new(1, 64);
@@ -621,7 +623,7 @@ fn utf_get_and_skip_decode_valid_sequences_and_branch_on_invalid() {
 #[test]
 fn utf16_and_utf32_decode_endianness_and_reject_invalid_codepoints() {
     let mut process = Process::new(1, 128);
-    let (module, _) = start_context(&mut process, &[0x00, 0x41, 0x34, 0xd8, 0x1e, 0xdd]);
+    let (module, _) = start_context(&mut process, &[0x00, 0x41, 0xd8, 0x34, 0xdd, 0x1e]);
     binary_op(
         &mut process,
         &module,
