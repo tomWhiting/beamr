@@ -7,6 +7,7 @@ use crate::loader::{Instruction, Literal};
 use crate::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use crate::native::{Capability, ExceptionClass, NativeEntry, ProcessContext};
 use crate::process::{CodePosition, ExitReason, Process};
+use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Cons, Tuple};
 use crate::term::{Term, compare};
@@ -889,6 +890,45 @@ fn native_import(function: crate::native::NativeFn) -> ResolvedImport {
             capability: Capability::Pure,
         }),
     }
+}
+
+#[test]
+fn dirty_native_returns_dirty_call_without_inline_execution() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(7),
+                destination: Operand::X(0),
+            },
+            Instruction::CallExt {
+                arity: Operand::Unsigned(1),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    let entry = NativeEntry {
+        function: native_increment,
+        dirty_kind: Some(DirtySchedulerKind::Cpu),
+        capability: Capability::Pure,
+    };
+    module.resolved_imports.push(ResolvedImport {
+        module: Atom::OK,
+        function: Atom::OK,
+        arity: 1,
+        target: ResolvedImportTarget::Native(entry),
+    });
+    let mut process = Process::new(1, 32);
+
+    let result = run(&mut process, &module).expect("dirty native yields");
+    let ExecutionResult::DirtyCall { entry, args, kind } = result else {
+        panic!("expected dirty call, got {result:?}");
+    };
+    assert_eq!(entry.dirty_kind, Some(DirtySchedulerKind::Cpu));
+    assert_eq!(args, vec![Term::small_int(7)]);
+    assert_eq!(kind, DirtySchedulerKind::Cpu);
+    assert_eq!(process.x_reg(0), Term::small_int(7));
 }
 
 fn try_native_class_module(function: crate::native::NativeFn, expected_class: Atom) -> Module {

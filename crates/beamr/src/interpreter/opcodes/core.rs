@@ -466,6 +466,9 @@ fn call_external_target(
             for register in 0..arity {
                 args.push(process.x_reg(register.into()));
             }
+            if let Some(kind) = entry.dirty_kind {
+                return Ok(InstructionOutcome::DirtyCall { entry, args, kind });
+            }
             let mut context = match ctx.timers {
                 Some(timers) => {
                     ProcessContext::with_timer_services(process.pid(), Arc::clone(timers))

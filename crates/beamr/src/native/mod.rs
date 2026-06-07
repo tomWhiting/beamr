@@ -73,6 +73,16 @@ pub struct NativeEntry {
     pub capability: Capability,
 }
 
+impl PartialEq for NativeEntry {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::fn_addr_eq(self.function, other.function)
+            && self.dirty_kind == other.dirty_kind
+            && self.capability == other.capability
+    }
+}
+
+impl Eq for NativeEntry {}
+
 /// Errors returned while registering native functions.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum NativeRegistrationError {

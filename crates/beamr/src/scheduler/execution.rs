@@ -7,6 +7,7 @@ use crossbeam_queue::SegQueue;
 
 use crate::error::ExecError;
 use crate::process::ExitReason;
+use crate::scheduler::dirty::DirtyResult;
 use crate::term::Term;
 
 use super::{
@@ -79,6 +80,12 @@ impl Scheduler {
     /// Wake a suspended process with a result term.
     pub fn wake_with_result(&self, pid: u64, result: Term) {
         self.shared.async_results.insert(pid, result);
+        wake_process(&self.shared, pid);
+    }
+
+    /// Wake a suspended process with a dirty native completion result.
+    pub fn wake_with_dirty_result(&self, pid: u64, result: DirtyResult) {
+        self.shared.dirty_results.insert(pid, result);
         wake_process(&self.shared, pid);
     }
 

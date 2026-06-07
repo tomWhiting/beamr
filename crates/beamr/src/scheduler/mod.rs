@@ -23,6 +23,7 @@ use crate::native::{
 };
 use crate::process::registry::ProcessTable;
 use crate::process::{ExitReason, Process, ProcessStatus};
+use crate::scheduler::dirty::DirtyResult;
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
 use crate::term::Term;
@@ -65,6 +66,7 @@ pub(super) struct SharedState {
     exit_errors: DashMap<u64, ExecError>,
     exit_exceptions: DashMap<u64, crate::process::Exception>,
     async_results: DashMap<u64, Term>,
+    dirty_results: DashMap<u64, DirtyResult>,
     link_set: Mutex<LinkSet>,
     monitor_set: Mutex<MonitorSet>,
     hook: Hook,
@@ -183,6 +185,7 @@ impl Scheduler {
             exit_errors: DashMap::new(),
             exit_exceptions: DashMap::new(),
             async_results: DashMap::new(),
+            dirty_results: DashMap::new(),
             link_set: Mutex::new(LinkSet::new()),
             monitor_set: Mutex::new(MonitorSet::new()),
             hook: Hook::new(),

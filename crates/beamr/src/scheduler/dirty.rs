@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::native::{NativeFn, ProcessContext};
+use crate::native::{ExceptionClass, NativeFn, ProcessContext};
 use crate::scheduler::lock_or_recover;
 use crate::term::Term;
 
@@ -70,6 +70,17 @@ pub mod oneshot {
     }
 }
 
+/// Result of a native function invocation completed on a dirty scheduler thread.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DirtyResult {
+    /// Native function return value or error reason.
+    pub result: Result<Term, Term>,
+    /// Exception class requested by the dirty native if it returned `Err`.
+    pub exception_class: ExceptionClass,
+    /// Stacktrace requested by the dirty native if it returned `Err`.
+    pub exception_stacktrace: Term,
+}
+
 /// Native function invocation scheduled onto a dirty scheduler thread.
 pub struct DirtyJob {
     /// Process id that submitted the dirty job.
@@ -81,7 +92,7 @@ pub struct DirtyJob {
     /// Native call context for the dirty worker.
     pub context: ProcessContext<'static>,
     /// Channel used to return the native result to the submitter.
-    pub result_sender: oneshot::Sender<Result<Term, Term>>,
+    pub result_sender: oneshot::Sender<DirtyResult>,
 }
 
 // SAFETY: dirty scheduler jobs are constructed for standalone native calls and
@@ -231,7 +242,13 @@ fn worker_loop(receiver: Receiver<DirtyMessage>) {
             DirtyMessage::Run(mut job) => {
                 let _pid = job.pid;
                 let result = (job.function)(&job.args, &mut job.context);
-                let _ = job.result_sender.send(result);
+                let exception_class = job.context.take_exception_class();
+                let exception_stacktrace = job.context.take_exception_stacktrace();
+                let _ = job.result_sender.send(DirtyResult {
+                    result,
+                    exception_class,
+                    exception_stacktrace,
+                });
             }
             DirtyMessage::Shutdown => break,
         }
@@ -240,8 +257,8 @@ fn worker_loop(receiver: Receiver<DirtyMessage>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirtyJob, DirtyPool, DirtySchedulerKind, oneshot};
-    use crate::native::ProcessContext;
+    use super::{DirtyJob, DirtyPool, DirtyResult, DirtySchedulerKind, oneshot};
+    use crate::native::{ExceptionClass, ProcessContext};
     use crate::term::Term;
 
     fn forty_two(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
@@ -282,7 +299,14 @@ mod tests {
             result_sender,
         });
 
-        assert_eq!(result_receiver.recv(), Ok(Ok(Term::small_int(42))));
+        assert_eq!(
+            result_receiver.recv(),
+            Ok(DirtyResult {
+                result: Ok(Term::small_int(42)),
+                exception_class: ExceptionClass::Error,
+                exception_stacktrace: Term::NIL,
+            })
+        );
         pool.shutdown();
     }
 

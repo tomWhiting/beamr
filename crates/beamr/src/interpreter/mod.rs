@@ -12,6 +12,7 @@ use crate::atom::AtomTable;
 use crate::error::ExecError;
 use crate::io::IoSink;
 use crate::module::{Module, ModuleRegistry};
+use crate::native::NativeEntry;
 use crate::native::code_management_bifs::CodeManagementFacility;
 use crate::native::group_leader::GroupLeaderFacility;
 use crate::native::links::LinkFacility;
@@ -20,6 +21,8 @@ use crate::native::spawn::SpawnFacility;
 use crate::native::supervision::SupervisionFacility;
 use crate::native::system_info_bifs::SystemInfoFacility;
 use crate::process::{CodePosition, ExitReason, Process};
+use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::term::Term;
 use crate::timer::TimerWheel;
 
 /// Bundle of native services injected by the scheduler into BIF execution.
@@ -47,7 +50,7 @@ pub struct NativeServices {
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionResult {
     /// Reduction budget exhausted; scheduler should reset and requeue.
     Yielded,
@@ -55,10 +58,19 @@ pub enum ExecutionResult {
     Waiting,
     /// Process terminated with an exit reason.
     Exited(ExitReason),
+    /// Process submitted a dirty native call and must wait for its result.
+    DirtyCall {
+        /// Registered native entry to execute on the dirty pool.
+        entry: NativeEntry,
+        /// Arguments copied from x registers at the call boundary.
+        args: Vec<Term>,
+        /// Dirty scheduler pool that must execute the call.
+        kind: DirtySchedulerKind,
+    },
 }
 
 /// Control-flow outcome from one atomically completed instruction.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstructionOutcome {
     /// Continue at the sequential next instruction.
     Continue,
@@ -74,6 +86,15 @@ pub enum InstructionOutcome {
     Exit(ExitReason),
     /// The loader on_load instruction completed successfully.
     OnLoadComplete,
+    /// A dirty native call was reached; yield to the scheduler for migration.
+    DirtyCall {
+        /// Registered native entry to execute on the dirty pool.
+        entry: NativeEntry,
+        /// Arguments copied from x registers at the call boundary.
+        args: Vec<Term>,
+        /// Dirty scheduler pool that must execute the call.
+        kind: DirtySchedulerKind,
+    },
 }
 
 /// Execute `process` against `module` until a scheduler boundary or exit.
@@ -221,6 +242,9 @@ fn run_loop(
                 process.set_code_position(None);
                 process.clear_current_module();
                 return Ok(ExecutionResult::Exited(ExitReason::Normal));
+            }
+            InstructionOutcome::DirtyCall { entry, args, kind } => {
+                return Ok(ExecutionResult::DirtyCall { entry, args, kind });
             }
         }
     }

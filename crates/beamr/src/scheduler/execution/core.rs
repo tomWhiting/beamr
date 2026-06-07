@@ -1,9 +1,12 @@
 //! Private process time-slice execution helpers.
 
+use crate::atom::Atom;
 use crate::hook::HookDecision;
 use crate::interpreter::{self, ExecutionResult};
+use crate::native::{ExceptionClass, NativeEntry, ProcessContext};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::{CodePosition, ExitReason, Process, ProcessStatus};
+use crate::scheduler::dirty::{DirtyJob, DirtyResult, DirtySchedulerKind, oneshot};
 use crate::term::Term;
 use std::sync::Arc;
 
@@ -61,8 +64,13 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             if cleanup_if_tombstoned_after_store(shared, pid) {
                 return;
             }
-            let mut ws = lock_or_recover(&shared.wait_set);
-            ws.waiting.insert(pid, my_index);
+            {
+                let mut ws = lock_or_recover(&shared.wait_set);
+                ws.waiting.insert(pid, my_index);
+            }
+            if shared.dirty_results.contains_key(&pid) {
+                crate::scheduler::execution::wake_process(shared, pid);
+            }
         }
         SliceOutcome::Exited(reason, result) => {
             shared.exit_results.insert(pid, result);
@@ -199,14 +207,22 @@ pub(in crate::scheduler) fn execute_slice(
     if process.transition_to(ProcessStatus::Running).is_err() {
         return SliceOutcome::Exited(exit_reason_from_status(process.status()), process.x_reg(0));
     }
+    if let Some((_, dirty_result)) = shared.dirty_results.remove(&process.pid()) {
+        match apply_dirty_result(process, dirty_result) {
+            Ok(InstructionOutcomeAfterDirty::Continue) => {}
+            Ok(InstructionOutcomeAfterDirty::Exit(reason)) => {
+                return exit_process(shared, process, reason);
+            }
+            Err(error) => {
+                let pid = process.pid();
+                shared.exit_errors.insert(pid, error);
+                return exit_process(shared, process, ExitReason::Error);
+            }
+        }
+    }
     if let Some((_, result_term)) = shared.async_results.remove(&process.pid()) {
         process.set_x_reg(0, result_term);
-        if let Some(pos) = process.code_position() {
-            process.set_code_position(Some(CodePosition {
-                module: pos.module,
-                instruction_pointer: pos.instruction_pointer.saturating_add(1),
-            }));
-        }
+        advance_past_current_instruction(process);
     }
     process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
     let module_atom = match process.code_position() {
@@ -255,6 +271,11 @@ pub(in crate::scheduler) fn execute_slice(
             let _t = process.transition_to(ProcessStatus::Waiting);
             SliceOutcome::Wait(take_process(process))
         }
+        Ok(ExecutionResult::DirtyCall { entry, args, kind }) => {
+            submit_dirty_call(shared, process, entry, args, kind);
+            let _t = process.transition_to(ProcessStatus::Suspended);
+            SliceOutcome::Suspended(take_process(process))
+        }
         Ok(ExecutionResult::Exited(reason)) => exit_process(shared, process, reason),
         Err(error) => {
             let pid = process.pid();
@@ -272,6 +293,115 @@ fn exit_process(shared: &SharedState, process: &mut Process, reason: ExitReason)
     }
     process.terminate(reason);
     SliceOutcome::Exited(reason, result)
+}
+
+enum InstructionOutcomeAfterDirty {
+    Continue,
+    Exit(ExitReason),
+}
+
+fn apply_dirty_result(
+    process: &mut Process,
+    dirty_result: DirtyResult,
+) -> Result<InstructionOutcomeAfterDirty, crate::error::ExecError> {
+    match dirty_result.result {
+        Ok(value) => {
+            process.set_x_reg(0, value);
+            advance_past_current_instruction(process);
+            Ok(InstructionOutcomeAfterDirty::Continue)
+        }
+        Err(reason) => {
+            let exception = crate::process::Exception {
+                class: Term::atom(exception_class_atom(dirty_result.exception_class)),
+                reason,
+                stacktrace: dirty_result.exception_stacktrace,
+            };
+            match crate::interpreter::opcodes::exceptions::raise_exception(process, exception)? {
+                crate::interpreter::InstructionOutcome::Continue => {
+                    advance_past_current_instruction(process);
+                    Ok(InstructionOutcomeAfterDirty::Continue)
+                }
+                crate::interpreter::InstructionOutcome::Jump(target) => {
+                    process.set_code_position(Some(target));
+                    Ok(InstructionOutcomeAfterDirty::Continue)
+                }
+                crate::interpreter::InstructionOutcome::Exit(reason) => {
+                    Ok(InstructionOutcomeAfterDirty::Exit(reason))
+                }
+                crate::interpreter::InstructionOutcome::Yield
+                | crate::interpreter::InstructionOutcome::Waiting
+                | crate::interpreter::InstructionOutcome::NativeContinuation
+                | crate::interpreter::InstructionOutcome::OnLoadComplete
+                | crate::interpreter::InstructionOutcome::DirtyCall { .. } => {
+                    Ok(InstructionOutcomeAfterDirty::Exit(ExitReason::Error))
+                }
+            }
+        }
+    }
+}
+
+fn advance_past_current_instruction(process: &mut Process) {
+    if let Some(pos) = process.code_position() {
+        process.set_code_position(Some(CodePosition {
+            module: pos.module,
+            instruction_pointer: pos.instruction_pointer.saturating_add(1),
+        }));
+    }
+}
+
+fn exception_class_atom(class: ExceptionClass) -> Atom {
+    match class {
+        ExceptionClass::Error => Atom::ERROR,
+        ExceptionClass::Throw => Atom::THROW,
+        ExceptionClass::Exit => Atom::EXIT_CLASS,
+    }
+}
+
+fn submit_dirty_call(
+    shared: &Arc<SharedState>,
+    process: &Process,
+    entry: NativeEntry,
+    args: Vec<Term>,
+    kind: DirtySchedulerKind,
+) {
+    let mut context =
+        ProcessContext::with_timer_services(process.pid(), Arc::clone(&shared.timers));
+    let services = supervision_integration::build_native_services(shared, process.namespace_id());
+    context.set_atom_table(services.atom_table);
+    context.set_spawn_facility(services.spawn_facility);
+    context.set_link_facility(services.link_facility);
+    context.set_group_leader_facility(services.group_leader_facility);
+    context.set_supervision_facility(services.supervision_facility);
+    context.set_process_info_facility(services.process_info_facility);
+    context.set_code_management_facility(services.code_management_facility);
+    context.set_system_info_facility(services.system_info_facility);
+    if let Some(sink) = services.io_sink {
+        context.set_io_sink(sink);
+    }
+
+    let (result_sender, result_receiver) = oneshot::channel();
+    let job = DirtyJob {
+        pid: process.pid(),
+        function: entry.function,
+        args,
+        context,
+        result_sender,
+    };
+    match kind {
+        DirtySchedulerKind::Cpu => shared.dirty_cpu.submit(job),
+        DirtySchedulerKind::Io => shared.dirty_io.submit(job),
+    }
+
+    let shared_for_completion = Arc::clone(shared);
+    let pid = process.pid();
+    let _completion = std::thread::Builder::new()
+        .name(format!("dirty-complete-{pid}"))
+        .spawn(move || {
+            if let Ok(result) = result_receiver.recv() {
+                shared_for_completion.dirty_results.insert(pid, result);
+                crate::scheduler::execution::wake_process(&shared_for_completion, pid);
+            }
+        });
 }
 
 fn exit_reason_from_status(status: ProcessStatus) -> ExitReason {

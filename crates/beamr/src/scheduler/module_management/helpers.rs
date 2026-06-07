@@ -106,7 +106,9 @@ fn run_on_load(
         match interpreter::run_with_native_services(&mut process, module, registry, &services) {
             Ok(ExecutionResult::Exited(reason)) => return reason,
             Ok(ExecutionResult::Yielded) => continue,
-            Ok(ExecutionResult::Waiting) | Err(_) => return ExitReason::Error,
+            Ok(ExecutionResult::Waiting) | Ok(ExecutionResult::DirtyCall { .. }) | Err(_) => {
+                return ExitReason::Error;
+            }
         }
     }
 }
