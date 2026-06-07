@@ -1,1 +1,1 @@
-feat(etf): add term_to_iovec scatter-gather encoding
+review(B-089): harden term_to_iovec option coverage

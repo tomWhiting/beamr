@@ -369,6 +369,33 @@ mod tests {
     }
 
     #[test]
+    fn term_to_iovec_2_rejects_malformed_encode_options() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let compressed_atom = atom_table.intern("compressed");
+        let mut process = Process::new(1, 128);
+        let out_of_range_option = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            let tuple = context
+                .alloc_tuple(&[Term::atom(compressed_atom), Term::small_int(10)])
+                .expect("tuple");
+            context.alloc_list(&[tuple]).expect("options")
+        };
+        let improper_options = {
+            let mut cell = [0_u64; 2];
+            write_cons(&mut cell, Term::atom(compressed_atom), Term::small_int(0))
+                .expect("improper options")
+        };
+
+        for options in [Term::small_int(0), out_of_range_option, improper_options] {
+            let result = {
+                let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+                bif_term_to_iovec_2(&[Term::small_int(42), options], &mut context)
+            };
+            assert_eq!(result, Err(badarg()));
+        }
+    }
+
+    #[test]
     fn term_to_binary_2_compresses_large_terms_and_round_trips() {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let compressed_atom = atom_table.intern("compressed");
