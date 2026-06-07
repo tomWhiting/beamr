@@ -238,9 +238,6 @@ fn collect_list(term: Term) -> Result<(Vec<Term>, Term), EncodeError> {
     let mut elements = Vec::new();
     let mut current = term;
     while current.is_list() {
-        if elements.len() > MAX_ETF_DEPTH {
-            return Err(EncodeError::TooDeep);
-        }
         let cons = Cons::new(current).ok_or(EncodeError::UnsupportedTerm)?;
         elements.push(cons.head());
         current = cons.tail();
@@ -498,11 +495,11 @@ mod tests {
     }
 
     #[test]
-    fn excessively_deep_cons_chain_returns_too_deep() {
+    fn deeply_nested_list_returns_too_deep() {
         let mut cells = vec![[0_u64; 2]; MAX_ETF_DEPTH + 2];
         let mut term = Term::NIL;
-        for (index, cell) in cells.iter_mut().enumerate().rev() {
-            term = write_cons(cell, Term::small_int(index as i64 + 256), term).expect("cons");
+        for cell in cells.iter_mut().rev() {
+            term = write_cons(cell, term, Term::NIL).expect("cons");
         }
 
         assert_eq!(encode_term(term, &atoms()), Err(EncodeError::TooDeep));
