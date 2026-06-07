@@ -333,8 +333,6 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         thread_count: 1,
         dirty_cpu: dirty::DirtyPool::with_queue_depth("dirty-test-cpu", 1, 1),
         dirty_io: dirty::DirtyPool::with_queue_depth("dirty-test-io", 1, 1),
-        dirty_cpu: dirty::DirtyPool::with_queue_depth("dirty-test-cpu", 1, 1),
-        dirty_io: dirty::DirtyPool::with_queue_depth("dirty-test-io", 1, 1),
         next_pid: AtomicU64::new(0),
         wait_set: Mutex::new(WaitSet::default()),
         wake_condvar: Condvar::new(),
