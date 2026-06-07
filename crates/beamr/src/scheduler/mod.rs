@@ -85,10 +85,11 @@ impl SharedState {
         let table_id = self.next_ets_table_id.fetch_add(1, Ordering::Relaxed);
         metadata.id = table_id;
         let table: Arc<dyn EtsTable> = Arc::new(MetadataOnlyTable { metadata });
-        if let Some(name) = table.metadata().name {
+        let name = table.metadata().name;
+        self.ets_tables.insert(table_id, table);
+        if let Some(name) = name {
             self.ets_named_tables.insert(name, table_id);
         }
-        self.ets_tables.insert(table_id, table);
         table_id
     }
 

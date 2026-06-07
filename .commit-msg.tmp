@@ -1,1 +1,1 @@
-feat(beamr): expose ets registry lifecycle through scheduler
+harden(beamr): strengthen ETS registry and copy coverage

@@ -187,10 +187,12 @@ impl EtsCopier {
     }
 
     fn copy_binary(&mut self, bytes: &[u8]) -> Result<Term, EtsError> {
-        self.write_words(
-            2 + crate::term::binary::packed_word_count(bytes.len()),
-            |words| crate::term::binary::write_binary(words, bytes),
-        )
+        let word_count = 2usize
+            .checked_add(crate::term::binary::packed_word_count(bytes.len()))
+            .ok_or(EtsError::AllocationFailed)?;
+        self.write_words(word_count, |words| {
+            crate::term::binary::write_binary(words, bytes)
+        })
     }
 
     fn write_words(
@@ -320,8 +322,11 @@ fn copy_map_to_heap(map: Map, heap: &mut Heap) -> Result<Term, EtsError> {
 }
 
 fn copy_binary_to_heap(bytes: &[u8], heap: &mut Heap) -> Result<Term, EtsError> {
+    let word_count = 2usize
+        .checked_add(crate::term::binary::packed_word_count(bytes.len()))
+        .ok_or(EtsError::AllocationFailed)?;
     let words = heap
-        .alloc_slice(2 + crate::term::binary::packed_word_count(bytes.len()))
+        .alloc_slice(word_count)
         .map_err(|_error| EtsError::AllocationFailed)?;
     crate::term::binary::write_binary(words, bytes).ok_or(EtsError::InvalidBoxedTerm)
 }
@@ -329,7 +334,10 @@ fn copy_binary_to_heap(bytes: &[u8], heap: &mut Heap) -> Result<Term, EtsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::boxed::Tuple;
+    use crate::term::binary::Binary;
+    use crate::term::boxed::{Cons, Map, Tuple};
+    use crate::term::shared_binary::{SharedBinary, write_proc_bin};
+    use crate::term::sub_binary::write_sub_binary;
 
     #[test]
     fn tuple_copy_survives_source_heap_reset_and_copies_out_to_new_heap() {
@@ -381,5 +389,80 @@ mod tests {
             .expect("copy out of ETS");
         let tuple = Tuple::new(copied).expect("copied tuple accessor");
         assert_eq!(tuple.get(0), Some(Term::pid(55)));
+    }
+
+    #[test]
+    fn nested_list_map_and_binary_copy_are_independent_of_source_heap() {
+        let mut source_heap = Heap::new(64);
+        let source = {
+            let binary_words = source_heap.alloc_slice(3).expect("binary allocation");
+            let binary =
+                crate::term::binary::write_binary(binary_words, b"ets").expect("binary write");
+            let cons_tail_words = source_heap.alloc_slice(2).expect("tail cons allocation");
+            let tail =
+                boxed::write_cons(cons_tail_words, binary, Term::NIL).expect("tail cons write");
+            let cons_head_words = source_heap.alloc_slice(2).expect("head cons allocation");
+            let list = boxed::write_cons(cons_head_words, Term::small_int(7), tail)
+                .expect("head cons write");
+            let map_words = source_heap.alloc_slice(4).expect("map allocation");
+            let map = boxed::write_map(map_words, &[Term::small_int(1)], &[Term::pid(99)])
+                .expect("map write");
+            let tuple_words = source_heap.alloc_slice(3).expect("tuple allocation");
+            boxed::write_tuple(tuple_words, &[list, map]).expect("tuple write")
+        };
+
+        let owned = copy_term_to_ets(source).expect("copy into ETS");
+        source_heap.reset_young();
+
+        let mut target_heap = Heap::new(64);
+        let copied = owned.copy_to_heap(&mut target_heap).expect("copy out");
+        let tuple = Tuple::new(copied).expect("tuple accessor");
+        let copied_list = tuple.get(0).expect("list element");
+        let first = Cons::new(copied_list).expect("first cons");
+        assert_eq!(first.head(), Term::small_int(7));
+        let second = Cons::new(first.tail()).expect("second cons");
+        let copied_binary = Binary::new(second.head()).expect("binary accessor");
+        assert_eq!(copied_binary.as_bytes(), b"ets");
+        assert_eq!(second.tail(), Term::NIL);
+
+        let copied_map = Map::new(tuple.get(1).expect("map element")).expect("map accessor");
+        assert_eq!(copied_map.key(0), Some(Term::small_int(1)));
+        assert_eq!(copied_map.value(0), Some(Term::pid(99)));
+    }
+
+    #[test]
+    fn proc_bin_and_sub_binary_copy_as_independent_inline_binaries() {
+        let shared = SharedBinary::new(b"0123456789".to_vec());
+        let (owned_proc_bin, owned_sub_binary) = {
+            let mut proc_heap = Heap::new(8);
+            let proc_bin = {
+                let words = proc_heap.alloc_slice(3).expect("proc bin allocation");
+                write_proc_bin(words, &shared).expect("proc bin write")
+            };
+            let mut sub_heap = Heap::new(8);
+            let sub_binary = {
+                let words = sub_heap.alloc_slice(5).expect("sub binary allocation");
+                write_sub_binary(words, proc_bin, 2, 4).expect("sub binary write")
+            };
+            (
+                copy_term_to_ets(proc_bin).expect("copy proc bin into ETS"),
+                copy_term_to_ets(sub_binary).expect("copy sub binary into ETS"),
+            )
+        };
+
+        let mut target_heap = Heap::new(16);
+        let copied_proc_bin = owned_proc_bin
+            .copy_to_heap(&mut target_heap)
+            .expect("copy proc bin out");
+        let copied_proc_binary =
+            Binary::new(copied_proc_bin).expect("copied proc bin is inline binary");
+        assert_eq!(copied_proc_binary.as_bytes(), b"0123456789");
+
+        let copied_sub_binary = owned_sub_binary
+            .copy_to_heap(&mut target_heap)
+            .expect("copy sub binary out");
+        let copied_sub_binary =
+            Binary::new(copied_sub_binary).expect("copied sub binary is inline binary");
+        assert_eq!(copied_sub_binary.as_bytes(), b"2345");
     }
 }
