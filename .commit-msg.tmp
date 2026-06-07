@@ -1,1 +1,1 @@
-harden(beamr): restore TermKey debug support without AtomTable Debug bound
+feat(beamr): add completion ring backends

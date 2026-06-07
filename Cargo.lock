@@ -36,6 +36,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "flate2",
+ "io-uring",
  "libc",
  "num_cpus",
  "proptest",
@@ -282,6 +283,17 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "io-uring"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d09b98f7eace8982db770e4408e7470b028ce513ac28fecdc6bf4c30fe92b62"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]

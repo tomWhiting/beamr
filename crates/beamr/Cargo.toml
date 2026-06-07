@@ -29,3 +29,6 @@ proptest = "1.11.0"
 [features]
 json = ["dep:base64", "dep:serde_json"]
 test-support = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"

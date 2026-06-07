@@ -268,6 +268,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    use crate::io::ring::IoCompletion;
+
     #[derive(Default)]
     struct MockRing {
         submitted: Mutex<Vec<IoOp>>,
@@ -282,6 +284,16 @@ mod tests {
                 0
             }
         }
+
+        fn poll_completions(&self, _timeout: std::time::Duration) -> Vec<IoCompletion> {
+            Vec::new()
+        }
+
+        fn pending_count(&self) -> usize {
+            self.submitted.lock().map(|ops| ops.len()).unwrap_or(0)
+        }
+
+        fn shutdown(&self) {}
     }
 
     fn pipe_read_fd() -> RawFd {
