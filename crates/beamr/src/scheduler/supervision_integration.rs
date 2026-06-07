@@ -323,8 +323,10 @@ pub(super) fn build_native_services(
         Arc::new(SchedulerSystemInfoFacility {
             shared: Arc::clone(shared),
         });
+    let ets_facility: Arc<dyn crate::native::EtsFacility> = shared.ets_registry.clone();
     crate::interpreter::NativeServices {
         atom_table: Some(Arc::clone(&shared.atom_table)),
+        ets_facility: Some(ets_facility),
         timers: Some(Arc::clone(&shared.timers)),
         spawn_facility: Some(spawn),
         link_facility: Some(link),

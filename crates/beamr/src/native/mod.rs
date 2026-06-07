@@ -11,6 +11,7 @@ pub mod code_management_bifs;
 mod context;
 pub mod dictionary_bifs;
 pub mod etf_bifs;
+pub mod ets_bifs;
 pub mod exception_bifs;
 pub mod gate3_bifs;
 pub mod gleam_ffi;
@@ -45,6 +46,7 @@ pub use code_management_bifs::CodeManagementFacility;
 pub use context::{
     ExceptionClass, NativeContinuation, ProcessContext, SuspendRequest, TrampolineRequest,
 };
+pub use ets_bifs::EtsFacility;
 pub use group_leader::GroupLeaderFacility;
 pub use links::LinkFacility;
 pub use process_info_bifs::{

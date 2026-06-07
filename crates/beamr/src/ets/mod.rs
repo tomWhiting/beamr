@@ -57,7 +57,8 @@ impl EtsRegistry {
         let id = metadata.id;
         let name = metadata.name;
         let table: Arc<dyn EtsTable> = match metadata.table_type {
-            EtsTableType::Set | EtsTableType::OrderedSet => Arc::new(EtsSet::new(metadata)),
+            EtsTableType::Set => Arc::new(EtsSet::new(metadata)),
+            EtsTableType::OrderedSet => Arc::new(EtsOrderedSet::new(metadata)),
             EtsTableType::Bag => Arc::new(EtsBag::new(metadata)),
             EtsTableType::DuplicateBag => Arc::new(EtsDuplicateBag::new(metadata)),
         };
@@ -128,6 +129,11 @@ impl EtsRegistry {
     #[must_use]
     pub fn lookup_table_by_name(&self, name: Atom) -> Option<EtsTableId> {
         self.names.get(&name).map(|entry| *entry.value())
+    }
+
+    #[must_use]
+    pub fn table_count(&self) -> usize {
+        self.tables.len()
     }
 }
 

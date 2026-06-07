@@ -57,6 +57,7 @@ pub fn register_gate1_bifs(
     crate::native::code_management_bifs::register_code_management_bifs(registry, atom_table)?;
     crate::native::dictionary_bifs::register_dictionary_bifs(registry, atom_table)?;
     crate::native::etf_bifs::register_etf_bifs(registry, atom_table)?;
+    crate::native::ets_bifs::register_ets_bifs(registry, atom_table)?;
     crate::native::exception_bifs::register_exception_bifs(registry, atom_table)?;
     crate::native::process_info_bifs::register_process_info_bifs(registry, atom_table)?;
     crate::native::system_info_bifs::register_system_info_bifs(registry, atom_table)?;
@@ -710,6 +711,24 @@ mod tests {
                 entry.capability, expected_capability,
                 "wrong capability for erlang:{name}/{arity}"
             );
+        }
+
+        let ets = atom_table.intern("ets");
+        for (name, arity) in [
+            ("new", 2),
+            ("insert", 2),
+            ("lookup", 2),
+            ("delete", 1),
+            ("delete", 2),
+            ("member", 2),
+            ("info", 1),
+            ("info", 2),
+        ] {
+            let function = atom_table.intern(name);
+            let entry = registry
+                .lookup(ets, function, arity)
+                .expect("registered ETS BIF should be present");
+            assert_eq!(entry.capability, Capability::ProcessLocal);
         }
     }
 
