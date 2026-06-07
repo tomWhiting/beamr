@@ -1,1 +1,1 @@
-feat(beamr): implement process group leader bifs
+Harden group leader BIF read-after-write semantics

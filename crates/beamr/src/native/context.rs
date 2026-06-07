@@ -137,7 +137,6 @@ impl fmt::Debug for ProcessContext<'_> {
             .field("shutdown_requested", &self.shutdown_requested)
             .field("trampoline", &self.trampoline)
             .field("suspend", &self.suspend)
-            .field("exception_class", &self.exception_class)
             .field("exception_stacktrace", &self.exception_stacktrace)
             .finish()
     }
@@ -439,6 +438,18 @@ impl<'process> ProcessContext<'process> {
             return Err(Term::atom(crate::atom::Atom::BADARG));
         };
         Ok(process.group_leader())
+    }
+
+    /// Set the attached process group leader when it matches `pid`.
+    pub fn set_attached_group_leader(&mut self, pid: u64, group_leader: Term) -> bool {
+        let Some(process) = self.process.as_deref_mut() else {
+            return false;
+        };
+        if process.pid() != pid {
+            return false;
+        }
+        process.set_group_leader(group_leader);
+        true
     }
 
     /// Fetch a value from the attached process dictionary.

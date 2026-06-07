@@ -59,6 +59,7 @@ pub fn bif_group_leader_2(args: &[Term], context: &mut ProcessContext) -> Result
     facility
         .set_group_leader(target_pid, *new_leader)
         .map_err(|_| badarg())?;
+    context.set_attached_group_leader(target_pid, *new_leader);
 
     Ok(Term::atom(Atom::TRUE))
 }
@@ -141,6 +142,24 @@ mod tests {
             bif_group_leader_2(&[Term::pid(4), Term::pid(9)], &mut context),
             Ok(Term::atom(Atom::TRUE))
         );
+        assert_eq!(facility.current_group_leader(), Term::pid(4));
+    }
+
+    #[test]
+    fn group_leader_2_updates_attached_self_for_immediate_reads() {
+        let facility = Arc::new(MockGroupLeaderFacility::new(9, Term::pid(1)));
+        let facility_for_context: Arc<dyn GroupLeaderFacility> = facility.clone();
+        let mut process = Process::new(9, 64);
+        process.set_group_leader(Term::pid(1));
+        let mut context = ProcessContext::new();
+        context.set_group_leader_facility(Some(facility_for_context));
+        context.attach_process(&mut process, 0);
+
+        assert_eq!(
+            bif_group_leader_2(&[Term::pid(4), Term::pid(9)], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(bif_group_leader_0(&[], &mut context), Ok(Term::pid(4)));
         assert_eq!(facility.current_group_leader(), Term::pid(4));
     }
 
