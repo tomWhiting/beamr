@@ -53,8 +53,9 @@ impl EtsRegistry {
         let id = metadata.id;
         let name = metadata.name;
         let table: Arc<dyn EtsTable> = match metadata.table_type {
-            EtsTableType::Set => Arc::new(EtsSet::new(metadata)),
-            _ => Arc::new(EtsSet::new(metadata)),
+            EtsTableType::Set | EtsTableType::OrderedSet => Arc::new(EtsSet::new(metadata)),
+            EtsTableType::Bag => Arc::new(EtsBag::new(metadata)),
+            EtsTableType::DuplicateBag => Arc::new(EtsDuplicateBag::new(metadata)),
         };
         if let Some(previous_table) = self.tables.insert(id, table)
             && let Some(previous_name) = previous_table.metadata().name
