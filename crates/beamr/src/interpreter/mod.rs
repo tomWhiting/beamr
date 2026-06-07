@@ -13,6 +13,7 @@ use crate::error::ExecError;
 use crate::io::IoSink;
 use crate::module::{Module, ModuleRegistry};
 use crate::native::code_management_bifs::CodeManagementFacility;
+use crate::native::group_leader::GroupLeaderFacility;
 use crate::native::links::LinkFacility;
 use crate::native::spawn::SpawnFacility;
 use crate::native::supervision::SupervisionFacility;
@@ -29,6 +30,8 @@ pub struct NativeServices {
     pub spawn_facility: Option<Arc<dyn SpawnFacility>>,
     /// Link facility for link management BIFs.
     pub link_facility: Option<Arc<dyn LinkFacility>>,
+    /// Group-leader facility for process metadata BIFs.
+    pub group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
     /// Supervision facility for monitor/demonitor/exit BIFs.
     pub supervision_facility: Option<Arc<dyn SupervisionFacility>>,
     /// Output sink for `io` module BIFs.
@@ -74,6 +77,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         timers: None,
         spawn_facility: None,
         link_facility: None,
+        group_leader_facility: None,
         supervision_facility: None,
         io_sink: None,
         code_management_facility: None,
@@ -92,6 +96,7 @@ pub fn run_with_registry(
         timers: None,
         spawn_facility: None,
         link_facility: None,
+        group_leader_facility: None,
         supervision_facility: None,
         io_sink: None,
         code_management_facility: None,
@@ -110,6 +115,7 @@ pub fn run_with_timer_services(
         timers: Some(timers),
         spawn_facility: None,
         link_facility: None,
+        group_leader_facility: None,
         supervision_facility: None,
         io_sink: None,
         code_management_facility: None,

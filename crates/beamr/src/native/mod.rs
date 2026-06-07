@@ -14,10 +14,12 @@ pub mod etf_bifs;
 pub mod exception_bifs;
 pub mod gate3_bifs;
 pub mod gleam_ffi;
+pub mod group_leader;
 pub mod links;
 pub mod meridian_ffi;
 pub mod otp_stubs;
 pub mod process_bifs;
+pub mod process_info_bifs;
 pub mod registry;
 pub mod select;
 pub mod selector_ffi;
@@ -41,6 +43,7 @@ pub use code_management_bifs::CodeManagementFacility;
 pub use context::{
     ExceptionClass, NativeContinuation, ProcessContext, SuspendRequest, TrampolineRequest,
 };
+pub use group_leader::GroupLeaderFacility;
 pub use links::LinkFacility;
 pub use registry::RegistryFacility;
 pub use select::SelectFacility;

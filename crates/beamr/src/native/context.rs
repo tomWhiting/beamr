@@ -20,6 +20,7 @@ use crate::term::compare;
 use crate::timer::{TimerRef, TimerWheel};
 
 use super::code_management_bifs::CodeManagementFacility;
+use super::group_leader::GroupLeaderFacility;
 use super::links::LinkFacility;
 use super::registry::RegistryFacility;
 use super::select::SelectFacility;
@@ -85,6 +86,7 @@ pub struct ProcessContext<'process> {
     atom_table: Option<Arc<AtomTable>>,
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
     link_facility: Option<Arc<dyn LinkFacility>>,
+    group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
     code_management_facility: Option<Arc<dyn CodeManagementFacility>>,
     registry_facility: Option<Arc<dyn RegistryFacility>>,
@@ -110,6 +112,10 @@ impl fmt::Debug for ProcessContext<'_> {
                 &self.spawn_facility.as_ref().map(|_| ".."),
             )
             .field("link_facility", &self.link_facility.as_ref().map(|_| ".."))
+            .field(
+                "group_leader_facility",
+                &self.group_leader_facility.as_ref().map(|_| ".."),
+            )
             .field(
                 "supervision_facility",
                 &self.supervision_facility.as_ref().map(|_| ".."),
@@ -155,6 +161,7 @@ impl<'process> ProcessContext<'process> {
             atom_table: None,
             spawn_facility: None,
             link_facility: None,
+            group_leader_facility: None,
             supervision_facility: None,
             code_management_facility: None,
             registry_facility: None,
@@ -179,6 +186,7 @@ impl<'process> ProcessContext<'process> {
             atom_table: None,
             spawn_facility: None,
             link_facility: None,
+            group_leader_facility: None,
             supervision_facility: None,
             code_management_facility: None,
             registry_facility: None,
@@ -262,6 +270,17 @@ impl<'process> ProcessContext<'process> {
     /// Set the link facility for link management BIFs.
     pub fn set_link_facility(&mut self, facility: Option<Arc<dyn LinkFacility>>) {
         self.link_facility = facility;
+    }
+
+    /// Return the group-leader facility, if one has been configured.
+    #[must_use]
+    pub fn group_leader_facility(&self) -> Option<&dyn GroupLeaderFacility> {
+        self.group_leader_facility.as_deref()
+    }
+
+    /// Set the group-leader facility for process metadata BIFs.
+    pub fn set_group_leader_facility(&mut self, facility: Option<Arc<dyn GroupLeaderFacility>>) {
+        self.group_leader_facility = facility;
     }
 
     /// Return the supervision facility, if one has been configured.
@@ -412,6 +431,14 @@ impl<'process> ProcessContext<'process> {
             return Err(Term::atom(crate::atom::Atom::BADARG));
         };
         Ok(process.dict_put(key, value))
+    }
+
+    /// Return the attached process group leader.
+    pub fn group_leader(&self) -> Result<Term, Term> {
+        let Some(process) = self.process.as_ref() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.group_leader())
     }
 
     /// Fetch a value from the attached process dictionary.

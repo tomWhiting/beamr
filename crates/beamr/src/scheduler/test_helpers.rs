@@ -79,6 +79,7 @@ impl Scheduler {
         let child_pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(child_pid);
         let mut child = Process::new(child_pid, DEFAULT_HEAP_SIZE);
+        child.set_group_leader(parent.group_leader());
         child.add_link(parent_pid);
         parent.add_link(child_pid);
         self.shared.process_bodies.insert(
@@ -114,5 +115,17 @@ impl Scheduler {
                     && tuple.get(1) == Some(Term::pid(source_pid))
             })
         })
+    }
+
+    /// Return a live process's group leader term for scheduler tests.
+    #[must_use]
+    pub fn test_group_leader(&self, pid: u64) -> Option<Term> {
+        self.with_process(pid, |process| process.group_leader())
+    }
+
+    /// Set a live process's group leader term for scheduler tests.
+    pub fn set_test_group_leader(&self, pid: u64, group_leader: Term) -> bool {
+        self.with_process(pid, |process| process.set_group_leader(group_leader))
+            .is_some()
     }
 }

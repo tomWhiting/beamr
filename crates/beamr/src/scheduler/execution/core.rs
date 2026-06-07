@@ -84,6 +84,7 @@ pub(in crate::scheduler) fn take_runnable_process(
                 links: process.links().to_vec(),
                 monitors: process.monitors().to_vec(),
                 trap_exit: process.trap_exit(),
+                group_leader: process.group_leader(),
                 pending_exit_messages: Vec::new(),
                 pending_down_messages: Vec::new(),
             };
@@ -102,6 +103,7 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
     if let Some(entry) = shared.process_bodies.get(&pid) {
         let mut slot = lock_or_recover(&entry);
         if let ProcessSlot::Executing(metadata) = &mut *slot {
+            process.set_group_leader(metadata.group_leader);
             for linked_pid in &metadata.links {
                 process.add_link(*linked_pid);
             }

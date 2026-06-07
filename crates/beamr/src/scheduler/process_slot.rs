@@ -1,5 +1,6 @@
 use crate::namespace::NamespaceId;
 use crate::process::{ExitReason, Monitor};
+use crate::term::Term;
 
 use super::ScheduledProcess;
 
@@ -8,6 +9,7 @@ pub(super) struct ProcessMetadata {
     pub(super) links: Vec<u64>,
     pub(super) monitors: Vec<Monitor>,
     pub(super) trap_exit: bool,
+    pub(super) group_leader: Term,
     pub(super) pending_exit_messages: Vec<(u64, ExitReason)>,
     pub(super) pending_down_messages: Vec<(u64, u64, ExitReason)>,
 }
