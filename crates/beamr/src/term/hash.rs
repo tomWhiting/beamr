@@ -363,4 +363,39 @@ mod tests {
         assert_ne!(Term::small_int(1), float);
         assert_ne!(term_hash(Term::small_int(1)), term_hash(float));
     }
+
+    #[test]
+    fn equal_maps_hash_equal_regardless_of_entry_order() {
+        let mut left_heap = [0_u64; 6];
+        let mut right_heap = [0_u64; 6];
+        let left = boxed::write_map(
+            &mut left_heap,
+            &[Term::atom(Atom::OK), Term::atom(Atom::ERROR)],
+            &[Term::small_int(1), Term::small_int(2)],
+        )
+        .expect("left map fits");
+        let right = boxed::write_map(
+            &mut right_heap,
+            &[Term::atom(Atom::ERROR), Term::atom(Atom::OK)],
+            &[Term::small_int(2), Term::small_int(1)],
+        )
+        .expect("right map fits");
+
+        assert_eq!(left, right);
+        assert_eq!(term_hash(left), term_hash(right));
+    }
+
+    #[test]
+    fn improper_list_tail_contributes_to_hash() {
+        let mut proper_heap = [0_u64; 2];
+        let mut improper_heap = [0_u64; 2];
+        let proper = boxed::write_cons(&mut proper_heap, Term::small_int(1), Term::NIL)
+            .expect("proper list fits");
+        let improper =
+            boxed::write_cons(&mut improper_heap, Term::small_int(1), Term::small_int(2))
+                .expect("improper list fits");
+
+        assert_ne!(proper, improper);
+        assert_ne!(term_hash(proper), term_hash(improper));
+    }
 }

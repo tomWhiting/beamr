@@ -75,18 +75,44 @@ impl EtsRegistry {
 
     pub fn create_table(&self, mut metadata: EtsTableMetadata) -> EtsTableId {
         if metadata.id == 0 {
-            metadata.id = self.next_table_id.fetch_add(1, Ordering::Relaxed);
+            metadata.id = self.allocate_table_id();
+        } else {
+            self.reserve_table_id(metadata.id);
         }
         let id = metadata.id;
         let name = metadata.name;
         let table: Arc<dyn EtsTable> = match metadata.table_type {
             EtsTableType::Set => Arc::new(EtsSet::new(metadata)),
         };
-        self.tables.insert(id, table);
+        if let Some((_, previous_table)) = self.tables.insert(id, table) {
+            if let Some(previous_name) = previous_table.metadata().name {
+                self.names
+                    .remove_if(&previous_name, |_, table_id| *table_id == id);
+            }
+        }
         if let Some(name) = name {
             self.names.insert(name, id);
         }
         id
+    }
+
+    fn allocate_table_id(&self) -> EtsTableId {
+        self.next_table_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn reserve_table_id(&self, id: EtsTableId) {
+        let mut current = self.next_table_id.load(Ordering::Relaxed);
+        while current <= id {
+            match self.next_table_id.compare_exchange_weak(
+                current,
+                id.saturating_add(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(next) => current = next,
+            }
+        }
     }
 
     #[must_use]
@@ -105,7 +131,7 @@ impl EtsRegistry {
             return false;
         };
         if let Some(name) = table.metadata().name {
-            self.names.remove(&name);
+            self.names.remove_if(&name, |_, table_id| *table_id == id);
         }
         true
     }
@@ -147,5 +173,51 @@ mod tests {
 
         table.insert(tuple).expect("tuple inserts");
         assert_eq!(table.lookup(Term::atom(Atom::OK)), vec![tuple]);
+    }
+
+    #[test]
+    fn registry_does_not_reuse_explicit_table_ids_for_implicit_tables() {
+        let registry = EtsRegistry::new();
+        let mut explicit = metadata(EtsTableType::Set);
+        explicit.id = 7;
+
+        assert_eq!(registry.create_table(explicit), 7);
+
+        let implicit_id = registry.create_table(EtsTableMetadata {
+            name: None,
+            ..metadata(EtsTableType::Set)
+        });
+
+        assert_ne!(implicit_id, 7);
+        assert!(implicit_id > 7);
+        assert!(registry.lookup_table(7).is_some());
+        assert!(registry.lookup_table(implicit_id).is_some());
+    }
+
+    #[test]
+    fn registry_keeps_reused_names_bound_to_latest_table_when_old_table_deleted() {
+        let registry = EtsRegistry::new();
+        let first_id = registry.create_table(metadata(EtsTableType::Set));
+        let second_id = registry.create_table(metadata(EtsTableType::Set));
+
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            registry
+                .lookup_named_table(Atom::OK)
+                .expect("latest name binding exists")
+                .metadata()
+                .id,
+            second_id
+        );
+
+        assert!(registry.delete_table(first_id));
+        assert_eq!(
+            registry
+                .lookup_named_table(Atom::OK)
+                .expect("newer name binding survives old table deletion")
+                .metadata()
+                .id,
+            second_id
+        );
     }
 }

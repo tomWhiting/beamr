@@ -1,1 +1,1 @@
-feat(beamr): add hash-backed ETS set tables
+review(beamr): harden ETS set hash table implementation
