@@ -9,7 +9,6 @@ pub mod heap;
 pub mod registry;
 pub mod stack;
 
-use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -224,7 +223,7 @@ pub struct Process {
     code_position: Option<CodePosition>,
     current_module: Option<Arc<Module>>,
     current_mfa: Option<(Atom, Atom, u8)>,
-    links: HashSet<u64>,
+    links: Vec<u64>,
     monitors: Vec<Monitor>,
     trap_exit: bool,
     group_leader: Option<u64>,
@@ -253,7 +252,7 @@ impl Process {
             code_position: None,
             current_module: None,
             current_mfa: None,
-            links: HashSet::new(),
+            links: Vec::new(),
             monitors: Vec::new(),
             trap_exit: false,
             group_leader: None,
@@ -572,22 +571,31 @@ impl Process {
 
     /// Linked process IDs.
     #[must_use]
-    pub const fn links(&self) -> &HashSet<u64> {
+    pub fn links(&self) -> &[u64] {
         &self.links
     }
 
-    /// Add a linked process id. Returns whether the set changed.
+    /// Add a linked process id. Returns whether the ordered set changed.
+    ///
+    /// Link insertion order is preserved for deterministic exit propagation.
+    /// Self-links and duplicate links are ignored.
     pub fn add_link(&mut self, pid: u64) -> bool {
-        pid != self.pid && self.links.insert(pid)
+        if pid == self.pid || self.links.contains(&pid) {
+            return false;
+        }
+        self.links.push(pid);
+        true
     }
 
-    /// Remove a linked process id. Returns whether the set changed.
+    /// Remove a linked process id. Returns whether the ordered set changed.
     pub fn remove_link(&mut self, pid: u64) -> bool {
-        self.links.remove(&pid)
+        let before = self.links.len();
+        self.links.retain(|linked| *linked != pid);
+        before != self.links.len()
     }
 
-    /// Remove all links and return the previous link set.
-    pub fn take_links(&mut self) -> HashSet<u64> {
+    /// Remove all links and return the previous link set in insertion order.
+    pub fn take_links(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.links)
     }
 
@@ -679,6 +687,44 @@ mod tests {
         assert!(process.monitors().is_empty());
         assert!(!process.trap_exit());
         assert_eq!(process.group_leader(), None);
+    }
+
+    #[test]
+    fn links_preserve_insertion_order_and_deduplicate() {
+        let mut process = Process::new(7, 233);
+
+        assert!(process.add_link(11));
+        assert!(process.add_link(13));
+        assert!(process.add_link(17));
+        assert!(!process.add_link(13));
+        assert!(!process.add_link(7));
+
+        assert_eq!(process.links(), &[11, 13, 17]);
+    }
+
+    #[test]
+    fn remove_link_preserves_remaining_order() {
+        let mut process = Process::new(7, 233);
+        process.add_link(11);
+        process.add_link(13);
+        process.add_link(17);
+        process.add_link(19);
+
+        assert!(process.remove_link(13));
+        assert!(!process.remove_link(23));
+
+        assert_eq!(process.links(), &[11, 17, 19]);
+    }
+
+    #[test]
+    fn take_links_returns_ordered_links_and_clears_storage() {
+        let mut process = Process::new(7, 233);
+        process.add_link(11);
+        process.add_link(13);
+        process.add_link(17);
+
+        assert_eq!(process.take_links(), vec![11, 13, 17]);
+        assert!(process.links().is_empty());
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub type Reference = u64;
 #[derive(Debug, Default)]
 pub struct MonitorSet {
     next_reference: Reference,
-    monitors: HashMap<Reference, Monitor>,
+    monitors: Vec<Monitor>,
     by_target: HashMap<u64, Vec<Reference>>,
     dead: HashMap<u64, ExitReason>,
 }
@@ -45,7 +45,7 @@ impl MonitorSet {
         let monitor = Monitor::new(reference, watcher.pid(), target.pid());
         watcher.add_monitor(monitor);
         target.add_monitor(monitor);
-        self.monitors.insert(reference, monitor);
+        self.monitors.push(monitor);
         self.by_target
             .entry(target.pid())
             .or_default()
@@ -65,7 +65,7 @@ impl MonitorSet {
 
         let monitor = Monitor::new(reference, watcher.pid(), target_pid);
         watcher.add_monitor(monitor);
-        self.monitors.insert(reference, monitor);
+        self.monitors.push(monitor);
         self.by_target
             .entry(target_pid)
             .or_default()
@@ -79,7 +79,7 @@ impl MonitorSet {
         reference: Reference,
         processes: &mut [&mut Process],
     ) -> Option<Monitor> {
-        let monitor = self.monitors.remove(&reference)?;
+        let monitor = self.remove_monitor_entry(reference)?;
         if let Some(references) = self.by_target.get_mut(&monitor.target()) {
             references.retain(|seen| *seen != reference);
             if references.is_empty() {
@@ -102,7 +102,7 @@ impl MonitorSet {
         self.record_dead(target_pid, reason);
         let references = self.by_target.remove(&target_pid).unwrap_or_default();
         for reference in references {
-            if let Some(monitor) = self.monitors.remove(&reference) {
+            if let Some(monitor) = self.remove_monitor_entry(reference) {
                 if let Some(index) = process_index_by_pid(processes, monitor.watcher()) {
                     let watcher = &mut processes[index];
                     watcher.remove_monitor(reference);
@@ -130,7 +130,7 @@ impl MonitorSet {
         let references = self.by_target.remove(&target_pid).unwrap_or_default();
         let mut watchers = Vec::with_capacity(references.len());
         for reference in references {
-            if let Some(monitor) = self.monitors.remove(&reference) {
+            if let Some(monitor) = self.remove_monitor_entry(reference) {
                 watchers.push((monitor.watcher(), reference));
             }
         }
@@ -146,7 +146,10 @@ impl MonitorSet {
     /// Look up a monitor by reference without removing it.
     #[must_use]
     pub fn get_monitor(&self, reference: Reference) -> Option<crate::process::Monitor> {
-        self.monitors.get(&reference).copied()
+        self.monitors
+            .iter()
+            .find(|monitor| monitor.reference() == reference)
+            .copied()
     }
 
     /// Register a pre-built monitor entry. Used by the scheduler's supervision
@@ -158,7 +161,10 @@ impl MonitorSet {
         monitor: crate::process::Monitor,
         target_pid: u64,
     ) {
-        self.monitors.insert(reference, monitor);
+        if self.get_monitor(reference).is_some() {
+            self.remove_monitor(reference);
+        }
+        self.monitors.push(monitor);
         self.by_target
             .entry(target_pid)
             .or_default()
@@ -168,7 +174,7 @@ impl MonitorSet {
     /// Remove a monitor entry by reference. Used by the scheduler's supervision
     /// facility for demonitor operations.
     pub fn remove_monitor(&mut self, reference: Reference) {
-        if let Some(monitor) = self.monitors.remove(&reference)
+        if let Some(monitor) = self.remove_monitor_entry(reference)
             && let Some(references) = self.by_target.get_mut(&monitor.target())
         {
             references.retain(|r| *r != reference);
@@ -176,6 +182,14 @@ impl MonitorSet {
                 self.by_target.remove(&monitor.target());
             }
         }
+    }
+
+    fn remove_monitor_entry(&mut self, reference: Reference) -> Option<Monitor> {
+        let index = self
+            .monitors
+            .iter()
+            .position(|monitor| monitor.reference() == reference)?;
+        Some(self.monitors.remove(index))
     }
 
     fn allocate_reference(&mut self) -> Reference {
@@ -227,7 +241,10 @@ fn enqueue_down_message(
         Term::pid(target_pid),
         reason.as_term(),
     ];
-    let words = watcher.heap_mut().alloc(1 + elements.len()).map_err(|_| ())?;
+    let words = watcher
+        .heap_mut()
+        .alloc(1 + elements.len())
+        .map_err(|_| ())?;
     // SAFETY: `alloc` returned a live region with exactly the requested number
     // of words in the watcher heap, used only to initialize this tuple.
     let words = unsafe { std::slice::from_raw_parts_mut(words, 1 + elements.len()) };
@@ -293,6 +310,48 @@ mod tests {
         assert_eq!(tuple.get(2), Some(Term::atom(Atom::PROCESS)));
         assert_eq!(tuple.get(3).and_then(Term::as_pid), Some(2));
         assert_eq!(tuple.get(4), Some(Term::atom(Atom::ERROR)));
+    }
+
+    #[test]
+    fn collect_watchers_preserves_monitor_insertion_order() {
+        let mut monitors = MonitorSet::new();
+        let mut first_watcher = running(1);
+        let mut second_watcher = running(2);
+        let mut target = running(3);
+        let first = monitors.monitor(&mut first_watcher, &mut target);
+        let second = monitors.monitor(&mut second_watcher, &mut target);
+
+        let watchers = monitors.collect_watchers_and_remove(target.pid(), ExitReason::Error);
+
+        assert_eq!(watchers, vec![(1, first), (2, second)]);
+    }
+
+    #[test]
+    fn demonitor_preserves_remaining_monitor_order() {
+        let mut monitors = MonitorSet::new();
+        let mut first_watcher = running(1);
+        let mut removed_watcher = running(2);
+        let mut third_watcher = running(3);
+        let mut target = running(4);
+        let first = monitors.monitor(&mut first_watcher, &mut target);
+        let removed = monitors.monitor(&mut removed_watcher, &mut target);
+        let third = monitors.monitor(&mut third_watcher, &mut target);
+
+        assert_eq!(
+            monitors.demonitor(
+                removed,
+                &mut [
+                    &mut first_watcher,
+                    &mut removed_watcher,
+                    &mut third_watcher,
+                    &mut target
+                ],
+            ),
+            Some(Monitor::new(removed, 2, 4))
+        );
+        let watchers = monitors.collect_watchers_and_remove(target.pid(), ExitReason::Error);
+
+        assert_eq!(watchers, vec![(1, first), (3, third)]);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! Extracted from `mod.rs` to keep per-file line counts within the project
 //! constraint (500 lines).
 
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use crate::atom::Atom;
 use crate::namespace::NamespaceId;
@@ -42,12 +42,11 @@ pub(super) fn propagate_exit(shared: &SharedState, pid: u64, reason: ExitReason)
     // The signal sent through links is always `terminal_reason`: Kill becomes
     // Killed, matching BEAM semantics where only a direct exit signal is
     // untrappable — propagation through links always uses the terminal reason.
-    let mut worklist: Vec<(u64, u64, ExitReason)> = linked_pids
+    let mut worklist: VecDeque<(u64, u64, ExitReason)> = linked_pids
         .into_iter()
         .map(|linked_pid| (pid, linked_pid, terminal_reason))
         .collect();
-
-    while let Some((source_pid, target_pid, signal_reason)) = worklist.pop() {
+    while let Some((source_pid, target_pid, signal_reason)) = worklist.pop_front() {
         let cascade = process_exit_signal(shared, source_pid, target_pid, signal_reason);
         worklist.extend(cascade);
     }
@@ -59,7 +58,7 @@ fn take_links_from(shared: &SharedState, pid: u64) -> Vec<u64> {
     if let Some(entry) = shared.process_bodies.get(&pid) {
         let mut slot = lock_or_recover(&entry);
         if let Some(ScheduledProcess(process)) = slot.as_mut() {
-            return process.take_links().into_iter().collect();
+            return process.take_links();
         }
     }
     Vec::new()
