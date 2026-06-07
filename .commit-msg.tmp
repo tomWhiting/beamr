@@ -1,1 +1,1 @@
-harden(beamr): strengthen ETS registry and copy coverage
+harden(beamr): restore TermKey debug support without AtomTable Debug bound

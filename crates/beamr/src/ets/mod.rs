@@ -2,8 +2,10 @@
 
 pub mod bag;
 pub mod copy;
+pub mod ordered_set;
 pub mod set;
 pub mod table;
+pub mod term_key;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,10 +18,12 @@ use crate::term::boxed::Tuple;
 
 pub use bag::{EtsBag, EtsDuplicateBag};
 pub use copy::{OwnedTerm, copy_term_to_ets, copy_term_to_heap};
+pub use ordered_set::EtsOrderedSet;
 pub use set::EtsSet;
 pub use table::{
     AccessOp, EtsError, EtsTable, EtsTableId, EtsTableMetadata, EtsTableType, Protection,
 };
+pub use term_key::TermKey;
 
 pub(crate) fn tuple_key(tuple_term: Term, keypos: usize) -> Result<Term, EtsError> {
     let tuple = Tuple::new(tuple_term).ok_or(EtsError::Badarg)?;
