@@ -464,7 +464,7 @@ fn socket_addr_to_raw(addr: SocketAddr) -> (libc::sockaddr_storage, libc::sockle
                 sin_family: libc::AF_INET as libc::sa_family_t,
                 sin_port: addr.port().to_be(),
                 sin_addr: libc::in_addr {
-                    s_addr: u32::from_ne_bytes(addr.ip().octets()).to_be(),
+                    s_addr: u32::from_ne_bytes(addr.ip().octets()),
                 },
                 sin_zero: [0; 8],
             };

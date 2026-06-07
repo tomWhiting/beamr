@@ -40,7 +40,7 @@ pub fn create_ring(config: RingConfig) -> Box<dyn CompletionRing> {
     {
         match try_create_ring(config) {
             Ok(ring) => ring,
-            Err(error) => Box::new(ring::FailedRing::new(error.kind())),
+            Err(error) => Box::new(ring::FailedRing::new(error)),
         }
     }
 

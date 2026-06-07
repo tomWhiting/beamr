@@ -1,9 +1,15 @@
 //! Backend-neutral completion ring types shared by I/O lifecycle code.
 
+#[cfg(target_os = "linux")]
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// I/O operation accepted by a completion ring.
@@ -128,14 +134,20 @@ pub trait CompletionRing: Send + Sync {
 /// Ring used only when a requested platform backend cannot be constructed.
 #[cfg(target_os = "linux")]
 pub(crate) struct FailedRing {
-    next_op_id: std::sync::atomic::AtomicU64,
+    next_op_id: AtomicU64,
+    error_kind: io::ErrorKind,
+    error_message: String,
+    completions: Mutex<VecDeque<IoCompletion>>,
 }
 
 #[cfg(target_os = "linux")]
 impl FailedRing {
-    pub(crate) fn new(_error: io::ErrorKind) -> Self {
+    pub(crate) fn new(error: io::Error) -> Self {
         Self {
-            next_op_id: std::sync::atomic::AtomicU64::new(1),
+            next_op_id: AtomicU64::new(1),
+            error_kind: error.kind(),
+            error_message: error.to_string(),
+            completions: Mutex::new(VecDeque::new()),
         }
     }
 }
@@ -143,12 +155,28 @@ impl FailedRing {
 #[cfg(target_os = "linux")]
 impl CompletionRing for FailedRing {
     fn submit(&self, _op: IoOp) -> u64 {
-        self.next_op_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
+        let completion = IoCompletion {
+            op_id,
+            result: Err(io::Error::new(
+                self.error_kind,
+                format!(
+                    "completion ring backend unavailable: {}",
+                    self.error_message
+                ),
+            )),
+        };
+        if let Ok(mut completions) = self.completions.lock() {
+            completions.push_back(completion);
+        }
+        op_id
     }
 
     fn poll_completions(&self, _timeout: Duration) -> Vec<IoCompletion> {
-        Vec::new()
+        self.completions
+            .lock()
+            .map(|mut completions| completions.drain(..).collect())
+            .unwrap_or_default()
     }
 
     fn pending_count(&self) -> usize {
