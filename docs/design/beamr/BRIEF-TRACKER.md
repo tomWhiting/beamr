@@ -1,6 +1,6 @@
 # beamr Brief Tracker
 
-Current version: **0.3.15** | Tests: **724** | Published: 2026-06-07
+Current version: **0.3.15** | Tests: **726** | Published: 2026-06-07
 
 ## Team
 
@@ -103,28 +103,28 @@ Bug fixes, hardening, namespace isolation, and memory safety.
 | 0.3.14 | Three additional body-taken races (spawn_link, take_links, pending_links) |
 | 0.3.15 | ProcessSlot sentinel, namespace isolation, capability-gated imports |
 
-## Phase 1 -- Critical Opcode/BIF Gaps (BRIEF WRITING)
+## Phase 1 -- Critical Opcode/BIF Gaps (COMPLETE)
 
-These block real Erlang/OTP code from running on beamr.
+All 16 briefs written, reviewed, and cleared for dispatch.
 
 | Brief | Title | Priority | Assign | Status |
 |-------|-------|----------|--------|--------|
-| B-056 | get_list opcode -- list destructuring | CRITICAL | Dave | **Reviewed** |
-| B-057 | trim opcode -- stack frame trimming in tail calls | CRITICAL | Dave | **Reviewed** |
-| B-058 | swap opcode -- register swap (OTP 27+) | CRITICAL | Dave | **Reviewed** |
-| B-059 | catch/catch_end -- traditional exception handling | CRITICAL | Adam | At Larry |
-| B-060 | erlang:throw/1 -- throw exception type | CRITICAL | Dave | **Reviewed** |
-| B-061 | build_stacktrace -- stack trace construction | HIGH | Adam | At Larry |
-| B-062 | raw_raise -- re-raise exceptions with class/reason/trace | HIGH | Adam | At Larry |
-| B-063 | is_tagged_tuple -- record pattern matching | HIGH | Dave | **Reviewed** |
-| B-064 | Float arithmetic instructions (7 opcodes: 96-102) | HIGH | Dave | **Reviewed** |
-| B-065 | update_record -- record update syntax | HIGH | Dave | **Reviewed** |
-| B-066 | Numeric equality and ordering (==, /=, >, =<) | HIGH | Adam | Drafted |
-| B-067 | Process dictionary (put/get/erase) | HIGH | Adam | Drafted |
-| B-068 | Binary ops expansion (bs_skip, bs_get_float, UTF, bs_match) | HIGH | Adam | Drafted |
-| B-069 | Tail-call BIF return fix (call_ext_only + Native) | MEDIUM | Dave | **Reviewed** |
-| B-070 | recv_marker opcodes (173-176, OTP 24+ selective receive) | MEDIUM | Dave | **Reviewed** |
-| B-071 | Scheduler module splitting (mod.rs over 500 lines) | MEDIUM | Adam | Drafted |
+| B-056 | get_list opcode -- list destructuring | CRITICAL | Dave | **Ready** |
+| B-057 | trim opcode -- stack frame trimming in tail calls | CRITICAL | Dave | **Ready** |
+| B-058 | swap opcode -- register swap (OTP 27+) | CRITICAL | Dave | **Ready** |
+| B-059 | catch/catch_end -- traditional exception handling | CRITICAL | Adam | **Ready** |
+| B-060 | erlang:throw/1 -- throw exception type | CRITICAL | Dave | **Ready** |
+| B-061 | build_stacktrace -- stack trace construction | HIGH | Adam | **Ready** |
+| B-062 | raw_raise -- re-raise exceptions with class/reason/trace | HIGH | Adam | **Ready** |
+| B-063 | is_tagged_tuple -- record pattern matching | HIGH | Dave | **Ready** |
+| B-064 | Float arithmetic instructions (7 opcodes: 96-102) | HIGH | Dave | **Ready** |
+| B-065 | update_record -- record update syntax | HIGH | Dave | **Ready** |
+| B-066 | Numeric equality and ordering (==, /=, >, =<) | HIGH | Adam | **Ready** |
+| B-067 | Process dictionary (put/get/erase) | HIGH | Adam | **Ready** |
+| B-068 | Binary ops expansion (bs_skip, bs_get_float, UTF, bs_match) | HIGH | Adam | **Ready** |
+| B-069 | Tail-call BIF return fix (call_ext_only + Native) | MEDIUM | Dave | **Ready** |
+| B-070 | recv_marker opcodes (173-176, OTP 24+ selective receive) | MEDIUM | Dave | **Ready** |
+| B-071 | Scheduler module splitting (mod.rs over 500 lines) | MEDIUM | Adam | **Ready** |
 
 ## Phase 2 -- Platform (NOT STARTED)
 
@@ -144,29 +144,29 @@ Makes OTP libraries work. 36 briefs. Recommended order: refc binaries first (man
 
 | Brief | Title | Depends on |
 |-------|-------|------------|
-| B-077 | Dirty scheduler thread pools (CPU + IO pools, work queues) | -- |
-| B-078 | Dirty NIF dispatch and process migration (suspend, execute, resume) | B-077 |
-| B-079 | Dirty NIF registration API and scheduling wrapper | B-078 |
+| B-077 | Dirty scheduler thread pools (CPU + IO pools, work queues) | -- | At Larry |
+| B-078 | Dirty NIF dispatch and process migration (suspend, execute, resume) | B-077 | At Larry |
+| B-079 | Dirty NIF registration API and scheduling wrapper | B-078 | At Larry |
 
 ### 2c. Process Features (B-080 -- B-085)
 
 | Brief | Title | Depends on |
 |-------|-------|------------|
-| B-080 | process_info/1,2 BIF (all process attribute items) | -- |
-| B-081 | system_info/1 BIF (VM introspection keys) | -- |
-| B-082 | Group leader read/write BIFs (erlang:group_leader/0,2) | -- |
-| B-083 | Process priorities (low/normal/high/max scheduling) | -- |
-| B-084 | spawn_monitor/1,3 (atomic spawn + monitor) | -- |
-| B-085 | spawn_opt/2,4 (link, monitor, priority, heap options) | B-083 |
+| B-080 | process_info/1,2 BIF (all process attribute items) | -- | At Larry |
+| B-081 | system_info/1 BIF (VM introspection keys) | -- | At Larry |
+| B-082 | Group leader read/write BIFs (erlang:group_leader/0,2) | -- | At Larry |
+| B-083 | Process priorities (low/normal/high/max scheduling) | -- | At Larry |
+| B-084 | spawn_monitor/1,3 (atomic spawn + monitor) | -- | At Larry |
+| B-085 | spawn_opt/2,4 (link, monitor, priority, heap options) | B-083 | At Larry |
 
 ### 2d. External Term Format (B-086 -- B-089)
 
 | Brief | Title | Depends on |
 |-------|-------|------------|
-| B-086 | term_to_binary encoder (all term types to ETF wire format) | -- |
-| B-087 | binary_to_term decoder (ETF to runtime Terms on process heap) | -- |
-| B-088 | term_to_binary options and compression (zlib, safe mode) | B-086, B-087 |
-| B-089 | term_to_iovec scatter-gather encoding (avoid copying refc binaries) | B-086, B-072 |
+| B-086 | term_to_binary encoder (all term types to ETF wire format) | -- | At Larry |
+| B-087 | binary_to_term decoder (ETF to runtime Terms on process heap) | -- | At Larry |
+| B-088 | term_to_binary options and compression (zlib, safe mode) | B-086, B-087 | At Larry |
+| B-089 | term_to_iovec scatter-gather encoding (avoid copying refc binaries) | B-086, B-072 | At Larry |
 
 ### 2e. ETS (B-090 -- B-099)
 
