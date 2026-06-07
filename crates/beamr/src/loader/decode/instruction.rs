@@ -181,6 +181,19 @@ pub enum Instruction {
         fail: Operand,
         timeout: Operand,
     },
+    RecvMarkerReserve {
+        dest: Operand,
+    },
+    RecvMarkerBind {
+        marker: Operand,
+        label: Operand,
+    },
+    RecvMarkerClear {
+        marker: Operand,
+    },
+    RecvMarkerUse {
+        marker: Operand,
+    },
     Catch {
         destination: Operand,
         label: Operand,
@@ -360,6 +373,10 @@ pub(crate) fn instruction_opcode(instruction: &Instruction) -> Option<u8> {
         Instruction::Fmul { .. } => Some(100),
         Instruction::Fdiv { .. } => Some(101),
         Instruction::Fnegate { .. } => Some(102),
+        Instruction::RecvMarkerReserve { .. } => Some(173),
+        Instruction::RecvMarkerBind { .. } => Some(174),
+        Instruction::RecvMarkerClear { .. } => Some(175),
+        Instruction::RecvMarkerUse { .. } => Some(176),
         Instruction::IsTaggedTuple { .. } => Some(159),
         Instruction::Generic { opcode, .. } => Some(*opcode),
         _ => None,

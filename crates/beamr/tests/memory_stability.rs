@@ -47,11 +47,8 @@ fn bif_and_literal_heavy_workload_does_not_grow_monotonically() {
 }
 
 fn workload_module(atom_table: &AtomTable) -> Module {
-    let erlang = atom_table.intern("erlang");
     let rand = atom_table.intern("rand");
     let uniform = atom_table.intern("uniform");
-    let self_atom = atom_table.intern("self");
-    let send = atom_table.intern("send");
     let literal_atom = atom_table.intern("literal_payload");
     let literals = vec![Literal::Tuple(vec![
         Literal::Atom(literal_atom),
@@ -93,14 +90,6 @@ fn workload_module(atom_table: &AtomTable) -> Module {
             tail: Operand::Atom(None),
             destination: Operand::X(1),
         });
-        code.push(Instruction::CallExt {
-            arity: Operand::Unsigned(0),
-            import: Operand::Unsigned(1),
-        });
-        code.push(Instruction::CallExt {
-            arity: Operand::Unsigned(2),
-            import: Operand::Unsigned(2),
-        });
     }
 
     code.push(Instruction::Move {
@@ -137,20 +126,6 @@ fn workload_module(atom_table: &AtomTable) -> Module {
                 0,
                 beamr::native::stdlib_stubs::bif_rand_uniform,
                 Capability::Entropy,
-            ),
-            native_import(
-                erlang,
-                self_atom,
-                0,
-                beamr::native::process_bifs::bif_self,
-                Capability::Pure,
-            ),
-            native_import(
-                erlang,
-                send,
-                2,
-                beamr::native::gate3_bifs::bif_send,
-                Capability::Pure,
             ),
         ],
         lambdas: Vec::new(),

@@ -114,20 +114,15 @@ pub fn bif_element(args: &[Term], _context: &mut ProcessContext) -> Result<Term,
 /// erlang:send/2 — the BIF form of `!`. Delivers a message to the target
 /// process's mailbox.
 ///
-/// Since BIFs only have ProcessContext (no direct process table access),
-/// message delivery routes through the supervision facility's process
-/// liveness check as a proxy. For now, if no facility is available, the
-/// message is silently dropped — matching BEAM's behavior for sends to
-/// dead processes. Returns Message.
-pub fn bif_send(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+/// Delivery to the attached current process is supported for self-send;
+/// sends to other processes are otherwise silently dropped for now. Returns
+/// Message, matching BEAM's return-value semantics.
+pub fn bif_send(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [pid_term, message_term] = args else {
         return Err(badarg());
     };
-    // Validate that the first argument is a pid.
-    pid_term.as_pid().ok_or_else(badarg)?;
-    // Message delivery requires mailbox access which is not yet available
-    // through ProcessContext. Return the message (BEAM semantics: send/2
-    // always returns the message, even for dead targets).
+    let target = pid_term.as_pid().ok_or_else(badarg)?;
+    let _ = context.send_to_attached_self(target, *message_term);
     Ok(*message_term)
 }
 

@@ -435,6 +435,11 @@ fn instruction_operands(instruction: &Instruction) -> Vec<&Operand> {
         Instruction::LoopRec { fail, destination } => vec![fail, destination],
         Instruction::LoopRecEnd { fail } | Instruction::Wait { fail } => vec![fail],
         Instruction::WaitTimeout { fail, timeout } => vec![fail, timeout],
+        Instruction::RecvMarkerReserve { dest } => vec![dest],
+        Instruction::RecvMarkerBind { marker, label } => vec![marker, label],
+        Instruction::RecvMarkerClear { marker } | Instruction::RecvMarkerUse { marker } => {
+            vec![marker]
+        }
         Instruction::Catch { destination, label } | Instruction::Try { destination, label } => {
             vec![destination, label]
         }

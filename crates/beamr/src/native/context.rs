@@ -219,6 +219,18 @@ impl<'process> ProcessContext<'process> {
         self.process.as_ref().map(|process| process.heap())
     }
 
+    /// Enqueue a message to the attached calling process when `target` is its pid.
+    pub fn send_to_attached_self(&mut self, target: u64, message: Term) -> bool {
+        let Some(process) = self.process.as_deref_mut() else {
+            return false;
+        };
+        if process.pid() != target {
+            return false;
+        }
+        process.mailbox_mut().push_owned(message);
+        true
+    }
+
     /// Ensure the calling process has at least `words` nursery words available.
     pub fn ensure_heap_space(&mut self, words: usize) -> Result<(), Term> {
         let Some(process) = self.process.as_deref_mut() else {

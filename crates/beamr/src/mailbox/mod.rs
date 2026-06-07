@@ -50,6 +50,7 @@ pub struct Mailbox {
     arrival: Arc<SegQueue<Term>>,
     scan_list: VecDeque<Term>,
     save_pointer: usize,
+    recv_marker: Option<(Term, usize)>,
 }
 
 impl Mailbox {
@@ -112,6 +113,52 @@ impl Mailbox {
     /// Reset selective receive state after a timeout or successful match.
     pub(crate) fn reset_save_pointer(&mut self) {
         self.save_pointer = 0;
+    }
+
+    /// Drain arrivals and return a marker for the current end of the mailbox scan list.
+    pub(crate) fn reserve_save_marker(&mut self) -> usize {
+        self.drain_arrival();
+        self.scan_list.len()
+    }
+
+    /// Drain arrivals and clamp the selective-receive save pointer to `marker`.
+    pub(crate) fn set_save_pointer(&mut self, marker: usize) {
+        self.drain_arrival();
+        self.save_pointer = marker.min(self.scan_list.len());
+    }
+
+    /// Return the current selective-receive save pointer.
+    #[cfg(test)]
+    pub(crate) fn save_pointer_marker(&self) -> usize {
+        self.save_pointer
+    }
+
+    /// Bind an OTP receive marker key to a saved mailbox position.
+    pub(crate) fn bind_recv_marker(&mut self, key: Term, marker: usize) {
+        self.drain_arrival();
+        self.recv_marker = Some((key, marker.min(self.scan_list.len())));
+    }
+
+    /// Use a bound OTP receive marker key, returning whether it was found.
+    pub(crate) fn use_recv_marker(&mut self, key: Term) -> bool {
+        let Some((bound_key, marker)) = self.recv_marker else {
+            return false;
+        };
+        if bound_key != key {
+            return false;
+        }
+        self.set_save_pointer(marker);
+        true
+    }
+
+    /// Clear a bound OTP receive marker key.
+    pub(crate) fn clear_recv_marker(&mut self, key: Term) {
+        if self
+            .recv_marker
+            .is_some_and(|(bound_key, _)| bound_key == key)
+        {
+            self.recv_marker = None;
+        }
     }
 
     /// Enqueue a term already owned by this process.

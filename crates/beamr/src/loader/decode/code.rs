@@ -377,6 +377,19 @@ fn decode_instruction(
         172 => Instruction::InitYregs {
             registers: operands[0].clone(),
         },
+        173 => Instruction::RecvMarkerReserve {
+            dest: operands[0].clone(),
+        },
+        174 => Instruction::RecvMarkerBind {
+            marker: operands[0].clone(),
+            label: operands[1].clone(),
+        },
+        175 => Instruction::RecvMarkerClear {
+            marker: operands[0].clone(),
+        },
+        176 => Instruction::RecvMarkerUse {
+            marker: operands[0].clone(),
+        },
         177 => binary_op(BinaryOp::BsCreateBin, operands),
         178 => Instruction::CallFun2 {
             function: operands[0].clone(),
@@ -567,6 +580,69 @@ mod tests {
                 arity: Operand::Unsigned(2),
                 tag: Operand::Atom(Some(Atom::OK)),
             }]
+        );
+    }
+
+    #[test]
+    fn opcodes_173_to_176_decode_to_recv_marker_instructions() {
+        let instructions = decode_instructions(
+            &[
+                173, 0x03, // recv_marker_reserve X0
+                174, 0x03, 0x75, // recv_marker_bind X0, label 7
+                175, 0x13, // recv_marker_clear X1
+                176, 0x13, // recv_marker_use X1
+            ],
+            &[],
+            &[],
+        )
+        .expect("decode recv_marker opcodes");
+
+        assert_eq!(
+            instructions,
+            vec![
+                Instruction::RecvMarkerReserve {
+                    dest: Operand::X(0),
+                },
+                Instruction::RecvMarkerBind {
+                    marker: Operand::X(0),
+                    label: Operand::Label(7),
+                },
+                Instruction::RecvMarkerClear {
+                    marker: Operand::X(1),
+                },
+                Instruction::RecvMarkerUse {
+                    marker: Operand::X(1),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn recv_marker_instruction_opcodes_are_available_for_opcode_max_validation() {
+        assert_eq!(
+            instruction_opcode(&Instruction::RecvMarkerReserve {
+                dest: Operand::X(0)
+            }),
+            Some(173)
+        );
+        assert_eq!(
+            instruction_opcode(&Instruction::RecvMarkerBind {
+                marker: Operand::X(0),
+                label: Operand::Label(7),
+            }),
+            Some(174)
+        );
+        assert_eq!(
+            instruction_opcode(&Instruction::RecvMarkerClear {
+                marker: Operand::X(0)
+            }),
+            Some(175)
+        );
+        assert_eq!(
+            instruction_opcode(&Instruction::RecvMarkerUse {
+                marker: Operand::X(0)
+            }),
+            Some(176)
         );
     }
 }
