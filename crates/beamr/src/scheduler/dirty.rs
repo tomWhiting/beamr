@@ -91,7 +91,7 @@ pub struct DirtyJob {
 unsafe impl Send for DirtyJob {}
 
 enum DirtyMessage {
-    Run(DirtyJob),
+    Run(Box<DirtyJob>),
     Shutdown,
 }
 
@@ -168,7 +168,7 @@ impl DirtyPool {
         if self.shutdown.load(Ordering::Acquire) {
             return;
         }
-        let _ = self.sender.send(DirtyMessage::Run(job));
+        let _ = self.sender.send(DirtyMessage::Run(Box::new(job)));
     }
 
     /// Signals all dirty workers to stop and joins them.
