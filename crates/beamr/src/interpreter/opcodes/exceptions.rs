@@ -39,7 +39,9 @@ pub fn try_end(process: &mut Process, source: &Operand) -> Result<InstructionOut
 
 pub fn catch_end(process: &mut Process, source: &Operand) -> Result<InstructionOutcome, ExecError> {
     let destination = y_register(source)?;
-    let _ = process.pop_exception_handler();
+    if process.current_exception().is_none() {
+        let _ = process.pop_exception_handler();
+    }
     process.set_current_exception(None);
     process
         .stack_mut()
@@ -498,6 +500,7 @@ mod tests {
         let code = label20_module();
         let mut process = Process::new(1, 32);
         push_frame(&mut process, &code);
+        try_(&mut process, &code, &Operand::Y(0), &Operand::Label(20)).expect("outer try");
         catch_(&mut process, &code, &Operand::Y(0), &Operand::Label(20)).expect("catch");
         raise_exception(
             &mut process,
@@ -510,6 +513,7 @@ mod tests {
             Ok(InstructionOutcome::Continue)
         );
         assert_eq!(process.current_exception(), None);
+        assert_eq!(process.exception_handler_count(), 1);
         assert_eq!(process.stack().y_reg(0), Ok(Term::NIL));
     }
 }

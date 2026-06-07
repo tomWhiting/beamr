@@ -1,1 +1,1 @@
-feat(beamr): implement catch exception handlers
+review: harden B-059 catch exception handling
