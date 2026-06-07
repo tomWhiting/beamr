@@ -423,6 +423,7 @@ fn process_info_reads_executing_process_metadata() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            ..SchedulerConfig::default()
         },
         Arc::clone(&registry),
     )
