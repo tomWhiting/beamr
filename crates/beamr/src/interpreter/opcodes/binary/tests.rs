@@ -1,4 +1,6 @@
 use super::*;
+use super::construction::{BinaryBuilder, bs_put_binary, bs_put_integer, finalize_builder};
+use super::matching::{Endian, MatchContext, SegmentFlags, decode_integer};
 use crate::atom::Atom;
 use crate::loader::{Instruction, Literal};
 use crate::module::Module;
