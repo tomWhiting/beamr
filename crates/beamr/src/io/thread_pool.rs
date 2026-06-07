@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::io::ring::{CompletionRing, IoCompletion, IoOp, IoResult, StatxData};
 
@@ -101,11 +101,8 @@ impl CompletionRing for ThreadPoolRing {
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return completions,
         }
 
-        loop {
-            match self.completion_receiver.try_recv() {
-                Ok(completion) => completions.push(completion),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(completion) = self.completion_receiver.try_recv() {
+            completions.push(completion);
         }
         completions
     }

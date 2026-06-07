@@ -154,11 +154,8 @@ impl CompletionRing for IoUringRing {
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return completions,
         }
 
-        loop {
-            match self.completion_receiver.try_recv() {
-                Ok(completion) => completions.push(completion),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(completion) = self.completion_receiver.try_recv() {
+            completions.push(completion);
         }
         completions
     }

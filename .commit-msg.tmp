@@ -1,1 +1,1 @@
-fix(beamr): correct fallback libc type casts
+fix(beamr): satisfy completion drain clippy lint
