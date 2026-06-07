@@ -1,1 +1,1 @@
-feat(beamr): add fd resource boxed term lifecycle
+fix(beamr): remove stale flat io module for fd resources
