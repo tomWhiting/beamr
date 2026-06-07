@@ -309,9 +309,13 @@ fn proc_bin_survives_minor_gc_as_leaf_with_shared_bytes() {
     let mut process = Process::new(1, 32);
     let proc_bin = alloc_proc_bin(&mut process, &shared);
     process.set_x_reg(0, proc_bin);
+    assert_eq!(shared.ref_count(), 2);
 
     collect_minor(&mut process).expect("minor GC succeeds");
 
+    // B-072's GC stub retains the copied ProcBin's Arc reference; the source
+    // nursery reference is intentionally leaked until B-075 adds ProcBin sweep.
+    assert_eq!(shared.ref_count(), 3);
     let proc_bin = ProcBin::new(process.x_reg(0)).expect("proc bin root");
     assert_eq!(proc_bin.len(), 100 * 1024);
     assert_eq!(proc_bin.as_bytes(), shared.as_bytes());
