@@ -7,6 +7,7 @@ use crate::{
             write_bigint, write_closure, write_cons, write_float, write_map, write_reference,
             write_tuple,
         },
+        shared_binary::{SharedBinary, write_proc_bin},
     },
 };
 
@@ -246,6 +247,7 @@ fn exact_equality_covers_boxed_numeric_reference_fun_map_and_binary_terms() {
     let mut closure_b_heap = [0_u64; 8];
     let mut bin_a_heap = [0_u64; 3];
     let mut bin_b_heap = [0_u64; 3];
+    let mut proc_bin_heap = [0_u64; 3];
 
     let float_a = write_float(&mut float_a_heap, 2.5).unwrap();
     let float_b = write_float(&mut float_b_heap, 2.5).unwrap();
@@ -275,12 +277,15 @@ fn exact_equality_covers_boxed_numeric_reference_fun_map_and_binary_terms() {
     .unwrap();
     let bin_a = write_binary(&mut bin_a_heap, b"ab").unwrap();
     let bin_b = write_binary(&mut bin_b_heap, b"ab").unwrap();
+    let shared_bin = SharedBinary::new(b"ab".to_vec());
+    let proc_bin = write_proc_bin(&mut proc_bin_heap, &shared_bin).unwrap();
 
     assert_eq!(float_a, float_b);
     assert_eq!(bigint_a, bigint_b);
     assert_eq!(ref_a, ref_b);
     assert_eq!(closure_a, closure_b);
     assert_eq!(bin_a, bin_b);
+    assert_eq!(bin_a, proc_bin);
 }
 
 #[test]
@@ -415,13 +420,13 @@ fn sorting_atom_terms_is_stable_across_intern_sequences() {
     let reverse_table = AtomTable::new();
     intern_atoms(&reverse_table, &["zebra", "mango", "apple"]);
     let (apple_reverse, mango_reverse, zebra_reverse) = ordered_atom_terms(&reverse_table);
-    let mut reverse_terms = vec![zebra_reverse, apple_reverse, mango_reverse];
+    let mut reverse_terms = [zebra_reverse, apple_reverse, mango_reverse];
     reverse_terms.sort_by(|left, right| cmp(*left, *right, &reverse_table));
 
     let forward_table = AtomTable::new();
     intern_atoms(&forward_table, &["apple", "mango", "zebra"]);
     let (apple_forward, mango_forward, zebra_forward) = ordered_atom_terms(&forward_table);
-    let mut forward_terms = vec![zebra_forward, apple_forward, mango_forward];
+    let mut forward_terms = [zebra_forward, apple_forward, mango_forward];
     forward_terms.sort_by(|left, right| cmp(*left, *right, &forward_table));
 
     let reverse_names: Vec<_> = reverse_terms

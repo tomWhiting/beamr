@@ -7,7 +7,7 @@
 
 mod accessors;
 
-pub use accessors::{BigInt, Closure, Cons, Float, Map, Reference, Tuple};
+pub use accessors::{BigInt, Closure, Cons, Float, Map, ProcBin, Reference, Tuple};
 
 use crate::{atom::Atom, term::Term};
 
@@ -28,6 +28,7 @@ pub enum BoxedTag {
     Binary = 0x16,
     BinaryBuilder = 0x17,
     MatchContext = 0x18,
+    ProcBin = 0x19,
 }
 
 impl BoxedTag {
@@ -42,6 +43,7 @@ impl BoxedTag {
             bits if bits == Self::Binary as u64 => Some(Self::Binary),
             bits if bits == Self::BinaryBuilder as u64 => Some(Self::BinaryBuilder),
             bits if bits == Self::MatchContext as u64 => Some(Self::MatchContext),
+            bits if bits == Self::ProcBin as u64 => Some(Self::ProcBin),
             _ => None,
         }
     }
@@ -201,6 +203,7 @@ mod tests {
             BoxedTag::Binary,
             BoxedTag::BinaryBuilder,
             BoxedTag::MatchContext,
+            BoxedTag::ProcBin,
         ];
 
         for (index, tag) in tags.iter().copied().enumerate() {

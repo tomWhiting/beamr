@@ -1,7 +1,7 @@
 //! Borrowed accessor structs for reading boxed term layouts.
 
 use crate::atom::Atom;
-use crate::term::Term;
+use crate::term::{Term, shared_binary::SharedBinary};
 
 use super::{BoxedHeader, BoxedTag};
 
@@ -237,6 +237,51 @@ impl Map {
     fn word(self, offset: usize) -> u64 {
         // SAFETY: see Tuple::word.
         unsafe { *self.ptr.add(offset) }
+    }
+}
+
+/// Borrowed accessor for an off-heap reference-counted binary.
+#[derive(Copy, Clone, Debug)]
+pub struct ProcBin {
+    ptr: *const u64,
+}
+
+impl ProcBin {
+    pub fn new(term: Term) -> Option<Self> {
+        let ptr = header_ptr(term, BoxedTag::ProcBin)?;
+        // SAFETY: `header_ptr` returned a boxed ProcBin header pointer.
+        let header = unsafe { *ptr };
+        if BoxedHeader::size(header) != 2 {
+            return None;
+        }
+        // SAFETY: validated ProcBin layout has two payload words; word two is
+        // the raw Arc pointer and must be present/non-null before access.
+        if unsafe { *ptr.add(2) } == 0 {
+            return None;
+        }
+
+        Some(Self { ptr })
+    }
+
+    pub fn as_bytes(self) -> &'static [u8] {
+        SharedBinary::bytes_from_raw_word(self.arc_ptr_word())
+    }
+
+    pub fn len(self) -> usize {
+        self.as_bytes().len()
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn shared_binary(self) -> SharedBinary {
+        SharedBinary::clone_from_raw_word(self.arc_ptr_word())
+    }
+
+    fn arc_ptr_word(self) -> u64 {
+        // SAFETY: ProcBin payload word two stores the raw `Arc<Vec<u8>>` pointer.
+        unsafe { *self.ptr.add(2) }
     }
 }
 
