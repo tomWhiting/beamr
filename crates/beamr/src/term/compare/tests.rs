@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    atom::Atom,
+    atom::{Atom, AtomTable},
     term::{
         binary::write_binary,
         boxed::{
@@ -9,6 +9,10 @@ use crate::{
         },
     },
 };
+
+fn common_atoms() -> AtomTable {
+    AtomTable::with_common_atoms()
+}
 
 #[test]
 fn exact_equality_compares_immediates_and_distinguishes_numeric_types() {
@@ -78,11 +82,18 @@ fn beam_ordering_across_available_types_follows_rank_order() {
         write_binary(&mut binary_heap, b"a").unwrap(),
     ];
 
+    let atom_table = common_atoms();
     for window in terms.windows(2) {
-        assert!(window[0] < window[1]);
+        assert_eq!(cmp(window[0], window[1], &atom_table), Ordering::Less);
     }
-    assert!(Term::small_int(1) < Term::atom(Atom::OK));
-    assert!(Term::atom(Atom::OK) < Term::pid(1));
+    assert_eq!(
+        cmp(Term::small_int(1), Term::atom(Atom::OK), &atom_table),
+        Ordering::Less
+    );
+    assert_eq!(
+        cmp(Term::atom(Atom::OK), Term::pid(1), &atom_table),
+        Ordering::Less
+    );
 }
 
 #[test]
@@ -102,10 +113,17 @@ fn beam_ordering_compares_within_types() {
     let tuple_b =
         write_tuple(&mut tuple_b_heap, &[Term::small_int(1), Term::small_int(3)]).unwrap();
 
-    assert!(Term::small_int(1) < Term::small_int(2));
-    assert!(Term::small_int(2) >= Term::small_int(1));
-    assert!(tuple_a < tuple_b);
-    assert!(tuple_one < tuple_two);
+    let atom_table = common_atoms();
+    assert_eq!(
+        cmp(Term::small_int(1), Term::small_int(2), &atom_table),
+        Ordering::Less
+    );
+    assert_ne!(
+        cmp(Term::small_int(2), Term::small_int(1), &atom_table),
+        Ordering::Less
+    );
+    assert_eq!(cmp(tuple_a, tuple_b, &atom_table), Ordering::Less);
+    assert_eq!(cmp(tuple_one, tuple_two, &atom_table), Ordering::Less);
 }
 
 #[test]
@@ -168,7 +186,8 @@ fn nested_structural_comparison_recurses_into_tuples_and_lists() {
     let left_list = write_cons(&mut left_root_heap, Term::small_int(1), left_root_tail).unwrap();
     let right_list = write_cons(&mut right_root_heap, Term::small_int(1), right_root_tail).unwrap();
 
-    assert!(left_list < right_list);
+    let atom_table = common_atoms();
+    assert_eq!(cmp(left_list, right_list, &atom_table), Ordering::Less);
 }
 
 #[test]
@@ -182,7 +201,8 @@ fn proper_lists_compare_head_then_tail_iteratively() {
     let left = write_cons(&mut left_head_heap, Term::small_int(1), left_tail).unwrap();
     let right = write_cons(&mut right_head_heap, Term::small_int(1), right_tail).unwrap();
 
-    assert!(left < right);
+    let atom_table = common_atoms();
+    assert_eq!(cmp(left, right, &atom_table), Ordering::Less);
 }
 
 #[test]
@@ -209,8 +229,9 @@ fn map_comparison_uses_sorted_key_order_then_values() {
     )
     .unwrap();
 
+    let atom_table = common_atoms();
     assert_eq!(left, right);
-    assert!(right < different_value);
+    assert_eq!(cmp(right, different_value, &atom_table), Ordering::Less);
 }
 
 #[test]
@@ -271,8 +292,9 @@ fn closure_comparison_includes_generation_and_unique_id_metadata() {
     let closure_b = write_closure(&mut closure_b_heap, Atom::OK, 1, 0, 2, 10, &[]).unwrap();
     let closure_c = write_closure(&mut closure_c_heap, Atom::OK, 1, 0, 1, 11, &[]).unwrap();
 
-    assert_ne!(cmp(closure_a, closure_b), Ordering::Equal);
-    assert_ne!(cmp(closure_a, closure_c), Ordering::Equal);
+    let atom_table = common_atoms();
+    assert_ne!(cmp(closure_a, closure_b, &atom_table), Ordering::Equal);
+    assert_ne!(cmp(closure_a, closure_c, &atom_table), Ordering::Equal);
 }
 
 #[test]
@@ -286,12 +308,31 @@ fn numeric_ordering_compares_bigints_by_value() {
     let negative_small = write_bigint(&mut negative_small_heap, true, &[9]).unwrap();
     let negative_large = write_bigint(&mut negative_large_heap, true, &[0, 1]).unwrap();
 
-    assert!(negative_large < negative_small);
-    assert!(negative_small < Term::small_int(0));
-    assert_eq!(cmp(Term::small_int(9), positive_small), Ordering::Equal);
-    assert!(Term::small_int(10) > positive_small);
-    assert!(positive_small < positive_large);
-    assert!(negative_small < positive_small);
+    let atom_table = common_atoms();
+    assert_eq!(
+        cmp(negative_large, negative_small, &atom_table),
+        Ordering::Less
+    );
+    assert_eq!(
+        cmp(negative_small, Term::small_int(0), &atom_table),
+        Ordering::Less
+    );
+    assert_eq!(
+        cmp(Term::small_int(9), positive_small, &atom_table),
+        Ordering::Equal
+    );
+    assert_eq!(
+        cmp(positive_small, Term::small_int(10), &atom_table),
+        Ordering::Less
+    );
+    assert_eq!(
+        cmp(positive_small, positive_large, &atom_table),
+        Ordering::Less
+    );
+    assert_eq!(
+        cmp(negative_small, positive_small, &atom_table),
+        Ordering::Less
+    );
 }
 
 #[test]
@@ -302,7 +343,11 @@ fn edge_cases_cover_empty_tuple_empty_list_and_atom_nil() {
     assert_eq!(empty_tuple, empty_tuple);
     assert_eq!(Term::NIL, Term::NIL);
     assert_ne!(Term::NIL, Term::atom(Atom::NIL));
-    assert!(Term::atom(Atom::NIL) < Term::NIL);
+    let atom_table = common_atoms();
+    assert_eq!(
+        cmp(Term::atom(Atom::NIL), Term::NIL, &atom_table),
+        Ordering::Less
+    );
 }
 
 #[test]
@@ -318,6 +363,95 @@ fn comparing_long_lists_does_not_stack_overflow() {
         right = write_cons(&mut right_heap[index], Term::small_int(index as i64), right).unwrap();
     }
 
+    let atom_table = common_atoms();
     assert_eq!(left, right);
-    assert_eq!(cmp(left, right), Ordering::Equal);
+    assert_eq!(cmp(left, right, &atom_table), Ordering::Equal);
+}
+
+fn ordered_atom_terms(table: &AtomTable) -> (Term, Term, Term) {
+    (
+        Term::atom(table.lookup("apple").unwrap()),
+        Term::atom(table.lookup("mango").unwrap()),
+        Term::atom(table.lookup("zebra").unwrap()),
+    )
+}
+
+fn intern_atoms(table: &AtomTable, names: &[&str]) {
+    for name in names {
+        table.intern(name);
+    }
+}
+
+fn assert_alphabetical_atom_order(table: &AtomTable) {
+    let (apple, mango, zebra) = ordered_atom_terms(table);
+
+    assert_eq!(cmp(apple, mango, table), Ordering::Less);
+    assert_eq!(cmp(mango, zebra, table), Ordering::Less);
+    assert_eq!(cmp(apple, zebra, table), Ordering::Less);
+    assert_eq!(cmp(mango, apple, table), Ordering::Greater);
+    assert_eq!(cmp(zebra, mango, table), Ordering::Greater);
+    assert_eq!(cmp(zebra, apple, table), Ordering::Greater);
+    assert_eq!(cmp(apple, apple, table), Ordering::Equal);
+}
+
+#[test]
+fn atom_ordering_uses_names_when_interned_reverse_alphabetically() {
+    let table = AtomTable::new();
+    intern_atoms(&table, &["zebra", "mango", "apple"]);
+
+    assert_alphabetical_atom_order(&table);
+}
+
+#[test]
+fn atom_ordering_uses_names_when_interned_alphabetically() {
+    let table = AtomTable::new();
+    intern_atoms(&table, &["apple", "mango", "zebra"]);
+
+    assert_alphabetical_atom_order(&table);
+}
+
+#[test]
+fn sorting_atom_terms_is_stable_across_intern_sequences() {
+    let reverse_table = AtomTable::new();
+    intern_atoms(&reverse_table, &["zebra", "mango", "apple"]);
+    let (apple_reverse, mango_reverse, zebra_reverse) = ordered_atom_terms(&reverse_table);
+    let mut reverse_terms = vec![zebra_reverse, apple_reverse, mango_reverse];
+    reverse_terms.sort_by(|left, right| cmp(*left, *right, &reverse_table));
+
+    let forward_table = AtomTable::new();
+    intern_atoms(&forward_table, &["apple", "mango", "zebra"]);
+    let (apple_forward, mango_forward, zebra_forward) = ordered_atom_terms(&forward_table);
+    let mut forward_terms = vec![zebra_forward, apple_forward, mango_forward];
+    forward_terms.sort_by(|left, right| cmp(*left, *right, &forward_table));
+
+    let reverse_names: Vec<_> = reverse_terms
+        .iter()
+        .filter_map(|term| term.as_atom().and_then(|atom| reverse_table.resolve(atom)))
+        .collect();
+    let forward_names: Vec<_> = forward_terms
+        .iter()
+        .filter_map(|term| term.as_atom().and_then(|atom| forward_table.resolve(atom)))
+        .collect();
+
+    assert_eq!(reverse_names, ["apple", "mango", "zebra"]);
+    assert_eq!(forward_names, ["apple", "mango", "zebra"]);
+}
+
+#[test]
+fn map_with_atom_keys_iterates_in_name_order() {
+    let table = AtomTable::new();
+    intern_atoms(&table, &["zebra", "apple"]);
+    let apple = Term::atom(table.lookup("apple").unwrap());
+    let zebra = Term::atom(table.lookup("zebra").unwrap());
+    let mut entries = [(zebra, Term::small_int(1)), (apple, Term::small_int(2))];
+    entries.sort_by(|(left, _), (right, _)| cmp(*left, *right, &table));
+
+    let keys: Vec<_> = entries.iter().map(|(key, _)| *key).collect();
+    let values: Vec<_> = entries.iter().map(|(_, value)| *value).collect();
+    let mut heap = [0_u64; 6];
+    let map_term = write_map(&mut heap, &keys, &values).unwrap();
+    let map = Map::new(map_term).unwrap();
+
+    assert_eq!(map.key(0).and_then(Term::as_atom), apple.as_atom());
+    assert_eq!(map.key(1).and_then(Term::as_atom), zebra.as_atom());
 }

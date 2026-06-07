@@ -219,6 +219,7 @@ pub(super) fn build_native_services(
             shared: Arc::clone(shared),
         });
     crate::interpreter::NativeServices {
+        atom_table: Some(Arc::clone(&shared.atom_table)),
         timers: Some(Arc::clone(&shared.timers)),
         spawn_facility: Some(spawn),
         link_facility: Some(link),

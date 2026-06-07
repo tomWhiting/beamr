@@ -12,7 +12,9 @@ use super::collection_bifs::{
 use super::register_stdlib_stubs;
 
 fn context() -> ProcessContext {
-    ProcessContext::new()
+    let mut context = ProcessContext::new();
+    context.set_atom_table(Some(std::sync::Arc::new(AtomTable::with_common_atoms())));
+    context
 }
 
 fn badarg() -> Term {

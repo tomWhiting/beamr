@@ -68,7 +68,7 @@ impl PartialOrd for Term {
 
 impl Ord for Term {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        compare::cmp(*self, *other)
+        compare::raw_cmp(*self, *other)
     }
 }
 

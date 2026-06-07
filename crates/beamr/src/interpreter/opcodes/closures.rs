@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::atom::Atom;
+use crate::atom::{Atom, AtomTable};
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::decode::MapOp;
@@ -11,6 +11,7 @@ use crate::module::{Module, ModuleRegistry};
 use crate::process::{CodePosition, Process};
 use crate::term::Term;
 use crate::term::boxed::{Closure, Map, write_closure, write_map};
+use crate::term::compare;
 
 use super::core;
 
@@ -235,12 +236,13 @@ pub fn map_op(
     module: &Module,
     op: MapOp,
     operands: &[Operand],
+    atom_table: Option<&AtomTable>,
 ) -> Result<InstructionOutcome, ExecError> {
     match op {
         MapOp::HasMapFields => has_map_fields(process, module, operands),
         MapOp::GetMapElements => get_map_elements(process, module, operands),
-        MapOp::PutMapAssoc => put_map(process, module, operands, PutMapMode::Assoc),
-        MapOp::PutMapExact => put_map(process, module, operands, PutMapMode::Exact),
+        MapOp::PutMapAssoc => put_map(process, module, operands, PutMapMode::Assoc, atom_table),
+        MapOp::PutMapExact => put_map(process, module, operands, PutMapMode::Exact, atom_table),
     }
 }
 
@@ -354,6 +356,7 @@ fn put_map(
     module: &Module,
     operands: &[Operand],
     mode: PutMapMode,
+    atom_table: Option<&AtomTable>,
 ) -> Result<InstructionOutcome, ExecError> {
     let [fail, source, destination, _live, Operand::List(items)] = operands else {
         return Err(ExecError::InvalidOperand("put_map operands"));
@@ -394,7 +397,12 @@ fn put_map(
             entries.push((key, value));
         }
     }
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_by(|(left, _), (right, _)| {
+        atom_table.map_or_else(
+            || compare::raw_cmp(*left, *right),
+            |table| compare::cmp(*left, *right, table),
+        )
+    });
 
     let keys: Vec<Term> = entries.iter().map(|(key, _)| *key).collect();
     let values: Vec<Term> = entries.iter().map(|(_, value)| *value).collect();
@@ -446,7 +454,9 @@ fn operand_u8(operand: &Operand, context: &'static str) -> Result<u8, ExecError>
 }
 
 fn collect_args(process: &Process, arity: u8) -> Vec<Term> {
-    (0..arity).map(|register| process.x_reg(register.into())).collect()
+    (0..arity)
+        .map(|register| process.x_reg(register.into()))
+        .collect()
 }
 
 #[cfg(test)]

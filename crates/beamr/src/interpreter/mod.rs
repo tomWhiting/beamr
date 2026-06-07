@@ -8,6 +8,7 @@ pub mod pattern;
 
 use std::sync::{Arc, Mutex};
 
+use crate::atom::AtomTable;
 use crate::error::ExecError;
 use crate::io::IoSink;
 use crate::module::{Module, ModuleRegistry};
@@ -20,6 +21,8 @@ use crate::timer::TimerWheel;
 
 /// Bundle of native services injected by the scheduler into BIF execution.
 pub struct NativeServices {
+    /// Atom table used for BEAM term ordering and atom conversion BIFs.
+    pub atom_table: Option<Arc<AtomTable>>,
     /// Timer wheel for asynchronous timer BIFs.
     pub timers: Option<Arc<Mutex<TimerWheel>>>,
     /// Spawn facility for process creation BIFs.
@@ -67,6 +70,7 @@ pub enum InstructionOutcome {
 /// Execute `process` against `module` until a scheduler boundary or exit.
 pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, ExecError> {
     let empty = NativeServices {
+        atom_table: None,
         timers: None,
         spawn_facility: None,
         link_facility: None,
@@ -84,6 +88,7 @@ pub fn run_with_registry(
     registry: &ModuleRegistry,
 ) -> Result<ExecutionResult, ExecError> {
     let empty = NativeServices {
+        atom_table: None,
         timers: None,
         spawn_facility: None,
         link_facility: None,
@@ -101,6 +106,7 @@ pub fn run_with_timer_services(
     timers: Arc<Mutex<TimerWheel>>,
 ) -> Result<ExecutionResult, ExecError> {
     let services = NativeServices {
+        atom_table: None,
         timers: Some(timers),
         spawn_facility: None,
         link_facility: None,

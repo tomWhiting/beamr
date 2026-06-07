@@ -85,18 +85,24 @@ pub fn rem(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
 /// BEAM: `<` is total over every term type and never raises — it routes
 /// through the same `compare::cmp` order as the fused comparison opcode, so
 /// `1 < a` is `true` (number < atom). See [`crate::term::compare::cmp`].
-pub fn less_than(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn less_than(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let (left, right) = two_terms(args)?;
-    Ok(bool_term(compare::cmp(left, right) == Ordering::Less))
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    Ok(bool_term(
+        compare::cmp(left, right, atom_table) == Ordering::Less,
+    ))
 }
 
 /// erlang:>=/2 over the full BEAM term order.
 ///
 /// BEAM: `>=` is total over every term type and never raises — the inverse of
 /// `<` under the same `compare::cmp` order. See [`crate::term::compare::cmp`].
-pub fn greater_equal(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn greater_equal(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let (left, right) = two_terms(args)?;
-    Ok(bool_term(compare::cmp(left, right) != Ordering::Less))
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    Ok(bool_term(
+        compare::cmp(left, right, atom_table) != Ordering::Less,
+    ))
 }
 
 /// erlang:=:=/2 exact term equality.
@@ -289,7 +295,9 @@ mod tests {
     use std::time::Duration;
 
     fn context() -> ProcessContext {
-        ProcessContext::new()
+        let mut context = ProcessContext::new();
+        context.set_atom_table(Some(Arc::new(AtomTable::with_common_atoms())));
+        context
     }
 
     fn small_int(value: i64) -> Term {
@@ -487,8 +495,9 @@ mod tests {
         ];
 
         for (left, right) in pairs {
-            let opcode_lt = compare::cmp(left, right) == Ordering::Less;
-            let opcode_ge = compare::cmp(left, right) != Ordering::Less;
+            let atom_table = context.atom_table().expect("atom table");
+            let opcode_lt = compare::cmp(left, right, atom_table) == Ordering::Less;
+            let opcode_ge = compare::cmp(left, right, atom_table) != Ordering::Less;
             assert_eq!(
                 less_than(&[left, right], &mut context),
                 Ok(Term::atom(if opcode_lt { Atom::TRUE } else { Atom::FALSE })),

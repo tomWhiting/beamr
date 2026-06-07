@@ -13,6 +13,7 @@ pub mod trampoline;
 
 use std::sync::{Arc, Mutex};
 
+use crate::atom::AtomTable;
 use crate::error::ExecError;
 use crate::interpreter::{InstructionOutcome, NativeServices};
 use crate::loader::Instruction;
@@ -28,6 +29,7 @@ struct DispatchCtx<'a> {
     timers: Option<&'a Arc<Mutex<TimerWheel>>>,
     registry: Option<&'a ModuleRegistry>,
     services: Option<&'a NativeServices>,
+    atom_table: Option<&'a AtomTable>,
 }
 
 /// Dispatch one already-fetched instruction.
@@ -60,6 +62,7 @@ pub fn dispatch_with_timer_services(
             timers,
             registry,
             services: None,
+            atom_table: None,
         },
     )
 }
@@ -83,6 +86,7 @@ pub fn dispatch_with_services(
             timers: services.timers.as_ref(),
             registry,
             services: Some(services),
+            atom_table: services.atom_table.as_deref(),
         },
     )
 }
@@ -111,6 +115,7 @@ pub fn dispatch_with_receiver(
             timers: None,
             registry,
             services: None,
+            atom_table: None,
         },
     )
 }
@@ -135,7 +140,7 @@ fn dispatch_common(
         Instruction::Move {
             source,
             destination,
-        } => core::move_(process, source, destination),
+        } => core::move_(process, source, destination, ctx.atom_table),
         Instruction::Call { arity, label } => {
             core::call(process, module, arity, label, next_ip, true)
         }
@@ -147,6 +152,7 @@ fn dispatch_common(
                 timers: ctx.timers,
                 services: ctx.services,
                 registry: ctx.registry,
+                atom_table: ctx.atom_table,
             };
             core::call_ext(process, module, arity, import, next_ip, true, &ext)
         }
@@ -155,6 +161,7 @@ fn dispatch_common(
                 timers: ctx.timers,
                 services: ctx.services,
                 registry: ctx.registry,
+                atom_table: ctx.atom_table,
             };
             core::call_ext(process, module, arity, import, next_ip, false, &ext)
         }
@@ -172,6 +179,7 @@ fn dispatch_common(
                 timers: ctx.timers,
                 services: ctx.services,
                 registry: ctx.registry,
+                atom_table: ctx.atom_table,
             };
             core::call_ext_last(process, module, arity, import, deallocate, &ext)
         }
@@ -217,7 +225,7 @@ fn dispatch_common(
             fail,
             left,
             right,
-        } => guards::comparison(process, module, *op, fail, left, right),
+        } => guards::comparison(process, module, *op, fail, left, right, ctx.atom_table),
         Instruction::TestArity { fail, tuple, arity } => {
             guards::test_arity(process, module, fail, tuple, arity)
         }
@@ -250,11 +258,15 @@ fn dispatch_common(
         Instruction::Badmatch { value } => messaging::badmatch(process, value),
         Instruction::CaseEnd { value } => messaging::case_end(process, value),
         Instruction::IfEnd => messaging::if_end(process),
-        Instruction::Line { .. } | Instruction::Generic { name: "executable_line", .. } => {
-            Ok(InstructionOutcome::Continue)
-        }
+        Instruction::Line { .. }
+        | Instruction::Generic {
+            name: "executable_line",
+            ..
+        } => Ok(InstructionOutcome::Continue),
         Instruction::BinaryOp { op, operands } => binary::binary_op(process, module, *op, operands),
-        Instruction::MapOp { op, operands } => closures::map_op(process, module, *op, operands),
+        Instruction::MapOp { op, operands } => {
+            closures::map_op(process, module, *op, operands, ctx.atom_table)
+        }
         Instruction::MakeFun { operands } => closures::make_fun(process, module, operands),
         Instruction::CallFun { arity } => {
             closures::call_fun(process, module, arity, next_ip, ctx.registry)
@@ -284,7 +296,9 @@ fn dispatch_common(
                 }
                 Ok(InstructionOutcome::Continue)
             } else {
-                Err(ExecError::InvalidOperand("init_yregs: expected register list"))
+                Err(ExecError::InvalidOperand(
+                    "init_yregs: expected register list",
+                ))
             }
         }
         Instruction::Generic { opcode, .. } => Err(ExecError::UnknownOpcode { opcode: *opcode }),

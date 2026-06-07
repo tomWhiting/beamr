@@ -7,12 +7,13 @@ use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::boxed::{Cons, Map, Tuple, write_cons, write_map};
+use crate::term::compare;
 
 /// maps:from_list/1 — builds a map from a list of `{Key, Value}` 2-tuples.
 ///
 /// Duplicate keys are resolved by last-occurrence-wins (the last tuple in the
 /// list with a given key determines the value), matching OTP semantics.
-pub fn bif_maps_from_list(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_maps_from_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };
@@ -30,7 +31,8 @@ pub fn bif_maps_from_list(args: &[Term], _context: &mut ProcessContext) -> Resul
     }
 
     // Sort by key for flatmap ordering.
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    entries.sort_by(|(a, _), (b, _)| compare::cmp(*a, *b, atom_table));
 
     let keys: Vec<Term> = entries.iter().map(|(k, _)| *k).collect();
     let values: Vec<Term> = entries.iter().map(|(_, v)| *v).collect();
@@ -39,7 +41,7 @@ pub fn bif_maps_from_list(args: &[Term], _context: &mut ProcessContext) -> Resul
 }
 
 /// maps:merge/2 — merges two maps (second overrides first on collision).
-pub fn bif_maps_merge(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_maps_merge(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [map1_term, map2_term] = args else {
         return Err(badarg());
     };
@@ -67,7 +69,8 @@ pub fn bif_maps_merge(args: &[Term], _context: &mut ProcessContext) -> Result<Te
     }
 
     // Sort by key for flatmap ordering.
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    entries.sort_by(|(a, _), (b, _)| compare::cmp(*a, *b, atom_table));
 
     let keys: Vec<Term> = entries.iter().map(|(k, _)| *k).collect();
     let values: Vec<Term> = entries.iter().map(|(_, v)| *v).collect();

@@ -5,6 +5,7 @@ use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Closure, Cons, Float, Map, Tuple, write_float, write_map, write_tuple};
+use crate::term::compare;
 
 use super::encoding_bifs::{
     bif_base64_decode as erlang_base64_decode, bif_base64_encode as erlang_base64_encode,
@@ -19,7 +20,6 @@ pub fn bif_classify_dynamic(args: &[Term], _context: &mut ProcessContext) -> Res
 }
 
 pub fn bif_dict(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [pairs] = args else {
         return Err(badarg());
     };
@@ -38,7 +38,7 @@ pub fn bif_dict(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
         );
         current = cons.tail();
     }
-    make_sorted_map(&entries)
+    make_sorted_map(&entries, context)
 }
 
 pub fn bif_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -339,9 +339,10 @@ fn set_entry(entries: &mut Vec<(Term, Term)>, key: Term, value: Term) {
     }
 }
 
-fn make_sorted_map(entries: &[(Term, Term)]) -> Result<Term, Term> {
+fn make_sorted_map(entries: &[(Term, Term)], context: &mut ProcessContext) -> Result<Term, Term> {
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
     let mut sorted = entries.to_vec();
-    sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
+    sorted.sort_by(|(left, _), (right, _)| compare::cmp(*left, *right, atom_table));
     let keys: Vec<_> = sorted.iter().map(|(key, _)| *key).collect();
     let values: Vec<_> = sorted.iter().map(|(_, value)| *value).collect();
     let heap = Box::leak(vec![0u64; 2 + keys.len() + values.len()].into_boxed_slice());

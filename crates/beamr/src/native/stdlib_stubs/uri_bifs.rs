@@ -5,6 +5,7 @@ use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::write_map;
+use crate::term::compare;
 
 pub fn bif_percent_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let _ = context;
@@ -91,7 +92,7 @@ fn parse_uri_map(input: Term, context: &mut ProcessContext) -> Result<Term, Term
         (atom(context, "path")?, make_binary(path.as_bytes())?),
         (atom(context, "query")?, make_binary(query.as_bytes())?),
     ];
-    make_sorted_map(&entries)
+    make_sorted_map(&entries, context)
 }
 
 fn parse_query_map(input: Term, context: &mut ProcessContext) -> Result<Term, Term> {
@@ -110,7 +111,7 @@ fn parse_query_map(input: Term, context: &mut ProcessContext) -> Result<Term, Te
             entries.push((key, value));
         }
     }
-    make_sorted_map(&entries)
+    make_sorted_map(&entries, context)
 }
 
 fn is_unreserved(byte: u8) -> bool {
@@ -142,9 +143,10 @@ fn atom(context: &mut ProcessContext, name: &str) -> Result<Term, Term> {
     Ok(Term::atom(table.intern(name)))
 }
 
-fn make_sorted_map(entries: &[(Term, Term)]) -> Result<Term, Term> {
+fn make_sorted_map(entries: &[(Term, Term)], context: &mut ProcessContext) -> Result<Term, Term> {
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
     let mut sorted = entries.to_vec();
-    sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
+    sorted.sort_by(|(left, _), (right, _)| compare::cmp(*left, *right, atom_table));
     let keys: Vec<_> = sorted.iter().map(|(key, _)| *key).collect();
     let values: Vec<_> = sorted.iter().map(|(_, value)| *value).collect();
     let heap = Box::leak(vec![0u64; 2 + keys.len() + values.len()].into_boxed_slice());

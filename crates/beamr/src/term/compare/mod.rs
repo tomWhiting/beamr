@@ -9,6 +9,7 @@ use super::{
     binary::Binary,
     boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple},
 };
+use crate::atom::AtomTable;
 
 /// Compares two terms using Erlang `=:=` exact equality semantics.
 #[must_use]
@@ -37,11 +38,25 @@ pub fn numeric_eq(left: Term, right: Term) -> bool {
 
 /// Compares two terms using the BEAM term order.
 #[must_use]
-pub fn cmp(left: Term, right: Term) -> Ordering {
+pub fn cmp(left: Term, right: Term, atom_table: &AtomTable) -> Ordering {
     let left_rank = rank(left);
     let right_rank = rank(right);
     match left_rank.cmp(&right_rank) {
-        Ordering::Equal => compare_same_rank(left, right, left_rank),
+        Ordering::Equal => compare_same_rank(left, right, left_rank, atom_table),
+        order => order,
+    }
+}
+
+/// Legacy table-free ordering used only by [`Term`]'s `Ord` implementation.
+///
+/// VM-visible ordering must call [`cmp`] with the runtime atom table so atom
+/// names are compared instead of raw intern indices.
+#[must_use]
+pub(crate) fn raw_cmp(left: Term, right: Term) -> Ordering {
+    let left_rank = rank(left);
+    let right_rank = rank(right);
+    match left_rank.cmp(&right_rank) {
+        Ordering::Equal => compare_same_rank_raw(left, right, left_rank),
         order => order,
     }
 }
@@ -109,20 +124,57 @@ fn number_value(term: Term) -> Option<NumberValue> {
     }
 }
 
-fn compare_same_rank(left: Term, right: Term, term_rank: TermRank) -> Ordering {
+fn compare_same_rank(
+    left: Term,
+    right: Term,
+    term_rank: TermRank,
+    atom_table: &AtomTable,
+) -> Ordering {
+    match term_rank {
+        TermRank::Number => compare_numbers(left, right),
+        TermRank::Atom => compare_atoms_by_name(left, right, atom_table),
+        TermRank::Reference => reference_id(left).cmp(&reference_id(right)),
+        TermRank::Fun => compare_closures(left, right, atom_table),
+        TermRank::Port => Ordering::Equal,
+        TermRank::Pid => left.as_pid().cmp(&right.as_pid()),
+        TermRank::Tuple => compare_tuples(left, right, atom_table),
+        TermRank::Map => compare_maps(left, right, atom_table),
+        TermRank::Nil => Ordering::Equal,
+        TermRank::List => compare_lists(left, right, atom_table),
+        TermRank::Binary => binary_bytes(left).cmp(binary_bytes(right)),
+        TermRank::OtherBoxed => left.raw().cmp(&right.raw()),
+    }
+}
+
+fn compare_same_rank_raw(left: Term, right: Term, term_rank: TermRank) -> Ordering {
     match term_rank {
         TermRank::Number => compare_numbers(left, right),
         TermRank::Atom => left.raw().cmp(&right.raw()),
         TermRank::Reference => reference_id(left).cmp(&reference_id(right)),
-        TermRank::Fun => compare_closures(left, right),
+        TermRank::Fun => compare_closures_raw(left, right),
         TermRank::Port => Ordering::Equal,
         TermRank::Pid => left.as_pid().cmp(&right.as_pid()),
-        TermRank::Tuple => compare_tuples(left, right),
-        TermRank::Map => compare_maps(left, right),
+        TermRank::Tuple => compare_tuples_raw(left, right),
+        TermRank::Map => compare_maps_raw(left, right),
         TermRank::Nil => Ordering::Equal,
-        TermRank::List => compare_lists(left, right),
+        TermRank::List => compare_lists_raw(left, right),
         TermRank::Binary => binary_bytes(left).cmp(binary_bytes(right)),
         TermRank::OtherBoxed => left.raw().cmp(&right.raw()),
+    }
+}
+
+fn compare_atoms_by_name(left: Term, right: Term, atom_table: &AtomTable) -> Ordering {
+    match (left.as_atom(), right.as_atom()) {
+        (Some(left_atom), Some(right_atom)) => {
+            match (
+                atom_table.resolve(left_atom),
+                atom_table.resolve(right_atom),
+            ) {
+                (Some(left_name), Some(right_name)) => left_name.cmp(right_name),
+                _ => left.raw().cmp(&right.raw()),
+            }
+        }
+        _ => left.raw().cmp(&right.raw()),
     }
 }
 
@@ -316,10 +368,20 @@ fn bigint_to_f64(term: Term) -> f64 {
     }
 }
 
-fn compare_tuples(left: Term, right: Term) -> Ordering {
+fn compare_tuples(left: Term, right: Term, atom_table: &AtomTable) -> Ordering {
     match (Tuple::new(left), Tuple::new(right)) {
         (Some(left), Some(right)) => match left.arity().cmp(&right.arity()) {
-            Ordering::Equal => compare_tuple_elements(left, right),
+            Ordering::Equal => compare_tuple_elements(left, right, atom_table),
+            order => order,
+        },
+        _ => left.raw().cmp(&right.raw()),
+    }
+}
+
+fn compare_tuples_raw(left: Term, right: Term) -> Ordering {
+    match (Tuple::new(left), Tuple::new(right)) {
+        (Some(left), Some(right)) => match left.arity().cmp(&right.arity()) {
+            Ordering::Equal => compare_tuple_elements_raw(left, right),
             order => order,
         },
         _ => left.raw().cmp(&right.raw()),
@@ -336,10 +398,22 @@ fn compare_tuples_exact(left: Term, right: Term) -> Ordering {
     }
 }
 
-fn compare_tuple_elements(left: Tuple, right: Tuple) -> Ordering {
+fn compare_tuple_elements(left: Tuple, right: Tuple, atom_table: &AtomTable) -> Ordering {
     for index in 0..left.arity() {
         if let (Some(left_element), Some(right_element)) = (left.get(index), right.get(index)) {
-            match cmp(left_element, right_element) {
+            match cmp(left_element, right_element, atom_table) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+        }
+    }
+    Ordering::Equal
+}
+
+fn compare_tuple_elements_raw(left: Tuple, right: Tuple) -> Ordering {
+    for index in 0..left.arity() {
+        if let (Some(left_element), Some(right_element)) = (left.get(index), right.get(index)) {
+            match raw_cmp(left_element, right_element) {
                 Ordering::Equal => {}
                 order => return order,
             }
@@ -360,8 +434,12 @@ fn compare_tuple_elements_exact(left: Tuple, right: Tuple) -> Ordering {
     Ordering::Equal
 }
 
-fn compare_lists(left: Term, right: Term) -> Ordering {
-    compare_lists_with(left, right, cmp)
+fn compare_lists(left: Term, right: Term, atom_table: &AtomTable) -> Ordering {
+    compare_lists_with(left, right, |left, right| cmp(left, right, atom_table))
+}
+
+fn compare_lists_raw(left: Term, right: Term) -> Ordering {
+    compare_lists_with(left, right, raw_cmp)
 }
 
 fn compare_lists_exact(left: Term, right: Term) -> Ordering {
@@ -371,7 +449,7 @@ fn compare_lists_exact(left: Term, right: Term) -> Ordering {
 fn compare_lists_with(
     mut left: Term,
     mut right: Term,
-    element_cmp: fn(Term, Term) -> Ordering,
+    mut element_cmp: impl FnMut(Term, Term) -> Ordering,
 ) -> Ordering {
     loop {
         match (Cons::new(left), Cons::new(right)) {
@@ -389,19 +467,27 @@ fn compare_lists_with(
     }
 }
 
-fn compare_maps(left: Term, right: Term) -> Ordering {
-    compare_maps_with(left, right, cmp)
+fn compare_maps(left: Term, right: Term, atom_table: &AtomTable) -> Ordering {
+    compare_maps_with(left, right, |left, right| cmp(left, right, atom_table))
+}
+
+fn compare_maps_raw(left: Term, right: Term) -> Ordering {
+    compare_maps_with(left, right, raw_cmp)
 }
 
 fn compare_maps_exact(left: Term, right: Term) -> Ordering {
     compare_maps_with(left, right, compare_exact)
 }
 
-fn compare_maps_with(left: Term, right: Term, element_cmp: fn(Term, Term) -> Ordering) -> Ordering {
+fn compare_maps_with(
+    left: Term,
+    right: Term,
+    mut element_cmp: impl FnMut(Term, Term) -> Ordering,
+) -> Ordering {
     match (Map::new(left), Map::new(right)) {
         (Some(left), Some(right)) => {
-            let left_entries = sorted_map_entries(left, element_cmp);
-            let right_entries = sorted_map_entries(right, element_cmp);
+            let left_entries = sorted_map_entries(left, &mut element_cmp);
+            let right_entries = sorted_map_entries(right, &mut element_cmp);
             match left_entries.len().cmp(&right_entries.len()) {
                 Ordering::Equal => compare_map_entries(&left_entries, &right_entries, element_cmp),
                 order => order,
@@ -417,7 +503,10 @@ struct MapEntry {
     value: Term,
 }
 
-fn sorted_map_entries(map: Map, element_cmp: fn(Term, Term) -> Ordering) -> Vec<MapEntry> {
+fn sorted_map_entries(
+    map: Map,
+    element_cmp: &mut impl FnMut(Term, Term) -> Ordering,
+) -> Vec<MapEntry> {
     let mut entries = Vec::with_capacity(map.len());
     for index in 0..map.len() {
         if let (Some(key), Some(value)) = (map.key(index), map.value(index)) {
@@ -431,7 +520,7 @@ fn sorted_map_entries(map: Map, element_cmp: fn(Term, Term) -> Ordering) -> Vec<
 fn compare_map_entries(
     left_entries: &[MapEntry],
     right_entries: &[MapEntry],
-    element_cmp: fn(Term, Term) -> Ordering,
+    mut element_cmp: impl FnMut(Term, Term) -> Ordering,
 ) -> Ordering {
     for (left, right) in left_entries.iter().zip(right_entries.iter()) {
         match element_cmp(left.key, right.key) {
@@ -445,18 +534,81 @@ fn compare_map_entries(
     Ordering::Equal
 }
 
-fn compare_closures(left: Term, right: Term) -> Ordering {
-    compare_closures_with(left, right, cmp)
+fn compare_closures(left: Term, right: Term, atom_table: &AtomTable) -> Ordering {
+    compare_closures_with(left, right, atom_table, |left, right| {
+        cmp(left, right, atom_table)
+    })
+}
+
+fn compare_closures_raw(left: Term, right: Term) -> Ordering {
+    compare_closures_with_raw(left, right, raw_cmp)
 }
 
 fn compare_closures_exact(left: Term, right: Term) -> Ordering {
-    compare_closures_with(left, right, compare_exact)
+    compare_closures_with_raw(left, right, compare_exact)
 }
 
 fn compare_closures_with(
     left: Term,
     right: Term,
-    element_cmp: fn(Term, Term) -> Ordering,
+    atom_table: &AtomTable,
+    mut element_cmp: impl FnMut(Term, Term) -> Ordering,
+) -> Ordering {
+    match (Closure::new(left), Closure::new(right)) {
+        (Some(left), Some(right)) => {
+            match match (left.module(), right.module()) {
+                (Some(left_module), Some(right_module)) => compare_atoms_by_name(
+                    Term::atom(left_module),
+                    Term::atom(right_module),
+                    atom_table,
+                ),
+                (None, Some(_)) => Ordering::Less,
+                (Some(_), None) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            } {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            match left.function_index().cmp(&right.function_index()) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            match left.arity().cmp(&right.arity()) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            match left.generation().cmp(&right.generation()) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            match left.unique_id().cmp(&right.unique_id()) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            match left.num_free().cmp(&right.num_free()) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            for index in 0..left.num_free() {
+                if let (Some(left_free), Some(right_free)) =
+                    (left.free_var(index), right.free_var(index))
+                {
+                    match element_cmp(left_free, right_free) {
+                        Ordering::Equal => {}
+                        order => return order,
+                    }
+                }
+            }
+            Ordering::Equal
+        }
+        _ => left.raw().cmp(&right.raw()),
+    }
+}
+
+fn compare_closures_with_raw(
+    left: Term,
+    right: Term,
+    mut element_cmp: impl FnMut(Term, Term) -> Ordering,
 ) -> Ordering {
     match (Closure::new(left), Closure::new(right)) {
         (Some(left), Some(right)) => {

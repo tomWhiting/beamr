@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use crate::atom::Atom;
+use crate::atom::{Atom, AtomTable};
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::decode::compact::Operand;
@@ -53,12 +53,19 @@ pub fn comparison(
     fail: &Operand,
     left: &Operand,
     right: &Operand,
+    atom_table: Option<&AtomTable>,
 ) -> Result<InstructionOutcome, ExecError> {
     let left = core::read_term(process, left)?;
     let right = core::read_term(process, right)?;
+    let order = || {
+        atom_table.map_or_else(
+            || compare::raw_cmp(left, right),
+            |table| compare::cmp(left, right, table),
+        )
+    };
     let passed = match op {
-        ComparisonOp::Lt => compare::cmp(left, right) == Ordering::Less,
-        ComparisonOp::Ge => compare::cmp(left, right) != Ordering::Less,
+        ComparisonOp::Lt => order() == Ordering::Less,
+        ComparisonOp::Ge => order() != Ordering::Less,
         ComparisonOp::Eq => compare::numeric_eq(left, right),
         ComparisonOp::Ne => !compare::numeric_eq(left, right),
         ComparisonOp::EqExact => compare::exact_eq(left, right),

@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::atom::AtomTable;
 use crate::error::ExecError;
 use crate::gc::{GcError, ensure_space};
 use crate::interpreter::InstructionOutcome;
@@ -11,8 +12,8 @@ use crate::loader::decode::compact::Operand;
 use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
 use crate::native::ProcessContext;
 use crate::process::{CodePosition, ExitReason, Process};
-use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
+use crate::term::{Term, compare};
 use crate::timer::TimerWheel;
 
 use super::trampoline;
@@ -22,6 +23,7 @@ pub struct ExtCallContext<'a> {
     pub timers: Option<&'a Arc<Mutex<TimerWheel>>>,
     pub services: Option<&'a NativeServices>,
     pub registry: Option<&'a ModuleRegistry>,
+    pub atom_table: Option<&'a AtomTable>,
 }
 
 pub fn label(_label: u32) -> Result<InstructionOutcome, ExecError> {
@@ -47,8 +49,9 @@ pub fn move_(
     process: &mut Process,
     source: &Operand,
     destination: &Operand,
+    atom_table: Option<&AtomTable>,
 ) -> Result<InstructionOutcome, ExecError> {
-    let value = read_term(process, source)?;
+    let value = read_term_with_atom_table(process, source, atom_table)?;
     write_term(process, destination, value)?;
     Ok(InstructionOutcome::Continue)
 }
@@ -334,6 +337,7 @@ fn call_external_target(
                 }
             };
             if let Some(svc) = ctx.services {
+                context.set_atom_table(svc.atom_table.clone());
                 context.set_spawn_facility(svc.spawn_facility.clone());
                 context.set_link_facility(svc.link_facility.clone());
                 context.set_supervision_facility(svc.supervision_facility.clone());
@@ -462,6 +466,14 @@ pub(crate) fn label_ip(module: &Module, label: u32) -> Result<usize, ExecError> 
 }
 
 pub(crate) fn read_term(process: &Process, operand: &Operand) -> Result<Term, ExecError> {
+    read_term_with_atom_table(process, operand, None)
+}
+
+pub(crate) fn read_term_with_atom_table(
+    process: &Process,
+    operand: &Operand,
+    atom_table: Option<&AtomTable>,
+) -> Result<Term, ExecError> {
     match operand {
         Operand::Integer(value) => Term::try_small_int(*value).ok_or(ExecError::Badarg),
         Operand::Unsigned(value) => {
@@ -475,8 +487,10 @@ pub(crate) fn read_term(process: &Process, operand: &Operand) -> Result<Term, Ex
             .stack()
             .y_reg(u16_from_u32(*index, "Y register")?)
             .map_err(ExecError::from),
-        Operand::Literal(literal) => literal_term(literal),
-        Operand::TypedRegister { register, .. } => read_term(process, register),
+        Operand::Literal(literal) => literal_term(literal, atom_table),
+        Operand::TypedRegister { register, .. } => {
+            read_term_with_atom_table(process, register, atom_table)
+        }
         _ => Err(ExecError::InvalidOperand("term source")),
     }
 }
@@ -500,7 +514,7 @@ pub(crate) fn write_term(
     }
 }
 
-fn literal_term(literal: &Literal) -> Result<Term, ExecError> {
+fn literal_term(literal: &Literal, atom_table: Option<&AtomTable>) -> Result<Term, ExecError> {
     match literal {
         Literal::Integer(value) => Term::try_small_int(*value).ok_or(ExecError::Badarg),
         Literal::Float(value) => {
@@ -522,15 +536,15 @@ fn literal_term(literal: &Literal) -> Result<Term, ExecError> {
         Literal::Tuple(elements) => {
             let mut terms = Vec::with_capacity(elements.len());
             for element in elements {
-                terms.push(literal_term(element)?);
+                terms.push(literal_term(element, atom_table)?);
             }
             let heap = Box::leak(vec![0u64; 1 + terms.len()].into_boxed_slice());
             crate::term::boxed::write_tuple(heap, &terms).ok_or(ExecError::Badarg)
         }
         Literal::List(elements, tail) => {
-            let mut result = literal_term(tail)?;
+            let mut result = literal_term(tail, atom_table)?;
             for element in elements.iter().rev() {
-                let head = literal_term(element)?;
+                let head = literal_term(element, atom_table)?;
                 let heap = Box::leak(Box::new([0u64; 2]));
                 result =
                     crate::term::boxed::write_cons(heap, head, result).ok_or(ExecError::Badarg)?;
@@ -540,9 +554,17 @@ fn literal_term(literal: &Literal) -> Result<Term, ExecError> {
         Literal::Map(entries) => {
             let mut pairs = Vec::with_capacity(entries.len());
             for (key, value) in entries {
-                pairs.push((literal_term(key)?, literal_term(value)?));
+                pairs.push((
+                    literal_term(key, atom_table)?,
+                    literal_term(value, atom_table)?,
+                ));
             }
-            pairs.sort_by(|(left, _), (right, _)| left.cmp(right));
+            pairs.sort_by(|(left, _), (right, _)| {
+                atom_table.map_or_else(
+                    || compare::raw_cmp(*left, *right),
+                    |table| compare::cmp(*left, *right, table),
+                )
+            });
             let keys: Vec<_> = pairs.iter().map(|(key, _)| *key).collect();
             let values: Vec<_> = pairs.iter().map(|(_, value)| *value).collect();
             let heap = Box::leak(vec![0u64; 2 + keys.len() + values.len()].into_boxed_slice());

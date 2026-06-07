@@ -1,4 +1,4 @@
-use crate::atom::Atom;
+use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::native::stdlib_stubs::lists_bifs::{
     bif_lists_append_1, bif_lists_append_2, bif_lists_join, bif_lists_reverse_2, bif_lists_seq,
@@ -9,9 +9,12 @@ use crate::native::stdlib_stubs::maps_bifs::{
 };
 use crate::term::Term;
 use crate::term::boxed::{Cons, Map, Tuple, write_map};
+use crate::term::compare;
 
 fn context() -> ProcessContext {
-    ProcessContext::new()
+    let mut context = ProcessContext::new();
+    context.set_atom_table(Some(std::sync::Arc::new(AtomTable::with_common_atoms())));
+    context
 }
 
 fn badarg() -> Term {
@@ -40,8 +43,9 @@ fn list_to_vec(term: Term) -> Vec<Term> {
 }
 
 fn map_from_pairs(pairs: &[(Term, Term)]) -> Term {
+    let atom_table = AtomTable::with_common_atoms();
     let mut sorted = pairs.to_vec();
-    sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
+    sorted.sort_by(|(left, _), (right, _)| compare::cmp(*left, *right, &atom_table));
     let keys: Vec<_> = sorted.iter().map(|(key, _)| *key).collect();
     let values: Vec<_> = sorted.iter().map(|(_, value)| *value).collect();
     let heap: &mut [u64] = Box::leak(vec![0_u64; 2 + pairs.len() * 2].into_boxed_slice());
