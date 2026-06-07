@@ -15,7 +15,7 @@ pub enum BinaryRef {
 }
 
 impl BinaryRef {
-    /// Creates a binary accessor for either inline binaries or ProcBins.
+    /// Creates a binary accessor for inline binaries, ProcBins, or SubBinaries.
     pub fn new(term: Term) -> Option<Self> {
         if let Some(binary) = Binary::new(term) {
             return Some(Self::Inline(binary));

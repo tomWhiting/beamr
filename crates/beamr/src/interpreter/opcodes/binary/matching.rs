@@ -33,6 +33,10 @@ pub(super) fn bs_start_match(
     let Some(binary) = BinaryRef::new(source) else {
         return jump_label(module, fail);
     };
+    let total_bits = binary
+        .len()
+        .checked_mul(u8::BITS as usize)
+        .ok_or(ExecError::Badarg)?;
     let ptr = process
         .heap_mut()
         .alloc(MATCH_CONTEXT_WORDS)
@@ -40,7 +44,7 @@ pub(super) fn bs_start_match(
     let heap = heap_slice(ptr, MATCH_CONTEXT_WORDS);
     heap[0] = BoxedHeader::new(BoxedTag::MatchContext, MATCH_CONTEXT_WORDS - 1);
     heap[1] = 0;
-    heap[2] = (binary.len() * u8::BITS as usize) as u64;
+    heap[2] = total_bits as u64;
     heap[3] = source.raw();
     core::write_term(process, destination, Term::boxed_ptr(heap.as_ptr()))?;
     Ok(InstructionOutcome::Continue)
@@ -567,9 +571,10 @@ fn literal_bytes<'a>(
         },
         offset => {
             let offset = core::operand_usize(offset, "string table offset")?;
+            let end = offset.checked_add(byte_len).ok_or(ExecError::Badarg)?;
             module
                 .string_table
-                .get(offset..offset + byte_len)
+                .get(offset..end)
                 .ok_or(ExecError::Badarg)
         }
     }

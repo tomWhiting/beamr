@@ -35,6 +35,7 @@ pub fn write_sub_binary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::term::binary::write_binary;
     use crate::term::boxed::{ProcBin, SubBinary};
     use crate::term::shared_binary::{SharedBinary, write_proc_bin};
 
@@ -62,6 +63,32 @@ mod tests {
         assert_eq!(sub_binary.len(), 10);
         assert_eq!(sub_binary.as_bytes(), &shared.as_bytes()[10..20]);
         assert_eq!(shared.ref_count(), 2);
+    }
+
+    #[test]
+    fn sub_binary_views_inline_binary_parent() {
+        let mut parent_heap = [0_u64; 3];
+        let parent =
+            write_binary(&mut parent_heap, b"0123456789abcdef").expect("inline binary fits");
+        let mut heap = [0_u64; SUB_BINARY_WORDS];
+        let term = write_sub_binary(&mut heap, parent, 4, 6).expect("sub binary fits");
+
+        let sub_binary = SubBinary::new(term).expect("sub binary accessor");
+        assert_eq!(sub_binary.parent(), parent);
+        assert_eq!(sub_binary.len(), 6);
+        assert_eq!(sub_binary.as_bytes(), b"456789");
+    }
+
+    #[test]
+    fn sub_binary_accessor_rejects_non_binary_parent_and_out_of_bounds_view() {
+        let mut heap = [0_u64; SUB_BINARY_WORDS];
+        let non_binary = write_sub_binary(&mut heap, Term::NIL, 0, 0).expect("sub binary fits");
+        assert!(SubBinary::new(non_binary).is_none());
+
+        let mut parent_heap = [0_u64; 3];
+        let parent = write_binary(&mut parent_heap, b"abc").expect("inline binary fits");
+        let out_of_bounds = write_sub_binary(&mut heap, parent, 2, 2).expect("sub binary fits");
+        assert!(SubBinary::new(out_of_bounds).is_none());
     }
 
     #[test]
