@@ -149,7 +149,7 @@ fn native_import(
         arity,
         target: ResolvedImportTarget::Native(NativeEntry {
             function: native_function,
-            is_dirty: false,
+            dirty_kind: None,
             capability,
         }),
     }

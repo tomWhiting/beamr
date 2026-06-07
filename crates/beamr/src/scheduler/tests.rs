@@ -445,6 +445,8 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
+        dirty_cpu: crate::scheduler::dirty::DirtyPool::new("test-cpu", 1),
+        dirty_io: crate::scheduler::dirty::DirtyPool::new("test-io", 1),
     });
     let pid = 1;
     shared.process_table.spawn_with_pid(pid);
