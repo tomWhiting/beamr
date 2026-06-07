@@ -12,11 +12,11 @@ use crate::io::{IoSink, NullSink};
 use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
 use crate::process::{Priority, Process};
 use crate::term::Term;
-use crate::term::binary::{packed_word_count, write_binary};
 use crate::term::boxed::{
     write_bigint, write_cons, write_float, write_map, write_reference, write_tuple,
 };
 use crate::term::compare;
+use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 use crate::timer::{TimerRef, TimerWheel};
 
 use super::code_management_bifs::CodeManagementFacility;
@@ -713,11 +713,11 @@ impl<'process> ProcessContext<'process> {
         write_float(heap, value).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
-    /// Allocate an inline binary on the calling process heap.
+    /// Allocate a binary on the calling process heap, promoting large binaries to ProcBin.
     pub fn alloc_binary(&mut self, bytes: &[u8]) -> Result<Term, Term> {
-        let words = 2 + packed_word_count(bytes.len());
+        let words = alloc_binary_word_count(bytes.len());
         let heap = self.alloc_words(words)?;
-        write_binary(heap, bytes).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        alloc_binary(heap, bytes).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
     /// Allocate a big integer on the calling process heap.

@@ -3,7 +3,7 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::Cons;
 
 pub fn bif_string_replace(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -140,7 +140,7 @@ pub fn bif_inspect(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     let [value] = args else {
         return Err(badarg());
     };
-    if let Some(binary) = Binary::new(*value) {
+    if let Some(binary) = BinaryRef::new(*value) {
         return context.alloc_binary(binary.as_bytes());
     }
     if let Some(integer) = value.as_small_int() {
@@ -207,7 +207,7 @@ fn collect_iodata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
         bytes.push(byte);
         return Ok(());
     }
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         bytes.extend_from_slice(binary.as_bytes());
         return Ok(());
     }
@@ -219,7 +219,9 @@ fn collect_iodata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
-    Binary::new(term).map(Binary::as_bytes).ok_or_else(badarg)
+    BinaryRef::new(term)
+        .map(|binary| binary.as_bytes())
+        .ok_or_else(badarg)
 }
 
 fn non_negative_usize(term: Term) -> Result<usize, Term> {

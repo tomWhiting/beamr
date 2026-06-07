@@ -7,8 +7,9 @@ use crate::loader::decode::compact::Operand;
 use crate::module::Module;
 use crate::process::Process;
 use crate::term::Term;
-use crate::term::binary::{Binary, packed_word_count, write_binary};
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{BoxedHeader, BoxedTag, write_float};
+use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 type GetOperands<'a> = (
     &'a Operand,
     &'a Operand,
@@ -28,7 +29,7 @@ pub(super) fn bs_start_match(
         _ => return Err(ExecError::InvalidOperand("bs_start_match operands")),
     };
     let source = core::read_term(process, module, source)?;
-    let Some(binary) = Binary::new(source) else {
+    let Some(binary) = BinaryRef::new(source) else {
         return jump_label(module, fail);
     };
     let ptr = process
@@ -488,7 +489,7 @@ fn match_bytes(context: MatchContext, bits: usize, expected: &[u8]) -> Result<bo
     Ok(context.slice(bits).ok_or(ExecError::Badarg)? == expected)
 }
 fn allocate_binary(process: &mut Process, bytes: &[u8]) -> Result<Term, ExecError> {
-    let words = 2 + packed_word_count(bytes.len());
+    let words = alloc_binary_word_count(bytes.len());
     if process.heap().available() < words {
         return Err(ExecError::GcNeeded {
             requested: words,
@@ -496,7 +497,7 @@ fn allocate_binary(process: &mut Process, bytes: &[u8]) -> Result<Term, ExecErro
         });
     }
     let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
-    write_binary(heap_slice(ptr, words), bytes).ok_or(ExecError::Badarg)
+    alloc_binary(heap_slice(ptr, words), bytes).ok_or(ExecError::Badarg)
 }
 fn read_context(
     process: &Process,
@@ -574,8 +575,8 @@ impl MatchContext {
     pub(crate) fn total_bits(self) -> usize {
         read_word(self.ptr, 2) as usize
     }
-    fn source(self) -> Option<Binary> {
-        Binary::new(Term::from_raw(read_word(self.ptr, 3)))
+    fn source(self) -> Option<BinaryRef> {
+        BinaryRef::new(Term::from_raw(read_word(self.ptr, 3)))
     }
     pub(crate) fn remaining_bits(self) -> usize {
         self.total_bits().saturating_sub(self.position_bits())

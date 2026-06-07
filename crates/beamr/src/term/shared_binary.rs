@@ -6,14 +6,29 @@
 
 use std::sync::Arc;
 
-use crate::term::{
-    Term,
-    boxed::{BoxedHeader, BoxedTag},
-};
+use crate::term::Term;
+use crate::term::binary::{packed_word_count, write_binary};
+use crate::term::boxed::{BoxedHeader, BoxedTag};
+
+/// Maximum byte length stored as an inline heap binary.
+///
+/// BEAM-compatible binary allocation keeps binaries with length less than or
+/// equal to this threshold in the process heap. Larger binaries are promoted to
+/// ProcBin terms that reference immutable off-heap storage.
+pub const REFC_BINARY_THRESHOLD: usize = 64;
 
 const PROC_BIN_PAYLOAD_WORDS: usize = 2;
 const PROC_BIN_WORDS: usize = 1 + PROC_BIN_PAYLOAD_WORDS;
 const PROC_BIN_FLAGS: u64 = 0;
+
+/// Number of heap words required for threshold-aware binary allocation.
+pub const fn alloc_binary_word_count(byte_len: usize) -> usize {
+    if byte_len <= REFC_BINARY_THRESHOLD {
+        2 + packed_word_count(byte_len)
+    } else {
+        PROC_BIN_WORDS
+    }
+}
 
 /// Off-heap immutable binary bytes shared by reference count.
 #[derive(Clone, Debug)]
@@ -87,6 +102,17 @@ pub fn write_proc_bin(heap: &mut [u64], shared: &SharedBinary) -> Option<Term> {
     Some(Term::boxed_ptr(heap.as_ptr()))
 }
 
+/// Allocates binary bytes using inline storage up to [`REFC_BINARY_THRESHOLD`]
+/// and ProcBin/refc storage above it.
+pub fn alloc_binary(heap: &mut [u64], bytes: &[u8]) -> Option<Term> {
+    if bytes.len() <= REFC_BINARY_THRESHOLD {
+        write_binary(heap, bytes)
+    } else {
+        let shared = SharedBinary::new(bytes.to_vec());
+        write_proc_bin(heap, &shared)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +168,39 @@ mod tests {
         let cloned = proc_bin.shared_binary();
         assert_eq!(cloned.as_bytes(), b"proc-bin");
         assert_eq!(shared.ref_count(), 3);
+    }
+
+    #[test]
+    fn alloc_binary_stores_empty_and_threshold_sized_binaries_inline() {
+        for bytes in [Vec::new(), vec![0xAB; REFC_BINARY_THRESHOLD]] {
+            let mut heap = vec![0_u64; alloc_binary_word_count(bytes.len())];
+            let term = alloc_binary(&mut heap, &bytes).expect("binary should fit");
+
+            assert!(term.is_boxed());
+            assert_eq!(BoxedHeader::tag(heap[0]), Some(BoxedTag::Binary));
+            assert_eq!(
+                crate::term::binary::Binary::new(term)
+                    .expect("inline binary")
+                    .as_bytes(),
+                bytes.as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn alloc_binary_promotes_above_threshold_to_proc_bin() {
+        let bytes = [0xCD; REFC_BINARY_THRESHOLD + 1];
+        let mut heap = vec![0_u64; alloc_binary_word_count(bytes.len())];
+        let term = alloc_binary(&mut heap, &bytes).expect("binary should fit");
+
+        assert!(term.is_boxed());
+        assert_eq!(BoxedHeader::tag(heap[0]), Some(BoxedTag::ProcBin));
+        assert_eq!(
+            crate::term::boxed::ProcBin::new(term)
+                .expect("proc bin")
+                .as_bytes(),
+            bytes
+        );
+        assert_eq!(heap.len(), PROC_BIN_WORDS);
     }
 }
