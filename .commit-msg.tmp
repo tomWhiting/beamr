@@ -1,1 +1,1 @@
-Harden B-051 process-heap native allocation tests
+fix(beamr): return after native tail-call BIFs
