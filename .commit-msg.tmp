@@ -1,1 +1,1 @@
-review: harden B-085 spawn_opt option coverage
+feat(etf): add term_to_iovec scatter-gather encoding

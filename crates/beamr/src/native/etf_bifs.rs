@@ -2,7 +2,9 @@
 
 use crate::atom::{Atom, AtomTable};
 use crate::etf::decode::{DecodeOptions, decode_term, decode_term_with_options};
-use crate::etf::encode::{EncodeOptions, encode_term, encode_term_with_options};
+use crate::etf::encode::{
+    EncodeOptions, IoSegment, encode_term, encode_term_iovec, encode_term_with_options,
+};
 use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
@@ -13,6 +15,8 @@ use crate::term::boxed::{Cons, Tuple};
 const ETF_BIFS: &[(&str, u8, Capability, NativeFn)] = &[
     ("term_to_binary", 1, Capability::Pure, bif_term_to_binary),
     ("term_to_binary", 2, Capability::Pure, bif_term_to_binary_2),
+    ("term_to_iovec", 1, Capability::Pure, bif_term_to_iovec),
+    ("term_to_iovec", 2, Capability::Pure, bif_term_to_iovec_2),
     ("binary_to_term", 1, Capability::Pure, bif_binary_to_term),
     ("binary_to_term", 2, Capability::Pure, bif_binary_to_term_2),
 ];
@@ -48,6 +52,38 @@ pub fn bif_term_to_binary_2(args: &[Term], context: &mut ProcessContext) -> Resu
     context.alloc_binary(&bytes)
 }
 
+pub fn bif_term_to_iovec(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [term] = args else {
+        return Err(badarg());
+    };
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let segments = encode_term_iovec(*term, atom_table).map_err(|_| badarg())?;
+    segments_to_iolist(segments, context)
+}
+
+pub fn bif_term_to_iovec_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [term, options] = args else {
+        return Err(badarg());
+    };
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let options = parse_encode_options(*options, atom_table)?;
+    let segments = encode_term_iovec(*term, atom_table).map_err(|_| badarg())?;
+    if options.compression_level.is_none() || options.compression_level == Some(0) {
+        return segments_to_iolist(segments, context);
+    }
+
+    let has_references = segments
+        .iter()
+        .any(|segment| matches!(segment, IoSegment::Reference(_)));
+    if has_references {
+        segments_to_iolist(segments, context)
+    } else {
+        let bytes = encode_term_with_options(*term, atom_table, options).map_err(|_| badarg())?;
+        let binary = context.alloc_binary(&bytes)?;
+        context.alloc_list(&[binary])
+    }
+}
+
 pub fn bif_binary_to_term(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [binary] = args else {
         return Err(badarg());
@@ -73,6 +109,20 @@ pub fn bif_binary_to_term_2(args: &[Term], context: &mut ProcessContext) -> Resu
     } else {
         Ok(decoded.term)
     }
+}
+
+fn segments_to_iolist(
+    segments: Vec<IoSegment>,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let mut terms = Vec::with_capacity(segments.len());
+    for segment in segments {
+        terms.push(match segment {
+            IoSegment::Owned(bytes) => context.alloc_binary(&bytes)?,
+            IoSegment::Reference(binary_term) => binary_term,
+        });
+    }
+    context.alloc_list(&terms)
 }
 
 fn parse_encode_options(options: Term, atom_table: &AtomTable) -> Result<EncodeOptions, Term> {
@@ -145,14 +195,16 @@ mod tests {
     use crate::native::{BifRegistryImpl, Capability, ProcessContext};
     use crate::process::Process;
     use crate::term::Term;
-    use crate::term::binary::Binary;
+    use crate::term::binary::{Binary, packed_word_count, write_binary};
     use crate::term::binary_ref::BinaryRef;
     use crate::term::boxed::{Tuple, write_cons, write_tuple};
 
     use super::{
         bif_binary_to_term, bif_binary_to_term_2, bif_term_to_binary, bif_term_to_binary_2,
-        parse_decode_options, parse_encode_options, register_etf_bifs,
+        bif_term_to_iovec, bif_term_to_iovec_2, parse_decode_options, parse_encode_options,
+        register_etf_bifs,
     };
+    use crate::native::stdlib_stubs::type_conversion_bifs::bif_iolist_to_binary;
 
     fn badarg() -> Term {
         Term::atom(Atom::BADARG)
@@ -179,6 +231,8 @@ mod tests {
         for (name, arity) in [
             ("term_to_binary", 1),
             ("term_to_binary", 2),
+            ("term_to_iovec", 1),
+            ("term_to_iovec", 2),
             ("binary_to_term", 1),
             ("binary_to_term", 2),
         ] {
@@ -218,6 +272,100 @@ mod tests {
                 42,
             ]
         );
+    }
+
+    fn list_elements(list: Term) -> Vec<Term> {
+        let mut elements = Vec::new();
+        let mut current = list;
+        while !current.is_nil() {
+            let cons = Cons::new(current).expect("proper list");
+            elements.push(cons.head());
+            current = cons.tail();
+        }
+        elements
+    }
+
+    fn inline_binary(bytes: &[u8]) -> (Vec<u64>, Term) {
+        let mut heap = vec![0_u64; 2 + packed_word_count(bytes.len())];
+        let term = write_binary(&mut heap, bytes).expect("binary fits");
+        (heap, term)
+    }
+
+    #[test]
+    fn term_to_iovec_returns_iolist_with_large_binary_reference() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let data_atom = atom_table.intern("data");
+        let bytes = vec![3_u8; 64];
+        let (_binary_heap, large_binary) = inline_binary(&bytes);
+        let mut tuple_heap = [0_u64; 3];
+        let tuple =
+            write_tuple(&mut tuple_heap, &[Term::atom(data_atom), large_binary]).expect("tuple");
+        let mut process = Process::new(1, 256);
+        let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+
+        let iolist = bif_term_to_iovec(&[tuple], &mut context).expect("term_to_iovec");
+        let elements = list_elements(iolist);
+
+        assert!(elements.len() >= 2);
+        assert!(elements.iter().all(|term| BinaryRef::new(*term).is_some()));
+        assert!(elements.contains(&large_binary));
+    }
+
+    #[test]
+    fn term_to_iovec_iolist_to_binary_matches_term_to_binary() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let data_atom = atom_table.intern("data");
+        let bytes = vec![4_u8; 64];
+        let (_binary_heap, large_binary) = inline_binary(&bytes);
+        let mut tuple_heap = [0_u64; 3];
+        let tuple =
+            write_tuple(&mut tuple_heap, &[Term::atom(data_atom), large_binary]).expect("tuple");
+        let mut process = Process::new(1, 512);
+
+        let iolist = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            bif_term_to_iovec(&[tuple], &mut context).expect("term_to_iovec")
+        };
+        let flattened = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            bif_iolist_to_binary(&[iolist], &mut context).expect("iolist_to_binary")
+        };
+        let term_binary = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            bif_term_to_binary(&[tuple], &mut context).expect("term_to_binary")
+        };
+
+        assert_eq!(
+            BinaryRef::new(flattened).expect("flattened").as_bytes(),
+            BinaryRef::new(term_binary).expect("term binary").as_bytes()
+        );
+    }
+
+    #[test]
+    fn term_to_iovec_2_reuses_encode_options_and_preserves_references() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let compressed_atom = atom_table.intern("compressed");
+        let data_atom = atom_table.intern("data");
+        let bytes = vec![5_u8; 64];
+        let (_binary_heap, large_binary) = inline_binary(&bytes);
+        let mut tuple_heap = [0_u64; 3];
+        let tuple =
+            write_tuple(&mut tuple_heap, &[Term::atom(data_atom), large_binary]).expect("tuple");
+        let mut process = Process::new(1, 512);
+        let options = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            context
+                .alloc_list(&[Term::atom(compressed_atom)])
+                .expect("options")
+        };
+
+        let iolist = {
+            let mut context = ctx_with_atoms(&mut process, Arc::clone(&atom_table));
+            bif_term_to_iovec_2(&[tuple, options], &mut context).expect("term_to_iovec/2")
+        };
+        let elements = list_elements(iolist);
+
+        assert!(elements.contains(&large_binary));
     }
 
     #[test]

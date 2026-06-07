@@ -1,7 +1,7 @@
 //! Encoder for Erlang's external term format (ETF).
 
 use crate::atom::{Atom, AtomTable};
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple};
 use crate::term::{Tag, Term};
 use flate2::Compression;
@@ -12,6 +12,7 @@ use super::tags;
 
 const MAX_ETF_DEPTH: usize = 256;
 const NONODE_NOHOST: &str = "nonode@nohost";
+const IOVEC_BINARY_REFERENCE_THRESHOLD: usize = 64;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum EncodeError {
@@ -26,10 +27,26 @@ pub struct EncodeOptions {
     pub compression_level: Option<u32>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum IoSegment {
+    Owned(Vec<u8>),
+    Reference(Term),
+}
+
 pub fn encode_term(term: Term, atom_table: &AtomTable) -> Result<Vec<u8>, EncodeError> {
     let mut out = vec![tags::VERSION];
     encode_term_inner(term, atom_table, &mut out, 0)?;
     Ok(out)
+}
+
+pub fn encode_term_iovec(
+    term: Term,
+    atom_table: &AtomTable,
+) -> Result<Vec<IoSegment>, EncodeError> {
+    let mut out = SegmentBuilder::new();
+    out.bytes().push(tags::VERSION);
+    encode_term_iovec_inner(term, atom_table, &mut out, 0)?;
+    Ok(out.finish())
 }
 
 pub fn encode_term_with_options(
@@ -186,6 +203,107 @@ fn encode_reference(reference: Reference, out: &mut Vec<u8>) -> Result<(), Encod
     Ok(())
 }
 
+struct SegmentBuilder {
+    segments: Vec<IoSegment>,
+    current: Vec<u8>,
+}
+
+impl SegmentBuilder {
+    fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+            current: Vec::new(),
+        }
+    }
+
+    fn bytes(&mut self) -> &mut Vec<u8> {
+        &mut self.current
+    }
+
+    fn flush(&mut self) {
+        if !self.current.is_empty() {
+            self.segments
+                .push(IoSegment::Owned(std::mem::take(&mut self.current)));
+        }
+    }
+
+    fn push_reference(&mut self, term: Term) {
+        self.flush();
+        self.segments.push(IoSegment::Reference(term));
+    }
+
+    fn finish(mut self) -> Vec<IoSegment> {
+        self.flush();
+        self.segments
+    }
+}
+
+fn encode_term_iovec_inner(
+    term: Term,
+    atom_table: &AtomTable,
+    out: &mut SegmentBuilder,
+    depth: usize,
+) -> Result<(), EncodeError> {
+    if depth > MAX_ETF_DEPTH {
+        return Err(EncodeError::TooDeep);
+    }
+
+    match term.tag() {
+        Tag::SmallInt => encode_integer(
+            term.as_small_int().ok_or(EncodeError::UnsupportedTerm)?,
+            out.bytes(),
+        ),
+        Tag::Atom => encode_atom(
+            term.as_atom().ok_or(EncodeError::UnsupportedTerm)?,
+            atom_table,
+            out.bytes(),
+        ),
+        Tag::Pid => encode_pid(
+            term.as_pid().ok_or(EncodeError::UnsupportedTerm)?,
+            out.bytes(),
+        ),
+        Tag::Nil => {
+            out.bytes().push(tags::NIL_EXT);
+            Ok(())
+        }
+        Tag::List => encode_list_iovec(term, atom_table, out, depth),
+        Tag::Boxed => encode_boxed_iovec(term, atom_table, out, depth),
+    }
+}
+
+fn encode_boxed_iovec(
+    term: Term,
+    atom_table: &AtomTable,
+    out: &mut SegmentBuilder,
+    depth: usize,
+) -> Result<(), EncodeError> {
+    if let Some(float) = Float::new(term) {
+        out.bytes().push(tags::NEW_FLOAT_EXT);
+        out.bytes()
+            .extend_from_slice(&float.value().to_bits().to_be_bytes());
+        return Ok(());
+    }
+    if let Some(tuple) = Tuple::new(term) {
+        return encode_tuple_iovec(tuple, atom_table, out, depth);
+    }
+    if let Some(binary) = BinaryRef::new(term) {
+        return encode_binary_iovec(term, binary, out);
+    }
+    if let Some(map) = Map::new(term) {
+        return encode_map_iovec(map, atom_table, out, depth);
+    }
+    if let Some(bigint) = BigInt::new(term) {
+        return encode_bigint(bigint, out.bytes());
+    }
+    if let Some(reference) = Reference::new(term) {
+        return encode_reference(reference, out.bytes());
+    }
+    if let Some(closure) = Closure::new(term) {
+        return encode_closure_iovec(closure, atom_table, out, depth);
+    }
+    Err(EncodeError::UnsupportedTerm)
+}
+
 fn encode_boxed(
     term: Term,
     atom_table: &AtomTable,
@@ -200,7 +318,7 @@ fn encode_boxed(
     if let Some(tuple) = Tuple::new(term) {
         return encode_tuple(tuple, atom_table, out, depth);
     }
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         return encode_binary(binary, out);
     }
     if let Some(map) = Map::new(term) {
@@ -237,6 +355,32 @@ fn encode_tuple(
     for index in 0..arity {
         let element = tuple.get(index).ok_or(EncodeError::UnsupportedTerm)?;
         encode_term_inner(element, atom_table, out, depth + 1)?;
+    }
+    Ok(())
+}
+
+fn encode_tuple_iovec(
+    tuple: Tuple,
+    atom_table: &AtomTable,
+    out: &mut SegmentBuilder,
+    depth: usize,
+) -> Result<(), EncodeError> {
+    let arity = tuple.arity();
+    if let Ok(small_arity) = u8::try_from(arity) {
+        out.bytes().push(tags::SMALL_TUPLE_EXT);
+        out.bytes().push(small_arity);
+    } else {
+        let large_arity = u32::try_from(arity).map_err(|_| EncodeError::UnsupportedTerm)?;
+        out.bytes().push(tags::LARGE_TUPLE_EXT);
+        out.bytes().extend_from_slice(&large_arity.to_be_bytes());
+    }
+    for index in 0..arity {
+        encode_term_iovec_inner(
+            tuple.get(index).ok_or(EncodeError::UnsupportedTerm)?,
+            atom_table,
+            out,
+            depth + 1,
+        )?;
     }
     Ok(())
 }
@@ -278,6 +422,44 @@ fn encode_list(
     encode_term_inner(tail, atom_table, out, depth + 1)
 }
 
+fn encode_list_iovec(
+    term: Term,
+    atom_table: &AtomTable,
+    out: &mut SegmentBuilder,
+    depth: usize,
+) -> Result<(), EncodeError> {
+    let (elements, tail) = collect_list(term)?;
+    if tail.is_nil() && elements.len() <= u16::MAX as usize {
+        let mut bytes = Vec::with_capacity(elements.len());
+        for element in &elements {
+            let Some(value) = element.as_small_int() else {
+                bytes.clear();
+                break;
+            };
+            let Ok(byte) = u8::try_from(value) else {
+                bytes.clear();
+                break;
+            };
+            bytes.push(byte);
+        }
+        if bytes.len() == elements.len() {
+            out.bytes().push(tags::STRING_EXT);
+            out.bytes()
+                .extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+            out.bytes().extend_from_slice(&bytes);
+            return Ok(());
+        }
+    }
+
+    let length = u32::try_from(elements.len()).map_err(|_| EncodeError::UnsupportedTerm)?;
+    out.bytes().push(tags::LIST_EXT);
+    out.bytes().extend_from_slice(&length.to_be_bytes());
+    for element in elements {
+        encode_term_iovec_inner(element, atom_table, out, depth + 1)?;
+    }
+    encode_term_iovec_inner(tail, atom_table, out, depth + 1)
+}
+
 fn collect_list(term: Term) -> Result<(Vec<Term>, Term), EncodeError> {
     let mut elements = Vec::new();
     let mut current = term;
@@ -289,12 +471,30 @@ fn collect_list(term: Term) -> Result<(Vec<Term>, Term), EncodeError> {
     Ok((elements, current))
 }
 
-fn encode_binary(binary: Binary, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+fn encode_binary(binary: BinaryRef, out: &mut Vec<u8>) -> Result<(), EncodeError> {
     let bytes = binary.as_bytes();
     let length = u32::try_from(bytes.len()).map_err(|_| EncodeError::UnsupportedTerm)?;
     out.push(tags::BINARY_EXT);
     out.extend_from_slice(&length.to_be_bytes());
     out.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn encode_binary_iovec(
+    term: Term,
+    binary: BinaryRef,
+    out: &mut SegmentBuilder,
+) -> Result<(), EncodeError> {
+    let length = u32::try_from(binary.len()).map_err(|_| EncodeError::UnsupportedTerm)?;
+    if binary.len() < IOVEC_BINARY_REFERENCE_THRESHOLD {
+        return encode_binary(binary, out.bytes());
+    }
+
+    out.flush();
+    out.bytes().push(tags::BINARY_EXT);
+    out.bytes().extend_from_slice(&length.to_be_bytes());
+    out.flush();
+    out.push_reference(term);
     Ok(())
 }
 
@@ -312,6 +512,32 @@ fn encode_map(
         let value = map.value(index).ok_or(EncodeError::UnsupportedTerm)?;
         encode_term_inner(key, atom_table, out, depth + 1)?;
         encode_term_inner(value, atom_table, out, depth + 1)?;
+    }
+    Ok(())
+}
+
+fn encode_map_iovec(
+    map: Map,
+    atom_table: &AtomTable,
+    out: &mut SegmentBuilder,
+    depth: usize,
+) -> Result<(), EncodeError> {
+    let len = u32::try_from(map.len()).map_err(|_| EncodeError::UnsupportedTerm)?;
+    out.bytes().push(tags::MAP_EXT);
+    out.bytes().extend_from_slice(&len.to_be_bytes());
+    for index in 0..map.len() {
+        encode_term_iovec_inner(
+            map.key(index).ok_or(EncodeError::UnsupportedTerm)?,
+            atom_table,
+            out,
+            depth + 1,
+        )?;
+        encode_term_iovec_inner(
+            map.value(index).ok_or(EncodeError::UnsupportedTerm)?,
+            atom_table,
+            out,
+            depth + 1,
+        )?;
     }
     Ok(())
 }
@@ -346,12 +572,43 @@ fn encode_closure(
     )
 }
 
+fn encode_closure_iovec(
+    closure: Closure,
+    atom_table: &AtomTable,
+    out: &mut SegmentBuilder,
+    depth: usize,
+) -> Result<(), EncodeError> {
+    if closure.num_free() != 0 {
+        return Err(EncodeError::UnsupportedTerm);
+    }
+    let function_index =
+        u32::try_from(closure.function_index()).map_err(|_| EncodeError::UnsupportedTerm)?;
+
+    out.bytes().push(tags::EXPORT_EXT);
+    let module = closure.module().ok_or(EncodeError::UnsupportedTerm)?;
+    encode_term_iovec_inner(Term::atom(module), atom_table, out, depth + 1)?;
+    encode_term_iovec_inner(
+        Term::atom(Atom::new(function_index)),
+        atom_table,
+        out,
+        depth + 1,
+    )?;
+    encode_term_iovec_inner(
+        Term::small_int(i64::from(closure.arity())),
+        atom_table,
+        out,
+        depth + 1,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::atom::Atom;
+    use crate::term::binary::packed_word_count;
     use crate::term::binary::write_binary;
     use crate::term::boxed::{write_bigint, write_cons, write_float, write_map, write_tuple};
+    use crate::term::shared_binary::{SharedBinary, write_proc_bin};
     use flate2::read::ZlibDecoder;
     use std::io::Read;
 
@@ -519,6 +776,99 @@ mod tests {
         );
     }
 
+    fn flatten_segments(segments: &[IoSegment]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for segment in segments {
+            match segment {
+                IoSegment::Owned(segment_bytes) => bytes.extend_from_slice(segment_bytes),
+                IoSegment::Reference(term) => bytes.extend_from_slice(
+                    BinaryRef::new(*term)
+                        .expect("reference segment should be binary")
+                        .as_bytes(),
+                ),
+            }
+        }
+        bytes
+    }
+
+    fn inline_binary(bytes: &[u8]) -> (Vec<u64>, Term) {
+        let mut heap = vec![0_u64; 2 + packed_word_count(bytes.len())];
+        let term = write_binary(&mut heap, bytes).expect("binary fits");
+        (heap, term)
+    }
+
+    #[test]
+    fn encode_term_iovec_small_binary_stays_in_single_owned_segment() {
+        let (_heap, binary) = inline_binary(b"small");
+        let segments = encode_term_iovec(binary, &atoms()).expect("iovec");
+        let encoded = encode_term(binary, &atoms()).expect("encoded");
+
+        assert_eq!(segments, vec![IoSegment::Owned(encoded.clone())]);
+        assert_eq!(flatten_segments(&segments), encoded);
+    }
+
+    #[test]
+    fn encode_term_iovec_large_binary_emits_header_and_reference() {
+        let bytes = vec![7_u8; IOVEC_BINARY_REFERENCE_THRESHOLD];
+        let (_heap, binary) = inline_binary(&bytes);
+        let segments = encode_term_iovec(binary, &atoms()).expect("iovec");
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(
+            segments[0],
+            IoSegment::Owned(vec![tags::VERSION, tags::BINARY_EXT, 0, 0, 0, 64])
+        );
+        assert_eq!(segments[1], IoSegment::Reference(binary));
+        assert_eq!(
+            flatten_segments(&segments),
+            encode_term(binary, &atoms()).expect("encoded")
+        );
+    }
+
+    #[test]
+    fn encode_term_iovec_references_proc_bins() {
+        let shared = SharedBinary::new(vec![9_u8; IOVEC_BINARY_REFERENCE_THRESHOLD + 1]);
+        let mut heap = [0_u64; 3];
+        let binary = write_proc_bin(&mut heap, &shared).expect("proc bin");
+        let segments = encode_term_iovec(binary, &atoms()).expect("iovec");
+
+        assert!(matches!(
+            segments.as_slice(),
+            [IoSegment::Owned(_), IoSegment::Reference(term)]
+                if *term == binary
+        ));
+        assert_eq!(
+            flatten_segments(&segments),
+            encode_term(binary, &atoms()).expect("encoded")
+        );
+    }
+
+    #[test]
+    fn encode_term_iovec_nested_large_binaries_match_flat_encoding() {
+        let table = AtomTable::with_common_atoms();
+        let key_atom = table.intern("payload");
+        let bytes = vec![1_u8; IOVEC_BINARY_REFERENCE_THRESHOLD];
+        let (_binary_heap, binary) = inline_binary(&bytes);
+        let mut tuple_heap = [0_u64; 3];
+        let tuple = write_tuple(&mut tuple_heap, &[Term::atom(Atom::OK), binary]).expect("tuple");
+        let mut cons_heap = [0_u64; 2];
+        let list = write_cons(&mut cons_heap, binary, Term::NIL).expect("list");
+        let mut map_heap = [0_u64; 4];
+        let map = write_map(&mut map_heap, &[Term::atom(key_atom)], &[binary]).expect("map");
+
+        for term in [tuple, list, map] {
+            let segments = encode_term_iovec(term, &table).expect("iovec");
+            assert!(segments.iter().any(|segment| matches!(
+                segment,
+                IoSegment::Reference(reference) if *reference == binary
+            )));
+            assert_eq!(
+                flatten_segments(&segments),
+                encode_term(term, &table).expect("encoded")
+            );
+        }
+    }
+
     #[test]
     fn compression_wraps_payload_when_smaller() {
         let table = AtomTable::with_common_atoms();
@@ -599,6 +949,7 @@ mod tests {
         }
 
         assert_eq!(encode_term(term, &atoms()), Err(EncodeError::TooDeep));
+        assert_eq!(encode_term_iovec(term, &atoms()), Err(EncodeError::TooDeep));
     }
 
     #[test]
@@ -610,5 +961,6 @@ mod tests {
         }
 
         assert_eq!(encode_term(term, &atoms()), Err(EncodeError::TooDeep));
+        assert_eq!(encode_term_iovec(term, &atoms()), Err(EncodeError::TooDeep));
     }
 }
