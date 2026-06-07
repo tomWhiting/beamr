@@ -344,6 +344,51 @@ fn swap_exchanges_y_and_x_registers_without_clobbering() {
 }
 
 #[test]
+fn swap_exchanges_y_registers_without_clobbering() {
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::AllocateZero {
+                stack_need: Operand::Unsigned(2),
+                live: Operand::Unsigned(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(42),
+                destination: Operand::Y(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(99),
+                destination: Operand::Y(1),
+            },
+            Instruction::Swap {
+                left: Operand::Y(0),
+                right: Operand::Y(1),
+            },
+            Instruction::Move {
+                source: Operand::Y(0),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Y(1),
+                destination: Operand::X(1),
+            },
+            Instruction::Deallocate {
+                words: Operand::Unsigned(2),
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(2, 32);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(99));
+    assert_eq!(process.x_reg(1), Term::small_int(42));
+}
+
+#[test]
 fn swap_same_register_is_no_op() {
     let module = module(
         Atom::OK,

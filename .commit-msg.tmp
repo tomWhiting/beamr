@@ -1,1 +1,1 @@
-feat(beamr): support swap opcode dispatch and execution
+harden(beamr): cover Y-Y swap register execution
