@@ -222,6 +222,7 @@ pub(crate) fn rewrite_copied_object(
             }
         }
         BoxedTag::MatchContext => rewrite_word(ptr, 3, work_queue, &mut copy_term)?,
+        BoxedTag::SubBinary => rewrite_word(ptr, 1, work_queue, &mut copy_term)?,
         BoxedTag::ProcBin => retain_proc_bin_arc(ptr),
         BoxedTag::Float
         | BoxedTag::BigInt

@@ -1,13 +1,16 @@
-use super::*;
 use super::construction::{BinaryBuilder, bs_put_binary, bs_put_integer, finalize_builder};
 use super::matching::{Endian, MatchContext, SegmentFlags, decode_integer};
+use super::*;
 use crate::atom::Atom;
 use crate::loader::{Instruction, Literal};
 use crate::module::Module;
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
-use crate::term::boxed::Float;
+use crate::term::binary_ref::BinaryRef;
+use crate::term::boxed::{Float, SubBinary};
+use crate::term::shared_binary::{SharedBinary, write_proc_bin};
+use crate::term::sub_binary::SUB_BINARY_WORDS;
 use std::collections::HashMap;
 
 fn module(code: Vec<Instruction>) -> Module {
@@ -41,6 +44,12 @@ fn binary_term(process: &mut Process, bytes: &[u8]) -> Term {
     let ptr = process.heap_mut().alloc(words).expect("test heap fits");
     let heap = heap_slice(ptr, words);
     write_binary(heap, bytes).expect("test binary fits")
+}
+
+fn proc_bin_term(process: &mut Process, shared: &SharedBinary) -> Term {
+    let ptr = process.heap_mut().alloc(3).expect("test heap fits");
+    let heap = heap_slice(ptr, 3);
+    write_proc_bin(heap, shared).expect("test proc bin fits")
 }
 
 fn start_context(process: &mut Process, source_bytes: &[u8]) -> (Module, Term) {
@@ -253,6 +262,67 @@ fn interpreter_binary_match_extracts_fields_and_tail() {
         ),
         Ok(InstructionOutcome::Continue)
     );
+}
+
+#[test]
+fn interpreter_binary_match_extracts_sub_binary_from_proc_bin_without_copying() {
+    let mut process = Process::new(1, 64);
+    let module = module(vec![Instruction::Label { label: 9 }]);
+    let bytes: Vec<u8> = (0_u8..=255).cycle().take(1024 * 1024).collect();
+    let shared = SharedBinary::new(bytes);
+    let source = proc_bin_term(&mut process, &shared);
+    process.set_x_reg(0, source);
+    assert_eq!(shared.ref_count(), 2);
+
+    binary_op(
+        &mut process,
+        &module,
+        BinaryOp::BsStartMatch3,
+        &[Operand::Label(9), Operand::X(0), Operand::X(1)],
+    )
+    .expect("start match");
+    binary_op(
+        &mut process,
+        &module,
+        BinaryOp::BsSkipBits2,
+        &[
+            Operand::Label(9),
+            Operand::X(1),
+            Operand::Unsigned(10 * u8::BITS as u64),
+            Operand::Unsigned(1),
+            Operand::Atom(None),
+        ],
+    )
+    .expect("skip offset");
+    let before_available = process.heap().available();
+    binary_op(
+        &mut process,
+        &module,
+        BinaryOp::BsGetBinary2,
+        &[
+            Operand::Label(9),
+            Operand::X(1),
+            Operand::Unsigned(10 * u8::BITS as u64),
+            Operand::Unsigned(1),
+            Operand::Atom(None),
+            Operand::X(2),
+        ],
+    )
+    .expect("get proc bin slice");
+
+    assert_eq!(
+        before_available - process.heap().available(),
+        SUB_BINARY_WORDS
+    );
+    let sub_binary = SubBinary::new(process.x_reg(2)).expect("sub binary result");
+    assert_eq!(sub_binary.parent(), source);
+    assert_eq!(
+        BinaryRef::new(process.x_reg(2))
+            .expect("binary ref")
+            .as_bytes(),
+        &shared.as_bytes()[10..20]
+    );
+    assert_eq!(shared.ref_count(), 2);
 }
 
 #[test]
