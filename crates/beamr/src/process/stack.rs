@@ -421,7 +421,28 @@ mod tests {
     }
 
     #[test]
-    fn trim_y_registers_keeps_low_slots_and_updates_slot_count() {
+    fn stack_frame_trim_y_registers_keeps_low_slots_and_updates_slot_count() {
+        let mut frame = StackFrame::new(Atom::OK, 7, module_arc(Atom::OK), 5);
+        for (index, value) in (0_u16..).zip([10, 20, 30, 40, 50]) {
+            frame
+                .set_y_reg(index, Term::small_int(value))
+                .expect("allocated Y register should exist");
+        }
+
+        frame.trim_y_regs(3).expect("trim within frame slots");
+
+        assert_eq!(frame.y_slots(), 3);
+        assert_eq!(frame.y_reg(0), Ok(Term::small_int(10)));
+        assert_eq!(frame.y_reg(1), Ok(Term::small_int(20)));
+        assert_eq!(frame.y_reg(2), Ok(Term::small_int(30)));
+        assert_eq!(
+            frame.y_reg(3),
+            Err(StackError::YRegisterOutOfBounds { index: 3, slots: 3 })
+        );
+    }
+
+    #[test]
+    fn stack_trim_y_registers_keeps_low_slots_and_preserves_return_metadata() {
         let mut stack = Stack::new();
         let module_version = module_arc(Atom::OK);
 
@@ -435,6 +456,14 @@ mod tests {
         }
 
         stack.trim_y_regs(3).expect("trim within frame slots");
+
+        let growth_error = stack
+            .trim_y_regs(4)
+            .expect_err("trim must not grow current frame");
+        assert_eq!(
+            growth_error,
+            StackError::YRegisterOutOfBounds { index: 4, slots: 3 }
+        );
 
         let frame = stack.current_frame().expect("trim must not pop frame");
         assert_eq!(frame.y_slots(), 3);
