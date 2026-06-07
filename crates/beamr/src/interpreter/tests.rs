@@ -608,6 +608,207 @@ fn stack_heap_and_data_opcodes_work() {
 }
 
 #[test]
+fn update_record_copies_tuple_and_applies_pairs() {
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::PutTuple2 {
+                destination: Operand::X(0),
+                elements: Operand::List(vec![
+                    Operand::Atom(Some(Atom::OK)),
+                    Operand::Integer(1),
+                    Operand::Integer(2),
+                ]),
+            },
+            Instruction::Move {
+                source: Operand::Integer(99),
+                destination: Operand::X(2),
+            },
+            Instruction::UpdateRecord {
+                operands: vec![
+                    Operand::Atom(Some(Atom::OK)),
+                    Operand::Unsigned(3),
+                    Operand::X(0),
+                    Operand::X(1),
+                    Operand::Unsigned(2),
+                    Operand::X(2),
+                ],
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(1, 16);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let tuple = Tuple::new(process.x_reg(1)).expect("update_record creates tuple");
+    assert_eq!(tuple.arity(), 3);
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::OK)));
+    assert_eq!(tuple.get(1), Some(Term::small_int(99)));
+    assert_eq!(tuple.get(2), Some(Term::small_int(2)));
+}
+
+#[test]
+fn update_record_applies_multiple_pairs_and_supports_loader_list_shape() {
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::PutTuple2 {
+                destination: Operand::X(0),
+                elements: Operand::List(vec![
+                    Operand::Atom(Some(Atom::OK)),
+                    Operand::Atom(Some(Atom::ERROR)),
+                    Operand::Atom(Some(Atom::BADARG)),
+                ]),
+            },
+            Instruction::UpdateRecord {
+                operands: vec![
+                    Operand::Atom(Some(Atom::OK)),
+                    Operand::Unsigned(3),
+                    Operand::X(0),
+                    Operand::X(1),
+                    Operand::List(vec![
+                        Operand::Unsigned(1),
+                        Operand::Atom(Some(Atom::TRUE)),
+                        Operand::Unsigned(3),
+                        Operand::Atom(Some(Atom::FALSE)),
+                    ]),
+                ],
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(1, 16);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let tuple = Tuple::new(process.x_reg(1)).expect("update_record creates tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::TRUE)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(2), Some(Term::atom(Atom::FALSE)));
+}
+
+#[test]
+fn update_record_without_pairs_allocates_identical_copy() {
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::PutTuple2 {
+                destination: Operand::X(0),
+                elements: Operand::List(vec![Operand::Integer(1), Operand::Integer(2)]),
+            },
+            Instruction::UpdateRecord {
+                operands: vec![
+                    Operand::Atom(Some(Atom::OK)),
+                    Operand::Unsigned(2),
+                    Operand::X(0),
+                    Operand::X(1),
+                ],
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(1, 16);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let updated = Tuple::new(process.x_reg(1)).expect("copied tuple");
+    assert_eq!(updated.arity(), 2);
+    assert_eq!(updated.get(0), Some(Term::small_int(1)));
+    assert_eq!(updated.get(1), Some(Term::small_int(2)));
+    assert_ne!(process.x_reg(0).heap_ptr(), process.x_reg(1).heap_ptr());
+}
+
+#[test]
+fn update_record_rejects_bad_source_and_invalid_operands() {
+    let bad_source = module(
+        Atom::OK,
+        vec![Instruction::UpdateRecord {
+            operands: vec![
+                Operand::Atom(Some(Atom::OK)),
+                Operand::Unsigned(3),
+                Operand::Integer(1),
+                Operand::X(0),
+                Operand::Unsigned(1),
+                Operand::Integer(2),
+            ],
+        }],
+    );
+    assert_eq!(
+        run(&mut Process::new(1, 16), &bad_source),
+        Err(ExecError::Badarg)
+    );
+
+    let invalid_pairs = module(
+        Atom::OK,
+        vec![Instruction::UpdateRecord {
+            operands: vec![
+                Operand::Atom(Some(Atom::OK)),
+                Operand::Unsigned(3),
+                Operand::X(0),
+                Operand::X(1),
+                Operand::Unsigned(1),
+            ],
+        }],
+    );
+    assert_eq!(
+        run(&mut Process::new(1, 16), &invalid_pairs),
+        Err(ExecError::InvalidOperand("update_record pairs"))
+    );
+}
+
+#[test]
+fn update_record_survives_gc_before_allocation() {
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::PutTuple2 {
+                destination: Operand::X(0),
+                elements: Operand::List(vec![
+                    Operand::Integer(1),
+                    Operand::Integer(2),
+                    Operand::Integer(3),
+                ]),
+            },
+            Instruction::PutTuple2 {
+                destination: Operand::X(2),
+                elements: Operand::List(vec![Operand::Integer(9), Operand::Integer(8)]),
+            },
+            Instruction::UpdateRecord {
+                operands: vec![
+                    Operand::Atom(Some(Atom::OK)),
+                    Operand::Unsigned(3),
+                    Operand::X(0),
+                    Operand::X(1),
+                    Operand::Unsigned(2),
+                    Operand::X(2),
+                ],
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(1, 7);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert!(process.heap().old_used() > 0);
+    let tuple = Tuple::new(process.x_reg(1)).expect("updated tuple survives gc");
+    assert_eq!(tuple.get(0), Some(Term::small_int(1)));
+    assert_eq!(tuple.get(2), Some(Term::small_int(3)));
+    let nested = Tuple::new(tuple.get(1).expect("nested update value")).expect("nested tuple");
+    assert_eq!(nested.get(0), Some(Term::small_int(9)));
+    assert_eq!(nested.get(1), Some(Term::small_int(8)));
+}
+
+#[test]
 fn bad_tuple_access_and_heap_exhaustion_report_errors() {
     let bad_tuple = module(
         Atom::OK,

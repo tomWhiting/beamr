@@ -267,6 +267,98 @@ pub fn get_tuple_element(
     Ok(InstructionOutcome::Continue)
 }
 
+pub fn update_record(
+    process: &mut Process,
+    module: &Module,
+    operands: &[Operand],
+) -> Result<InstructionOutcome, ExecError> {
+    let parsed = parse_update_record_operands(operands)?;
+    let words = parsed
+        .arity
+        .checked_add(1)
+        .ok_or(ExecError::InvalidOperand("update_record tuple size"))?;
+
+    ensure_space(process, words, 256).map_err(gc_error_to_exec)?;
+
+    let source_term = read_term(process, module, parsed.source)?;
+    let tuple = Tuple::new(source_term).ok_or(ExecError::Badarg)?;
+    if tuple.arity() != parsed.arity {
+        return Err(ExecError::Badarg);
+    }
+
+    let mut values = Vec::with_capacity(parsed.arity);
+    for index in 0..parsed.arity {
+        values.push(tuple.get(index).ok_or(ExecError::Badarg)?);
+    }
+
+    for update in parsed.updates {
+        let slot = update.index.checked_sub(1).ok_or(ExecError::Badarg)?;
+        let value = values.get_mut(slot).ok_or(ExecError::Badarg)?;
+        *value = read_term(process, module, update.value)?;
+    }
+
+    let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
+    let heap = heap_slice(ptr, words);
+    let term = write_tuple(heap, &values).ok_or(ExecError::Badarg)?;
+    write_term(process, parsed.destination, term)?;
+    Ok(InstructionOutcome::Continue)
+}
+
+struct UpdateRecordOperands<'a> {
+    arity: usize,
+    source: &'a Operand,
+    destination: &'a Operand,
+    updates: Vec<UpdateRecordPair<'a>>,
+}
+
+struct UpdateRecordPair<'a> {
+    index: usize,
+    value: &'a Operand,
+}
+
+fn parse_update_record_operands(
+    operands: &[Operand],
+) -> Result<UpdateRecordOperands<'_>, ExecError> {
+    if operands.len() < 4 {
+        return Err(ExecError::InvalidOperand("update_record operands"));
+    }
+
+    let _hint = operand_atom(&operands[0])?;
+    let arity = operand_usize(&operands[1], "update_record arity")?;
+    let pair_operands = update_record_pair_operands(operands)?;
+    let update_count = pair_operands.len() / 2;
+    let mut updates = Vec::with_capacity(update_count);
+    for pair in pair_operands.chunks_exact(2) {
+        updates.push(UpdateRecordPair {
+            index: operand_usize(&pair[0], "update_record index")?,
+            value: &pair[1],
+        });
+    }
+
+    Ok(UpdateRecordOperands {
+        arity,
+        source: &operands[2],
+        destination: &operands[3],
+        updates,
+    })
+}
+
+fn update_record_pair_operands(operands: &[Operand]) -> Result<&[Operand], ExecError> {
+    if operands.len() == 5
+        && let Operand::List(pairs) = &operands[4]
+    {
+        if pairs.len() % 2 == 0 {
+            return Ok(pairs);
+        }
+        return Err(ExecError::InvalidOperand("update_record pairs"));
+    }
+
+    if !(operands.len() - 4).is_multiple_of(2) {
+        return Err(ExecError::InvalidOperand("update_record pairs"));
+    }
+    Ok(&operands[4..])
+}
+
 fn call_external_target(
     process: &mut Process,
     module: &Module,

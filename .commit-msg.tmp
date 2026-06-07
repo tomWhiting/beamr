@@ -1,1 +1,1 @@
-feat(beamr): implement get_list opcode decoding and execution
+feat(beamr): implement update_record opcode

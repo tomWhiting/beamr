@@ -214,6 +214,7 @@ fn dispatch_common(
         Instruction::GetList { source, head, tail } => {
             guards::get_list(process, module, source, head, tail)
         }
+        Instruction::UpdateRecord { operands } => core::update_record(process, module, operands),
         Instruction::GetHd {
             source,
             destination,
