@@ -26,6 +26,7 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
+use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::Cons;
@@ -93,8 +94,15 @@ use uri_bifs::{
     bif_uri_string_dissect_query, bif_uri_string_parse,
 };
 
-/// A stub BIF entry: (module_name, function_name, arity, implementation).
-type StubBif = (&'static str, &'static str, u8, Capability, NativeFn);
+/// A stub BIF entry: (module_name, function_name, arity, capability, dirty_kind, implementation).
+type StubBif = (
+    &'static str,
+    &'static str,
+    u8,
+    Capability,
+    Option<DirtySchedulerKind>,
+    NativeFn,
+);
 
 const STDLIB_STUBS: &[StubBif] = &[
     (
@@ -102,6 +110,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "atom_to_binary",
         1,
         Capability::Pure,
+        None,
         bif_atom_to_binary,
     ),
     (
@@ -109,6 +118,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "binary_to_float",
         1,
         Capability::Pure,
+        None,
         bif_binary_to_float,
     ),
     (
@@ -116,6 +126,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "binary_to_integer",
         1,
         Capability::Pure,
+        None,
         bif_binary_to_integer,
     ),
     (
@@ -123,14 +134,16 @@ const STDLIB_STUBS: &[StubBif] = &[
         "binary_to_integer",
         2,
         Capability::Pure,
+        None,
         bif_binary_to_integer_radix,
     ),
-    ("erlang", "float", 1, Capability::Pure, bif_float),
+    ("erlang", "float", 1, Capability::Pure, None, bif_float),
     (
         "erlang",
         "integer_to_binary",
         1,
         Capability::Pure,
+        None,
         bif_integer_to_binary,
     ),
     (
@@ -138,6 +151,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "integer_to_binary",
         2,
         Capability::Pure,
+        None,
         bif_integer_to_binary_radix,
     ),
     (
@@ -145,6 +159,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "integer_to_list",
         1,
         Capability::Pure,
+        None,
         bif_integer_to_list,
     ),
     (
@@ -152,6 +167,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "iolist_to_binary",
         1,
         Capability::Pure,
+        None,
         bif_iolist_to_binary,
     ),
     (
@@ -159,6 +175,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "list_to_bitstring",
         1,
         Capability::Pure,
+        None,
         bif_list_to_bitstring,
     ),
     (
@@ -166,6 +183,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "list_to_tuple",
         1,
         Capability::Pure,
+        None,
         bif_list_to_tuple,
     ),
     (
@@ -173,25 +191,34 @@ const STDLIB_STUBS: &[StubBif] = &[
         "tuple_to_list",
         1,
         Capability::Pure,
+        None,
         bif_tuple_to_list,
     ),
-    ("erlang", "band", 2, Capability::Pure, bif_band),
-    ("erlang", "bnot", 1, Capability::Pure, bif_bnot),
-    ("erlang", "bor", 2, Capability::Pure, bif_bor),
-    ("erlang", "bsl", 2, Capability::Pure, bif_bsl),
-    ("erlang", "bsr", 2, Capability::Pure, bif_bsr),
-    ("erlang", "bxor", 2, Capability::Pure, bif_bxor),
-    ("math", "ceil", 1, Capability::Pure, bif_ceil),
-    ("math", "floor", 1, Capability::Pure, bif_floor),
-    ("math", "exp", 1, Capability::Pure, bif_exp),
-    ("math", "log", 1, Capability::Pure, bif_log),
-    ("math", "pow", 2, Capability::Pure, bif_pow),
-    ("rand", "uniform", 0, Capability::Entropy, bif_rand_uniform),
+    ("erlang", "band", 2, Capability::Pure, None, bif_band),
+    ("erlang", "bnot", 1, Capability::Pure, None, bif_bnot),
+    ("erlang", "bor", 2, Capability::Pure, None, bif_bor),
+    ("erlang", "bsl", 2, Capability::Pure, None, bif_bsl),
+    ("erlang", "bsr", 2, Capability::Pure, None, bif_bsr),
+    ("erlang", "bxor", 2, Capability::Pure, None, bif_bxor),
+    ("math", "ceil", 1, Capability::Pure, None, bif_ceil),
+    ("math", "floor", 1, Capability::Pure, None, bif_floor),
+    ("math", "exp", 1, Capability::Pure, None, bif_exp),
+    ("math", "log", 1, Capability::Pure, None, bif_log),
+    ("math", "pow", 2, Capability::Pure, None, bif_pow),
+    (
+        "rand",
+        "uniform",
+        0,
+        Capability::Entropy,
+        None,
+        bif_rand_uniform,
+    ),
     (
         "logger",
         "warning",
         2,
         Capability::ExternalIo,
+        None,
         bif_logger_warning,
     ),
     (
@@ -199,6 +226,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "characters_to_list",
         1,
         Capability::Pure,
+        None,
         bif_characters_to_list,
     ),
     (
@@ -206,6 +234,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "characters_to_binary",
         1,
         Capability::Pure,
+        None,
         bif_characters_to_binary,
     ),
     (
@@ -213,6 +242,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "debug_options",
         1,
         Capability::Pure,
+        None,
         bif_debug_options,
     ),
     (
@@ -220,6 +250,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "identity",
         1,
         Capability::Pure,
+        None,
         bif_identity,
     ),
     (
@@ -227,14 +258,16 @@ const STDLIB_STUBS: &[StubBif] = &[
         "classify_dynamic",
         1,
         Capability::Pure,
+        None,
         bif_classify_dynamic,
     ),
-    ("gleam_stdlib", "dict", 1, Capability::Pure, bif_dict),
+    ("gleam_stdlib", "dict", 1, Capability::Pure, None, bif_dict),
     (
         "gleam_stdlib",
         "float",
         1,
         Capability::Pure,
+        None,
         bif_gleam_float,
     ),
     (
@@ -242,15 +275,24 @@ const STDLIB_STUBS: &[StubBif] = &[
         "float_to_string",
         1,
         Capability::Pure,
+        None,
         bif_float_to_string,
     ),
-    ("gleam_stdlib", "index", 2, Capability::Pure, bif_index),
-    ("gleam_stdlib", "int", 1, Capability::Pure, bif_int),
+    (
+        "gleam_stdlib",
+        "index",
+        2,
+        Capability::Pure,
+        None,
+        bif_index,
+    ),
+    ("gleam_stdlib", "int", 1, Capability::Pure, None, bif_int),
     (
         "gleam_stdlib",
         "int_from_base_string",
         2,
         Capability::Pure,
+        None,
         bif_int_from_base_string,
     ),
     (
@@ -258,6 +300,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "parse_float",
         1,
         Capability::Pure,
+        None,
         bif_parse_float,
     ),
     (
@@ -265,16 +308,39 @@ const STDLIB_STUBS: &[StubBif] = &[
         "parse_int",
         1,
         Capability::Pure,
+        None,
         bif_parse_int,
     ),
-    ("gleam_stdlib", "is_null", 1, Capability::Pure, bif_is_null),
-    ("gleam_stdlib", "list", 5, Capability::Pure, bif_gleam_list),
-    ("gleam_stdlib", "map_get", 2, Capability::Pure, bif_map_get),
+    (
+        "gleam_stdlib",
+        "is_null",
+        1,
+        Capability::Pure,
+        None,
+        bif_is_null,
+    ),
+    (
+        "gleam_stdlib",
+        "list",
+        5,
+        Capability::Pure,
+        None,
+        bif_gleam_list,
+    ),
+    (
+        "gleam_stdlib",
+        "map_get",
+        2,
+        Capability::Pure,
+        None,
+        bif_map_get,
+    ),
     (
         "gleam_stdlib",
         "print",
         1,
         Capability::ExternalIo,
+        None,
         bif_print,
     ),
     (
@@ -282,6 +348,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "print_error",
         1,
         Capability::ExternalIo,
+        None,
         bif_print_error,
     ),
     (
@@ -289,6 +356,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "println",
         1,
         Capability::ExternalIo,
+        None,
         bif_println,
     ),
     (
@@ -296,6 +364,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "println_error",
         1,
         Capability::ExternalIo,
+        None,
         bif_println_error,
     ),
     (
@@ -303,6 +372,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "wrap_list",
         1,
         Capability::Pure,
+        None,
         bif_wrap_list,
     ),
     (
@@ -310,6 +380,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "parse_query",
         1,
         Capability::Pure,
+        None,
         bif_parse_query,
     ),
     (
@@ -317,6 +388,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "percent_decode",
         1,
         Capability::Pure,
+        None,
         bif_percent_decode,
     ),
     (
@@ -324,6 +396,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "percent_encode",
         1,
         Capability::Pure,
+        None,
         bif_percent_encode,
     ),
     (
@@ -331,6 +404,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "uri_parse",
         1,
         Capability::Pure,
+        None,
         bif_uri_parse,
     ),
     (
@@ -338,6 +412,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "base16_decode",
         1,
         Capability::Pure,
+        None,
         bif_gleam_base16_decode,
     ),
     (
@@ -345,6 +420,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "base16_encode",
         1,
         Capability::Pure,
+        None,
         bif_gleam_base16_encode,
     ),
     (
@@ -352,6 +428,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "base64_decode",
         1,
         Capability::Pure,
+        None,
         bif_gleam_base64_decode,
     ),
     (
@@ -359,6 +436,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "base64_encode",
         2,
         Capability::Pure,
+        None,
         bif_gleam_base64_encode,
     ),
     (
@@ -366,6 +444,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "bit_array",
         1,
         Capability::Pure,
+        None,
         bif_gleam_bit_array,
     ),
     (
@@ -373,6 +452,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "bit_array_concat",
         1,
         Capability::Pure,
+        None,
         bif_gleam_bit_array_concat,
     ),
     (
@@ -380,6 +460,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "bit_array_pad_to_bytes",
         1,
         Capability::Pure,
+        None,
         bif_gleam_bit_array_pad_to_bytes,
     ),
     (
@@ -387,6 +468,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "bit_array_slice",
         3,
         Capability::Pure,
+        None,
         bif_gleam_bit_array_slice,
     ),
     (
@@ -394,6 +476,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "bit_array_to_int_and_size",
         1,
         Capability::Pure,
+        None,
         bif_gleam_bit_array_to_int_and_size,
     ),
     (
@@ -401,6 +484,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "string_replace",
         3,
         Capability::Pure,
+        None,
         bif_string_replace,
     ),
     (
@@ -408,14 +492,23 @@ const STDLIB_STUBS: &[StubBif] = &[
         "less_than",
         2,
         Capability::Pure,
+        None,
         bif_less_than,
     ),
-    ("gleam_stdlib", "slice", 3, Capability::Pure, bif_slice),
+    (
+        "gleam_stdlib",
+        "slice",
+        3,
+        Capability::Pure,
+        None,
+        bif_slice,
+    ),
     (
         "gleam_stdlib",
         "crop_string",
         2,
         Capability::Pure,
+        None,
         bif_crop_string,
     ),
     (
@@ -423,6 +516,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "contains_string",
         2,
         Capability::Pure,
+        None,
         bif_contains_string,
     ),
     (
@@ -430,6 +524,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "string_starts_with",
         2,
         Capability::Pure,
+        None,
         bif_string_starts_with,
     ),
     (
@@ -437,6 +532,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "string_ends_with",
         2,
         Capability::Pure,
+        None,
         bif_string_ends_with,
     ),
     (
@@ -444,6 +540,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "string_pop_grapheme",
         1,
         Capability::Pure,
+        None,
         bif_string_pop_grapheme,
     ),
     (
@@ -451,14 +548,23 @@ const STDLIB_STUBS: &[StubBif] = &[
         "utf_codepoint_list_to_string",
         1,
         Capability::Pure,
+        None,
         bif_utf_codepoint_list_to_string,
     ),
-    ("gleam_stdlib", "inspect", 1, Capability::Pure, bif_inspect),
+    (
+        "gleam_stdlib",
+        "inspect",
+        1,
+        Capability::Pure,
+        None,
+        bif_inspect,
+    ),
     (
         "gleam_stdlib",
         "string_remove_prefix",
         2,
         Capability::Pure,
+        None,
         bif_string_remove_prefix,
     ),
     (
@@ -466,6 +572,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "string_remove_suffix",
         2,
         Capability::Pure,
+        None,
         bif_string_remove_suffix,
     ),
     (
@@ -473,6 +580,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "iodata_append",
         2,
         Capability::Pure,
+        None,
         bif_iodata_append,
     ),
     (
@@ -480,6 +588,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "parse",
         1,
         Capability::Pure,
+        None,
         bif_uri_string_parse,
     ),
     (
@@ -487,15 +596,31 @@ const STDLIB_STUBS: &[StubBif] = &[
         "dissect_query",
         1,
         Capability::Pure,
+        None,
         bif_uri_string_dissect_query,
     ),
-    ("string", "length", 1, Capability::Pure, bif_string_length),
-    ("string", "reverse", 1, Capability::Pure, bif_string_reverse),
+    (
+        "string",
+        "length",
+        1,
+        Capability::Pure,
+        None,
+        bif_string_length,
+    ),
+    (
+        "string",
+        "reverse",
+        1,
+        Capability::Pure,
+        None,
+        bif_string_reverse,
+    ),
     (
         "string",
         "lowercase",
         1,
         Capability::Pure,
+        None,
         bif_string_lowercase,
     ),
     (
@@ -503,41 +628,67 @@ const STDLIB_STUBS: &[StubBif] = &[
         "uppercase",
         1,
         Capability::Pure,
+        None,
         bif_string_uppercase,
     ),
-    ("string", "trim", 2, Capability::Pure, bif_string_trim),
-    ("string", "split", 3, Capability::Pure, bif_string_split),
-    ("string", "find", 2, Capability::Pure, bif_string_find),
+    ("string", "trim", 2, Capability::Pure, None, bif_string_trim),
+    (
+        "string",
+        "split",
+        3,
+        Capability::Pure,
+        None,
+        bif_string_split,
+    ),
+    ("string", "find", 2, Capability::Pure, None, bif_string_find),
     (
         "string",
         "next_grapheme",
         1,
         Capability::Pure,
+        None,
         bif_string_next_grapheme,
     ),
-    ("string", "pad", 4, Capability::Pure, bif_string_pad),
+    ("string", "pad", 4, Capability::Pure, None, bif_string_pad),
     (
         "string",
         "replace",
         4,
         Capability::Pure,
+        None,
         bif_string_replace4,
     ),
-    ("string", "slice", 3, Capability::Pure, bif_string_slice),
-    ("string", "equal", 2, Capability::Pure, bif_string_equal),
+    (
+        "string",
+        "slice",
+        3,
+        Capability::Pure,
+        None,
+        bif_string_slice,
+    ),
+    (
+        "string",
+        "equal",
+        2,
+        Capability::Pure,
+        None,
+        bif_string_equal,
+    ),
     (
         "string",
         "is_empty",
         1,
         Capability::Pure,
+        None,
         bif_string_is_empty,
     ),
-    ("binary", "part", 3, Capability::Pure, bif_binary_part),
+    ("binary", "part", 3, Capability::Pure, None, bif_binary_part),
     (
         "binary",
         "encode_hex",
         1,
         Capability::Pure,
+        None,
         bif_binary_encode_hex,
     ),
     (
@@ -545,15 +696,31 @@ const STDLIB_STUBS: &[StubBif] = &[
         "decode_hex",
         1,
         Capability::Pure,
+        None,
         bif_binary_decode_hex,
     ),
-    ("base64", "encode", 2, Capability::Pure, bif_base64_encode),
-    ("base64", "decode", 1, Capability::Pure, bif_base64_decode),
+    (
+        "base64",
+        "encode",
+        2,
+        Capability::Pure,
+        None,
+        bif_base64_encode,
+    ),
+    (
+        "base64",
+        "decode",
+        1,
+        Capability::Pure,
+        None,
+        bif_base64_decode,
+    ),
     (
         "io",
         "put_chars",
         1,
         Capability::ExternalIo,
+        None,
         bif_io_put_chars_1,
     ),
     (
@@ -561,37 +728,75 @@ const STDLIB_STUBS: &[StubBif] = &[
         "put_chars",
         2,
         Capability::ExternalIo,
+        None,
         bif_io_put_chars_2,
     ),
-    ("io", "format", 3, Capability::ExternalIo, bif_io_format_3),
-    ("io", "setopts", 2, Capability::ExternalIo, bif_io_setopts_2),
+    (
+        "io",
+        "format",
+        3,
+        Capability::ExternalIo,
+        None,
+        bif_io_format_3,
+    ),
+    (
+        "io",
+        "setopts",
+        2,
+        Capability::ExternalIo,
+        None,
+        bif_io_setopts_2,
+    ),
     (
         "io_lib",
         "format",
         2,
         Capability::ExternalIo,
+        None,
         bif_io_lib_format_2,
     ),
-    ("init", "stop", 1, Capability::ExternalIo, bif_init_stop),
+    (
+        "init",
+        "stop",
+        1,
+        Capability::ExternalIo,
+        None,
+        bif_init_stop,
+    ),
     // Non-higher-order collection BIFs (B-028a):
-    ("maps", "from_list", 1, Capability::Pure, bif_maps_from_list),
-    ("maps", "merge", 2, Capability::Pure, bif_maps_merge),
-    ("maps", "remove", 2, Capability::Pure, bif_maps_remove),
+    (
+        "maps",
+        "from_list",
+        1,
+        Capability::Pure,
+        None,
+        bif_maps_from_list,
+    ),
+    ("maps", "merge", 2, Capability::Pure, None, bif_maps_merge),
+    ("maps", "remove", 2, Capability::Pure, None, bif_maps_remove),
     // maps:map/2 is a stub — requires interpreter re-entry for closures.
     // The real implementation needs compiled BEAM bytecode; see B-028b.
-    ("maps", "map", 2, Capability::Pure, bif_maps_map),
-    ("maps", "put", 3, Capability::Pure, bif_maps_put),
-    ("maps", "find", 2, Capability::Pure, bif_maps_find),
-    ("maps", "keys", 1, Capability::Pure, bif_maps_keys),
-    ("maps", "values", 1, Capability::Pure, bif_maps_values),
-    ("maps", "to_list", 1, Capability::Pure, bif_maps_to_list),
-    ("maps", "fold", 3, Capability::Pure, bif_maps_fold),
-    ("maps", "filter", 2, Capability::Pure, bif_maps_filter),
+    ("maps", "map", 2, Capability::Pure, None, bif_maps_map),
+    ("maps", "put", 3, Capability::Pure, None, bif_maps_put),
+    ("maps", "find", 2, Capability::Pure, None, bif_maps_find),
+    ("maps", "keys", 1, Capability::Pure, None, bif_maps_keys),
+    ("maps", "values", 1, Capability::Pure, None, bif_maps_values),
+    (
+        "maps",
+        "to_list",
+        1,
+        Capability::Pure,
+        None,
+        bif_maps_to_list,
+    ),
+    ("maps", "fold", 3, Capability::Pure, None, bif_maps_fold),
+    ("maps", "filter", 2, Capability::Pure, None, bif_maps_filter),
     (
         "maps",
         "merge_with",
         3,
         Capability::Pure,
+        None,
         bif_maps_merge_with,
     ),
     (
@@ -599,24 +804,75 @@ const STDLIB_STUBS: &[StubBif] = &[
         "update_with",
         4,
         Capability::Pure,
+        None,
         bif_maps_update_with,
     ),
-    ("maps", "with", 2, Capability::Pure, bif_maps_with),
-    ("maps", "without", 2, Capability::Pure, bif_maps_without),
-    ("lists", "reverse", 1, Capability::Pure, bif_lists_reverse),
-    ("lists", "append", 1, Capability::Pure, bif_lists_append_1),
-    ("lists", "append", 2, Capability::Pure, bif_lists_append_2),
-    ("lists", "join", 2, Capability::Pure, bif_lists_join),
-    ("lists", "map", 2, Capability::Pure, bif_lists_map),
-    ("lists", "reverse", 2, Capability::Pure, bif_lists_reverse_2),
-    ("lists", "seq", 2, Capability::Pure, bif_lists_seq),
-    ("timer", "sleep", 1, Capability::Clock, bif_timer_sleep),
-    ("gleam@list", "map", 2, Capability::Pure, bif_gleam_list_map),
+    ("maps", "with", 2, Capability::Pure, None, bif_maps_with),
+    (
+        "maps",
+        "without",
+        2,
+        Capability::Pure,
+        None,
+        bif_maps_without,
+    ),
+    (
+        "lists",
+        "reverse",
+        1,
+        Capability::Pure,
+        None,
+        bif_lists_reverse,
+    ),
+    (
+        "lists",
+        "append",
+        1,
+        Capability::Pure,
+        None,
+        bif_lists_append_1,
+    ),
+    (
+        "lists",
+        "append",
+        2,
+        Capability::Pure,
+        None,
+        bif_lists_append_2,
+    ),
+    ("lists", "join", 2, Capability::Pure, None, bif_lists_join),
+    ("lists", "map", 2, Capability::Pure, None, bif_lists_map),
+    (
+        "lists",
+        "reverse",
+        2,
+        Capability::Pure,
+        None,
+        bif_lists_reverse_2,
+    ),
+    ("lists", "seq", 2, Capability::Pure, None, bif_lists_seq),
+    (
+        "timer",
+        "sleep",
+        1,
+        Capability::Clock,
+        Some(DirtySchedulerKind::Io),
+        bif_timer_sleep,
+    ),
+    (
+        "gleam@list",
+        "map",
+        2,
+        Capability::Pure,
+        None,
+        bif_gleam_list_map,
+    ),
     (
         "gleam@string",
         "repeat",
         2,
         Capability::Pure,
+        None,
         bif_gleam_string_repeat,
     ),
     (
@@ -624,6 +880,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "replace",
         3,
         Capability::Pure,
+        None,
         bif_gleam_string_replace,
     ),
     (
@@ -631,6 +888,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "split",
         2,
         Capability::Pure,
+        None,
         bif_gleam_string_tree_split,
     ),
     (
@@ -638,6 +896,7 @@ const STDLIB_STUBS: &[StubBif] = &[
         "try",
         2,
         Capability::Pure,
+        None,
         bif_gleam_result_try,
     ),
     (
@@ -645,22 +904,31 @@ const STDLIB_STUBS: &[StubBif] = &[
         "main",
         0,
         Capability::ExternalIo,
+        None,
         bif_gleeunit_main,
     ),
-    ("erlang", "fun_info", 2, Capability::Pure, bif_fun_info),
+    (
+        "erlang",
+        "fun_info",
+        2,
+        Capability::Pure,
+        None,
+        bif_fun_info,
+    ),
     (
         "io_lib_format",
         "fwrite_g",
         1,
         Capability::Pure,
+        None,
         bif_fwrite_g,
     ),
 ];
 
 #[cfg(feature = "json")]
 const JSON_STUBS: &[StubBif] = &[
-    ("json", "decode", 1, Capability::Pure, bif_json_decode),
-    ("json", "encode", 1, Capability::Pure, bif_json_encode),
+    ("json", "decode", 1, Capability::Pure, None, bif_json_decode),
+    ("json", "encode", 1, Capability::Pure, None, bif_json_encode),
 ];
 
 /// Registers all stdlib stub BIFs under their OTP module names.
@@ -668,20 +936,55 @@ pub fn register_stdlib_stubs(
     registry: &BifRegistryImpl,
     atom_table: &AtomTable,
 ) -> Result<(), NativeRegistrationError> {
-    for &(module_name, function_name, arity, capability, native_function) in STDLIB_STUBS {
+    for &(module_name, function_name, arity, capability, dirty_kind, native_function) in
+        STDLIB_STUBS
+    {
         let module = atom_table.intern(module_name);
         let function = atom_table.intern(function_name);
-        registry.register(module, function, arity, native_function, capability)?;
+        register_stub(
+            registry,
+            module,
+            function,
+            arity,
+            native_function,
+            capability,
+            dirty_kind,
+        )?;
     }
 
     #[cfg(feature = "json")]
-    for &(module_name, function_name, arity, capability, native_function) in JSON_STUBS {
+    for &(module_name, function_name, arity, capability, dirty_kind, native_function) in JSON_STUBS
+    {
         let module = atom_table.intern(module_name);
         let function = atom_table.intern(function_name);
-        registry.register(module, function, arity, native_function, capability)?;
+        register_stub(
+            registry,
+            module,
+            function,
+            arity,
+            native_function,
+            capability,
+            dirty_kind,
+        )?;
     }
 
     Ok(())
+}
+
+fn register_stub(
+    registry: &BifRegistryImpl,
+    module: Atom,
+    function: Atom,
+    arity: u8,
+    native_function: NativeFn,
+    capability: Capability,
+    dirty_kind: Option<DirtySchedulerKind>,
+) -> Result<(), NativeRegistrationError> {
+    if let Some(kind) = dirty_kind {
+        registry.register_dirty(module, function, arity, native_function, kind, capability)
+    } else {
+        registry.register(module, function, arity, native_function, capability)
+    }
 }
 
 /// logger:warning/2 — prints format string and args to stderr, returns `ok`.

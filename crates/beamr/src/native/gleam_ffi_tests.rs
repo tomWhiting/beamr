@@ -8,8 +8,9 @@ use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
 use crate::native::{BifRegistryImpl, ProcessContext};
-use crate::process::Process;
 use crate::process::ExitReason;
+use crate::process::Process;
+use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::boxed::Tuple;
 
@@ -48,7 +49,7 @@ fn trap_exits_badarg_non_bool() {
 
 #[test]
 fn trap_exits_badarg_no_facility() {
-    let mut process = Process::new(1, 64);
+    let _process = Process::new(1, 64);
     let mut ctx = ProcessContext::new();
     ctx.set_pid(Some(1));
     assert_eq!(
@@ -92,7 +93,7 @@ fn gleam_link_badarg_non_pid() {
 
 #[test]
 fn gleam_link_badarg_no_facility() {
-    let mut process = Process::new(1, 64);
+    let _process = Process::new(1, 64);
     let mut ctx = ProcessContext::new();
     ctx.set_pid(Some(1));
     assert_eq!(bif_gleam_link(&[Term::pid(2)], &mut ctx), Err(badarg()));
@@ -136,7 +137,7 @@ fn gleam_demonitor_badarg_non_integer() {
 
 #[test]
 fn gleam_demonitor_badarg_no_facility() {
-    let mut process = Process::new(1, 64);
+    let _process = Process::new(1, 64);
     let mut ctx = ProcessContext::new();
     ctx.set_pid(Some(1));
     assert_eq!(
@@ -396,8 +397,7 @@ fn pid_from_dynamic_badarg_wrong_arity() {
 fn register_gleam_ffi_bifs_registers_all_expected() {
     let atom_table = AtomTable::with_common_atoms();
     let registry = BifRegistryImpl::new();
-    register_gleam_ffi_bifs(&registry, &atom_table)
-        .expect("gleam ffi registration should succeed");
+    register_gleam_ffi_bifs(&registry, &atom_table).expect("gleam ffi registration should succeed");
 
     let module = atom_table.intern("gleam_erlang_ffi");
     for (name, arity) in [
@@ -418,6 +418,12 @@ fn register_gleam_ffi_bifs_registers_all_expected() {
             "missing gleam_erlang_ffi:{name}/{arity}"
         );
     }
+
+    let sleep = atom_table.intern("sleep");
+    let sleep_entry = registry
+        .lookup(module, sleep, 1)
+        .expect("gleam_erlang_ffi:sleep/1");
+    assert_eq!(sleep_entry.dirty_kind, Some(DirtySchedulerKind::Io));
 }
 
 #[test]
@@ -460,7 +466,10 @@ fn link_ctx(caller_pid: u64) -> (Arc<MockLinkFacility>, ProcessContext<'static>)
     (f, ctx)
 }
 
-fn sup_ctx(next_ref: u64, caller_pid: u64) -> (Arc<MockSupervisionFacility>, ProcessContext<'static>) {
+fn sup_ctx(
+    next_ref: u64,
+    caller_pid: u64,
+) -> (Arc<MockSupervisionFacility>, ProcessContext<'static>) {
     let f = Arc::new(MockSupervisionFacility::new(next_ref));
     let mut ctx = ProcessContext::new();
     ctx.set_pid(Some(caller_pid));

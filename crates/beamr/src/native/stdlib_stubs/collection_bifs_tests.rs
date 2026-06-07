@@ -3,6 +3,7 @@
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, ProcessContext};
 use crate::process::Process;
+use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::boxed::{Cons, Map, write_cons, write_map, write_tuple};
 
@@ -432,4 +433,9 @@ fn register_stdlib_stubs_includes_collection_bifs() {
             "missing {module_name}:{function_name}/{arity}"
         );
     }
+
+    let timer = atom_table.intern("timer");
+    let sleep = atom_table.intern("sleep");
+    let sleep_entry = registry.lookup(timer, sleep, 1).expect("timer:sleep/1");
+    assert_eq!(sleep_entry.dirty_kind, Some(DirtySchedulerKind::Io));
 }

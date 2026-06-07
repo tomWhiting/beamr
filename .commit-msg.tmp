@@ -1,1 +1,1 @@
-Harden dirty NIF scheduler migration and completion wakeups
+review: harden dirty NIF registration API
