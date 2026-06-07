@@ -25,7 +25,11 @@ const GATE1_BIFS: &[Gate1Bif] = &[
     ("div", 2, Capability::Pure, div),
     ("rem", 2, Capability::Pure, rem),
     ("<", 2, Capability::Pure, less_than),
+    (">", 2, Capability::Pure, greater_than),
+    ("=<", 2, Capability::Pure, less_equal),
     (">=", 2, Capability::Pure, greater_equal),
+    ("==", 2, Capability::Pure, numeric_equal),
+    ("/=", 2, Capability::Pure, numeric_not_equal),
     ("=:=", 2, Capability::Pure, exact_equal),
     ("=/=", 2, Capability::Pure, exact_not_equal),
     ("error", 1, Capability::Pure, error),
@@ -92,6 +96,24 @@ pub fn less_than(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
     ))
 }
 
+/// erlang:>/2 over the full BEAM term order.
+pub fn greater_than(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let (left, right) = two_terms(args)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    Ok(bool_term(
+        compare::cmp(left, right, atom_table) == Ordering::Greater,
+    ))
+}
+
+/// erlang:=</2 over the full BEAM term order.
+pub fn less_equal(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let (left, right) = two_terms(args)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    Ok(bool_term(
+        compare::cmp(left, right, atom_table) != Ordering::Greater,
+    ))
+}
+
 /// erlang:>=/2 over the full BEAM term order.
 ///
 /// BEAM: `>=` is total over every term type and never raises — the inverse of
@@ -102,6 +124,18 @@ pub fn greater_equal(args: &[Term], context: &mut ProcessContext) -> Result<Term
     Ok(bool_term(
         compare::cmp(left, right, atom_table) != Ordering::Less,
     ))
+}
+
+/// erlang:==/2 numeric equality.
+pub fn numeric_equal(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let (left, right) = two_terms(args)?;
+    Ok(bool_term(compare::numeric_eq(left, right)))
+}
+
+/// erlang:/=/2 numeric inequality.
+pub fn numeric_not_equal(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let (left, right) = two_terms(args)?;
+    Ok(bool_term(!compare::numeric_eq(left, right)))
 }
 
 /// erlang:=:=/2 exact term equality.
@@ -279,14 +313,14 @@ fn badarg() -> Term {
 mod tests {
     use super::{
         add, cancel_timer, compare, display, div, error, exact_equal, exact_not_equal,
-        greater_equal, less_than, multiply, register_gate1_bifs, rem, send_after, start_timer,
-        subtract,
+        greater_equal, greater_than, less_equal, less_than, multiply, numeric_equal,
+        numeric_not_equal, register_gate1_bifs, rem, send_after, start_timer, subtract,
     };
     use crate::atom::{Atom, AtomTable};
     use crate::native::{BifRegistryImpl, ProcessContext};
     use crate::process::Process;
     use crate::term::Term;
-    use crate::term::boxed::{Tuple, write_cons, write_map, write_tuple};
+    use crate::term::boxed::{Tuple, write_cons, write_float, write_map, write_tuple};
     use crate::timer::TimerWheel;
     use std::cmp::Ordering;
     use std::sync::{Arc, Mutex};
@@ -393,12 +427,55 @@ mod tests {
             Ok(Term::atom(Atom::FALSE))
         );
         assert_eq!(
+            greater_than(&[small_int(2), small_int(1)], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(
+            greater_than(&[small_int(1), small_int(2)], &mut context),
+            Ok(Term::atom(Atom::FALSE))
+        );
+        assert_eq!(
+            less_equal(&[small_int(1), small_int(2)], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(
+            less_equal(&[small_int(2), small_int(1)], &mut context),
+            Ok(Term::atom(Atom::FALSE))
+        );
+        assert_eq!(
             greater_equal(&[small_int(2), small_int(1)], &mut context),
             Ok(Term::atom(Atom::TRUE))
         );
         assert_eq!(
             greater_equal(&[small_int(1), small_int(2)], &mut context),
             Ok(Term::atom(Atom::FALSE))
+        );
+
+        let mut one_float_heap = [0_u64; 2];
+        let one_float = write_float(&mut one_float_heap, 1.0).expect("float should fit");
+        assert_eq!(
+            greater_than(&[one_float, small_int(1)], &mut context),
+            Ok(Term::atom(Atom::FALSE))
+        );
+        assert_eq!(
+            less_equal(&[one_float, small_int(1)], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(
+            numeric_equal(&[small_int(1), one_float], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(
+            numeric_equal(&[small_int(1), small_int(2)], &mut context),
+            Ok(Term::atom(Atom::FALSE))
+        );
+        assert_eq!(
+            numeric_not_equal(&[small_int(1), one_float], &mut context),
+            Ok(Term::atom(Atom::FALSE))
+        );
+        assert_eq!(
+            numeric_not_equal(&[small_int(1), small_int(2)], &mut context),
+            Ok(Term::atom(Atom::TRUE))
         );
         assert_eq!(
             exact_equal(&[small_int(1), small_int(1)], &mut context),
@@ -425,7 +502,14 @@ mod tests {
 
         // Wrong arity is the sole error condition for total-order comparisons.
         assert_eq!(less_than(&[small_int(1)], &mut context), Err(badarg()));
+        assert_eq!(greater_than(&[small_int(1)], &mut context), Err(badarg()));
+        assert_eq!(less_equal(&[small_int(1)], &mut context), Err(badarg()));
         assert_eq!(greater_equal(&[], &mut context), Err(badarg()));
+        assert_eq!(numeric_equal(&[small_int(1)], &mut context), Err(badarg()));
+        assert_eq!(
+            numeric_not_equal(&[small_int(1)], &mut context),
+            Err(badarg())
+        );
         assert_eq!(exact_equal(&[small_int(1)], &mut context), Err(badarg()));
         assert_eq!(
             exact_not_equal(&[small_int(1)], &mut context),
@@ -555,7 +639,11 @@ mod tests {
             ("div", 2),
             ("rem", 2),
             ("<", 2),
+            (">", 2),
+            ("=<", 2),
             (">=", 2),
+            ("==", 2),
+            ("/=", 2),
             ("=:=", 2),
             ("=/=", 2),
             ("error", 1),
