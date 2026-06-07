@@ -1,12 +1,12 @@
 use super::*;
 use crate::atom::{Atom, AtomTable};
-use crate::native::spawn::{SpawnError, SpawnFacility, SpawnRecord};
+use crate::native::spawn::{SpawnError, SpawnFacility, SpawnMonitorResult, SpawnRecord};
 use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
 use crate::native::{BifRegistryImpl, ProcessContext};
-use crate::process::Process;
 use crate::process::ExitReason;
+use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary;
 use crate::term::boxed::{write_closure, write_tuple};
@@ -537,6 +537,19 @@ impl SpawnFacility for MockSpawnFacility {
         Ok(self.next_pid)
     }
 
+    fn spawn_monitor(
+        &self,
+        _caller_pid: u64,
+        _module: Atom,
+        _function: Atom,
+        _args: Vec<Term>,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        Ok(SpawnMonitorResult {
+            pid: self.next_pid,
+            reference: 0,
+        })
+    }
+
     fn spawn_lambda(
         &self,
         caller_pid: u64,
@@ -552,6 +565,25 @@ impl SpawnFacility for MockSpawnFacility {
                 link_to,
             });
         Ok(self.next_pid)
+    }
+
+    fn spawn_lambda_monitor(
+        &self,
+        caller_pid: u64,
+        _module: Atom,
+        _lambda_index: u32,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        self.lambda_records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(LambdaSpawnRecord {
+                caller_pid,
+                link_to: None,
+            });
+        Ok(SpawnMonitorResult {
+            pid: self.next_pid,
+            reference: 0,
+        })
     }
 }
 

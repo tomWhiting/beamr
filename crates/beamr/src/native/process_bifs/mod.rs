@@ -1,5 +1,5 @@
-//! Process lifecycle BIFs — self, spawn, spawn_link, link, unlink,
-//! process_flag, monitor, demonitor, exit.
+//! Process lifecycle BIFs — self, spawn, spawn_link, spawn_monitor, link,
+//! unlink, process_flag, monitor, demonitor, exit.
 //!
 //! Registered as Gate 2 BIFs alongside the Gate 1 arithmetic, comparison, and
 //! utility functions.
@@ -11,7 +11,7 @@ use crate::native::{
 };
 use crate::process::ExitReason;
 use crate::term::Term;
-use crate::term::boxed::Cons;
+use crate::term::boxed::{Closure, Cons};
 
 type Gate2Bif = (&'static str, u8, Capability, NativeFn);
 
@@ -19,6 +19,8 @@ const GATE2_BIFS: &[Gate2Bif] = &[
     ("self", 0, Capability::Pure, bif_self),
     ("spawn", 3, Capability::Pure, bif_spawn),
     ("spawn_link", 3, Capability::Pure, bif_spawn_link),
+    ("spawn_monitor", 1, Capability::Pure, bif_spawn_monitor_1),
+    ("spawn_monitor", 3, Capability::Pure, bif_spawn_monitor_3),
     ("link", 1, Capability::Pure, bif_link),
     ("unlink", 1, Capability::Pure, bif_unlink),
     ("process_flag", 2, Capability::Pure, bif_process_flag),
@@ -60,6 +62,16 @@ pub fn bif_spawn(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
 /// erlang:spawn_link/3 — creates a new linked process.
 pub fn bif_spawn_link(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     spawn_impl(args, context, true)
+}
+
+/// erlang:spawn_monitor/1 — creates and monitors a process from a zero-arity fun.
+pub fn bif_spawn_monitor_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    spawn_monitor_fun_impl(args, context)
+}
+
+/// erlang:spawn_monitor/3 — creates and monitors a new process atomically.
+pub fn bif_spawn_monitor_3(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    spawn_monitor_mfa_impl(args, context)
 }
 
 /// erlang:link/1 — establishes a bidirectional link to the target process.
@@ -204,6 +216,49 @@ fn spawn_impl(args: &[Term], context: &mut ProcessContext, link: bool) -> Result
         .spawn(caller_pid, module, function, spawn_args, link_to)
         .map_err(|_| badarg())?;
     Term::try_pid(new_pid).ok_or_else(badarg)
+}
+
+fn spawn_monitor_mfa_impl(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [module_term, function_term, args_term] = args else {
+        return Err(badarg());
+    };
+    let module = module_term.as_atom().ok_or_else(badarg)?;
+    let function = function_term.as_atom().ok_or_else(badarg)?;
+    let spawn_args = list_to_vec(*args_term)?;
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let facility = context.spawn_facility().ok_or_else(badarg)?;
+    let result = facility
+        .spawn_monitor(caller_pid, module, function, spawn_args)
+        .map_err(|_| badarg())?;
+    spawn_monitor_tuple(result.pid, result.reference, context)
+}
+
+fn spawn_monitor_fun_impl(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [fun_term] = args else {
+        return Err(badarg());
+    };
+    let closure = Closure::new(*fun_term).ok_or_else(badarg)?;
+    if closure.arity() != 0 || closure.num_free() != 0 {
+        return Err(badarg());
+    }
+    let module = closure.module().ok_or_else(badarg)?;
+    let lambda_index = closure.function_index() as u32;
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let facility = context.spawn_facility().ok_or_else(badarg)?;
+    let result = facility
+        .spawn_lambda_monitor(caller_pid, module, lambda_index)
+        .map_err(|_| badarg())?;
+    spawn_monitor_tuple(result.pid, result.reference, context)
+}
+
+fn spawn_monitor_tuple(
+    child_pid: u64,
+    reference: u64,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let pid_term = Term::try_pid(child_pid).ok_or_else(badarg)?;
+    let reference_term = context.alloc_reference(reference)?;
+    context.alloc_tuple(&[pid_term, reference_term])
 }
 
 fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {

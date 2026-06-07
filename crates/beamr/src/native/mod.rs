@@ -44,7 +44,7 @@ pub use context::{
 pub use links::LinkFacility;
 pub use registry::RegistryFacility;
 pub use select::SelectFacility;
-pub use spawn::SpawnFacility;
+pub use spawn::{SpawnFacility, SpawnMonitorResult};
 pub use supervision::SupervisionFacility;
 
 /// Registry key for a native module/function/arity tuple.

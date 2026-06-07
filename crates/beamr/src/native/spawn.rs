@@ -49,6 +49,16 @@ pub trait SpawnFacility: Send + Sync {
         link_to: Option<u64>,
     ) -> Result<u64, SpawnError>;
 
+    /// Request creation of a new process and atomically establish a monitor
+    /// from `caller_pid` to the child before the child can execute.
+    fn spawn_monitor(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        function: Atom,
+        args: Vec<Term>,
+    ) -> Result<SpawnMonitorResult, SpawnError>;
+
     /// Spawn a process from a lambda (FunT entry) by module and lambda index.
     ///
     /// The scheduler looks up the module's lambda table to find the entry
@@ -61,6 +71,24 @@ pub trait SpawnFacility: Send + Sync {
         lambda_index: u32,
         link_to: Option<u64>,
     ) -> Result<u64, SpawnError>;
+
+    /// Spawn a process from a lambda and atomically establish a monitor from
+    /// `caller_pid` to the child before the child can execute.
+    fn spawn_lambda_monitor(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        lambda_index: u32,
+    ) -> Result<SpawnMonitorResult, SpawnError>;
+}
+
+/// Successful atomic spawn-monitor result.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SpawnMonitorResult {
+    /// PID assigned to the child process.
+    pub pid: u64,
+    /// Monitor reference owned by the caller.
+    pub reference: u64,
 }
 
 /// Record of a spawn request, used by test mocks to verify BIF behavior.

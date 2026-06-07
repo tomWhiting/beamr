@@ -46,6 +46,11 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             if cleanup_if_tombstoned_after_store(shared, pid) {
                 return;
             }
+            if process_has_queued_messages(shared, pid) {
+                timer_integration::cancel_receive_timer(shared, pid);
+                queue.push(pid);
+                return;
+            }
             let mut ws = lock_or_recover(&shared.wait_set);
             ws.waiting.insert(pid, my_index);
         }
@@ -77,8 +82,10 @@ pub(in crate::scheduler) fn take_runnable_process(
             let metadata = ProcessMetadata {
                 namespace_id: process.namespace_id(),
                 links: process.links().to_vec(),
+                monitors: process.monitors().to_vec(),
                 trap_exit: process.trap_exit(),
                 pending_exit_messages: Vec::new(),
+                pending_down_messages: Vec::new(),
             };
             *slot = ProcessSlot::Executing(metadata);
             Some(process)
@@ -98,10 +105,36 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
             for linked_pid in &metadata.links {
                 process.add_link(*linked_pid);
             }
+            for monitor in process.monitors().to_vec() {
+                if !metadata
+                    .monitors
+                    .iter()
+                    .any(|metadata_monitor| metadata_monitor.reference() == monitor.reference())
+                {
+                    process.remove_monitor(monitor.reference());
+                }
+            }
+            for monitor in &metadata.monitors {
+                if !process
+                    .monitors()
+                    .iter()
+                    .any(|process_monitor| process_monitor.reference() == monitor.reference())
+                {
+                    process.add_monitor(*monitor);
+                }
+            }
             for (source_pid, reason) in metadata.pending_exit_messages.drain(..) {
                 crate::supervision::link::enqueue_exit_message_pub(
                     &mut process,
                     source_pid,
+                    reason,
+                );
+            }
+            for (reference, target_pid, reason) in metadata.pending_down_messages.drain(..) {
+                crate::supervision::monitor::enqueue_down_message_pub(
+                    &mut process,
+                    reference,
+                    target_pid,
                     reason,
                 );
             }
@@ -129,6 +162,17 @@ pub(in crate::scheduler) fn cleanup_if_tombstoned_after_store(
 
 fn tombstone_reason(shared: &SharedState, pid: u64) -> Option<ExitReason> {
     shared.exit_tombstones.get(&pid).map(|reason| *reason)
+}
+
+fn process_has_queued_messages(shared: &SharedState, pid: u64) -> bool {
+    let Some(entry) = shared.process_bodies.get(&pid) else {
+        return false;
+    };
+    let slot = lock_or_recover(&entry);
+    match &*slot {
+        ProcessSlot::Present(ScheduledProcess(process)) => !process.mailbox().is_empty(),
+        ProcessSlot::Executing(_) | ProcessSlot::Absent => false,
+    }
 }
 
 pub(in crate::scheduler) fn execute_slice(
