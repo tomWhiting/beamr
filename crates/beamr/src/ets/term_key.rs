@@ -14,7 +14,7 @@ use crate::{
 /// [`TermKey::with_atom_table`]. That stores the table handle in the key, keeping
 /// B-tree comparisons on the same BEAM term ordering used by VM-visible term
 /// comparison.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TermKey {
     term: Term,
     atom_table: Option<Arc<AtomTable>>,
