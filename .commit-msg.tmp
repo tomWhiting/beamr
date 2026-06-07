@@ -1,1 +1,1 @@
-fix(scheduler): preserve normal-exit semantics for executing sentinels
+fix(beamr): allocate native boxed results on process heap

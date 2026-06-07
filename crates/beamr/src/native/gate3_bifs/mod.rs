@@ -312,7 +312,7 @@ pub fn bif_get(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Ter
 ///
 /// Returns a binary containing `"<0.N.0>"` for PID N, matching the Erlang
 /// convention for local PIDs.
-pub fn bif_pid_to_list(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_pid_to_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [pid_term] = args else {
         return Err(badarg());
     };
@@ -320,14 +320,12 @@ pub fn bif_pid_to_list(args: &[Term], _context: &mut ProcessContext) -> Result<T
     let repr = format!("<0.{pid}.0>");
     let bytes = repr.as_bytes();
 
-    // Build a proper list of integer code points (Erlang string).
-    let mut tail = Term::NIL;
-    for &byte in bytes.iter().rev() {
-        let int_term = Term::small_int(i64::from(byte));
-        let cell = Box::leak(Box::new([0u64; 2]));
-        tail = crate::term::boxed::write_cons(cell, int_term, tail).ok_or_else(badarg)?;
-    }
-    Ok(tail)
+    let elements: Vec<_> = bytes
+        .iter()
+        .copied()
+        .map(|byte| Term::small_int(i64::from(byte)))
+        .collect();
+    context.alloc_list(&elements)
 }
 
 /// erlang:byte_size/1 — returns the byte length of a binary.
@@ -362,7 +360,7 @@ fn binary_size(term: Term) -> Result<Term, Term> {
 /// erlang:++/2 — appends two proper lists.
 ///
 /// Returns a new list that is the concatenation of `ListA ++ ListB`.
-pub fn bif_list_append(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_list_append(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [list_a, list_b] = args else {
         return Err(badarg());
     };
@@ -384,13 +382,7 @@ pub fn bif_list_append(args: &[Term], _context: &mut ProcessContext) -> Result<T
         current = cons.tail();
     }
 
-    // Build a new list: elements from A followed by B as the tail.
-    let mut tail = *list_b;
-    for element in elements.into_iter().rev() {
-        let cell = Box::leak(Box::new([0u64; 2]));
-        tail = crate::term::boxed::write_cons(cell, element, tail).ok_or_else(badarg)?;
-    }
-    Ok(tail)
+    context.alloc_list_with_tail(&elements, *list_b)
 }
 
 /// erlang:not/1 — boolean negation.

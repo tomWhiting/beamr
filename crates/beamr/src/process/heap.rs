@@ -91,6 +91,21 @@ impl HeapRegion {
         Ok(ptr)
     }
 
+    fn alloc_slice(&mut self, words: usize) -> Result<&mut [u64], HeapFull> {
+        let Some(end) = self.used.checked_add(words) else {
+            return Err(HeapFull::new(words, self.available()));
+        };
+
+        if end > self.capacity() {
+            return Err(HeapFull::new(words, self.available()));
+        }
+
+        let start = self.used;
+        self.used = end;
+        self.high_water_mark = self.high_water_mark.max(self.used);
+        Ok(&mut self.words[start..end])
+    }
+
     pub(crate) const fn used(&self) -> usize {
         self.used
     }
@@ -159,6 +174,11 @@ impl Heap {
     /// Allocate `words` contiguous machine words from the young generation.
     pub fn alloc(&mut self, words: usize) -> Result<*mut u64, HeapFull> {
         self.young.alloc(words)
+    }
+
+    /// Allocate `words` contiguous machine words from the young generation.
+    pub fn alloc_slice(&mut self, words: usize) -> Result<&mut [u64], HeapFull> {
+        self.young.alloc_slice(words)
     }
 
     /// Allocate `words` contiguous machine words from the old generation.

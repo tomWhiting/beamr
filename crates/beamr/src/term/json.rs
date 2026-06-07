@@ -9,8 +9,8 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::{
     Tag, Term,
-    binary::{Binary, packed_word_count, write_binary},
-    boxed::{BigInt, Cons, Float, Map, Tuple, write_bigint, write_float, write_map},
+    binary::Binary,
+    boxed::{BigInt, Cons, Float, Map, Tuple},
 };
 
 /// Error raised while converting between BEAM terms and JSON values.
@@ -30,7 +30,7 @@ pub enum JsonTermError {
     UnsupportedNumber(Number),
     /// Object key conversion requires a configured atom table in the process context.
     MissingAtomTable,
-    /// A leaked heap allocation unexpectedly failed to write its boxed layout.
+    /// A process heap allocation unexpectedly failed to write its boxed layout.
     AllocationFailed(&'static str),
 }
 
@@ -91,13 +91,15 @@ pub fn term_to_value(term: Term, atom_table: &AtomTable) -> Result<Value, JsonTe
 pub fn value_to_term(value: &Value, context: &mut ProcessContext) -> Result<Term, JsonTermError> {
     match value {
         Value::Null => {
-            let atom_table = context.atom_table().ok_or(JsonTermError::MissingAtomTable)?;
+            let atom_table = context
+                .atom_table()
+                .ok_or(JsonTermError::MissingAtomTable)?;
             Ok(Term::atom(atom_table.intern("null")))
         }
         Value::Bool(true) => Ok(Term::atom(Atom::TRUE)),
         Value::Bool(false) => Ok(Term::atom(Atom::FALSE)),
-        Value::Number(number) => number_to_term(number),
-        Value::String(string) => string_to_binary_term(string),
+        Value::Number(number) => number_to_term(number, context),
+        Value::String(string) => string_to_binary_term(string, context),
         Value::Array(elements) => array_to_list_term(elements, context),
         Value::Object(object) => object_to_map_term(object, context),
     }
@@ -281,12 +283,12 @@ fn div_rem_limbs_by_10(limbs: &mut [u64]) -> u64 {
     remainder as u64
 }
 
-fn number_to_term(number: &Number) -> Result<Term, JsonTermError> {
+fn number_to_term(number: &Number, context: &mut ProcessContext) -> Result<Term, JsonTermError> {
     if let Some(value) = number.as_i64() {
         if let Some(term) = Term::try_small_int(value) {
             return Ok(term);
         }
-        return allocate_bigint_from_i128(i128::from(value));
+        return allocate_bigint_from_i128(i128::from(value), context);
     }
 
     if let Some(value) = number.as_u64() {
@@ -295,29 +297,40 @@ fn number_to_term(number: &Number) -> Result<Term, JsonTermError> {
         {
             return Ok(term);
         }
-        return allocate_bigint_from_u64(value);
+        return allocate_bigint_from_u64(value, context);
     }
 
     let value = number
         .as_f64()
         .ok_or_else(|| JsonTermError::UnsupportedNumber(number.clone()))?;
-    allocate_float_term(value)
+    allocate_float_term(value, context)
 }
 
-fn allocate_bigint_from_i128(value: i128) -> Result<Term, JsonTermError> {
+fn allocate_bigint_from_i128(
+    value: i128,
+    context: &mut ProcessContext,
+) -> Result<Term, JsonTermError> {
     let negative = value.is_negative();
     let magnitude = value.unsigned_abs();
     let limbs = limbs_from_u128(magnitude);
-    allocate_bigint_term(negative, &limbs)
+    allocate_bigint_term(negative, &limbs, context)
 }
 
-fn allocate_bigint_from_u64(value: u64) -> Result<Term, JsonTermError> {
-    allocate_bigint_term(false, &[value])
+fn allocate_bigint_from_u64(
+    value: u64,
+    context: &mut ProcessContext,
+) -> Result<Term, JsonTermError> {
+    allocate_bigint_term(false, &[value], context)
 }
 
-fn allocate_bigint_term(negative: bool, limbs: &[u64]) -> Result<Term, JsonTermError> {
-    let heap: &mut [u64] = Box::leak(vec![0_u64; 3 + limbs.len()].into_boxed_slice());
-    write_bigint(heap, negative, limbs).ok_or(JsonTermError::AllocationFailed("bigint"))
+fn allocate_bigint_term(
+    negative: bool,
+    limbs: &[u64],
+    context: &mut ProcessContext,
+) -> Result<Term, JsonTermError> {
+    context
+        .alloc_bigint(negative, limbs)
+        .map_err(|_| JsonTermError::AllocationFailed("bigint"))
 }
 
 fn limbs_from_u128(value: u128) -> Vec<u64> {
@@ -330,16 +343,19 @@ fn limbs_from_u128(value: u128) -> Vec<u64> {
     }
 }
 
-fn allocate_float_term(value: f64) -> Result<Term, JsonTermError> {
-    let heap: &mut [u64] = Box::leak(vec![0_u64; 2].into_boxed_slice());
-    write_float(heap, value).ok_or(JsonTermError::AllocationFailed("float"))
+fn allocate_float_term(value: f64, context: &mut ProcessContext) -> Result<Term, JsonTermError> {
+    context
+        .alloc_float(value)
+        .map_err(|_| JsonTermError::AllocationFailed("float"))
 }
 
-fn string_to_binary_term(string: &str) -> Result<Term, JsonTermError> {
-    let bytes = string.as_bytes();
-    let words = 2 + packed_word_count(bytes.len());
-    let heap: &mut [u64] = Box::leak(vec![0_u64; words].into_boxed_slice());
-    write_binary(heap, bytes).ok_or(JsonTermError::AllocationFailed("binary"))
+fn string_to_binary_term(
+    string: &str,
+    context: &mut ProcessContext,
+) -> Result<Term, JsonTermError> {
+    context
+        .alloc_binary(string.as_bytes())
+        .map_err(|_| JsonTermError::AllocationFailed("binary"))
 }
 
 fn array_to_list_term(
@@ -362,7 +378,7 @@ fn object_to_map_term(
 ) -> Result<Term, JsonTermError> {
     let mut pairs = Vec::with_capacity(object.len());
     for (key, value) in object {
-        let key_term = string_to_binary_term(key)?;
+        let key_term = string_to_binary_term(key, context)?;
         let value_term = value_to_term(value, context)?;
         pairs.push((key_term, value_term));
     }
@@ -370,8 +386,9 @@ fn object_to_map_term(
 
     let keys = pairs.iter().map(|(key, _)| *key).collect::<Vec<_>>();
     let values = pairs.iter().map(|(_, value)| *value).collect::<Vec<_>>();
-    let heap: &mut [u64] = Box::leak(vec![0_u64; 2 + keys.len() + values.len()].into_boxed_slice());
-    write_map(heap, &keys, &values).ok_or(JsonTermError::AllocationFailed("map"))
+    context
+        .alloc_map(&keys, &values)
+        .map_err(|_| JsonTermError::AllocationFailed("map"))
 }
 
 #[cfg(test)]
@@ -381,7 +398,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::term::boxed::{write_cons, write_tuple};
+    use crate::term::{
+        binary::{packed_word_count, write_binary},
+        boxed::{write_bigint, write_cons, write_float, write_map, write_tuple},
+    };
 
     fn atom_table() -> AtomTable {
         AtomTable::with_common_atoms()

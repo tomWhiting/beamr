@@ -3,8 +3,7 @@
 use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::{Binary, packed_word_count, write_binary};
-use crate::term::boxed::write_map;
+use crate::term::binary::Binary;
 use crate::term::compare;
 
 pub fn bif_percent_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -22,7 +21,7 @@ pub fn bif_percent_encode(args: &[Term], context: &mut ProcessContext) -> Result
             out.push(hex_digit(*byte & 0x0f));
         }
     }
-    make_binary(&out)
+    context.alloc_binary(&out)
 }
 
 pub fn bif_percent_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -47,7 +46,7 @@ pub fn bif_percent_decode(args: &[Term], context: &mut ProcessContext) -> Result
         out.push((high << 4) | low);
         index += 3;
     }
-    make_binary(&out)
+    context.alloc_binary(&out)
 }
 
 pub fn bif_uri_parse(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -87,10 +86,22 @@ fn parse_uri_map(input: Term, context: &mut ProcessContext) -> Result<Term, Term
         .unwrap_or((authority_and_path, String::new()));
 
     let entries = [
-        (atom(context, "scheme")?, make_binary(scheme.as_bytes())?),
-        (atom(context, "host")?, make_binary(host.as_bytes())?),
-        (atom(context, "path")?, make_binary(path.as_bytes())?),
-        (atom(context, "query")?, make_binary(query.as_bytes())?),
+        (
+            atom(context, "scheme")?,
+            context.alloc_binary(scheme.as_bytes())?,
+        ),
+        (
+            atom(context, "host")?,
+            context.alloc_binary(host.as_bytes())?,
+        ),
+        (
+            atom(context, "path")?,
+            context.alloc_binary(path.as_bytes())?,
+        ),
+        (
+            atom(context, "query")?,
+            context.alloc_binary(query.as_bytes())?,
+        ),
     ];
     make_sorted_map(&entries, context)
 }
@@ -103,8 +114,8 @@ fn parse_query_map(input: Term, context: &mut ProcessContext) -> Result<Term, Te
     let mut entries: Vec<(Term, Term)> = Vec::new();
     for pair in text.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let key = make_binary(key.as_bytes())?;
-        let value = make_binary(value.as_bytes())?;
+        let key = context.alloc_binary(key.as_bytes())?;
+        let value = context.alloc_binary(value.as_bytes())?;
         if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| *entry_key == key) {
             *existing = value;
         } else {
@@ -149,8 +160,7 @@ fn make_sorted_map(entries: &[(Term, Term)], context: &mut ProcessContext) -> Re
     sorted.sort_by(|(left, _), (right, _)| compare::cmp(*left, *right, atom_table));
     let keys: Vec<_> = sorted.iter().map(|(key, _)| *key).collect();
     let values: Vec<_> = sorted.iter().map(|(_, value)| *value).collect();
-    let heap = Box::leak(vec![0u64; 2 + keys.len() + values.len()].into_boxed_slice());
-    write_map(heap, &keys, &values).ok_or_else(badarg)
+    context.alloc_map(&keys, &values)
 }
 
 fn binary_text(binary: Term) -> Result<&'static str, Term> {
@@ -161,11 +171,6 @@ fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
     Binary::new(term)
         .map(|binary| binary.as_bytes())
         .ok_or_else(badarg)
-}
-
-fn make_binary(bytes: &[u8]) -> Result<Term, Term> {
-    let heap = Box::leak(vec![0u64; 2 + packed_word_count(bytes.len())].into_boxed_slice());
-    write_binary(heap, bytes).ok_or_else(badarg)
 }
 
 fn badarg() -> Term {

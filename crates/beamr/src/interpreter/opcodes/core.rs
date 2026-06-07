@@ -347,17 +347,19 @@ fn call_external_target(
                 }
             }
 
-            // Provide mailbox access for select BIFs.
+            // Provide mailbox access for select BIFs before borrowing the process for heap allocation.
             let snapshot = trampoline::build_mailbox_snapshot(process);
             context.set_select_facility(
                 snapshot
                     .clone()
                     .map(|s| s as Arc<dyn crate::native::SelectFacility>),
             );
+            context.attach_process(process, usize::from(arity));
 
             let result = match (entry.function)(&args, &mut context) {
                 Ok(value) => value,
                 Err(reason) => {
+                    context.detach_process();
                     let exception = crate::process::Exception {
                         class: Term::atom(crate::atom::Atom::ERROR),
                         reason,
@@ -366,6 +368,7 @@ fn call_external_target(
                     return super::messaging::raise_exception(process, exception);
                 }
             };
+            context.detach_process();
             let shutdown_requested = context.take_shutdown_request();
 
             // Handle mailbox removal if the select facility recorded one.

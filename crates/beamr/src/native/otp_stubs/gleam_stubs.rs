@@ -41,7 +41,8 @@ pub fn bif_dynamic_classify(args: &[Term], context: &mut ProcessContext) -> Resu
     } else {
         "Other"
     };
-    make_leaked_binary(description.as_bytes())
+    context
+        .alloc_binary(description.as_bytes())
         .or_else(|_| context.alloc_tuple(&[Term::atom(Atom::OK), Term::atom(Atom::NIL)]))
 }
 
@@ -77,7 +78,7 @@ pub fn bif_string_inspect(args: &[Term], _context: &mut ProcessContext) -> Resul
         return Err(badarg());
     };
     let repr = format!("{term:?}");
-    make_leaked_binary(repr.as_bytes())
+    context.alloc_binary(repr.as_bytes())
 }
 
 /// `gleam@string:append/2` -- concatenates two binary strings.
@@ -93,7 +94,7 @@ pub fn bif_string_append(args: &[Term], _context: &mut ProcessContext) -> Result
         .unwrap_or_default();
     let mut combined = a_bytes;
     combined.extend_from_slice(&b_bytes);
-    make_leaked_binary(&combined)
+    context.alloc_binary(&combined)
 }
 
 // ── gleam@option ──────────────────────────────────────────────────────────
@@ -167,13 +168,6 @@ pub fn bif_intensity_tracker_add_event(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-fn make_leaked_binary(bytes: &[u8]) -> Result<Term, Term> {
-    let data_words = crate::term::binary::packed_word_count(bytes.len());
-    let total_words = 2 + data_words;
-    let heap: &mut [u64] = Box::leak(vec![0u64; total_words].into_boxed_slice());
-    crate::term::binary::write_binary(heap, bytes).ok_or_else(badarg)
-}
 
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)

@@ -6,7 +6,7 @@
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::boxed::{Cons, Map, Tuple, write_cons, write_map};
+use crate::term::boxed::{Cons, Map, Tuple};
 use crate::term::compare;
 
 /// maps:from_list/1 — builds a map from a list of `{Key, Value}` 2-tuples.
@@ -37,7 +37,7 @@ pub fn bif_maps_from_list(args: &[Term], context: &mut ProcessContext) -> Result
     let keys: Vec<Term> = entries.iter().map(|(k, _)| *k).collect();
     let values: Vec<Term> = entries.iter().map(|(_, v)| *v).collect();
 
-    make_leaked_map(&keys, &values)
+    context.alloc_map(&keys, &values)
 }
 
 /// maps:merge/2 — merges two maps (second overrides first on collision).
@@ -75,14 +75,14 @@ pub fn bif_maps_merge(args: &[Term], context: &mut ProcessContext) -> Result<Ter
     let keys: Vec<Term> = entries.iter().map(|(k, _)| *k).collect();
     let values: Vec<Term> = entries.iter().map(|(_, v)| *v).collect();
 
-    make_leaked_map(&keys, &values)
+    context.alloc_map(&keys, &values)
 }
 
 /// maps:remove/2 — removes a key from a map, returning a new map.
 ///
 /// If the key is not present, returns the same map structure (as a new
 /// allocation for simplicity).
-pub fn bif_maps_remove(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_maps_remove(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [key_term, map_term] = args else {
         return Err(badarg());
     };
@@ -101,11 +101,11 @@ pub fn bif_maps_remove(args: &[Term], _context: &mut ProcessContext) -> Result<T
         }
     }
 
-    make_leaked_map(&keys, &values)
+    context.alloc_map(&keys, &values)
 }
 
 /// lists:reverse/1 — reverses a proper list.
-pub fn bif_lists_reverse(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_lists_reverse(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };
@@ -113,14 +113,8 @@ pub fn bif_lists_reverse(args: &[Term], _context: &mut ProcessContext) -> Result
     // Collect all elements from the proper list.
     let elements = list_to_vec(*input)?;
 
-    // Build the reversed list from the end.
-    let mut tail = Term::NIL;
-    for element in elements {
-        let cell = Box::leak(Box::new([0u64; 2]));
-        tail = write_cons(cell, element, tail).ok_or_else(badarg)?;
-    }
-
-    Ok(tail)
+    let reversed: Vec<_> = elements.into_iter().rev().collect();
+    context.alloc_list(&reversed)
 }
 
 /// maps:map/2 — stub for higher-order map transformation.
@@ -196,13 +190,6 @@ fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
         elements.push(cons.head());
         current = cons.tail();
     }
-}
-
-/// Creates a map term via leaked heap allocation.
-fn make_leaked_map(keys: &[Term], values: &[Term]) -> Result<Term, Term> {
-    let total_words = 2 + keys.len() + values.len();
-    let heap: &mut [u64] = Box::leak(vec![0u64; total_words].into_boxed_slice());
-    write_map(heap, keys, values).ok_or_else(badarg)
 }
 
 fn badarg() -> Term {

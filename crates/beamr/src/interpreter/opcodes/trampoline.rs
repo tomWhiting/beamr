@@ -10,10 +10,10 @@ use std::sync::Arc;
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::module::Module;
-use crate::native::NativeContinuation;
 use crate::native::select::MailboxSnapshot;
 use crate::native::stdlib_stubs::lists_bifs::resume_lists_map;
 use crate::native::stdlib_stubs::maps_bifs::{ContinuationStep, resume_maps_continuation};
+use crate::native::{NativeContinuation, ProcessContext};
 use crate::process::{CodePosition, Process, ProcessStatus, ReceiveTimeout};
 use crate::term::Term;
 use crate::term::boxed::Closure;
@@ -126,12 +126,20 @@ pub fn handle_native_continuation(
         .take_native_continuation()
         .ok_or(ExecError::InvalidOperand("native continuation"))?;
     let closure_result = process.x_reg(0);
+    let mut context = ProcessContext::new();
+    context.set_pid(Some(process.pid()));
+    context.attach_process(process, 1);
     let step = match continuation {
-        NativeContinuation::Maps(state) => resume_maps_continuation(state, closure_result),
-        NativeContinuation::ListsMap(state) => resume_lists_map(state, closure_result),
+        NativeContinuation::Maps(state) => {
+            resume_maps_continuation(state, closure_result, &mut context)
+        }
+        NativeContinuation::ListsMap(state) => {
+            resume_lists_map(state, closure_result, &mut context)
+        }
         NativeContinuation::GleamResultTry => Ok(ContinuationStep::Done(closure_result)),
     }
     .map_err(|_| ExecError::Badarg)?;
+    context.detach_process();
 
     match step {
         ContinuationStep::Done(result) => {

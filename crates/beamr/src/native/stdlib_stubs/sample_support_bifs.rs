@@ -3,7 +3,7 @@
 use crate::atom::Atom;
 use crate::native::{NativeContinuation, ProcessContext};
 use crate::term::Term;
-use crate::term::binary::{Binary, packed_word_count, write_binary};
+use crate::term::binary::Binary;
 use crate::term::boxed::{Closure, Tuple};
 
 use super::gleam_stdlib_ffi::bif_string_replace;
@@ -34,7 +34,7 @@ pub fn bif_gleam_string_repeat(args: &[Term], context: &mut ProcessContext) -> R
     for _ in 0..count {
         out.extend_from_slice(bytes);
     }
-    make_binary(&out)
+    context.alloc_binary(&out)
 }
 
 pub fn bif_gleam_string_tree_split(
@@ -90,11 +90,6 @@ pub fn bif_gleam_result_try(args: &[Term], context: &mut ProcessContext) -> Resu
         Some(tag) if tag == Term::atom(Atom::ERROR) => Ok(result),
         _ => Err(badarg()),
     }
-}
-
-fn make_binary(bytes: &[u8]) -> Result<Term, Term> {
-    let heap = Box::leak(vec![0u64; 2 + packed_word_count(bytes.len())].into_boxed_slice());
-    write_binary(heap, bytes).ok_or_else(badarg)
 }
 
 fn badarg() -> Term {

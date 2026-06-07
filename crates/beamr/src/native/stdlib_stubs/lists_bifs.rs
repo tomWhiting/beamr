@@ -111,6 +111,7 @@ pub fn bif_lists_seq(args: &[Term], context: &mut ProcessContext) -> Result<Term
 pub fn resume_lists_map(
     state: ListsMapState,
     closure_result: Term,
+    context: &mut ProcessContext,
 ) -> Result<ContinuationStep, Term> {
     let mut results = state.results;
     results.push(closure_result);
@@ -125,11 +126,7 @@ pub fn resume_lists_map(
             }),
         })
     } else {
-        let mut context = ProcessContext::new();
-        Ok(ContinuationStep::Done(list_from_vec(
-            &results,
-            &mut context,
-        )?))
+        Ok(ContinuationStep::Done(list_from_vec(&results, context)?))
     }
 }
 

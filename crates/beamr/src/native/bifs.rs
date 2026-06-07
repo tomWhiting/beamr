@@ -13,7 +13,6 @@ use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
 use crate::term::Term;
-use crate::term::boxed::write_tuple;
 use crate::term::compare;
 use crate::timer::TimerRef;
 
@@ -182,11 +181,10 @@ pub fn start_timer(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     };
     let delay = duration_from_term(*delay)?;
     let target_pid = pid.as_pid().ok_or_else(badarg)?;
-    let payload = *message;
+    let reference = context.reserve_timer_reference().ok_or_else(badarg)?;
+    let payload = timeout_tuple_term(context, reference, *message)?;
     let reference = context
-        .schedule_timer_with_reference(delay, target_pid, |reference| {
-            timeout_tuple_term(reference, payload).unwrap_or(payload)
-        })
+        .schedule_reserved_timer(reference, delay, target_pid, payload)
         .ok_or_else(badarg)?;
     timer_ref_term(reference)
 }
@@ -253,17 +251,16 @@ fn timer_ref_term(reference: TimerRef) -> Result<Term, Term> {
         .ok_or_else(badarg)
 }
 
-fn timeout_tuple_term(reference: TimerRef, message: Term) -> Result<Term, Term> {
-    let words = Box::leak(Box::new([0_u64; 4]));
-    write_tuple(
-        words,
-        &[
-            Term::atom(Atom::TIMEOUT),
-            timer_ref_term(reference)?,
-            message,
-        ],
-    )
-    .ok_or_else(badarg)
+fn timeout_tuple_term(
+    context: &mut ProcessContext,
+    reference: TimerRef,
+    message: Term,
+) -> Result<Term, Term> {
+    context.alloc_tuple(&[
+        Term::atom(Atom::TIMEOUT),
+        timer_ref_term(reference)?,
+        message,
+    ])
 }
 
 fn bool_term(value: bool) -> Term {
