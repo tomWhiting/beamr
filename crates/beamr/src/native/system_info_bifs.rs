@@ -8,6 +8,8 @@ use crate::term::Term;
 pub const DEFAULT_PROCESS_LIMIT: usize = 262_144;
 /// OTP release compatibility claim used by stdlib probes.
 pub const OTP_RELEASE: &[u8] = b"27";
+/// BEAM word size reported for the supported 64-bit runtime target.
+pub const WORDSIZE_BYTES: usize = 8;
 
 /// Narrow interface used by `system_info/1` to query runtime metrics.
 ///
@@ -55,25 +57,37 @@ pub fn bif_system_info(args: &[Term], context: &mut ProcessContext) -> Result<Te
     };
 
     match item_name.as_str() {
-        "schedulers" => facility_small_int(context, |facility| facility.scheduler_count()),
-        "process_count" => facility_small_int(context, |facility| facility.process_count()),
-        "process_limit" => facility_small_int(context, |facility| facility.process_limit()),
-        "wordsize" => small_int(std::mem::size_of::<usize>()),
+        "schedulers" => facility_small_int(context, SystemInfoMetric::Schedulers),
+        "process_count" => facility_small_int(context, SystemInfoMetric::ProcessCount),
+        "process_limit" => facility_small_int(context, SystemInfoMetric::ProcessLimit),
+        "wordsize" => small_int(WORDSIZE_BYTES),
         "otp_release" => context.alloc_binary(OTP_RELEASE),
         "version" => context.alloc_binary(env!("CARGO_PKG_VERSION").as_bytes()),
         "system_architecture" => context.alloc_binary(system_architecture().as_bytes()),
-        "atom_count" => facility_small_int(context, |facility| facility.atom_count()),
-        "atom_limit" => facility_small_int(context, |facility| facility.atom_limit()),
+        "atom_count" => facility_small_int(context, SystemInfoMetric::AtomCount),
+        "atom_limit" => facility_small_int(context, SystemInfoMetric::AtomLimit),
         _ => Err(badarg()),
     }
 }
 
-fn facility_small_int(
-    context: &ProcessContext,
-    metric: impl FnOnce(&dyn SystemInfoFacility) -> usize,
-) -> Result<Term, Term> {
+enum SystemInfoMetric {
+    Schedulers,
+    ProcessCount,
+    ProcessLimit,
+    AtomCount,
+    AtomLimit,
+}
+
+fn facility_small_int(context: &ProcessContext, metric: SystemInfoMetric) -> Result<Term, Term> {
     let facility = context.system_info_facility().ok_or_else(badarg)?;
-    small_int(metric(facility))
+    let value = match metric {
+        SystemInfoMetric::Schedulers => facility.scheduler_count(),
+        SystemInfoMetric::ProcessCount => facility.process_count(),
+        SystemInfoMetric::ProcessLimit => facility.process_limit(),
+        SystemInfoMetric::AtomCount => facility.atom_count(),
+        SystemInfoMetric::AtomLimit => facility.atom_limit(),
+    };
+    small_int(value)
 }
 
 fn small_int(value: usize) -> Result<Term, Term> {
@@ -161,7 +175,10 @@ mod tests {
             call_system_info("process_limit").as_small_int(),
             Some(262_144)
         );
-        assert_eq!(call_system_info("wordsize").as_small_int(), Some(8));
+        assert_eq!(
+            call_system_info("wordsize").as_small_int(),
+            Some(i64::try_from(WORDSIZE_BYTES).unwrap_or(i64::MAX))
+        );
         assert_eq!(call_system_info("atom_count").as_small_int(), Some(44));
         assert_eq!(
             call_system_info("atom_limit").as_small_int(),

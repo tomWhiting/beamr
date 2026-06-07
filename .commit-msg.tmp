@@ -1,1 +1,1 @@
-feat(beamr): add erlang system_info bif
+review(beamr): harden system_info wordsize dispatch
