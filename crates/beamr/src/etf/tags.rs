@@ -4,6 +4,7 @@ pub const VERSION: u8 = 131;
 pub const SMALL_INTEGER_EXT: u8 = 97;
 pub const INTEGER_EXT: u8 = 98;
 pub const NEW_FLOAT_EXT: u8 = 70;
+pub const COMPRESSED_EXT: u8 = 80;
 pub const ATOM_EXT: u8 = 100;
 pub const ATOM_UTF8_EXT: u8 = 118;
 pub const SMALL_ATOM_UTF8_EXT: u8 = 119;

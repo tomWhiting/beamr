@@ -1,1 +1,1 @@
-Harden B-087 ETF runtime decoder budget accounting and edge cases
+Harden ETF compression/decompression option handling and runtime decoder safety

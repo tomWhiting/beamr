@@ -1,799 +1,592 @@
-//! Runtime ETF decoder that allocates decoded terms on the calling process heap.
+//! Runtime decoder for Erlang's external term format (ETF).
+
+use std::io::{Read, Take};
+
+use flate2::read::ZlibDecoder;
 
 use crate::atom::AtomTable;
-use crate::process::Process;
+use crate::native::ProcessContext;
 use crate::term::Term;
-use crate::term::binary::{packed_word_count, write_binary};
-use crate::term::boxed::{
-    write_bigint, write_cons, write_float, write_map, write_reference, write_tuple,
-};
 
 use super::tags;
 
-/// Maximum recursion depth for runtime ETF decoding.
-pub const MAX_ETF_DEPTH: usize = 256;
+const MAX_ETF_DEPTH: usize = 256;
+const DEFAULT_MAX_HEAP_WORDS: usize = crate::process::heap::DEFAULT_MAX_HEAP_WORDS;
 
-/// Budget for decoding untrusted ETF bytes directly onto a process heap.
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DecodeError {
+    EmptyInput,
+    BadVersion(u8),
+    Truncated,
+    TrailingBytes,
+    UnsupportedTag(u8),
+    InvalidUtf8,
+    UnsafeAtom(String),
+    TooDeep,
+    IntegerOutOfRange,
+    InvalidBigSign(u8),
+    HeapAllocationFailed,
+    SizeLimitExceeded,
+    DecompressionFailed,
+    DecompressedSizeMismatch { expected: usize, actual: usize },
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct DecodeOptions {
+    pub safe: bool,
+    pub return_used: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DecodedTerm {
+    pub term: Term,
+    pub used: usize,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct RuntimeDecodeBudget {
-    /// Maximum allowed nesting depth.
-    pub max_depth: usize,
-    /// Maximum process-heap words this decode may allocate.
     pub max_heap_words: usize,
-    /// Current recursive nesting depth.
-    pub current_depth: usize,
-    /// Process-heap words charged by this decode.
-    pub heap_words_used: usize,
 }
 
 impl RuntimeDecodeBudget {
-    /// Build a budget with the default nesting limit and caller-provided heap limit.
     #[must_use]
-    pub const fn new(max_heap_words: usize) -> Self {
-        Self::with_limits(MAX_ETF_DEPTH, max_heap_words)
+    pub fn for_context(context: &ProcessContext<'_>) -> Self {
+        let max_heap_words = context
+            .process_heap()
+            .map_or(DEFAULT_MAX_HEAP_WORDS, |heap| heap.max_capacity());
+        Self { max_heap_words }
     }
 
-    /// Build a budget with explicit depth and heap limits.
-    #[must_use]
-    pub const fn with_limits(max_depth: usize, max_heap_words: usize) -> Self {
-        Self {
-            max_depth,
-            max_heap_words,
-            current_depth: 0,
-            heap_words_used: 0,
-        }
-    }
-
-    /// Build the default runtime budget for a process, using its remaining heap capacity.
-    #[must_use]
-    pub fn for_process(process: &Process) -> Self {
-        Self::new(process.heap().available())
-    }
-
-    /// Enter one recursive ETF level.
-    pub fn descend(&mut self) -> Result<(), DecodeError> {
-        let Some(next_depth) = self.current_depth.checked_add(1) else {
-            return Err(DecodeError::DepthExceeded);
-        };
-        if next_depth > self.max_depth {
-            return Err(DecodeError::DepthExceeded);
-        }
-        self.current_depth = next_depth;
-        Ok(())
-    }
-
-    /// Leave one recursive ETF level.
-    pub fn ascend(&mut self) {
-        self.current_depth = self.current_depth.saturating_sub(1);
-    }
-
-    /// Charge process-heap words against this decode budget.
-    pub fn charge_heap(&mut self, words: usize) -> Result<(), DecodeError> {
-        let Some(next_used) = self.heap_words_used.checked_add(words) else {
-            return Err(DecodeError::HeapBudgetExceeded);
-        };
-        if next_used > self.max_heap_words {
-            return Err(DecodeError::HeapBudgetExceeded);
-        }
-        self.heap_words_used = next_used;
-        Ok(())
+    fn max_bytes(self) -> Result<usize, DecodeError> {
+        self.max_heap_words
+            .checked_mul(std::mem::size_of::<u64>())
+            .ok_or(DecodeError::SizeLimitExceeded)
     }
 }
 
-impl Default for RuntimeDecodeBudget {
-    fn default() -> Self {
-        Self::new(usize::MAX)
-    }
-}
-
-/// Runtime ETF decode failures.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum DecodeError {
-    DepthExceeded,
-    HeapBudgetExceeded,
-    InvalidTag(u8),
-    Truncated,
-    InvalidAtom,
-    InvalidUtf8,
-}
-
-/// Decode one complete ETF value and allocate boxed results on `process`'s heap.
 pub fn decode_term(
     bytes: &[u8],
-    process: &mut Process,
+    context: &mut ProcessContext<'_>,
     atom_table: &AtomTable,
 ) -> Result<Term, DecodeError> {
+    decode_term_with_options(bytes, context, atom_table, DecodeOptions::default())
+        .map(|decoded| decoded.term)
+}
+
+pub fn decode_term_with_options(
+    bytes: &[u8],
+    context: &mut ProcessContext<'_>,
+    atom_table: &AtomTable,
+    options: DecodeOptions,
+) -> Result<DecodedTerm, DecodeError> {
+    let budget = RuntimeDecodeBudget::for_context(context);
     let mut cursor = Cursor::new(bytes);
     let version = cursor.read_u8()?;
     if version != tags::VERSION {
-        return Err(DecodeError::InvalidTag(version));
+        return Err(DecodeError::BadVersion(version));
     }
-
-    let mut budget = RuntimeDecodeBudget::for_process(process);
-    let term = decode_term_inner(&mut cursor, process, atom_table, &mut budget)?;
-    if !cursor.is_empty() {
-        return Err(DecodeError::InvalidTag(cursor.peek_u8()?));
+    let tag = cursor.read_u8()?;
+    let term = if tag == tags::COMPRESSED_EXT {
+        let declared_size =
+            usize::try_from(cursor.read_u32()?).map_err(|_| DecodeError::SizeLimitExceeded)?;
+        let max_bytes = budget.max_bytes()?;
+        if declared_size > max_bytes {
+            return Err(DecodeError::SizeLimitExceeded);
+        }
+        let (inflated, compressed_used) = decompress_bounded(cursor.remaining(), declared_size)?;
+        cursor.skip_bytes(compressed_used)?;
+        let mut inflated_cursor = Cursor::new(&inflated);
+        let inflated_tag = inflated_cursor.read_u8()?;
+        let term = decode_after_tag(
+            inflated_tag,
+            &mut inflated_cursor,
+            context,
+            atom_table,
+            options,
+            0,
+            budget,
+        )?;
+        inflated_cursor.expect_empty()?;
+        term
+    } else {
+        decode_after_tag(tag, &mut cursor, context, atom_table, options, 0, budget)?
+    };
+    let used = cursor.position();
+    if !options.return_used {
+        cursor.expect_empty()?;
     }
-    Ok(term)
+    Ok(DecodedTerm { term, used })
 }
 
-fn decode_term_inner(
+fn decode_after_tag(
+    tag: u8,
     cursor: &mut Cursor<'_>,
-    process: &mut Process,
+    context: &mut ProcessContext<'_>,
     atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
+    options: DecodeOptions,
+    depth: usize,
+    budget: RuntimeDecodeBudget,
 ) -> Result<Term, DecodeError> {
-    budget.descend()?;
-    let result = decode_payload(cursor, process, atom_table, budget);
-    budget.ascend();
-    result
+    if depth > MAX_ETF_DEPTH {
+        return Err(DecodeError::TooDeep);
+    }
+
+    match tag {
+        tag if tag == tags::NEW_FLOAT_EXT => {
+            let bytes = cursor.read_bytes(8)?;
+            let value = f64::from_bits(u64::from_be_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]));
+            context
+                .alloc_float(value)
+                .map_err(|_| DecodeError::HeapAllocationFailed)
+        }
+        tag if tag == tags::SMALL_INTEGER_EXT => Ok(Term::small_int(i64::from(cursor.read_u8()?))),
+        tag if tag == tags::INTEGER_EXT => decode_small_integer(i64::from(cursor.read_i32()?)),
+        tag if tag == tags::ATOM_UTF8_EXT => {
+            let len = usize::from(cursor.read_u16()?);
+            decode_atom(cursor.read_bytes(len)?, atom_table, options)
+        }
+        tag if tag == tags::SMALL_ATOM_UTF8_EXT => {
+            let len = usize::from(cursor.read_u8()?);
+            decode_atom(cursor.read_bytes(len)?, atom_table, options)
+        }
+        tag if tag == tags::SMALL_TUPLE_EXT => {
+            let arity = usize::from(cursor.read_u8()?);
+            decode_tuple(cursor, arity, context, atom_table, options, depth, budget)
+        }
+        tag if tag == tags::LARGE_TUPLE_EXT => {
+            let arity = cursor.read_u32()? as usize;
+            decode_tuple(cursor, arity, context, atom_table, options, depth, budget)
+        }
+        tag if tag == tags::NIL_EXT => Ok(Term::NIL),
+        tag if tag == tags::STRING_EXT => {
+            let len = usize::from(cursor.read_u16()?);
+            ensure_heap_words(
+                len.checked_mul(2).ok_or(DecodeError::SizeLimitExceeded)?,
+                budget,
+            )?;
+            let mut elements = Vec::with_capacity(len);
+            for byte in cursor.read_bytes(len)? {
+                elements.push(Term::small_int(i64::from(*byte)));
+            }
+            context
+                .alloc_list(&elements)
+                .map_err(|_| DecodeError::HeapAllocationFailed)
+        }
+        tag if tag == tags::LIST_EXT => {
+            let len = cursor.read_u32()? as usize;
+            ensure_heap_words(
+                len.checked_mul(2).ok_or(DecodeError::SizeLimitExceeded)?,
+                budget,
+            )?;
+            let mut elements = Vec::with_capacity(len);
+            for _ in 0..len {
+                elements.push(decode_one(
+                    cursor,
+                    context,
+                    atom_table,
+                    options,
+                    depth + 1,
+                    budget,
+                )?);
+            }
+            let tail = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
+            context
+                .alloc_list_with_tail(&elements, tail)
+                .map_err(|_| DecodeError::HeapAllocationFailed)
+        }
+        tag if tag == tags::BINARY_EXT => {
+            let len = cursor.read_u32()? as usize;
+            let words = packed_word_count(len)
+                .and_then(|count| count.checked_add(2))
+                .ok_or(DecodeError::SizeLimitExceeded)?;
+            ensure_heap_words(words, budget)?;
+            context
+                .alloc_binary(cursor.read_bytes(len)?)
+                .map_err(|_| DecodeError::HeapAllocationFailed)
+        }
+        tag if tag == tags::SMALL_BIG_EXT => {
+            let len = usize::from(cursor.read_u8()?);
+            decode_big_integer(cursor, len, context, budget)
+        }
+        tag if tag == tags::LARGE_BIG_EXT => {
+            let len = cursor.read_u32()? as usize;
+            decode_big_integer(cursor, len, context, budget)
+        }
+        tag if tag == tags::EXPORT_EXT => {
+            let module = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
+            let function = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
+            let arity = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
+            context
+                .alloc_tuple(&[module, function, arity])
+                .map_err(|_| DecodeError::HeapAllocationFailed)
+        }
+        tag if tag == tags::MAP_EXT => {
+            let len = cursor.read_u32()? as usize;
+            let words = len
+                .checked_mul(2)
+                .and_then(|count| count.checked_add(2))
+                .ok_or(DecodeError::SizeLimitExceeded)?;
+            ensure_heap_words(words, budget)?;
+            let mut keys = Vec::with_capacity(len);
+            let mut values = Vec::with_capacity(len);
+            for _ in 0..len {
+                keys.push(decode_one(
+                    cursor,
+                    context,
+                    atom_table,
+                    options,
+                    depth + 1,
+                    budget,
+                )?);
+                values.push(decode_one(
+                    cursor,
+                    context,
+                    atom_table,
+                    options,
+                    depth + 1,
+                    budget,
+                )?);
+            }
+            context
+                .alloc_map(&keys, &values)
+                .map_err(|_| DecodeError::HeapAllocationFailed)
+        }
+        other => Err(DecodeError::UnsupportedTag(other)),
+    }
 }
 
-fn decode_payload(
+fn decode_one(
     cursor: &mut Cursor<'_>,
-    process: &mut Process,
+    context: &mut ProcessContext<'_>,
     atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
+    options: DecodeOptions,
+    depth: usize,
+    budget: RuntimeDecodeBudget,
 ) -> Result<Term, DecodeError> {
     let tag = cursor.read_u8()?;
-    match tag {
-        tags::SMALL_INTEGER_EXT => Ok(Term::small_int(i64::from(cursor.read_u8()?))),
-        tags::INTEGER_EXT => Ok(Term::small_int(i64::from(cursor.read_i32()?))),
-        tags::NEW_FLOAT_EXT => decode_float(cursor, process, budget),
-        tags::ATOM_UTF8_EXT => {
-            let len = cursor.read_u16()? as usize;
-            decode_atom(cursor, len, atom_table)
-        }
-        tags::SMALL_ATOM_UTF8_EXT => {
-            let len = cursor.read_u8()? as usize;
-            decode_atom(cursor, len, atom_table)
-        }
-        tags::ATOM_EXT => {
-            let len = cursor.read_u16()? as usize;
-            decode_latin1_atom(cursor, len, atom_table)
-        }
-        tags::SMALL_TUPLE_EXT => {
-            let arity = cursor.read_u8()? as usize;
-            decode_tuple(cursor, process, atom_table, budget, arity)
-        }
-        tags::LARGE_TUPLE_EXT => {
-            let arity = cursor.read_u32()? as usize;
-            decode_tuple(cursor, process, atom_table, budget, arity)
-        }
-        tags::NIL_EXT => Ok(Term::NIL),
-        tags::STRING_EXT => decode_string(cursor, process, budget),
-        tags::LIST_EXT => decode_list(cursor, process, atom_table, budget),
-        tags::BINARY_EXT => decode_binary(cursor, process, budget),
-        tags::SMALL_BIG_EXT => {
-            let len = cursor.read_u8()? as usize;
-            decode_big(cursor, process, budget, len)
-        }
-        tags::LARGE_BIG_EXT => {
-            let len = cursor.read_u32()? as usize;
-            decode_big(cursor, process, budget, len)
-        }
-        tags::MAP_EXT => decode_map(cursor, process, atom_table, budget),
-        tags::EXPORT_EXT => decode_export(cursor, process, atom_table, budget),
-        tags::NEW_PID_EXT => decode_pid(cursor, process, atom_table, budget, true),
-        tags::PID_EXT => decode_pid(cursor, process, atom_table, budget, false),
-        tags::NEWER_REFERENCE_EXT => decode_newer_reference(cursor, process, atom_table, budget),
-        tags::REFERENCE_EXT => decode_reference(cursor, process, atom_table, budget),
-        other => Err(DecodeError::InvalidTag(other)),
-    }
-}
-
-fn decode_float(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    budget: &mut RuntimeDecodeBudget,
-) -> Result<Term, DecodeError> {
-    let value = f64::from_bits(cursor.read_u64()?);
-    alloc_boxed(process, budget, 2, |heap| write_float(heap, value))
-}
-
-fn decode_atom(
-    cursor: &mut Cursor<'_>,
-    len: usize,
-    atom_table: &AtomTable,
-) -> Result<Term, DecodeError> {
-    let bytes = cursor.read_bytes(len)?;
-    let name = std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)?;
-    Ok(Term::atom(atom_table.intern(name)))
-}
-
-fn decode_latin1_atom(
-    cursor: &mut Cursor<'_>,
-    len: usize,
-    atom_table: &AtomTable,
-) -> Result<Term, DecodeError> {
-    let bytes = cursor.read_bytes(len)?;
-    let mut name = String::new();
-    name.try_reserve(bytes.len())
-        .map_err(|_| DecodeError::HeapBudgetExceeded)?;
-    for byte in bytes {
-        name.push(char::from(*byte));
-    }
-    Ok(Term::atom(atom_table.intern(&name)))
+    decode_after_tag(tag, cursor, context, atom_table, options, depth, budget)
 }
 
 fn decode_tuple(
     cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
     arity: usize,
-) -> Result<Term, DecodeError> {
-    let words = checked_words(1, arity)?;
-    budget.charge_heap(words)?;
-    let mut elements = Vec::new();
-    elements
-        .try_reserve(arity)
-        .map_err(|_| DecodeError::HeapBudgetExceeded)?;
-    for _ in 0..arity {
-        elements.push(decode_term_inner(cursor, process, atom_table, budget)?);
-    }
-    alloc_boxed_charged(process, words, |heap| write_tuple(heap, &elements))
-}
-
-fn decode_string(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    budget: &mut RuntimeDecodeBudget,
-) -> Result<Term, DecodeError> {
-    let len = cursor.read_u16()? as usize;
-    let bytes = cursor.read_bytes(len)?;
-    let mut tail = Term::NIL;
-    let words = bytes
-        .len()
-        .checked_mul(2)
-        .ok_or(DecodeError::HeapBudgetExceeded)?;
-    budget.charge_heap(words)?;
-    for byte in bytes.iter().rev().copied() {
-        tail = alloc_boxed_charged(process, 2, |heap| {
-            write_cons(heap, Term::small_int(i64::from(byte)), tail)
-        })?;
-    }
-    Ok(tail)
-}
-
-fn decode_list(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
+    context: &mut ProcessContext<'_>,
     atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
+    options: DecodeOptions,
+    depth: usize,
+    budget: RuntimeDecodeBudget,
 ) -> Result<Term, DecodeError> {
-    let len = cursor.read_u32()? as usize;
-    let words = len.checked_mul(2).ok_or(DecodeError::HeapBudgetExceeded)?;
-    budget.charge_heap(words)?;
-    let mut elements = Vec::new();
-    elements
-        .try_reserve(len)
-        .map_err(|_| DecodeError::HeapBudgetExceeded)?;
-    for _ in 0..len {
-        elements.push(decode_term_inner(cursor, process, atom_table, budget)?);
+    ensure_heap_words(
+        arity.checked_add(1).ok_or(DecodeError::SizeLimitExceeded)?,
+        budget,
+    )?;
+    let mut elements = Vec::with_capacity(arity);
+    for _ in 0..arity {
+        elements.push(decode_one(
+            cursor,
+            context,
+            atom_table,
+            options,
+            depth + 1,
+            budget,
+        )?);
     }
-    let mut tail = decode_term_inner(cursor, process, atom_table, budget)?;
-    for element in elements.iter().rev().copied() {
-        tail = alloc_boxed_charged(process, 2, |heap| write_cons(heap, element, tail))?;
-    }
-    Ok(tail)
+    context
+        .alloc_tuple(&elements)
+        .map_err(|_| DecodeError::HeapAllocationFailed)
 }
 
-fn decode_binary(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    budget: &mut RuntimeDecodeBudget,
+fn decode_atom(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    options: DecodeOptions,
 ) -> Result<Term, DecodeError> {
-    let len = cursor.read_u32()? as usize;
-    let bytes = cursor.read_bytes(len)?;
-    let words = checked_words(2, packed_word_count(bytes.len()))?;
-    alloc_boxed(process, budget, words, |heap| write_binary(heap, bytes))
+    let name = std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)?;
+    let atom = if options.safe {
+        atom_table
+            .lookup(name)
+            .ok_or_else(|| DecodeError::UnsafeAtom(name.to_owned()))?
+    } else {
+        atom_table.intern(name)
+    };
+    Ok(Term::atom(atom))
 }
 
-fn decode_big(
+fn decode_small_integer(value: i64) -> Result<Term, DecodeError> {
+    Term::try_small_int(value).ok_or(DecodeError::IntegerOutOfRange)
+}
+
+fn decode_big_integer(
     cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    budget: &mut RuntimeDecodeBudget,
     len: usize,
+    context: &mut ProcessContext<'_>,
+    budget: RuntimeDecodeBudget,
 ) -> Result<Term, DecodeError> {
     let sign = cursor.read_u8()?;
     let negative = match sign {
         0 => false,
         1 => true,
-        _ => return Err(DecodeError::InvalidAtom),
+        other => return Err(DecodeError::InvalidBigSign(other)),
     };
     let bytes = cursor.read_bytes(len)?;
-
-    if let Some(term) = small_big_term(negative, bytes) {
-        return Ok(term);
-    }
-
-    let mut limbs = Vec::new();
-    limbs
-        .try_reserve(bytes.len().div_ceil(std::mem::size_of::<u64>()))
-        .map_err(|_| DecodeError::HeapBudgetExceeded)?;
-    for chunk in bytes.chunks(std::mem::size_of::<u64>()) {
-        let mut limb = 0_u64;
-        for (index, byte) in chunk.iter().copied().enumerate() {
-            limb |= u64::from(byte) << (index * u8::BITS as usize);
+    if len <= std::mem::size_of::<i64>() {
+        let mut value: i128 = 0;
+        for (shift, byte) in bytes.iter().enumerate() {
+            value += i128::from(*byte) << (shift * u8::BITS as usize);
         }
-        limbs.push(limb);
-    }
-    while limbs.last().copied() == Some(0) && limbs.len() > 1 {
-        limbs.pop();
-    }
-    let words = checked_words(3, limbs.len())?;
-    alloc_boxed(process, budget, words, |heap| {
-        write_bigint(heap, negative, &limbs)
-    })
-}
-
-fn small_big_term(negative: bool, bytes: &[u8]) -> Option<Term> {
-    if bytes.len() > std::mem::size_of::<u64>() {
-        return None;
-    }
-
-    let mut magnitude = 0_u64;
-    for (index, byte) in bytes.iter().copied().enumerate() {
-        magnitude |= u64::from(byte) << (index * u8::BITS as usize);
-    }
-
-    if negative {
-        let min_magnitude = (Term::SMALL_INT_MAX as u64) + 1;
-        if magnitude == min_magnitude {
-            Term::try_small_int(Term::SMALL_INT_MIN)
+        let signed = if negative { -value } else { value };
+        let integer = i64::try_from(signed).map_err(|_| DecodeError::IntegerOutOfRange)?;
+        if let Some(term) = Term::try_small_int(integer) {
+            Ok(term)
         } else {
-            i64::try_from(magnitude)
-                .ok()
-                .and_then(|value| Term::try_small_int(-value))
+            let magnitude = integer.unsigned_abs();
+            context
+                .alloc_bigint(integer.is_negative(), &[magnitude])
+                .map_err(|_| DecodeError::HeapAllocationFailed)
         }
     } else {
-        i64::try_from(magnitude).ok().and_then(Term::try_small_int)
-    }
-}
-
-fn decode_map(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
-) -> Result<Term, DecodeError> {
-    let len = cursor.read_u32()? as usize;
-    let words = checked_words(
-        2,
-        len.checked_mul(2).ok_or(DecodeError::HeapBudgetExceeded)?,
-    )?;
-    budget.charge_heap(words)?;
-    let mut keys = Vec::new();
-    let mut values = Vec::new();
-    keys.try_reserve(len)
-        .map_err(|_| DecodeError::HeapBudgetExceeded)?;
-    values
-        .try_reserve(len)
-        .map_err(|_| DecodeError::HeapBudgetExceeded)?;
-    for _ in 0..len {
-        keys.push(decode_term_inner(cursor, process, atom_table, budget)?);
-        values.push(decode_term_inner(cursor, process, atom_table, budget)?);
-    }
-    alloc_boxed_charged(process, words, |heap| write_map(heap, &keys, &values))
-}
-
-fn decode_export(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
-) -> Result<Term, DecodeError> {
-    let module = decode_term_inner(cursor, process, atom_table, budget)?;
-    let function = decode_term_inner(cursor, process, atom_table, budget)?;
-    let arity = decode_term_inner(cursor, process, atom_table, budget)?;
-    if module.as_atom().is_none() || function.as_atom().is_none() {
-        return Err(DecodeError::InvalidAtom);
-    }
-    if !matches!(arity.as_small_int(), Some(value) if value >= 0) {
-        return Err(DecodeError::InvalidAtom);
-    }
-    let elements = [module, function, arity];
-    alloc_boxed(process, budget, 1 + elements.len(), |heap| {
-        write_tuple(heap, &elements)
-    })
-}
-
-fn decode_pid(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
-    new_pid: bool,
-) -> Result<Term, DecodeError> {
-    let _node = decode_term_inner(cursor, process, atom_table, budget)?;
-    let id = u64::from(cursor.read_u32()?);
-    let _serial = cursor.read_u32()?;
-    if new_pid {
-        let _creation = cursor.read_u32()?;
-    } else {
-        let _creation = cursor.read_u8()?;
-    }
-    Term::try_pid(id).ok_or(DecodeError::InvalidAtom)
-}
-
-fn decode_reference(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
-) -> Result<Term, DecodeError> {
-    let _node = decode_term_inner(cursor, process, atom_table, budget)?;
-    let id = u64::from(cursor.read_u32()?);
-    let _creation = cursor.read_u8()?;
-    alloc_boxed(process, budget, 2, |heap| write_reference(heap, id))
-}
-
-fn decode_newer_reference(
-    cursor: &mut Cursor<'_>,
-    process: &mut Process,
-    atom_table: &AtomTable,
-    budget: &mut RuntimeDecodeBudget,
-) -> Result<Term, DecodeError> {
-    let len = cursor.read_u16()? as usize;
-    let _node = decode_term_inner(cursor, process, atom_table, budget)?;
-    let _creation = cursor.read_u32()?;
-    let mut folded = 0_u64;
-    for index in 0..len {
-        let word = u64::from(cursor.read_u32()?);
-        if index == 0 {
-            folded = word;
-        } else if index == 1 {
-            folded = (folded << u32::BITS) | word;
+        let limb_count = len.div_ceil(std::mem::size_of::<u64>());
+        ensure_heap_words(
+            limb_count
+                .checked_add(3)
+                .ok_or(DecodeError::SizeLimitExceeded)?,
+            budget,
+        )?;
+        let mut limbs = Vec::with_capacity(limb_count);
+        for chunk in bytes.chunks(std::mem::size_of::<u64>()) {
+            let mut limb_bytes = [0_u8; std::mem::size_of::<u64>()];
+            limb_bytes[..chunk.len()].copy_from_slice(chunk);
+            limbs.push(u64::from_le_bytes(limb_bytes));
         }
+        context
+            .alloc_bigint(negative, &limbs)
+            .map_err(|_| DecodeError::HeapAllocationFailed)
     }
-    alloc_boxed(process, budget, 2, |heap| write_reference(heap, folded))
 }
 
-fn alloc_boxed<F>(
-    process: &mut Process,
-    budget: &mut RuntimeDecodeBudget,
-    words: usize,
-    write: F,
-) -> Result<Term, DecodeError>
-where
-    F: FnOnce(&mut [u64]) -> Option<Term>,
-{
-    budget.charge_heap(words)?;
-    alloc_boxed_charged(process, words, write)
+fn ensure_heap_words(words: usize, budget: RuntimeDecodeBudget) -> Result<(), DecodeError> {
+    if words > budget.max_heap_words {
+        return Err(DecodeError::SizeLimitExceeded);
+    }
+    Ok(())
 }
 
-fn alloc_boxed_charged<F>(
-    process: &mut Process,
-    words: usize,
-    write: F,
-) -> Result<Term, DecodeError>
-where
-    F: FnOnce(&mut [u64]) -> Option<Term>,
-{
-    let heap = process
-        .heap_mut()
-        .alloc_slice(words)
-        .map_err(|_| DecodeError::HeapBudgetExceeded)?;
-    write(heap).ok_or(DecodeError::HeapBudgetExceeded)
+fn packed_word_count(bytes: usize) -> Option<usize> {
+    bytes
+        .checked_add(7)
+        .map(|count| count / std::mem::size_of::<u64>())
 }
 
-fn checked_words(base: usize, payload: usize) -> Result<usize, DecodeError> {
-    base.checked_add(payload)
-        .ok_or(DecodeError::HeapBudgetExceeded)
+fn decompress_bounded(bytes: &[u8], declared_size: usize) -> Result<(Vec<u8>, usize), DecodeError> {
+    let limit = u64::try_from(declared_size).map_err(|_| DecodeError::SizeLimitExceeded)?;
+    let decoder = ZlibDecoder::new(bytes);
+    let mut reader: Take<ZlibDecoder<&[u8]>> = decoder.take(limit.saturating_add(1));
+    let mut out = Vec::new();
+    reader
+        .read_to_end(&mut out)
+        .map_err(|_| DecodeError::DecompressionFailed)?;
+    let compressed_used = usize::try_from(reader.into_inner().total_in())
+        .map_err(|_| DecodeError::SizeLimitExceeded)?;
+    if out.len() != declared_size {
+        return Err(DecodeError::DecompressedSizeMismatch {
+            expected: declared_size,
+            actual: out.len(),
+        });
+    }
+    Ok((out, compressed_used))
 }
 
-struct Cursor<'bytes> {
-    bytes: &'bytes [u8],
+struct Cursor<'a> {
+    bytes: &'a [u8],
     offset: usize,
 }
 
-impl<'bytes> Cursor<'bytes> {
-    const fn new(bytes: &'bytes [u8]) -> Self {
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
-    fn is_empty(&self) -> bool {
-        self.offset == self.bytes.len()
+    fn position(&self) -> usize {
+        self.offset
     }
 
-    fn peek_u8(&self) -> Result<u8, DecodeError> {
-        self.bytes
-            .get(self.offset)
-            .copied()
-            .ok_or(DecodeError::Truncated)
+    fn remaining(&self) -> &'a [u8] {
+        if self.offset <= self.bytes.len() {
+            &self.bytes[self.offset..]
+        } else {
+            &[]
+        }
+    }
+
+    fn skip_bytes(&mut self, len: usize) -> Result<(), DecodeError> {
+        self.read_bytes(len)?;
+        Ok(())
+    }
+
+    fn expect_empty(&self) -> Result<(), DecodeError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(DecodeError::TrailingBytes)
+        }
     }
 
     fn read_u8(&mut self) -> Result<u8, DecodeError> {
-        let byte = self.peek_u8()?;
-        self.offset += 1;
+        let byte = self
+            .bytes
+            .get(self.offset)
+            .copied()
+            .ok_or(DecodeError::Truncated)?;
+        self.offset = self.offset.checked_add(1).ok_or(DecodeError::Truncated)?;
         Ok(byte)
     }
 
     fn read_u16(&mut self) -> Result<u16, DecodeError> {
-        let bytes = self.read_array::<2>()?;
-        Ok(u16::from_be_bytes(bytes))
+        let bytes = self.read_bytes(2)?;
+        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
     }
 
     fn read_u32(&mut self) -> Result<u32, DecodeError> {
-        let bytes = self.read_array::<4>()?;
-        Ok(u32::from_be_bytes(bytes))
+        let bytes = self.read_bytes(4)?;
+        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     fn read_i32(&mut self) -> Result<i32, DecodeError> {
-        let bytes = self.read_array::<4>()?;
-        Ok(i32::from_be_bytes(bytes))
+        let bytes = self.read_bytes(4)?;
+        Ok(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
-    fn read_u64(&mut self) -> Result<u64, DecodeError> {
-        let bytes = self.read_array::<8>()?;
-        Ok(u64::from_be_bytes(bytes))
-    }
-
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
-        let bytes = self.read_bytes(N)?;
-        let mut array = [0_u8; N];
-        array.copy_from_slice(bytes);
-        Ok(array)
-    }
-
-    fn read_bytes(&mut self, len: usize) -> Result<&'bytes [u8], DecodeError> {
-        let Some(end) = self.offset.checked_add(len) else {
-            return Err(DecodeError::Truncated);
-        };
-        let Some(bytes) = self.bytes.get(self.offset..end) else {
-            return Err(DecodeError::Truncated);
-        };
+    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
+        let end = self.offset.checked_add(len).ok_or(DecodeError::Truncated)?;
+        let slice = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(DecodeError::Truncated)?;
         self.offset = end;
-        Ok(bytes)
+        Ok(slice)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::atom::Atom;
-    use crate::etf::encode::encode_term;
+    use crate::etf::encode::{EncodeOptions, encode_term_with_options};
+    use crate::process::Process;
     use crate::term::binary::Binary;
-    use crate::term::boxed::{Cons, Map, Tuple};
+    use crate::term::boxed::{Tuple, write_tuple};
 
-    fn atoms() -> AtomTable {
-        AtomTable::with_common_atoms()
+    fn context(process: &mut Process) -> ProcessContext<'_> {
+        let mut context = ProcessContext::new();
+        context.attach_process(process, 0);
+        context
     }
 
     #[test]
-    fn runtime_budget_tracks_depth_and_heap_words() {
-        let mut budget = RuntimeDecodeBudget::with_limits(1, 2);
-        assert_eq!(budget.descend(), Ok(()));
-        assert_eq!(budget.descend(), Err(DecodeError::DepthExceeded));
-        budget.ascend();
-        assert_eq!(budget.charge_heap(2), Ok(()));
-        assert_eq!(budget.charge_heap(1), Err(DecodeError::HeapBudgetExceeded));
-    }
-
-    #[test]
-    fn decode_small_integer() {
-        let table = atoms();
-        let mut process = Process::new(1, 64);
-        let term = decode_term(
-            &[tags::VERSION, tags::SMALL_INTEGER_EXT, 42],
-            &mut process,
-            &table,
+    fn decodes_compressed_binary_from_encoder() {
+        let atoms = AtomTable::with_common_atoms();
+        let mut tuple_heap = [0_u64; 3];
+        let tuple = write_tuple(
+            &mut tuple_heap,
+            &[Term::atom(Atom::OK), Term::small_int(42)],
         )
-        .expect("small integer decodes");
-        assert_eq!(term, Term::small_int(42));
-    }
+        .expect("tuple");
+        let bytes = encode_term_with_options(
+            tuple,
+            &atoms,
+            EncodeOptions {
+                compression_level: Some(6),
+            },
+        )
+        .expect("encode");
+        let mut process = Process::new(1, 128);
+        let mut ctx = context(&mut process);
 
-    #[test]
-    fn decode_tuple_on_process_heap() {
-        let table = atoms();
-        let mut process = Process::new(1, 64);
-        let bytes = [
-            tags::VERSION,
-            tags::SMALL_TUPLE_EXT,
-            2,
-            tags::SMALL_ATOM_UTF8_EXT,
-            2,
-            b'o',
-            b'k',
-            tags::SMALL_INTEGER_EXT,
-            42,
-        ];
-        let term = decode_term(&bytes, &mut process, &table).expect("tuple decodes");
-        let tuple = Tuple::new(term).expect("tuple term");
-        assert_eq!(tuple.arity(), 2);
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode");
+        let tuple = Tuple::new(decoded).expect("tuple result");
         assert_eq!(tuple.get(0), Some(Term::atom(Atom::OK)));
         assert_eq!(tuple.get(1), Some(Term::small_int(42)));
     }
 
     #[test]
-    fn decode_string_ext_as_cons_list() {
-        let table = atoms();
-        let mut process = Process::new(1, 64);
-        let bytes = [tags::VERSION, tags::STRING_EXT, 0, 3, 1, 2, 3];
-        let term = decode_term(&bytes, &mut process, &table).expect("string list decodes");
-        assert_list(&[1, 2, 3], term);
+    fn rejects_claimed_uncompressed_size_beyond_budget() {
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 8);
+        process.heap_mut().set_max_capacity(8);
+        let mut ctx = context(&mut process);
+        let bytes = [tags::VERSION, tags::COMPRESSED_EXT, 0, 0, 0, 65, 0x78, 0x9c];
+
+        assert_eq!(
+            decode_term(&bytes, &mut ctx, &atoms),
+            Err(DecodeError::SizeLimitExceeded)
+        );
     }
 
     #[test]
-    fn decode_list_ext_as_cons_list() {
-        let table = atoms();
+    fn safe_mode_rejects_novel_atoms() {
+        let atoms = AtomTable::with_common_atoms();
         let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
         let bytes = [
             tags::VERSION,
-            tags::LIST_EXT,
-            0,
-            0,
-            0,
-            3,
-            tags::SMALL_INTEGER_EXT,
-            1,
-            tags::SMALL_INTEGER_EXT,
-            2,
-            tags::SMALL_INTEGER_EXT,
-            3,
-            tags::NIL_EXT,
+            tags::SMALL_ATOM_UTF8_EXT,
+            5,
+            b'n',
+            b'o',
+            b'v',
+            b'e',
+            b'l',
         ];
-        let term = decode_term(&bytes, &mut process, &table).expect("list decodes");
-        assert_list(&[1, 2, 3], term);
-    }
 
-    #[test]
-    fn encode_decode_round_trip_for_tuple() {
-        let table = atoms();
-        let mut source_heap = [0_u64; 3];
-        let original = write_tuple(
-            &mut source_heap,
-            &[Term::atom(Atom::OK), Term::small_int(42)],
-        )
-        .expect("source tuple");
-        let bytes = encode_term(original, &table).expect("encode");
-        let mut process = Process::new(1, 64);
-        let decoded = decode_term(&bytes, &mut process, &table).expect("decode");
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn decode_binary_and_map() {
-        let table = atoms();
-        let mut process = Process::new(1, 64);
-        let binary_bytes = [tags::VERSION, tags::BINARY_EXT, 0, 0, 0, 3, 1, 2, 3];
-        let binary = decode_term(&binary_bytes, &mut process, &table).expect("binary decodes");
         assert_eq!(
-            Binary::new(binary).expect("binary term").as_bytes(),
+            decode_term_with_options(
+                &bytes,
+                &mut ctx,
+                &atoms,
+                DecodeOptions {
+                    safe: true,
+                    return_used: false,
+                },
+            ),
+            Err(DecodeError::UnsafeAtom("novel".to_owned()))
+        );
+    }
+
+    #[test]
+    fn used_mode_tracks_consumed_prefix_size() {
+        let atoms = AtomTable::with_common_atoms();
+        let bytes = [tags::VERSION, tags::BINARY_EXT, 0, 0, 0, 3, 1, 2, 3, 99];
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+
+        let decoded = decode_term_with_options(
+            &bytes,
+            &mut ctx,
+            &atoms,
+            DecodeOptions {
+                safe: false,
+                return_used: true,
+            },
+        )
+        .expect("decode");
+        assert_eq!(decoded.used, bytes.len() - 1);
+        assert_eq!(
+            Binary::new(decoded.term).expect("binary").as_bytes(),
             &[1, 2, 3]
         );
-
-        let map_bytes = [
-            tags::VERSION,
-            tags::MAP_EXT,
-            0,
-            0,
-            0,
-            1,
-            tags::SMALL_ATOM_UTF8_EXT,
-            1,
-            b'a',
-            tags::SMALL_INTEGER_EXT,
-            1,
-        ];
-        let map = decode_term(&map_bytes, &mut process, &table).expect("map decodes");
-        let map = Map::new(map).expect("map term");
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.value(0), Some(Term::small_int(1)));
     }
 
     #[test]
-    fn decode_bigint_small_or_boxed() {
-        let table = atoms();
+    fn default_decode_rejects_trailing_bytes() {
+        let atoms = AtomTable::with_common_atoms();
+        let bytes = [tags::VERSION, tags::SMALL_INTEGER_EXT, 42, 99];
         let mut process = Process::new(1, 64);
-        let small = [tags::VERSION, tags::SMALL_BIG_EXT, 2, 0, 0x2a, 0];
-        assert_eq!(
-            decode_term(&small, &mut process, &table),
-            Ok(Term::small_int(42))
-        );
-
-        let boxed = [
-            tags::VERSION,
-            tags::SMALL_BIG_EXT,
-            8,
-            0,
-            0xff,
-            0xff,
-            0xff,
-            0xff,
-            0xff,
-            0xff,
-            0xff,
-            0x7f,
-        ];
-        let decoded = decode_term(&boxed, &mut process, &table).expect("boxed bigint decodes");
-        assert!(decoded.is_boxed());
-    }
-
-    #[test]
-    fn invalid_inputs_return_decode_errors() {
-        let table = atoms();
-        let mut process = Process::new(1, 64);
-        assert_eq!(
-            decode_term(&[], &mut process, &table),
-            Err(DecodeError::Truncated)
-        );
-        assert_eq!(
-            decode_term(&[0], &mut process, &table),
-            Err(DecodeError::InvalidTag(0))
-        );
-        assert_eq!(
-            decode_term(&[tags::VERSION, 0], &mut process, &table),
-            Err(DecodeError::InvalidTag(0))
-        );
-        assert_eq!(
-            decode_term(
-                &[tags::VERSION, tags::SMALL_ATOM_UTF8_EXT, 1, 0xff],
-                &mut process,
-                &table,
-            ),
-            Err(DecodeError::InvalidUtf8)
-        );
-    }
-
-    #[test]
-    fn decode_reports_depth_exhaustion_before_allocating_parent_container() {
-        let table = atoms();
-        let mut process = Process::new(1, 1024);
-        let mut bytes = vec![tags::VERSION];
-        for _ in 0..MAX_ETF_DEPTH {
-            bytes.extend_from_slice(&[tags::SMALL_TUPLE_EXT, 1]);
-        }
-        bytes.extend_from_slice(&[tags::SMALL_TUPLE_EXT, 1, tags::NIL_EXT]);
+        let mut ctx = context(&mut process);
 
         assert_eq!(
-            decode_term(&bytes, &mut process, &table),
-            Err(DecodeError::DepthExceeded)
+            decode_term(&bytes, &mut ctx, &atoms),
+            Err(DecodeError::TrailingBytes)
         );
-        assert_eq!(process.heap().young_used(), 0);
-    }
-
-    #[test]
-    fn decode_rejects_export_with_non_atom_components() {
-        let table = atoms();
-        let mut process = Process::new(1, 64);
-        let bytes = [
-            tags::VERSION,
-            tags::EXPORT_EXT,
-            tags::SMALL_INTEGER_EXT,
-            1,
-            tags::SMALL_ATOM_UTF8_EXT,
-            1,
-            b'f',
-            tags::SMALL_INTEGER_EXT,
-            0,
-        ];
-
-        assert_eq!(
-            decode_term(&bytes, &mut process, &table),
-            Err(DecodeError::InvalidAtom)
-        );
-        assert_eq!(process.heap().young_used(), 0);
-    }
-
-    #[test]
-    fn decode_reports_heap_budget_exhaustion() {
-        let table = atoms();
-        let mut process = Process::new(1, 1);
-        let bytes = [tags::VERSION, tags::NEW_FLOAT_EXT, 0, 0, 0, 0, 0, 0, 0, 0];
-        assert_eq!(
-            decode_term(&bytes, &mut process, &table),
-            Err(DecodeError::HeapBudgetExceeded)
-        );
-    }
-
-    fn assert_list(expected: &[i64], mut term: Term) {
-        for value in expected {
-            let cons = Cons::new(term).expect("cons cell");
-            assert_eq!(cons.head(), Term::small_int(*value));
-            term = cons.tail();
-        }
-        assert_eq!(term, Term::NIL);
     }
 }
