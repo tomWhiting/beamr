@@ -8,6 +8,7 @@ use dashmap::DashMap;
 
 use super::*;
 use crate::atom::{Atom, AtomTable};
+use crate::ets::{EtsTableMetadata, EtsTableType, Protection};
 use crate::hook::{Hook, HookDecision};
 use crate::io::NullSink;
 use crate::loader::Instruction;
@@ -26,6 +27,46 @@ use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
 use crate::term::{Term, boxed};
 use crate::timer::TimerWheel;
+
+fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
+    EtsTableMetadata {
+        name,
+        id: 0,
+        table_type: EtsTableType::Set,
+        protection: Protection::Protected,
+        owner,
+        keypos: 1,
+    }
+}
+
+#[test]
+fn ets_registry_create_lookup_name_and_delete() {
+    let scheduler = Scheduler::new(SchedulerConfig::default(), Arc::new(ModuleRegistry::new()))
+        .expect("scheduler should start");
+    let name = scheduler.shared.atom_table.intern("named_ets_table");
+
+    let first_id = scheduler.shared.create_table(ets_metadata(Some(name), 99));
+    let second_id = scheduler.shared.create_table(ets_metadata(None, 99));
+
+    assert_ne!(first_id, second_id);
+    assert!(second_id > first_id);
+    assert_eq!(scheduler.shared.lookup_table_by_name(name), Some(first_id));
+
+    let table = scheduler
+        .shared
+        .lookup_table(first_id)
+        .expect("table should be present by id");
+    assert_eq!(table.metadata().id, first_id);
+    assert_eq!(table.metadata().name, Some(name));
+
+    assert!(scheduler.shared.delete_table(first_id));
+    assert!(scheduler.shared.lookup_table(first_id).is_none());
+    assert_eq!(scheduler.shared.lookup_table_by_name(name), None);
+    assert!(scheduler.shared.lookup_table(second_id).is_some());
+    assert!(!scheduler.shared.delete_table(first_id));
+
+    scheduler.shutdown();
+}
 
 fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
     let label_index = code
@@ -385,6 +426,9 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
         atom_table: Arc::new(crate::atom::AtomTable::new()),
+        ets_tables: DashMap::new(),
+        ets_named_tables: DashMap::new(),
+        next_ets_table_id: AtomicU64::new(1),
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
@@ -643,6 +687,9 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
         atom_table: Arc::new(crate::atom::AtomTable::new()),
+        ets_tables: DashMap::new(),
+        ets_named_tables: DashMap::new(),
+        next_ets_table_id: AtomicU64::new(1),
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),

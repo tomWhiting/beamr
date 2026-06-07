@@ -9,6 +9,7 @@ use dashmap::DashMap;
 
 use super::*;
 use crate::atom::Atom;
+use crate::ets::{EtsTableMetadata, EtsTableType, Protection};
 use crate::process::ProcessStatus;
 use crate::process::registry::ProcessTable;
 use crate::scheduler::execution::{
@@ -141,6 +142,17 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
     }
 }
 
+fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
+    EtsTableMetadata {
+        name,
+        id: 0,
+        table_type: EtsTableType::Set,
+        protection: Protection::Protected,
+        owner,
+        keypos: 1,
+    }
+}
+
 fn make_shared_state() -> Arc<SharedState> {
     let module_registry = Arc::new(ModuleRegistry::new());
     let namespace_store = DashMap::new();
@@ -171,11 +183,30 @@ fn make_shared_state() -> Arc<SharedState> {
         timers: Arc::new(std::sync::Mutex::new(crate::timer::TimerWheel::new())),
         output_sink: std::sync::Mutex::new(Arc::new(crate::io::NullSink)),
         atom_table: Arc::new(crate::atom::AtomTable::new()),
+        ets_tables: DashMap::new(),
+        ets_named_tables: DashMap::new(),
+        next_ets_table_id: AtomicU64::new(1),
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
         dirty_results: DashMap::new(),
     })
+}
+
+#[test]
+fn cleanup_exited_process_deletes_tables_owned_by_process() {
+    let shared = make_shared_state();
+    let owner = insert_process(&shared, 11);
+    let survivor = insert_process(&shared, 12);
+    let owned_name = shared.atom_table.intern("owned_table");
+    let owned_id = shared.create_table(ets_metadata(Some(owned_name), owner));
+    let other_id = shared.create_table(ets_metadata(None, survivor));
+
+    cleanup_exited_process(&shared, owner, ExitReason::Normal);
+
+    assert!(shared.lookup_table(owned_id).is_none());
+    assert_eq!(shared.lookup_table_by_name(owned_name), None);
+    assert!(shared.lookup_table(other_id).is_some());
 }
 
 #[test]

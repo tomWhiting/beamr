@@ -443,6 +443,7 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     reason: ExitReason,
 ) {
     shared.exit_tombstones.insert(pid, reason);
+    let _deleted_tables = shared.delete_tables_owned_by(pid);
     supervision_integration::propagate_exit(shared, pid, reason);
     let _removed = shared.process_table.remove(pid);
     let _removed_body = shared.process_bodies.remove(&pid);

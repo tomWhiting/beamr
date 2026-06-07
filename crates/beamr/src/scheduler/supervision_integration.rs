@@ -155,8 +155,9 @@ fn process_exit_signal(
 
                 target.terminate(propagated_reason);
 
-                // Record tombstone.
+                // Record tombstone and remove resources owned by the terminated process.
                 shared.exit_tombstones.insert(target_pid, propagated_reason);
+                let _deleted_tables = shared.delete_tables_owned_by(target_pid);
                 {
                     let mut ls = lock_or_recover(&shared.link_set);
                     ls.process_exited_tombstone(target_pid, propagated_reason);
@@ -213,6 +214,7 @@ fn process_exit_signal(
                     .filter(|linked_pid| *linked_pid != source_pid)
                     .collect();
                 shared.exit_tombstones.insert(target_pid, propagated_reason);
+                let _deleted_tables = shared.delete_tables_owned_by(target_pid);
                 {
                     let mut ls = lock_or_recover(&shared.link_set);
                     ls.process_exited_tombstone(target_pid, propagated_reason);
@@ -1050,6 +1052,7 @@ impl SupervisionFacility for SchedulerSupervisionFacility {
 
 fn shared_exit_tombstone(shared: &SharedState, pid: u64, reason: ExitReason) {
     shared.exit_tombstones.insert(pid, reason);
+    let _deleted_tables = shared.delete_tables_owned_by(pid);
     let mut ls = lock_or_recover(&shared.link_set);
     ls.process_exited_tombstone(pid, reason);
 }
