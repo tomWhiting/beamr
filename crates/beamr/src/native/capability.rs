@@ -16,6 +16,8 @@ pub enum Capability {
     /// Arithmetic, comparisons, type checks, and pure collection operations are
     /// in this class.
     Pure,
+    /// Mutates or reads only the calling process's private runtime state.
+    ProcessLocal,
     /// Reads wall-clock time or otherwise waits on timers.
     Clock,
     /// Consumes randomness or cryptographic entropy.
@@ -37,7 +39,7 @@ pub struct LeastAuthorityPolicy;
 
 impl CapabilityPolicy for LeastAuthorityPolicy {
     fn is_granted(&self, capability: Capability) -> bool {
-        capability == Capability::Pure
+        matches!(capability, Capability::Pure | Capability::ProcessLocal)
     }
 }
 
@@ -112,6 +114,7 @@ mod tests {
     fn least_authority_grants_only_pure() {
         let policy = LeastAuthorityPolicy;
         assert!(policy.is_granted(Capability::Pure));
+        assert!(policy.is_granted(Capability::ProcessLocal));
         assert!(!policy.is_granted(Capability::Clock));
         assert!(!policy.is_granted(Capability::Entropy));
         assert!(!policy.is_granted(Capability::ExternalIo));
@@ -121,6 +124,7 @@ mod tests {
     fn all_capabilities_grants_everything() {
         let policy = AllCapabilitiesPolicy;
         assert!(policy.is_granted(Capability::Pure));
+        assert!(policy.is_granted(Capability::ProcessLocal));
         assert!(policy.is_granted(Capability::Clock));
         assert!(policy.is_granted(Capability::Entropy));
         assert!(policy.is_granted(Capability::ExternalIo));
@@ -128,9 +132,10 @@ mod tests {
 
     #[test]
     fn capability_set_grants_exact_members() {
-        let policy = CapabilitySet::from_slice(&[Capability::Pure, Capability::Clock]);
+        let policy = CapabilitySet::from_slice(&[Capability::Pure, Capability::ProcessLocal]);
         assert!(policy.grants(Capability::Pure));
-        assert!(policy.grants(Capability::Clock));
+        assert!(policy.grants(Capability::ProcessLocal));
+        assert!(!policy.grants(Capability::Clock));
         assert!(!policy.grants(Capability::Entropy));
         assert!(!policy.grants(Capability::ExternalIo));
     }

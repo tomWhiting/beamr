@@ -75,6 +75,8 @@ mod tests {
         let message = alloc_tuple(&mut process, &[Term::small_int(12)]);
         let reason = alloc_tuple(&mut process, &[Term::small_int(13)]);
         let stacktrace = alloc_tuple(&mut process, &[Term::small_int(14)]);
+        let dict_key = alloc_tuple(&mut process, &[Term::small_int(15)]);
+        let dict_value = alloc_tuple(&mut process, &[Term::small_int(16)]);
         process
             .stack_mut()
             .push_frame(Atom::OK, 0, module_pin(Atom::OK), 2)
@@ -87,6 +89,7 @@ mod tests {
             reason,
             stacktrace,
         }));
+        process.dict_put(dict_key, dict_value);
 
         let roots = root_set(&mut process, 0);
         let snapshots: Vec<_> = roots.as_slice().iter().copied().map(snapshot).collect();
@@ -99,6 +102,8 @@ mod tests {
                 Snapshot::Tuple(vec![Snapshot::Int(12)]),
                 Snapshot::Tuple(vec![Snapshot::Int(13)]),
                 Snapshot::Tuple(vec![Snapshot::Int(14)]),
+                Snapshot::Tuple(vec![Snapshot::Int(15)]),
+                Snapshot::Tuple(vec![Snapshot::Int(16)]),
             ]
         );
     }

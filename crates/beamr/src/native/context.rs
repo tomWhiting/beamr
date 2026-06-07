@@ -391,6 +391,54 @@ impl<'process> ProcessContext<'process> {
         self.select_facility = facility;
     }
 
+    /// Store a value in the attached process dictionary.
+    pub fn dict_put(&mut self, key: Term, value: Term) -> Result<Term, Term> {
+        let Some(process) = self.process.as_deref_mut() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.dict_put(key, value))
+    }
+
+    /// Fetch a value from the attached process dictionary.
+    pub fn dict_get(&self, key: Term) -> Result<Term, Term> {
+        let Some(process) = self.process.as_ref() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.dict_get(key))
+    }
+
+    /// Copy all attached process dictionary entries in current vector order.
+    pub fn dict_get_all(&self) -> Result<Vec<(Term, Term)>, Term> {
+        let Some(process) = self.process.as_ref() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.dict_get_all().to_vec())
+    }
+
+    /// Remove a value from the attached process dictionary.
+    pub fn dict_erase(&mut self, key: Term) -> Result<Term, Term> {
+        let Some(process) = self.process.as_deref_mut() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.dict_erase(key))
+    }
+
+    /// Remove and return all attached process dictionary entries.
+    pub fn dict_erase_all(&mut self) -> Result<Vec<(Term, Term)>, Term> {
+        let Some(process) = self.process.as_deref_mut() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.dict_erase_all())
+    }
+
+    /// Copy all dictionary keys whose values exactly match `value`.
+    pub fn dict_get_keys(&self, value: Term) -> Result<Vec<Term>, Term> {
+        let Some(process) = self.process.as_ref() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.dict_get_keys(value))
+    }
+
     /// Return the configured output sink for `io` module BIFs.
     #[must_use]
     pub fn io_sink(&self) -> &dyn IoSink {

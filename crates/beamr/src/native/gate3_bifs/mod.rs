@@ -62,7 +62,6 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     // demonitor/2 (R3)
     ("demonitor", 2, Capability::Pure, bif_demonitor_2),
     // OTP support BIFs (B-032)
-    ("get", 0, Capability::Pure, bif_get),
     ("pid_to_list", 1, Capability::Pure, bif_pid_to_list),
     ("byte_size", 1, Capability::Pure, bif_byte_size),
     ("iolist_size", 1, Capability::Pure, bif_iolist_size),
@@ -295,17 +294,6 @@ pub fn bif_demonitor_2(args: &[Term], context: &mut ProcessContext) -> Result<Te
 }
 
 // ── OTP support BIFs (B-032) ──────────────────────────────────────────────
-
-/// erlang:get/0 — returns the process dictionary as a list of `{Key, Value}` pairs.
-///
-/// beamr does not implement a process dictionary. Returns an empty list,
-/// which is the correct result for a process that has never called `put/2`.
-pub fn bif_get(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    if !args.is_empty() {
-        return Err(badarg());
-    }
-    Ok(Term::NIL)
-}
 
 /// erlang:pid_to_list/1 — converts a PID to its string representation.
 ///

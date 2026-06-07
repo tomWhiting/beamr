@@ -21,7 +21,7 @@ use crate::namespace::NamespaceId;
 use crate::native::NativeContinuation;
 use crate::process::heap::Heap;
 use crate::process::stack::Stack;
-use crate::term::Term;
+use crate::term::{Term, compare};
 
 /// Default number of reductions assigned to a fresh process time slice.
 pub const DEFAULT_REDUCTION_BUDGET: u32 = 4000;
@@ -227,6 +227,7 @@ pub struct Process {
     mailbox: Mailbox,
     handlers: Vec<ExceptionHandler>,
     current_exception: Option<Exception>,
+    dictionary: Vec<(Term, Term)>,
     receive_timeout: Option<ReceiveTimeout>,
     receive_timer_ref: Option<u64>,
     x_regs: [Term; 1024],
@@ -256,6 +257,7 @@ impl Process {
             mailbox: Mailbox::new(),
             handlers: Vec::new(),
             current_exception: None,
+            dictionary: Vec::new(),
             receive_timeout: None,
             receive_timer_ref: None,
             x_regs: [Term::NIL; 1024],
@@ -348,6 +350,72 @@ impl Process {
         &mut self.mailbox
     }
 
+    /// Store `value` under `key` in the process dictionary.
+    ///
+    /// Existing keys are matched with Erlang exact equality (`=:=`). Returns the
+    /// previous value, or `undefined` when the key was not present.
+    pub fn dict_put(&mut self, key: Term, value: Term) -> Term {
+        for (existing_key, existing_value) in &mut self.dictionary {
+            if compare::exact_eq(*existing_key, key) {
+                let old_value = *existing_value;
+                *existing_value = value;
+                return old_value;
+            }
+        }
+
+        self.dictionary.push((key, value));
+        Term::atom(Atom::UNDEFINED)
+    }
+
+    /// Fetch a value from the process dictionary by exact-equality key match.
+    #[must_use]
+    pub fn dict_get(&self, key: Term) -> Term {
+        self.dictionary
+            .iter()
+            .find_map(|(existing_key, value)| {
+                compare::exact_eq(*existing_key, key).then_some(*value)
+            })
+            .unwrap_or_else(|| Term::atom(Atom::UNDEFINED))
+    }
+
+    /// Borrow all process dictionary entries in current vector order.
+    #[must_use]
+    pub fn dict_get_all(&self) -> &[(Term, Term)] {
+        &self.dictionary
+    }
+
+    /// Remove a dictionary entry by exact-equality key match.
+    ///
+    /// Uses `swap_remove`, so entry order may change after deletion.
+    pub fn dict_erase(&mut self, key: Term) -> Term {
+        let Some(index) = self
+            .dictionary
+            .iter()
+            .position(|(existing_key, _)| compare::exact_eq(*existing_key, key))
+        else {
+            return Term::atom(Atom::UNDEFINED);
+        };
+
+        let (_key, value) = self.dictionary.swap_remove(index);
+        value
+    }
+
+    /// Remove and return all process dictionary entries.
+    pub fn dict_erase_all(&mut self) -> Vec<(Term, Term)> {
+        std::mem::take(&mut self.dictionary)
+    }
+
+    /// Return all keys whose values exactly match `value`.
+    #[must_use]
+    pub fn dict_get_keys(&self, value: Term) -> Vec<Term> {
+        self.dictionary
+            .iter()
+            .filter_map(|(key, existing_value)| {
+                compare::exact_eq(*existing_value, value).then_some(*key)
+            })
+            .collect()
+    }
+
     /// Snapshot every GC root owned by this process, treating all X registers as live.
     pub(crate) fn roots(&mut self) -> Vec<Term> {
         self.roots_with_live_x(256)
@@ -368,6 +436,11 @@ impl Process {
             .chain(self.mailbox.scan_iter())
             .copied()
             .chain(exception_roots)
+            .chain(
+                self.dictionary
+                    .iter()
+                    .flat_map(|(key, value)| [*key, *value]),
+            )
             .collect()
     }
 
@@ -408,6 +481,17 @@ impl Process {
             if let Some(value) = roots.get(index).copied() {
                 exception.stacktrace = value;
             }
+            index += 1;
+        }
+        for (key, value) in &mut self.dictionary {
+            if let Some(root) = roots.get(index).copied() {
+                *key = root;
+            }
+            index += 1;
+            if let Some(root) = roots.get(index).copied() {
+                *value = root;
+            }
+            index += 1;
         }
     }
 
@@ -663,6 +747,7 @@ impl Process {
         self.mailbox = Mailbox::new();
         self.handlers.clear();
         self.current_exception = None;
+        self.dictionary.clear();
         self.receive_timeout = None;
         self.receive_timer_ref = None;
         self.x_regs = [Term::NIL; 1024];
@@ -692,6 +777,7 @@ mod tests {
         assert_eq!(process.heap().capacity(), 233);
         assert!(process.stack().is_empty());
         assert!(process.mailbox().is_empty());
+        assert!(process.dict_get_all().is_empty());
         assert_eq!(process.reduction_counter(), DEFAULT_REDUCTION_BUDGET);
         assert_eq!(process.namespace_id(), NamespaceId::DEFAULT);
         assert_eq!(process.code_position(), None);
@@ -700,6 +786,83 @@ mod tests {
         assert!(process.monitors().is_empty());
         assert!(!process.trap_exit());
         assert_eq!(process.group_leader(), None);
+    }
+
+    #[test]
+    fn dictionary_put_get_round_trip() {
+        let mut process = Process::new(7, 233);
+        let key = Term::atom(Atom::OK);
+        let value = Term::small_int(42);
+
+        assert_eq!(process.dict_put(key, value), Term::atom(Atom::UNDEFINED));
+        assert_eq!(process.dict_get(key), value);
+        assert_eq!(process.dict_get_all(), &[(key, value)]);
+    }
+
+    #[test]
+    fn dictionary_put_replaces_existing_entry_and_returns_old_value() {
+        let mut process = Process::new(7, 233);
+        let key = Term::atom(Atom::OK);
+        let old_value = Term::small_int(1);
+        let new_value = Term::small_int(2);
+
+        assert_eq!(
+            process.dict_put(key, old_value),
+            Term::atom(Atom::UNDEFINED)
+        );
+        assert_eq!(process.dict_put(key, new_value), old_value);
+        assert_eq!(process.dict_get(key), new_value);
+        assert_eq!(process.dict_get_all(), &[(key, new_value)]);
+    }
+
+    #[test]
+    fn dictionary_get_and_erase_missing_return_undefined() {
+        let mut process = Process::new(7, 233);
+        let key = Term::atom(Atom::OK);
+
+        assert_eq!(process.dict_get(key), Term::atom(Atom::UNDEFINED));
+        assert_eq!(process.dict_erase(key), Term::atom(Atom::UNDEFINED));
+    }
+
+    #[test]
+    fn dictionary_erase_removes_entry_with_swap_remove() {
+        let mut process = Process::new(7, 233);
+        let key = Term::atom(Atom::OK);
+        let value = Term::small_int(42);
+        process.dict_put(key, value);
+
+        assert_eq!(process.dict_erase(key), value);
+        assert_eq!(process.dict_get(key), Term::atom(Atom::UNDEFINED));
+        assert!(process.dict_get_all().is_empty());
+    }
+
+    #[test]
+    fn dictionary_erase_all_drains_entries() {
+        let mut process = Process::new(7, 233);
+        process.dict_put(Term::atom(Atom::OK), Term::small_int(1));
+        process.dict_put(Term::atom(Atom::ERROR), Term::small_int(2));
+
+        assert_eq!(
+            process.dict_erase_all(),
+            vec![
+                (Term::atom(Atom::OK), Term::small_int(1)),
+                (Term::atom(Atom::ERROR), Term::small_int(2)),
+            ]
+        );
+        assert!(process.dict_get_all().is_empty());
+    }
+
+    #[test]
+    fn dictionary_get_keys_returns_exact_value_matches() {
+        let mut process = Process::new(7, 233);
+        process.dict_put(Term::atom(Atom::OK), Term::small_int(1));
+        process.dict_put(Term::atom(Atom::ERROR), Term::small_int(1));
+        process.dict_put(Term::atom(Atom::UNDEFINED), Term::small_int(2));
+
+        assert_eq!(
+            process.dict_get_keys(Term::small_int(1)),
+            vec![Term::atom(Atom::OK), Term::atom(Atom::ERROR)]
+        );
     }
 
     #[test]
