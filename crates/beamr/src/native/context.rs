@@ -538,9 +538,9 @@ mod tests {
         context
     }
 
-    fn assert_on_heap(process: &Process, term: Term) {
+    fn assert_on_heap(heap: &crate::process::heap::Heap, term: Term) {
         let ptr = term.heap_ptr().expect("boxed/list term has heap pointer");
-        assert!(process.heap().contains(ptr));
+        assert!(heap.contains(ptr));
     }
 
     #[test]
@@ -563,6 +563,10 @@ mod tests {
                 .alloc_tuple(&[float, binary, list, map, bigint])
                 .expect("tuple allocation");
 
+            for term in [float, binary, list, map, bigint, tuple] {
+                assert_on_heap(context.process_heap().expect("process heap"), term);
+            }
+
             assert_eq!(Float::new(float).expect("float accessor").value(), 1.5);
             assert_eq!(
                 Binary::new(binary).expect("binary accessor").as_bytes(),
@@ -579,7 +583,7 @@ mod tests {
             assert_eq!(Tuple::new(tuple).expect("tuple accessor").arity(), 5);
             tuple
         };
-        assert_on_heap(&process, tuple);
+        assert_on_heap(process.heap(), tuple);
     }
 
     #[test]

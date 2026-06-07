@@ -398,26 +398,36 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::term::{
-        binary::{packed_word_count, write_binary},
-        boxed::{write_bigint, write_cons, write_float, write_map, write_tuple},
-    };
+    use crate::process::Process;
+    use crate::term::boxed::{write_bigint, write_cons, write_float, write_map, write_tuple};
 
     fn atom_table() -> AtomTable {
         AtomTable::with_common_atoms()
     }
 
-    fn context() -> (Arc<AtomTable>, ProcessContext) {
-        let table = Arc::new(AtomTable::with_common_atoms());
-        let mut context = ProcessContext::new();
-        context.set_atom_table(Some(Arc::clone(&table)));
-        (table, context)
+    fn context() -> (Arc<AtomTable>, Process) {
+        (
+            Arc::new(AtomTable::with_common_atoms()),
+            Process::new(42, 512),
+        )
     }
 
-    fn binary_term(bytes: &[u8]) -> Term {
-        let heap: &mut [u64] =
-            Box::leak(vec![0_u64; 2 + packed_word_count(bytes.len())].into_boxed_slice());
-        write_binary(heap, bytes).expect("test binary allocation should fit")
+    fn attach_context<'process>(
+        table: &Arc<AtomTable>,
+        process: &'process mut Process,
+    ) -> ProcessContext<'process> {
+        let mut context = ProcessContext::new();
+        context.set_atom_table(Some(Arc::clone(table)));
+        context.attach_process(process, 0);
+        context
+    }
+
+    fn binary_term(process: &mut Process, bytes: &[u8]) -> Term {
+        let table = Arc::new(AtomTable::with_common_atoms());
+        let mut context = attach_context(&table, process);
+        context
+            .alloc_binary(bytes)
+            .expect("test binary allocation should fit")
     }
 
     #[test]
@@ -459,13 +469,14 @@ mod tests {
     #[test]
     fn term_to_value_converts_binaries() {
         let table = atom_table();
+        let mut process = Process::new(7, 64);
 
         assert_eq!(
-            term_to_value(binary_term(b"hello"), &table),
+            term_to_value(binary_term(&mut process, b"hello"), &table),
             Ok(json!("hello"))
         );
         assert_eq!(
-            term_to_value(binary_term(&[0xff, 0x00]), &table),
+            term_to_value(binary_term(&mut process, &[0xff, 0x00]), &table),
             Ok(json!("/wA="))
         );
     }
@@ -473,6 +484,7 @@ mod tests {
     #[test]
     fn term_to_value_converts_tuple_list_map_float_and_bigint() {
         let table = atom_table();
+        let mut process = Process::new(8, 64);
         let mut tuple_heap = [0_u64; 3];
         let tuple = write_tuple(
             &mut tuple_heap,
@@ -490,7 +502,7 @@ mod tests {
         assert_eq!(term_to_value(list, &table), Ok(json!([1, 2])));
 
         let keys = [Term::atom(Atom::OK)];
-        let values = [binary_term(b"value")];
+        let values = [binary_term(&mut process, b"value")];
         let mut map_heap = [0_u64; 4];
         let map = write_map(&mut map_heap, &keys, &values).expect("map should fit");
         assert_eq!(term_to_value(map, &table), Ok(json!({"ok": "value"})));
@@ -527,7 +539,8 @@ mod tests {
 
     #[test]
     fn value_to_term_converts_json_scalars() {
-        let (table, mut context) = context();
+        let (table, mut process) = context();
+        let mut context = attach_context(&table, &mut process);
 
         assert_eq!(
             value_to_term(&json!(42), &mut context),
@@ -554,7 +567,8 @@ mod tests {
 
     #[test]
     fn value_to_term_converts_arrays_to_proper_lists() {
-        let (table, mut context) = context();
+        let (table, mut process) = context();
+        let mut context = attach_context(&table, &mut process);
         let term = value_to_term(&json!([1, 2, 3]), &mut context).expect("array to list");
 
         assert_eq!(term_to_value(term, &table), Ok(json!([1, 2, 3])));
@@ -569,7 +583,8 @@ mod tests {
 
     #[test]
     fn value_to_term_converts_objects_to_binary_keyed_maps() {
-        let (_table, mut context) = context();
+        let (table, mut process) = context();
+        let mut context = attach_context(&table, &mut process);
         let term = value_to_term(&json!({"key": "value"}), &mut context).expect("object to map");
         let map = Map::new(term).expect("map accessor");
         let key = map.key(0).expect("first key");
@@ -590,7 +605,8 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_object_keys_named_like_special_atoms() {
-        let (table, mut context) = context();
+        let (table, mut process) = context();
+        let mut context = attach_context(&table, &mut process);
         let value = json!({"true": "bool-name", "nil": "nil-name"});
         let term = value_to_term(&value, &mut context).expect("object to term");
 
@@ -609,14 +625,17 @@ mod tests {
 
     #[test]
     fn value_to_term_objects_work_without_atom_table() {
+        let mut process = Process::new(43, 128);
         let mut context = ProcessContext::new();
+        context.attach_process(&mut process, 0);
         let term = value_to_term(&json!({"key": "value"}), &mut context);
         assert!(term.is_ok());
     }
 
     #[test]
     fn round_trip_preserves_representable_json_shapes() {
-        let (table, mut context) = context();
+        let (table, mut process) = context();
+        let mut context = attach_context(&table, &mut process);
         let values = [
             json!(true),
             json!(false),
@@ -635,7 +654,8 @@ mod tests {
 
     #[test]
     fn null_round_trips_as_null_atom() {
-        let (table, mut context) = context();
+        let (table, mut process) = context();
+        let mut context = attach_context(&table, &mut process);
         let term = value_to_term(&Value::Null, &mut context).expect("null to atom");
 
         assert!(term.is_atom());

@@ -284,6 +284,7 @@ mod tests {
     };
     use crate::atom::{Atom, AtomTable};
     use crate::native::{BifRegistryImpl, ProcessContext};
+    use crate::process::Process;
     use crate::term::Term;
     use crate::term::boxed::{Tuple, write_cons, write_map, write_tuple};
     use crate::timer::TimerWheel;
@@ -582,7 +583,9 @@ mod tests {
     #[test]
     fn timer_bifs_schedule_start_and_cancel_round_trips() {
         let timers = Arc::new(Mutex::new(TimerWheel::new()));
+        let mut process = Process::new(7, 32);
         let mut context = ProcessContext::with_timer_services(7, Arc::clone(&timers));
+        context.attach_process(&mut process, 0);
 
         let send_ref = send_after(
             &[small_int(100), Term::pid(9), Term::atom(Atom::OK)],
@@ -604,6 +607,7 @@ mod tests {
             cancel_timer(&[send_ref], &mut context),
             Ok(Term::atom(Atom::FALSE))
         );
+        context.detach_process();
 
         let expired = timers
             .lock()
@@ -614,6 +618,11 @@ mod tests {
             expired[0].reference.id(),
             start_ref.as_small_int().unwrap_or_default() as u64
         );
+        let message_ptr = expired[0]
+            .message
+            .heap_ptr()
+            .expect("timeout tuple has a heap pointer");
+        assert!(process.heap().contains(message_ptr));
         let tuple = Tuple::new(expired[0].message).expect("timeout tuple");
         assert_eq!(tuple.get(0), Some(Term::atom(Atom::TIMEOUT)));
         assert_eq!(tuple.get(1), Some(start_ref));
