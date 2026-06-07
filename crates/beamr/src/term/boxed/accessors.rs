@@ -271,6 +271,10 @@ impl ProcBin {
         self.as_bytes().len()
     }
 
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
     pub fn shared_binary(self) -> SharedBinary {
         SharedBinary::clone_from_raw_word(self.arc_ptr_word())
     }

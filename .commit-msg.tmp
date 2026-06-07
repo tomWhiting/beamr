@@ -1,1 +1,1 @@
-fix(beamr): expose static binary ref byte borrow
+fix(beamr): satisfy procbin clippy checks
