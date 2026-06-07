@@ -69,7 +69,7 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
                 ws.waiting.insert(pid, my_index);
             }
             if shared.dirty_results.contains_key(&pid) {
-                crate::scheduler::execution::wake_process(shared, pid);
+                let _resumed = timer_integration::resume_suspended(shared, pid);
             }
         }
         SliceOutcome::Exited(reason, result) => {
@@ -272,7 +272,10 @@ pub(in crate::scheduler) fn execute_slice(
             SliceOutcome::Wait(take_process(process))
         }
         Ok(ExecutionResult::DirtyCall { entry, args, kind }) => {
-            submit_dirty_call(shared, process, entry, args, kind);
+            if let Err(error) = submit_dirty_call(shared, process, entry, args, kind) {
+                shared.exit_errors.insert(process.pid(), error.into());
+                return exit_process(shared, process, ExitReason::Error);
+            }
             let _t = process.transition_to(ProcessStatus::Suspended);
             SliceOutcome::Suspended(take_process(process))
         }
@@ -317,10 +320,6 @@ fn apply_dirty_result(
                 stacktrace: dirty_result.exception_stacktrace,
             };
             match crate::interpreter::opcodes::exceptions::raise_exception(process, exception)? {
-                crate::interpreter::InstructionOutcome::Continue => {
-                    advance_past_current_instruction(process);
-                    Ok(InstructionOutcomeAfterDirty::Continue)
-                }
                 crate::interpreter::InstructionOutcome::Jump(target) => {
                     process.set_code_position(Some(target));
                     Ok(InstructionOutcomeAfterDirty::Continue)
@@ -328,7 +327,8 @@ fn apply_dirty_result(
                 crate::interpreter::InstructionOutcome::Exit(reason) => {
                     Ok(InstructionOutcomeAfterDirty::Exit(reason))
                 }
-                crate::interpreter::InstructionOutcome::Yield
+                crate::interpreter::InstructionOutcome::Continue
+                | crate::interpreter::InstructionOutcome::Yield
                 | crate::interpreter::InstructionOutcome::Waiting
                 | crate::interpreter::InstructionOutcome::NativeContinuation
                 | crate::interpreter::InstructionOutcome::OnLoadComplete
@@ -363,7 +363,7 @@ fn submit_dirty_call(
     entry: NativeEntry,
     args: Vec<Term>,
     kind: DirtySchedulerKind,
-) {
+) -> Result<(), DirtySubmissionError> {
     let mut context =
         ProcessContext::with_timer_services(process.pid(), Arc::clone(&shared.timers));
     let services = supervision_integration::build_native_services(shared, process.namespace_id());
@@ -391,17 +391,43 @@ fn submit_dirty_call(
         DirtySchedulerKind::Cpu => shared.dirty_cpu.submit(job),
         DirtySchedulerKind::Io => shared.dirty_io.submit(job),
     }
+    .map_err(|_| DirtySubmissionError::PoolUnavailable)?;
 
     let shared_for_completion = Arc::clone(shared);
     let pid = process.pid();
-    let _completion = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name(format!("dirty-complete-{pid}"))
-        .spawn(move || {
-            if let Ok(result) = result_receiver.recv() {
+        .spawn(move || match result_receiver.recv() {
+            Ok(result) => {
                 shared_for_completion.dirty_results.insert(pid, result);
-                crate::scheduler::execution::wake_process(&shared_for_completion, pid);
+                let _resumed = timer_integration::resume_suspended(&shared_for_completion, pid);
             }
-        });
+            Err(_closed) => {
+                shared_for_completion.dirty_results.insert(
+                    pid,
+                    DirtyResult {
+                        result: Err(Term::atom(Atom::ERROR)),
+                        exception_class: ExceptionClass::Error,
+                        exception_stacktrace: Term::NIL,
+                    },
+                );
+                let _resumed = timer_integration::resume_suspended(&shared_for_completion, pid);
+            }
+        })
+        .map_err(|_| DirtySubmissionError::CompletionBridgeSpawn)?;
+    Ok(())
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum DirtySubmissionError {
+    PoolUnavailable,
+    CompletionBridgeSpawn,
+}
+
+impl From<DirtySubmissionError> for crate::error::ExecError {
+    fn from(_error: DirtySubmissionError) -> Self {
+        Self::Badarg
+    }
 }
 
 fn exit_reason_from_status(status: ProcessStatus) -> ExitReason {

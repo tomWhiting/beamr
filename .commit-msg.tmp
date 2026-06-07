@@ -1,1 +1,1 @@
-feat(beamr): dispatch dirty natives through dirty scheduler pools
+Harden dirty NIF scheduler migration and completion wakeups

@@ -106,6 +106,17 @@ enum DirtyMessage {
     Shutdown,
 }
 
+/// Failure returned when a dirty job cannot be enqueued.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DirtySubmitError {
+    /// Submission was attempted after pool shutdown began.
+    ShutDown,
+    /// The bounded dirty queue is full; the normal scheduler must not block.
+    QueueFull,
+    /// All dirty workers disconnected from the queue.
+    Disconnected,
+}
+
 /// A bounded dirty scheduler pool backed by OS threads.
 pub struct DirtyPool {
     name: String,
@@ -174,12 +185,17 @@ impl DirtyPool {
         }
     }
 
-    /// Enqueues a dirty job, blocking while the bounded queue is full.
-    pub fn submit(&self, job: DirtyJob) {
+    /// Enqueues a dirty job without blocking a normal scheduler thread.
+    pub fn submit(&self, job: DirtyJob) -> Result<(), DirtySubmitError> {
         if self.shutdown.load(Ordering::Acquire) {
-            return;
+            return Err(DirtySubmitError::ShutDown);
         }
-        let _ = self.sender.send(DirtyMessage::Run(Box::new(job)));
+        self.sender
+            .try_send(DirtyMessage::Run(Box::new(job)))
+            .map_err(|error| match error {
+                crossbeam_channel::TrySendError::Full(_) => DirtySubmitError::QueueFull,
+                crossbeam_channel::TrySendError::Disconnected(_) => DirtySubmitError::Disconnected,
+            })
     }
 
     /// Signals all dirty workers to stop and joins them.
@@ -291,13 +307,16 @@ mod tests {
         let pool = DirtyPool::with_queue_depth("dirty-test-job", 1, 1);
         let (result_sender, result_receiver) = oneshot::channel();
 
-        pool.submit(DirtyJob {
-            pid: 7,
-            function: forty_two,
-            args: Vec::new(),
-            context: ProcessContext::new(),
-            result_sender,
-        });
+        assert_eq!(
+            pool.submit(DirtyJob {
+                pid: 7,
+                function: forty_two,
+                args: Vec::new(),
+                context: ProcessContext::new(),
+                result_sender,
+            }),
+            Ok(())
+        );
 
         assert_eq!(
             result_receiver.recv(),
