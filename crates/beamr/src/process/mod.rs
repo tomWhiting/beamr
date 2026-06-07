@@ -257,6 +257,7 @@ pub struct Process {
     status: ProcessStatus,
     priority: Priority,
     heap: Heap,
+    virtual_binary_heap: usize,
     stack: Stack,
     mailbox: Mailbox,
     handlers: Vec<ExceptionHandler>,
@@ -290,6 +291,7 @@ impl Process {
             status: ProcessStatus::New,
             priority: Priority::Normal,
             heap: Heap::new(heap_size),
+            virtual_binary_heap: 0,
             stack: Stack::new(),
             mailbox: Mailbox::new(),
             handlers: Vec::new(),
@@ -383,6 +385,22 @@ impl Process {
     /// Mutable access to this process heap.
     pub fn heap_mut(&mut self) -> &mut Heap {
         &mut self.heap
+    }
+
+    /// Bytes of off-heap binary data currently referenced by ProcBins on this heap.
+    #[must_use]
+    pub const fn virtual_binary_heap(&self) -> usize {
+        self.virtual_binary_heap
+    }
+
+    /// Record a newly allocated heap ProcBin's off-heap byte ownership.
+    pub fn increase_virtual_binary_heap(&mut self, bytes: usize) {
+        self.virtual_binary_heap = self.virtual_binary_heap.saturating_add(bytes);
+    }
+
+    /// Record removal of a heap ProcBin's off-heap byte ownership.
+    pub(crate) fn decrease_virtual_binary_heap(&mut self, bytes: usize) {
+        self.virtual_binary_heap = self.virtual_binary_heap.saturating_sub(bytes);
     }
 
     /// Immutable access to this process stack.
@@ -837,6 +855,8 @@ impl Process {
     /// heap terms alive after process death.
     pub fn terminate(&mut self, reason: ExitReason) {
         self.status = ProcessStatus::Exited(reason);
+        crate::gc::release_all_proc_bins(self);
+        self.virtual_binary_heap = 0;
         self.heap = Heap::new(1);
         self.stack = Stack::new();
         self.mailbox = Mailbox::new();
@@ -861,9 +881,9 @@ mod tests {
         ProcessStatus,
     };
     use crate::atom::Atom;
-    use crate::gc::tests::module_pin;
+    use crate::gc::tests::{alloc_proc_bin, module_pin};
     use crate::namespace::NamespaceId;
-    use crate::term::Term;
+    use crate::term::{Term, shared_binary::SharedBinary};
 
     #[test]
     fn fresh_process_has_expected_state() {
@@ -1014,6 +1034,23 @@ mod tests {
 
         assert!(process.current_module().is_none());
         assert_eq!(process.code_position(), None);
+    }
+
+    #[test]
+    fn terminate_releases_heap_proc_bins_and_resets_virtual_binary_heap() {
+        let shared = SharedBinary::new(vec![0xAB; 256 * 1024]);
+        let mut process = Process::new(0, 233);
+        let proc_bin = alloc_proc_bin(&mut process, &shared);
+        process.set_x_reg(0, proc_bin);
+        assert_eq!(shared.ref_count(), 2);
+        assert_eq!(process.virtual_binary_heap(), 256 * 1024);
+
+        process.terminate(ExitReason::Normal);
+
+        assert_eq!(shared.ref_count(), 1);
+        assert_eq!(process.virtual_binary_heap(), 0);
+        assert_eq!(process.heap().total_used(), 0);
+        assert_eq!(process.x_reg(0), Term::NIL);
     }
 
     #[test]

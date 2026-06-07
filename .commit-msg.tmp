@@ -1,1 +1,1 @@
-Harden SubBinary views and matching edge cases
+fix(beamr): retain copied ProcBin arcs at copy time

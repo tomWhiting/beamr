@@ -11,6 +11,8 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
+const WORD_BYTES: usize = std::mem::size_of::<u64>();
+
 use crate::process::{Process, heap::HeapFull};
 use crate::term::{
     Term,
@@ -112,9 +114,11 @@ pub fn collect_major(process: &mut Process) -> Result<GcStats, GcError> {
 /// during minor GC requires old-space compaction. The function does not touch
 /// any process except `process`.
 pub fn alloc(process: &mut Process, words: usize) -> Result<*mut u64, GcError> {
-    match process.heap_mut().alloc(words) {
-        Ok(ptr) => return Ok(ptr),
-        Err(_heap_full) => {}
+    if !virtual_binary_pressure_exceeds_heap(process) {
+        match process.heap_mut().alloc(words) {
+            Ok(ptr) => return Ok(ptr),
+            Err(_heap_full) => {}
+        }
     }
 
     ensure_space(process, words, 256)?;
@@ -124,7 +128,7 @@ pub fn alloc(process: &mut Process, words: usize) -> Result<*mut u64, GcError> {
 
 /// Ensure `words` nursery words are available, collecting and growing if needed.
 pub fn ensure_space(process: &mut Process, words: usize, live_x: usize) -> Result<(), GcError> {
-    if process.heap().available() >= words {
+    if process.heap().available() >= words && !virtual_binary_pressure_exceeds_heap(process) {
         return Ok(());
     }
 
@@ -144,6 +148,12 @@ pub fn ensure_space(process: &mut Process, words: usize, live_x: usize) -> Resul
         process.heap_mut().grow_to_next_capacity_with_max()?;
     }
     Ok(())
+}
+
+fn virtual_binary_pressure_exceeds_heap(process: &Process) -> bool {
+    let heap_used_bytes = process.heap().total_used().saturating_mul(WORD_BYTES);
+    let heap_capacity_bytes = process.heap().total_capacity().saturating_mul(WORD_BYTES);
+    heap_used_bytes.saturating_add(process.virtual_binary_heap()) >= heap_capacity_bytes
 }
 
 pub(crate) fn new_stats(process: &Process) -> GcStats {
@@ -223,7 +233,7 @@ pub(crate) fn rewrite_copied_object(
         }
         BoxedTag::MatchContext => rewrite_word(ptr, 3, work_queue, &mut copy_term)?,
         BoxedTag::SubBinary => rewrite_word(ptr, 1, work_queue, &mut copy_term)?,
-        BoxedTag::ProcBin => retain_proc_bin_arc(ptr),
+        BoxedTag::ProcBin => {}
         BoxedTag::Float
         | BoxedTag::BigInt
         | BoxedTag::Reference
@@ -248,7 +258,54 @@ fn rewrite_word(
     Ok(())
 }
 
-fn retain_proc_bin_arc(ptr: *const u64) {
+pub(crate) fn release_proc_bins_in_young(
+    process: &mut Process,
+    is_forwarded: impl Fn(usize) -> bool,
+) {
+    if process.virtual_binary_heap() == 0 {
+        return;
+    }
+    let mut unreachable_bytes = 0_usize;
+    process
+        .heap()
+        .visit_young_boxed_objects(|ptr, tag, _words| {
+            if tag == BoxedTag::ProcBin {
+                let bytes = release_proc_bin_arc(ptr);
+                if !is_forwarded(ptr.addr()) {
+                    unreachable_bytes = unreachable_bytes.saturating_add(bytes);
+                }
+            }
+        });
+    process.decrease_virtual_binary_heap(unreachable_bytes);
+}
+
+pub(crate) fn release_all_proc_bins(process: &mut Process) {
+    let mut released_bytes = 0_usize;
+    process.heap().visit_boxed_objects(|ptr, tag, _words| {
+        if tag == BoxedTag::ProcBin {
+            released_bytes = released_bytes.saturating_add(release_proc_bin_arc(ptr));
+        }
+    });
+    process.decrease_virtual_binary_heap(released_bytes);
+}
+
+pub(crate) fn release_all_proc_bins_in_compacted_sources(
+    process: &mut Process,
+    is_forwarded: impl Fn(usize) -> bool,
+) {
+    let mut unreachable_bytes = 0_usize;
+    process.heap().visit_boxed_objects(|ptr, tag, _words| {
+        if tag == BoxedTag::ProcBin {
+            let bytes = release_proc_bin_arc(ptr);
+            if !is_forwarded(ptr.addr()) {
+                unreachable_bytes = unreachable_bytes.saturating_add(bytes);
+            }
+        }
+    });
+    process.decrease_virtual_binary_heap(unreachable_bytes);
+}
+
+pub(crate) fn retain_proc_bin_arc(ptr: *const u64) {
     let raw = read_raw_word(ptr, 2);
     let arc_ptr = raw as *const Vec<u8>;
     // SAFETY: ProcBin word two stores a raw `Arc<Vec<u8>>` pointer created by
@@ -260,6 +317,19 @@ fn retain_proc_bin_arc(ptr: *const u64) {
     let _source_raw = Arc::into_raw(source);
     let copied_raw = Arc::into_raw(copied);
     write_raw_word(ptr, 2, copied_raw as u64);
+}
+
+fn release_proc_bin_arc(ptr: *const u64) -> usize {
+    let raw = read_raw_word(ptr, 2);
+    let arc_ptr = raw as *const Vec<u8>;
+    // SAFETY: ProcBin word two stores a raw `Arc<Vec<u8>>` pointer created by
+    // `Arc::into_raw`. Rebuild exactly that heap-owned strong reference, record
+    // the byte length while it is live, and then let it drop to release this
+    // ProcBin's ownership of the off-heap data.
+    let source = unsafe { Arc::from_raw(arc_ptr) };
+    let bytes = source.len();
+    write_raw_word(ptr, 2, 0);
+    bytes
 }
 
 fn read_raw_word(ptr: *const u64, offset: usize) -> u64 {
