@@ -128,6 +128,7 @@ impl Mailbox {
     }
 
     /// Return the current selective-receive save pointer.
+    #[cfg(test)]
     pub(crate) fn save_pointer_marker(&self) -> usize {
         self.save_pointer
     }
