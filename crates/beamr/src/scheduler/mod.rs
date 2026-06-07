@@ -96,24 +96,6 @@ impl SharedState {
     pub(super) fn atom_count(&self) -> usize {
         self.atom_table.len()
     }
-
-    pub(super) fn create_table(&self, metadata: EtsTableMetadata) -> EtsTableId {
-        self.ets_registry.create_table(metadata)
-    }
-
-    #[must_use]
-    pub(super) fn lookup_table(&self, id: EtsTableId) -> Option<Arc<dyn EtsTable>> {
-        self.ets_registry.lookup_table(id)
-    }
-
-    #[must_use]
-    pub(super) fn lookup_named_table(&self, name: crate::atom::Atom) -> Option<Arc<dyn EtsTable>> {
-        self.ets_registry.lookup_named_table(name)
-    }
-
-    pub(super) fn delete_table(&self, id: EtsTableId) -> bool {
-        self.ets_registry.delete_table(id)
-    }
 }
 
 #[derive(Default)]
@@ -268,6 +250,24 @@ impl Scheduler {
             worker_names,
         })
     }
+    pub fn create_table(&self, metadata: EtsTableMetadata) -> EtsTableId {
+        self.shared.ets_registry.create_table(metadata)
+    }
+
+    #[must_use]
+    pub fn lookup_table(&self, id: EtsTableId) -> Option<Arc<dyn EtsTable>> {
+        self.shared.ets_registry.lookup_table(id)
+    }
+
+    #[must_use]
+    pub fn lookup_named_table(&self, name: crate::atom::Atom) -> Option<Arc<dyn EtsTable>> {
+        self.shared.ets_registry.lookup_named_table(name)
+    }
+
+    pub fn delete_table(&self, id: EtsTableId) -> bool {
+        self.shared.ets_registry.delete_table(id)
+    }
+
     #[must_use]
     pub fn create_namespace(&self) -> NamespaceId {
         let id = NamespaceId(

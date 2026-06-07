@@ -423,7 +423,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
 }
 
 #[test]
-fn shared_state_creates_set_table_that_round_trips_insert_lookup() {
+fn scheduler_creates_set_table_that_round_trips_insert_lookup() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
@@ -433,12 +433,11 @@ fn shared_state_creates_set_table_that_round_trips_insert_lookup() {
     )
     .expect("scheduler starts");
 
-    let table_id = scheduler.shared.create_table(set_metadata());
+    let table_id = scheduler.create_table(set_metadata());
     let table = scheduler
-        .shared
         .lookup_table(table_id)
         .expect("table is registered");
-    assert!(scheduler.shared.lookup_named_table(Atom::OK).is_some());
+    assert!(scheduler.lookup_named_table(Atom::OK).is_some());
 
     let mut tuple_heap = [0_u64; 3];
     let tuple = boxed::write_tuple(
@@ -449,8 +448,8 @@ fn shared_state_creates_set_table_that_round_trips_insert_lookup() {
     table.insert(tuple).expect("insert succeeds");
     assert_eq!(table.lookup(Term::atom(Atom::OK)), vec![tuple]);
 
-    assert!(scheduler.shared.delete_table(table_id));
-    assert!(scheduler.shared.lookup_table(table_id).is_none());
+    assert!(scheduler.delete_table(table_id));
+    assert!(scheduler.lookup_table(table_id).is_none());
 }
 
 #[test]
