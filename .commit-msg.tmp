@@ -1,1 +1,1 @@
-feat(beamr): add module-owned constant pool for literals
+fix(beamr): harden constant-pool clone rebasing
