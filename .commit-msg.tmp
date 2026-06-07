@@ -1,1 +1,1 @@
-fix(beamr): release ProcBin refs during GC and process exit
+fix(beamr): clean up ProcBin GC accounting APIs

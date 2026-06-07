@@ -326,10 +326,6 @@ impl Heap {
         self.young.visit_allocated_boxed_objects(visit);
     }
 
-    pub(crate) fn visit_old_boxed_objects(&self, visit: impl FnMut(*const u64, BoxedTag, usize)) {
-        self.old.visit_allocated_boxed_objects(visit);
-    }
-
     pub(crate) fn visit_boxed_objects(&self, mut visit: impl FnMut(*const u64, BoxedTag, usize)) {
         self.young.visit_allocated_boxed_objects(&mut visit);
         self.old.visit_allocated_boxed_objects(visit);

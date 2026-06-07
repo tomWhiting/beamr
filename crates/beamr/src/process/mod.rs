@@ -394,7 +394,7 @@ impl Process {
     }
 
     /// Record a newly allocated heap ProcBin's off-heap byte ownership.
-    pub(crate) fn increase_virtual_binary_heap(&mut self, bytes: usize) {
+    pub fn increase_virtual_binary_heap(&mut self, bytes: usize) {
         self.virtual_binary_heap = self.virtual_binary_heap.saturating_add(bytes);
     }
 
