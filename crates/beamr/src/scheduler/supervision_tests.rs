@@ -119,6 +119,8 @@ fn make_shared_state() -> Arc<SharedState> {
         wait_set: std::sync::Mutex::new(WaitSet::default()),
         wake_condvar: std::sync::Condvar::new(),
         process_bodies: DashMap::new(),
+        process_namespaces: DashMap::new(),
+        pending_links: DashMap::new(),
         exit_tombstones: DashMap::new(),
         exit_results: DashMap::new(),
         exit_errors: DashMap::new(),

@@ -62,6 +62,8 @@ pub(super) struct SharedState {
     wait_set: Mutex<WaitSet>,
     wake_condvar: Condvar,
     process_bodies: DashMap<u64, Mutex<Option<ScheduledProcess>>>,
+    process_namespaces: DashMap<u64, NamespaceId>,
+    pending_links: DashMap<u64, Vec<u64>>,
     exit_tombstones: DashMap<u64, ExitReason>,
     exit_results: DashMap<u64, Term>,
     exit_errors: DashMap<u64, ExecError>,
@@ -161,6 +163,8 @@ impl Scheduler {
             wait_set: Mutex::new(WaitSet::default()),
             wake_condvar: Condvar::new(),
             process_bodies: DashMap::new(),
+            process_namespaces: DashMap::new(),
+            pending_links: DashMap::new(),
             exit_tombstones: DashMap::new(),
             exit_results: DashMap::new(),
             exit_errors: DashMap::new(),
@@ -439,6 +443,7 @@ impl Scheduler {
     ) -> Result<u64, ExecError> {
         let parent_namespace = self
             .with_process(parent_pid, |process| process.namespace_id())
+            .or_else(|| self.shared.process_namespaces.get(&parent_pid).map(|r| *r))
             .ok_or(ExecError::Badarg)?;
         let facility = supervision_integration::SchedulerSpawnFacility {
             shared: Arc::clone(&self.shared),
@@ -509,6 +514,7 @@ impl Scheduler {
     ) -> u64 {
         let pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(pid);
+        self.shared.process_namespaces.insert(pid, namespace_id);
         let index =
             self.shared.spawn_counter.fetch_add(1, Ordering::Relaxed) % self.shared.thread_count;
         if trap_exit {
@@ -905,6 +911,7 @@ fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64, my_index: 
         return;
     };
     let outcome = execute_slice(shared, &mut process);
+    apply_pending_links(shared, &mut process);
     if shared.exit_tombstones.contains_key(&pid) {
         let reason = shared
             .exit_tombstones
@@ -933,7 +940,16 @@ fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64, my_index: 
         }
         SliceOutcome::Exited(reason, result) => {
             shared.exit_results.insert(pid, result);
+            store_runnable_process(shared, process);
             cleanup_exited_process(shared, pid, reason);
+        }
+    }
+}
+
+fn apply_pending_links(shared: &SharedState, process: &mut Process) {
+    if let Some((_, children)) = shared.pending_links.remove(&process.pid()) {
+        for child_pid in children {
+            process.add_link(child_pid);
         }
     }
 }
@@ -1250,6 +1266,8 @@ fn cleanup_exited_process(shared: &SharedState, pid: u64, reason: ExitReason) {
     supervision_integration::propagate_exit(shared, pid, reason);
     let _removed = shared.process_table.remove(pid);
     let _removed_body = shared.process_bodies.remove(&pid);
+    let _removed_ns = shared.process_namespaces.remove(&pid);
+    let _removed_pending = shared.pending_links.remove(&pid);
     let mut wait_set = lock_or_recover(&shared.wait_set);
     wait_set.waiting.remove(&pid);
     wait_set.woken.retain(|(woken_pid, _)| *woken_pid != pid);

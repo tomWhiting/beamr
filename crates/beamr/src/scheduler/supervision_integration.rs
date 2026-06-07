@@ -263,6 +263,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             .next_pid
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(child_pid);
+        self.shared.process_namespaces.insert(child_pid, namespace_id);
 
         let mut child = super::build_process(super::SpawnRequest {
             pid: child_pid,
@@ -274,12 +275,17 @@ impl SpawnFacility for SchedulerSpawnFacility {
         });
 
         if let Some(parent_pid) = link_to {
-            // Add bidirectional link.
             child.add_link(parent_pid);
             if let Some(parent_entry) = self.shared.process_bodies.get(&parent_pid) {
                 let mut parent_slot = lock_or_recover(&parent_entry);
                 if let Some(ScheduledProcess(parent)) = parent_slot.as_mut() {
                     parent.add_link(child_pid);
+                } else {
+                    self.shared
+                        .pending_links
+                        .entry(parent_pid)
+                        .or_default()
+                        .push(child_pid);
                 }
             }
         }
@@ -331,6 +337,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             .next_pid
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(child_pid);
+        self.shared.process_namespaces.insert(child_pid, namespace_id);
 
         let mut child = super::build_process(super::SpawnRequest {
             pid: child_pid,
@@ -347,6 +354,12 @@ impl SpawnFacility for SchedulerSpawnFacility {
                 let mut parent_slot = lock_or_recover(&parent_entry);
                 if let Some(ScheduledProcess(parent)) = parent_slot.as_mut() {
                     parent.add_link(child_pid);
+                } else {
+                    self.shared
+                        .pending_links
+                        .entry(parent_pid)
+                        .or_default()
+                        .push(child_pid);
                 }
             }
         }

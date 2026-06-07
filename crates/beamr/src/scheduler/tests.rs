@@ -315,6 +315,8 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         wait_set: Mutex::new(WaitSet::default()),
         wake_condvar: Condvar::new(),
         process_bodies: DashMap::new(),
+        process_namespaces: DashMap::new(),
+        pending_links: DashMap::new(),
         exit_tombstones: DashMap::new(),
         exit_results: DashMap::new(),
         exit_errors: DashMap::new(),
