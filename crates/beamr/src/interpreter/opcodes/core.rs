@@ -49,9 +49,8 @@ pub fn move_(
     module: &Module,
     source: &Operand,
     destination: &Operand,
-    atom_table: Option<&AtomTable>,
 ) -> Result<InstructionOutcome, ExecError> {
-    let value = read_term_with_atom_table(process, module, source, atom_table)?;
+    let value = read_term(process, module, source)?;
     write_term(process, destination, value)?;
     Ok(InstructionOutcome::Continue)
 }
@@ -473,15 +472,6 @@ pub(crate) fn read_term(
     module: &Module,
     operand: &Operand,
 ) -> Result<Term, ExecError> {
-    read_term_with_atom_table(process, module, operand, None)
-}
-
-pub(crate) fn read_term_with_atom_table(
-    process: &Process,
-    module: &Module,
-    operand: &Operand,
-    atom_table: Option<&AtomTable>,
-) -> Result<Term, ExecError> {
     match operand {
         Operand::Integer(value) => Term::try_small_int(*value).ok_or(ExecError::Badarg),
         Operand::Unsigned(value) => {
@@ -496,9 +486,7 @@ pub(crate) fn read_term_with_atom_table(
             .y_reg(u16_from_u32(*index, "Y register")?)
             .map_err(ExecError::from),
         Operand::Literal(index) => literal_term(module, *index),
-        Operand::TypedRegister { register, .. } => {
-            read_term_with_atom_table(process, module, register, atom_table)
-        }
+        Operand::TypedRegister { register, .. } => read_term(process, module, register),
         _ => Err(ExecError::InvalidOperand("term source")),
     }
 }

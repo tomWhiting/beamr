@@ -124,7 +124,7 @@ impl ConstantPool {
 impl Clone for ConstantPool {
     fn clone(&self) -> Self {
         Self {
-            blocks: self.blocks.iter().cloned().collect(),
+            blocks: self.blocks.to_vec(),
             roots: self.roots.clone(),
         }
     }

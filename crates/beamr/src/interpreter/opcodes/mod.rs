@@ -140,7 +140,7 @@ fn dispatch_common(
         Instruction::Move {
             source,
             destination,
-        } => core::move_(process, module, source, destination, ctx.atom_table),
+        } => core::move_(process, module, source, destination),
         Instruction::Call { arity, label } => {
             core::call(process, module, arity, label, next_ip, true)
         }
