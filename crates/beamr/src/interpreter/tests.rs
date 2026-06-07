@@ -268,6 +268,107 @@ fn func_info_and_move_cover_metadata_register_literals_and_stack() {
 }
 
 #[test]
+fn swap_exchanges_x_registers_without_allocating() {
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(42),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(99),
+                destination: Operand::X(1),
+            },
+            Instruction::Swap {
+                left: Operand::X(0),
+                right: Operand::X(1),
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(2, 32);
+    let before_heap = process.heap().used();
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(99));
+    assert_eq!(process.x_reg(1), Term::small_int(42));
+    assert_eq!(process.heap().used(), before_heap);
+}
+
+#[test]
+fn swap_exchanges_y_and_x_registers_without_clobbering() {
+    let atoms = AtomTable::new();
+    let hello = atoms.intern("hello");
+    let world = atoms.intern("world");
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::AllocateZero {
+                stack_need: Operand::Unsigned(1),
+                live: Operand::Unsigned(0),
+            },
+            Instruction::Move {
+                source: Operand::Atom(Some(hello)),
+                destination: Operand::Y(0),
+            },
+            Instruction::Move {
+                source: Operand::Atom(Some(world)),
+                destination: Operand::X(0),
+            },
+            Instruction::Swap {
+                left: Operand::Y(0),
+                right: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Y(0),
+                destination: Operand::X(1),
+            },
+            Instruction::Deallocate {
+                words: Operand::Unsigned(1),
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(2, 32);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::atom(hello));
+    assert_eq!(process.x_reg(1), Term::atom(world));
+}
+
+#[test]
+fn swap_same_register_is_no_op() {
+    let module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(42),
+                destination: Operand::X(0),
+            },
+            Instruction::Swap {
+                left: Operand::X(0),
+                right: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    let mut process = Process::new(1, 32);
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(42));
+}
+
+#[test]
 fn stack_heap_and_data_opcodes_work() {
     let module = module(
         Atom::OK,

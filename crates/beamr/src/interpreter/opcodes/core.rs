@@ -55,6 +55,19 @@ pub fn move_(
     Ok(InstructionOutcome::Continue)
 }
 
+pub fn swap(
+    process: &mut Process,
+    module: &Module,
+    left: &Operand,
+    right: &Operand,
+) -> Result<InstructionOutcome, ExecError> {
+    let left_value = read_term(process, module, left)?;
+    let right_value = read_term(process, module, right)?;
+    write_term(process, left, right_value)?;
+    write_term(process, right, left_value)?;
+    Ok(InstructionOutcome::Continue)
+}
+
 pub fn call(
     process: &mut Process,
     module: &Module,

@@ -141,6 +141,7 @@ fn dispatch_common(
             source,
             destination,
         } => core::move_(process, module, source, destination),
+        Instruction::Swap { left, right } => core::swap(process, module, left, right),
         Instruction::Call { arity, label } => {
             core::call(process, module, arity, label, next_ip, true)
         }
