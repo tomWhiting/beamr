@@ -13,7 +13,7 @@ use self::execution::scheduler_loop;
 use self::spawning::SpawnRequest;
 use crate::atom::AtomTable;
 use crate::error::ExecError;
-use crate::ets::{EtsTable, EtsTableId, EtsTableMetadata};
+use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::hook::Hook;
 use crate::io::{IoSink, NullSink};
 use crate::module::ModuleRegistry;
@@ -52,9 +52,7 @@ pub(super) struct SharedState {
     namespace_store: DashMap<NamespaceId, Arc<ModuleRegistry>>,
     next_namespace_id: AtomicU64,
     atom_table: Arc<AtomTable>,
-    ets_tables: DashMap<EtsTableId, Arc<dyn EtsTable>>,
-    ets_named_tables: DashMap<crate::atom::Atom, EtsTableId>,
-    next_ets_table_id: AtomicU64,
+    ets_registry: Arc<EtsRegistry>,
     bif_registry: Arc<BifRegistryImpl>,
     capability_policy: Arc<dyn CapabilityPolicy>,
     spawn_counter: AtomicUsize,
@@ -81,54 +79,26 @@ pub(super) struct SharedState {
 }
 
 impl SharedState {
-    pub(super) fn create_table(&self, mut metadata: EtsTableMetadata) -> EtsTableId {
-        let table_id = self.next_ets_table_id.fetch_add(1, Ordering::Relaxed);
-        metadata.id = table_id;
-        let table: Arc<dyn EtsTable> = Arc::new(MetadataOnlyTable { metadata });
-        let name = table.metadata().name;
-        self.ets_tables.insert(table_id, table);
-        if let Some(name) = name {
-            self.ets_named_tables.insert(name, table_id);
-        }
-        table_id
+    pub(super) fn create_table(&self, metadata: EtsTableMetadata) -> EtsTableId {
+        self.ets_registry.create_table(metadata)
     }
 
     pub(super) fn lookup_table(&self, id: EtsTableId) -> Option<Arc<dyn EtsTable>> {
-        self.ets_tables.get(&id).map(|table| Arc::clone(&table))
+        self.ets_registry.lookup_table(id)
     }
 
     pub(super) fn lookup_table_by_name(&self, name: crate::atom::Atom) -> Option<EtsTableId> {
-        self.ets_named_tables.get(&name).map(|entry| *entry.value())
+        self.ets_registry.lookup_table_by_name(name)
     }
 
     pub(super) fn delete_table(&self, id: EtsTableId) -> bool {
-        let Some((_id, table)) = self.ets_tables.remove(&id) else {
-            return false;
-        };
-        if let Some(name) = table.metadata().name {
-            self.ets_named_tables
-                .remove_if(&name, |_name, indexed_id| *indexed_id == id);
-        }
-        true
+        self.ets_registry.delete_table(id)
     }
 
     pub(super) fn delete_tables_owned_by(&self, owner: u64) -> usize {
-        let table_ids = self
-            .ets_tables
-            .iter()
-            .filter_map(|entry| {
-                if entry.value().metadata().owner == owner {
-                    Some(*entry.key())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        let deleted = table_ids.len();
-        for table_id in table_ids {
-            let _removed = self.delete_table(table_id);
-        }
-        deleted
+        let before = self.ets_registry.table_count();
+        self.ets_registry.delete_tables_owned_by(owner);
+        before.saturating_sub(self.ets_registry.table_count())
     }
 
     /// Return the number of alive processes tracked by the scheduler.
@@ -147,32 +117,6 @@ impl SharedState {
     #[must_use]
     pub(super) fn atom_count(&self) -> usize {
         self.atom_table.len()
-    }
-}
-
-struct MetadataOnlyTable {
-    metadata: EtsTableMetadata,
-}
-
-impl EtsTable for MetadataOnlyTable {
-    fn metadata(&self) -> &EtsTableMetadata {
-        &self.metadata
-    }
-
-    fn insert(&self, _tuple: Term) -> Result<(), crate::ets::EtsError> {
-        Ok(())
-    }
-
-    fn lookup(&self, _key: Term) -> Vec<Term> {
-        Vec::new()
-    }
-
-    fn delete_key(&self, _key: Term) -> bool {
-        false
-    }
-
-    fn tab2list(&self) -> Vec<Term> {
-        Vec::new()
     }
 }
 
@@ -273,9 +217,7 @@ impl Scheduler {
             namespace_store,
             next_namespace_id: AtomicU64::new(1),
             atom_table,
-            ets_tables: DashMap::new(),
-            ets_named_tables: DashMap::new(),
-            next_ets_table_id: AtomicU64::new(1),
+            ets_registry: Arc::new(EtsRegistry::new()),
             bif_registry,
             capability_policy,
             spawn_counter: AtomicUsize::new(0),

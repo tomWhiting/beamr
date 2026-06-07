@@ -33,6 +33,7 @@ fn bif_and_literal_heavy_workload_does_not_grow_monotonically() {
         process_info_facility: None,
         system_info_facility: None,
         group_leader_facility: None,
+        ets_facility: None,
     };
     let mut process = Process::new(1, 512);
     process.reset_reductions(500_000);

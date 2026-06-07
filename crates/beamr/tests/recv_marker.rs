@@ -71,6 +71,7 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
         process_info_facility: None,
         system_info_facility: None,
         group_leader_facility: None,
+        ets_facility: None,
     };
 
     assert_eq!(

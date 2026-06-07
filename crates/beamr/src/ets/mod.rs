@@ -10,7 +10,7 @@ pub mod term_key;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 
 use crate::atom::Atom;
 use crate::term::Term;
@@ -56,11 +56,7 @@ impl EtsRegistry {
         }
         let id = metadata.id;
         let name = metadata.name;
-        let table: Arc<dyn EtsTable> = match metadata.table_type {
-            EtsTableType::Set | EtsTableType::OrderedSet => Arc::new(EtsSet::new(metadata)),
-            EtsTableType::Bag => Arc::new(EtsBag::new(metadata)),
-            EtsTableType::DuplicateBag => Arc::new(EtsDuplicateBag::new(metadata)),
-        };
+        let table = Self::table_from_metadata(metadata);
         if let Some(previous_table) = self.tables.insert(id, table)
             && let Some(previous_name) = previous_table.metadata().name
         {
@@ -71,6 +67,46 @@ impl EtsRegistry {
             self.names.insert(name, id);
         }
         id
+    }
+
+    /// Create a table while rejecting duplicate named-table bindings.
+    ///
+    /// This is the ETS BIF creation path: Erlang `ets:new(Name,
+    /// [named_table])` must fail with `badarg` when `Name` is already bound.
+    /// The name reservation is performed with a `DashMap` entry guard so two
+    /// concurrent named creates cannot both succeed.
+    pub fn try_create_table(&self, mut metadata: EtsTableMetadata) -> Result<EtsTableId, EtsError> {
+        if metadata.id == 0 {
+            metadata.id = self.allocate_table_id();
+        } else {
+            self.reserve_table_id(metadata.id);
+        }
+        let id = metadata.id;
+        let name = metadata.name;
+        let table = Self::table_from_metadata(metadata);
+
+        let Some(name) = name else {
+            self.tables.insert(id, table);
+            return Ok(id);
+        };
+
+        match self.names.entry(name) {
+            Entry::Occupied(_existing) => Err(EtsError::Badarg),
+            Entry::Vacant(entry) => {
+                self.tables.insert(id, table);
+                entry.insert(id);
+                Ok(id)
+            }
+        }
+    }
+
+    fn table_from_metadata(metadata: EtsTableMetadata) -> Arc<dyn EtsTable> {
+        match metadata.table_type {
+            EtsTableType::Set => Arc::new(EtsSet::new(metadata)),
+            EtsTableType::OrderedSet => Arc::new(EtsOrderedSet::new(metadata)),
+            EtsTableType::Bag => Arc::new(EtsBag::new(metadata)),
+            EtsTableType::DuplicateBag => Arc::new(EtsDuplicateBag::new(metadata)),
+        }
     }
 
     fn allocate_table_id(&self) -> EtsTableId {
@@ -128,6 +164,11 @@ impl EtsRegistry {
     #[must_use]
     pub fn lookup_table_by_name(&self, name: Atom) -> Option<EtsTableId> {
         self.names.get(&name).map(|entry| *entry.value())
+    }
+
+    #[must_use]
+    pub fn table_count(&self) -> usize {
+        self.tables.len()
     }
 }
 
@@ -213,5 +254,20 @@ mod tests {
                 .id,
             second_id
         );
+    }
+
+    #[test]
+    fn try_create_table_rejects_duplicate_names_without_rebinding() {
+        let registry = EtsRegistry::new();
+        let first_id = registry
+            .try_create_table(metadata(EtsTableType::Set))
+            .expect("first named create succeeds");
+
+        assert_eq!(
+            registry.try_create_table(metadata(EtsTableType::Bag)),
+            Err(EtsError::Badarg)
+        );
+        assert_eq!(registry.lookup_table_by_name(Atom::OK), Some(first_id));
+        assert_eq!(registry.table_count(), 1);
     }
 }

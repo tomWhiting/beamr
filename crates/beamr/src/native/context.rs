@@ -20,6 +20,7 @@ use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 use crate::timer::{TimerRef, TimerWheel};
 
 use super::code_management_bifs::CodeManagementFacility;
+use super::ets_bifs::EtsFacility;
 use super::group_leader::GroupLeaderFacility;
 use super::links::LinkFacility;
 use super::process_info_bifs::ProcessInfoFacility;
@@ -95,6 +96,7 @@ pub struct ProcessContext<'process> {
     registry_facility: Option<Arc<dyn RegistryFacility>>,
     select_facility: Option<Arc<dyn SelectFacility>>,
     system_info_facility: Option<Arc<dyn SystemInfoFacility>>,
+    ets_facility: Option<Arc<dyn EtsFacility>>,
     io_sink: Arc<dyn IoSink>,
     exception_class: ExceptionClass,
     exception_stacktrace: Term,
@@ -144,6 +146,7 @@ impl fmt::Debug for ProcessContext<'_> {
                 "system_info_facility",
                 &self.system_info_facility.as_ref().map(|_| ".."),
             )
+            .field("ets_facility", &self.ets_facility.as_ref().map(|_| ".."))
             .field("io_sink", &"..")
             .field("exception_class", &self.exception_class)
             .field("shutdown_requested", &self.shutdown_requested)
@@ -179,6 +182,7 @@ impl<'process> ProcessContext<'process> {
             registry_facility: None,
             select_facility: None,
             system_info_facility: None,
+            ets_facility: None,
             io_sink: Arc::new(NullSink),
             exception_class: ExceptionClass::Error,
             exception_stacktrace: Term::NIL,
@@ -206,6 +210,7 @@ impl<'process> ProcessContext<'process> {
             registry_facility: None,
             select_facility: None,
             system_info_facility: None,
+            ets_facility: None,
             io_sink: Arc::new(NullSink),
             exception_class: ExceptionClass::Error,
             exception_stacktrace: Term::NIL,
@@ -467,6 +472,19 @@ impl<'process> ProcessContext<'process> {
     /// Set the system-info facility for VM introspection BIFs.
     pub fn set_system_info_facility(&mut self, facility: Option<Arc<dyn SystemInfoFacility>>) {
         self.system_info_facility = facility;
+    }
+
+    // --- ETS facility ---
+
+    /// Return the ETS facility, if one has been configured.
+    #[must_use]
+    pub fn ets_facility(&self) -> Option<&dyn EtsFacility> {
+        self.ets_facility.as_deref()
+    }
+
+    /// Set the ETS facility for `ets` module BIFs.
+    pub fn set_ets_facility(&mut self, facility: Option<Arc<dyn EtsFacility>>) {
+        self.ets_facility = facility;
     }
 
     /// Store a value in the attached process dictionary.
