@@ -41,6 +41,8 @@ pub fn unlink(left: &mut Process, right: &mut Process) {
 #[derive(Debug, Default)]
 pub struct LinkSet {
     dead: HashMap<u64, ExitReason>,
+    #[cfg(test)]
+    delivered_signals: Vec<(u64, u64, ExitReason)>,
 }
 
 impl LinkSet {
@@ -135,12 +137,20 @@ impl LinkSet {
     }
 
     fn deliver_exit_signal(&mut self, source_pid: u64, target: &mut Process, reason: ExitReason) {
+        #[cfg(test)]
+        self.delivered_signals
+            .push((source_pid, target.pid(), reason));
         if should_die_from_signal(target, reason) {
             let _ = target.transition_to(ProcessStatus::Exited(terminal_reason(reason)));
         } else if target.trap_exit() && enqueue_exit_message(target, source_pid, reason).is_err() {
             target.terminate(ExitReason::Error);
             self.dead.insert(target.pid(), ExitReason::Error);
         }
+    }
+
+    #[cfg(test)]
+    fn delivered_signals(&self) -> &[(u64, u64, ExitReason)] {
+        &self.delivered_signals
     }
 }
 
@@ -341,6 +351,14 @@ mod tests {
             ExitReason::Error,
         );
 
+        assert_eq!(
+            links.delivered_signals(),
+            &[
+                (1, 2, ExitReason::Error),
+                (1, 3, ExitReason::Error),
+                (1, 4, ExitReason::Error),
+            ]
+        );
         assert_exit_from(&mut first, 1);
         assert_exit_from(&mut second, 1);
         assert_exit_from(&mut third, 1);
@@ -366,6 +384,10 @@ mod tests {
             ExitReason::Error,
         );
 
+        assert_eq!(
+            links.delivered_signals(),
+            &[(1, 2, ExitReason::Error), (1, 4, ExitReason::Error)]
+        );
         assert_exit_from(&mut first, 1);
         assert!(removed.mailbox().is_empty());
         assert_exit_from(&mut third, 1);
@@ -373,7 +395,7 @@ mod tests {
 
     fn links_in_order(source: &mut Process, targets: &mut [&mut Process]) {
         for target in targets {
-            link(source, &mut **target);
+            link(source, target);
         }
     }
 
