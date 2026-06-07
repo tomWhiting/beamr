@@ -4,7 +4,7 @@
   "title": "ETS ordered_set table type \u2014 B-tree based",
   "depends_on": [
     "B-090",
-    "B-007"
+    "B-008"
   ],
   "blocked_by": [],
   "checklist": [

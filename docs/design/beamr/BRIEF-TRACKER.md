@@ -126,9 +126,9 @@ All 16 briefs written, reviewed, and cleared for dispatch.
 | B-070 | recv_marker opcodes (173-176, OTP 24+ selective receive) | MEDIUM | Dave | **Ready** |
 | B-071 | Scheduler module splitting (mod.rs over 500 lines) | MEDIUM | Adam | **Ready** |
 
-## Phase 2 -- Platform (NOT STARTED)
+## Phase 2 -- Platform (30/40 REVIEWED — IO block writing)
 
-Makes OTP libraries work. 36 briefs. Recommended order: refc binaries first (many OTP modules need >64-byte binaries), then dirty schedulers (IO depends on them), then process features, ETF, ETS, and IO last (largest effort).
+Makes OTP libraries work. 40 briefs. 30 reviewed and cleared, IO block (12 briefs) being written by Adam.
 
 ### 2a. Refc Binaries (B-072 -- B-076)
 

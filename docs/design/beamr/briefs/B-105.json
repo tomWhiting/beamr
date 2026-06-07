@@ -1,0 +1,79 @@
+{
+  "id": "B-105",
+  "cluster": "beamr",
+  "title": "File metadata operations — stat, list_dir, mkdir, delete, rename",
+  "depends_on": ["B-103"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "File metadata operations (stat, directory listing, creation, deletion, renaming) are needed by OTP's file and filelib modules. io_uring supports statx and unlinkat natively. Directory operations (opendir/readdir) are not directly supported by io_uring but can be submitted as thread-pool work via the ring's IORING_OP_POLL or delegated to the ThreadPoolRing fallback. This brief provides the metadata BIF surface that Gleam and Erlang code needs for file system interaction beyond read/write.",
+  "task": "Implement file metadata BIFs: stat (file info), list_dir (directory listing), mkdir, delete (file and directory), and rename. Use io_uring statx for stat, and thread-pool delegation for directory operations.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "file_info BIF (stat)",
+      "spec": "WHEN erlang:file_info/1 is called with a filename binary, THE SYSTEM SHALL submit a Statx operation to the CompletionRing and return a file_info record or {error, Reason}.",
+      "acceptance": [
+        "erlang:file_info/1 registered as BIF with args (Filename :: binary())",
+        "Returns a tuple matching Erlang's #file_info record: {file_info, Size, Type, Access, Atime, Mtime, Ctime, Mode, Links, MajorDev, MinorDev, Inode, Uid, Gid}",
+        "Type atom: regular, directory, symlink, device, other",
+        "Access atom: read, write, read_write, none",
+        "Times as integer seconds since epoch",
+        "On error: {error, Reason} with errno mapping",
+        "Test: stat an existing file, verify size and type"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/file_meta_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "list_dir BIF",
+      "spec": "WHEN erlang:list_dir/1 is called with a directory path, THE SYSTEM SHALL return {ok, [Filename]} listing all entries or {error, Reason}.",
+      "acceptance": [
+        "erlang:list_dir/1 registered as BIF",
+        "Uses blocking std::fs::read_dir on dirty scheduler thread (directory listing is not supported by io_uring)",
+        "Returns {ok, List} where List is a list of binary filenames (excluding . and ..)",
+        "On error: {error, Reason}",
+        "Test: create temp directory with files, list_dir, verify all filenames present"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/file_meta_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "mkdir, delete, rename BIFs",
+      "spec": "THE SYSTEM SHALL provide BIFs for creating directories, deleting files/directories, and renaming files.",
+      "acceptance": [
+        "erlang:make_dir/1 — creates a directory, returns ok or {error, Reason}",
+        "erlang:del_file/1 — deletes a file, returns ok or {error, Reason}",
+        "erlang:del_dir/1 — deletes an empty directory, returns ok or {error, Reason}",
+        "erlang:rename/2 — renames a file or directory, returns ok or {error, Reason}",
+        "All use blocking std::fs operations on dirty scheduler thread",
+        "Test: mkdir, create file in it, rename file, delete file, delete dir"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/file_meta_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement symbolic link operations (readlink, symlink) — future addition",
+    "SHALL NOT implement recursive directory operations — those belong in a library, not BIFs",
+    "SHALL NOT implement file permission changes (chmod, chown) — future addition"
+  ],
+  "verification": [
+    "cargo test passes with file stat returning correct metadata",
+    "Directory listing returns all entries",
+    "mkdir/delete/rename cycle completes without errors",
+    "Error cases (nonexistent file, permission denied) return correct atoms"
+  ]
+}

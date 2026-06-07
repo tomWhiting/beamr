@@ -1,0 +1,88 @@
+{
+  "id": "B-088",
+  "cluster": "beamr",
+  "title": "term_to_binary options and compression",
+  "depends_on": ["B-086", "B-087"],
+  "blocked_by": [],
+  "checklist": ["C150"],
+  "stories": [],
+  "purpose": "term_to_binary/1 and binary_to_term/1 (B-086, B-087) handle the basic encode/decode cycle. Real-world use needs two extensions: (1) Compression — term_to_binary/2 with {compressed, Level} wraps the ETF payload in zlib, reducing wire/storage size significantly for large terms. The loader already uses flate2 for decompressing the LitT chunk, so the dependency exists. (2) Safe mode — binary_to_term/2 with [safe] prevents the decoder from creating new atoms. Any atom in the ETF that isn't already in the atom table causes a decode failure. This defends against atom table exhaustion from untrusted input (network messages, user-supplied binaries). Both are standard BEAM BIF options used by OTP libraries and the distribution protocol.",
+  "task": "Add term_to_binary/2 with compression options ({compressed, Level} using flate2 zlib), add decompression support to the decoder for COMPRESSED_EXT (tag 80), and add binary_to_term/2 with safe mode (prevent new atom creation) and used mode (return {Term, BytesUsed} tuple).",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "term_to_binary/2 with compression",
+      "spec": "WHEN erlang:term_to_binary/2 is called with a list of options, THE SYSTEM SHALL parse the options: compressed (default level 6), {compressed, Level} (0-9), and {minor_version, 2} (no behavior change, compatibility). WHEN compression is requested, THE SYSTEM SHALL encode the term to ETF, compress the payload using flate2::write::ZlibEncoder, and wrap the output as version byte (131) + COMPRESSED_EXT tag (80) + uncompressed size (u32) + zlib payload. WHEN the compressed output is not smaller than the uncompressed output, THE SYSTEM SHALL return the uncompressed output. WHEN {compressed, 0} is specified, THE SYSTEM SHALL produce uncompressed output.",
+      "acceptance": [
+        "erlang:term_to_binary/2 registered as BIF",
+        "Second argument is a list of options: compressed (default level 6), {compressed, Level} (0-9), {minor_version, 2} (compatibility, no behavior change)",
+        "Compression uses flate2::write::ZlibEncoder (already a dependency via the loader)",
+        "Compressed format: version byte (131) + COMPRESSED_EXT tag (80) + uncompressed size (u32) + zlib payload",
+        "Uncompressed format: version byte (131) + direct ETF payload (same as term_to_binary/1)",
+        "The encoder only compresses if the compressed output is smaller than the uncompressed output (no expansion)",
+        "Test: term_to_binary(LargeTerm, [compressed]) produces smaller binary than term_to_binary(LargeTerm)",
+        "Test: term_to_binary(X, [{compressed, 0}]) produces uncompressed output",
+        "Test: round-trip with compression: binary_to_term(term_to_binary(X, [compressed])) recovers X"
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/beamr/src/etf/encode.rs", "crates/beamr/src/native/etf_bifs.rs", "crates/beamr/src/etf/tags.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "binary_to_term decompression support",
+      "spec": "WHEN decode_term encounters a COMPRESSED_EXT tag (80) after the version byte, THE SYSTEM SHALL read the uncompressed size (u32), decompress the zlib payload using flate2::read::ZlibDecoder with a bounded reader matching the decompress_bounded pattern from the loader, and decode the decompressed ETF. WHEN the claimed uncompressed size exceeds RuntimeDecodeBudget's max_heap_words * 8 bytes, THE SYSTEM SHALL return an error. WHEN the tag is not COMPRESSED_EXT, THE SYSTEM SHALL decode normally via the existing path.",
+      "acceptance": [
+        "decode_term checks for COMPRESSED_EXT tag (80) after the version byte",
+        "If compressed: read uncompressed size (u32), decompress zlib payload using flate2::read::ZlibDecoder, then decode the decompressed ETF",
+        "Decompression uses bounded reader (matching decompress_bounded pattern from the loader) to prevent zip bombs",
+        "Uncompressed size limit: same as RuntimeDecodeBudget's max_heap_words * 8 bytes (reasonable bound)",
+        "If not compressed: decode normally (existing path)",
+        "Test: decode a compressed binary produced by R1",
+        "Test: reject a binary claiming unreasonable uncompressed size"
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/beamr/src/etf/decode.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "binary_to_term/2 with safe mode",
+      "spec": "WHEN erlang:binary_to_term/2 is called with a list of options, THE SYSTEM SHALL parse the options: safe (prevent new atom creation) and used (return {Term, UsedBytes} tuple). THE SYSTEM SHALL define a DecodeOptions struct with safe: bool and return_used: bool fields. WHEN safe mode is enabled, THE SYSTEM SHALL use atom_table.lookup(name) instead of atom_table.intern(name) in the atom decode path; if lookup returns None, THE SYSTEM SHALL return DecodeError::UnsafeAtom(name). WHEN used mode is enabled, THE SYSTEM SHALL track bytes consumed and return a 2-tuple {Term, BytesUsed} on heap.",
+      "acceptance": [
+        "erlang:binary_to_term/2 registered as BIF",
+        "Second argument is a list of options: safe (prevent new atom creation), used (return {Term, UsedBytes} tuple)",
+        "DecodeOptions struct with safe: bool and return_used: bool fields",
+        "Safe mode: in the atom decode path, use atom_table.lookup(name) instead of atom_table.intern(name). If lookup returns None, return DecodeError::UnsafeAtom(name).",
+        "Used mode: track bytes consumed, return 2-tuple {Term, BytesUsed} on heap",
+        "Test: binary_to_term(term_to_binary(hello), [safe]) succeeds (atom 'hello' exists)",
+        "Test: binary_to_term(Binary_with_novel_atom, [safe]) fails with badarg",
+        "Test: binary_to_term(Bin, [used]) returns {Term, Size} where Size = byte_size(Bin)"
+      ],
+      "files": {
+        "create": [],
+        "modify": ["crates/beamr/src/etf/decode.rs", "crates/beamr/src/native/etf_bifs.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the deterministic option (ordering guarantees — separate concern)",
+    "SHALL NOT implement the local option (distribution-specific — Phase 3)"
+  ],
+  "verification": [
+    "cargo test passes with all existing tests plus new compression and safe mode tests",
+    "term_to_binary/2 with compression produces smaller output for large terms",
+    "Compressed ETF round-trips correctly through binary_to_term",
+    "binary_to_term/2 with safe mode rejects unknown atoms",
+    "binary_to_term/2 with used mode returns correct byte count",
+    "Decompression rejects unreasonable uncompressed size claims"
+  ]
+}

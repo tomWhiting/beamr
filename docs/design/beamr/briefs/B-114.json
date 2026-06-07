@@ -1,0 +1,110 @@
+{
+  "id": "B-114",
+  "cluster": "beamr",
+  "title": "Distribution connection manager \u2014 TCP connections and connection table",
+  "depends_on": [
+    "B-113"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Distribution connections are long-lived TCP connections between nodes. The connection manager owns the connection table (mapping node names to active connections), handles outbound connection setup (resolve \u2192 connect \u2192 handshake), accepts inbound connections, and detects connection failures. Each connection is a bidirectional byte stream used for control messages and term data.",
+  "task": "Implement the ConnectionManager with a connection table, outbound connect path, inbound accept loop, and connection lifecycle management.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Connection table and ConnectionManager",
+      "spec": "ConnectionManager owns a map of active distribution connections indexed by node name.",
+      "acceptance": [
+        "ConnectionManager struct with connections: DashMap<Atom, Arc<DistConnection>>",
+        "DistConnection wraps a TCP stream (tokio::net::TcpStream or equivalent) with read/write halves",
+        "get_connection(node: Atom) -> Option<Arc<DistConnection>> looks up active connection",
+        "ConnectionManager::start(listen_addr, resolver) spawns the accept loop",
+        "Test: create manager, verify no connections initially"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/connection.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Outbound connection establishment",
+      "spec": "Connect to a remote node by resolving its name and establishing a TCP connection.",
+      "acceptance": [
+        "connect(node_name: &str) -> Result<Arc<DistConnection>, ConnectError> resolves name via NodeResolver, opens TCP connection",
+        "Connection is added to the connection table on success",
+        "ConnectError variants: ResolveFailure, ConnectionRefused, Timeout",
+        "Configurable connection timeout (default 5 seconds)",
+        "Test: connect to a local listener, verify connection established"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/connection.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Inbound connection accept loop",
+      "spec": "Listen for incoming distribution connections and add them to the connection table after identification.",
+      "acceptance": [
+        "Accept loop runs on a dedicated async task",
+        "Incoming connections are held pending until the handshake identifies the remote node (B-115)",
+        "Accepted connections are added to the connection table with the remote node name as key",
+        "Test: spawn two ConnectionManagers, connect one to the other, verify bidirectional connection"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/connection.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Connection failure detection and cleanup",
+      "spec": "Detect TCP connection failures and remove dead connections from the table.",
+      "acceptance": [
+        "Connection read/write errors trigger connection removal from the table",
+        "A connection_down callback notifies the distribution layer (for link/monitor cleanup in B-122/B-121)",
+        "Reconnection is NOT automatic (net_kernel handles that in B-123)",
+        "Test: establish connection, drop remote end, verify connection removed from table"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/connection.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the handshake protocol \u2014 that's B-115",
+    "SHALL NOT implement message encoding/decoding \u2014 that's B-117",
+    "SHALL NOT implement automatic reconnection \u2014 that's B-123's net_kernel responsibility",
+    "SHALL use async I/O (tokio) for connection management"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

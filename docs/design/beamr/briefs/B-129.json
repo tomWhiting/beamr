@@ -1,0 +1,105 @@
+{
+  "id": "B-129",
+  "cluster": "beamr",
+  "title": "erlang BIFs batch 4 \u2014 hashing, time, and misc",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Remaining erlang module BIFs needed across OTP: phash2 (portable hash), unique_integer (monotonic unique values), monotonic_time (monotonic clock), system_time (wall clock), and miscellaneous utilities.",
+  "task": "Register ~10 remaining utility BIFs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Hashing BIFs",
+      "spec": "erlang:phash2/1 and erlang:phash2/2 \u2014 portable term hashing matching BEAM's algorithm.",
+      "acceptance": [
+        "phash2(Term) returns integer in 0..2^27-1",
+        "phash2(Term, Range) returns integer in 0..Range-1",
+        "Same term always produces same hash (deterministic)",
+        "Hash is consistent with ETS term hashing from B-091"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Time BIFs",
+      "spec": "erlang:monotonic_time/0, erlang:system_time/0, erlang:monotonic_time/1, erlang:system_time/1, erlang:time_offset/0.",
+      "acceptance": [
+        "monotonic_time() returns monotonically increasing native time units",
+        "system_time() returns wall clock in native time units",
+        "monotonic_time(millisecond) converts to milliseconds",
+        "time_offset() returns the difference between system and monotonic time"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Unique value BIFs",
+      "spec": "erlang:unique_integer/0, erlang:unique_integer/1 with options [positive, monotonic].",
+      "acceptance": [
+        "unique_integer() returns unique values across calls",
+        "unique_integer([positive]) returns only positive values",
+        "unique_integer([monotonic]) returns monotonically increasing values",
+        "Thread-safe (uses AtomicU64)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Misc utility BIFs",
+      "spec": "erlang:min/2, erlang:max/2, erlang:abs/1, erlang:binary_to_term/1, erlang:term_to_binary/1.",
+      "acceptance": [
+        "min(1,2) returns 1, min(a,b) returns a (term ordering)",
+        "max(1,2) returns 2",
+        "abs(-5) returns 5, abs(5) returns 5",
+        "binary_to_term/term_to_binary round-trip using ETF from B-117"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement erlang:phash (legacy hash) \u2014 only phash2",
+    "SHALL NOT implement os:timestamp \u2014 use monotonic_time",
+    "binary_to_term/term_to_binary depend on B-117 ETF encoder/decoder"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

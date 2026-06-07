@@ -16,12 +16,12 @@
     {
       "id": "R1",
       "title": "Group leader field on Process",
-      "spec": "Add a `group_leader: Term` field to Process, defaulting to the process's own PID.",
+      "spec": "Add a `group_leader: Term` field to Process. The initial process (init) uses its own PID as group_leader. All spawned processes inherit their parent's group_leader.",
       "acceptance": [
         "Process gains `group_leader: Term` field",
-        "Default group_leader is the process's own PID (set at spawn)",
-        "Spawned processes inherit the parent's group_leader",
-        "Test: spawn process, verify group_leader is parent's PID"
+        "The initial process (init) has group_leader set to its own PID",
+        "Spawned processes inherit the parent's group_leader (NOT their own PID)",
+        "Test: spawn process, verify group_leader is parent's group_leader, not the child's own PID"
       ],
       "files": {
         "modify": [
@@ -60,7 +60,7 @@
   "boundaries": [
     "SHALL NOT implement full I/O protocol message routing \u2014 group_leader is stored but not used for I/O dispatch (beamr uses IoSink from B-039)",
     "SHALL NOT implement group leader inheritance across spawn \u2014 spawned processes get the parent's group leader (simple copy)",
-    "SHALL return the process's own PID as default group leader if none is set"
+    "SHALL use own PID as group_leader only for the initial (init) process — all spawned processes inherit from parent"
   ],
   "verification": [
     "cargo check --workspace passes",

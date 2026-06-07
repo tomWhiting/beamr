@@ -1,0 +1,96 @@
+{
+  "id": "B-102",
+  "cluster": "beamr",
+  "title": "File descriptor resource type — boxed term, refcounted FD lifecycle",
+  "depends_on": ["B-101"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "BEAM represents open file descriptors and sockets as port terms. In beamr's completion-based IO model, we need a lighter-weight resource type: a boxed term on the process heap that holds a raw file descriptor with reference-counted lifecycle management. When the owning process exits or the resource is garbage collected, the FD is closed automatically. This is the foundation for all file and socket operations — every BIF in B-103 through B-111 operates on FdResource terms. The resource type also tracks the owning process (for controlling-process semantics in TCP/UDP) and the current IO state (open, closing, closed).",
+  "task": "Define an FdResource boxed term type with a new BoxedTag. Implement reference counting for FD lifecycle (FDs are shared between the heap term and the ring's in-flight operations). Add GC integration so unreferenced FdResources close their FDs. Register the resource type in the boxed term system.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "FdResource boxed term type",
+      "spec": "THE SYSTEM SHALL define an FdResource heap layout with a new BoxedTag::FdResource. THE SYSTEM SHALL store the raw file descriptor, owning process PID, resource state, and a shared reference to the FD lifecycle manager.",
+      "acceptance": [
+        "BoxedTag::FdResource = 0x19 added to the BoxedTag enum",
+        "FdResource heap layout: [header(tag=0x19, size), fd_ptr] where fd_ptr is a pointer to an Arc<FdInner>",
+        "FdInner struct: { fd: RawFd, owner_pid: u64, state: AtomicU8 (Open=0, Closing=1, Closed=2) }",
+        "write_fd_resource(heap, fd_inner: Arc<FdInner>) -> Option<Term> allocates on process heap",
+        "FdResource accessor: FdResource::new(term: Term) -> Option<Self> validates tag, provides fd(), owner_pid(), state(), inner() methods",
+        "Arc<FdInner> ensures the FD stays alive while any reference exists (heap term, in-flight ring ops, etc.)",
+        "Test: write an FdResource to the heap, read it back, verify fd and owner"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/io/resource.rs"],
+        "modify": ["crates/beamr/src/term/boxed/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "FD lifecycle management — close on drop",
+      "spec": "WHEN the last Arc<FdInner> reference is dropped, THE SYSTEM SHALL close the raw file descriptor via the CompletionRing (async close) or libc::close (synchronous fallback).",
+      "acceptance": [
+        "FdInner implements Drop: transitions state to Closing, submits Close op to ring if available, else calls libc::close",
+        "Double-close protection: state check prevents closing an already-closed FD",
+        "explicit_close(ring: &dyn CompletionRing) method for BIF-initiated close — submits async close and transitions state",
+        "Test: create FdResource, drop all references, verify FD is closed (try read on closed FD fails)",
+        "Test: explicit close followed by drop does not double-close"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/io/resource.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "GC integration for FdResource",
+      "spec": "WHEN the garbage collector encounters a BoxedTag::FdResource during heap traversal, THE SYSTEM SHALL copy the header and fd_ptr words, and clone the Arc<FdInner> to maintain the reference count.",
+      "acceptance": [
+        "GC's rewrite_copied_object handles BoxedTag::FdResource: copies 2 words (header + fd_ptr)",
+        "Arc clone incremented during copy so the FdInner is not prematurely dropped",
+        "When the old heap is freed, the old FdResource's Arc reference is decremented",
+        "FdResource terms survive minor and major GC correctly",
+        "Test: allocate FdResource, trigger GC, verify FD is still open and accessible"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/gc/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Process exit closes owned FDs",
+      "spec": "WHEN a process exits, THE SYSTEM SHALL close all FdResource terms owned by that process by iterating the process heap and closing any FdInner with matching owner_pid.",
+      "acceptance": [
+        "Process cleanup path (in scheduler exit handling) scans for FdResource terms on the heap",
+        "Each FdResource with owner_pid matching the exiting process is explicitly closed",
+        "FDs with other owners (shared resources) are not closed — only the Arc reference is dropped",
+        "Test: process opens a file, process exits, verify FD is closed"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement specific file or socket operations — those are B-103 through B-111",
+    "SHALL NOT implement controlling-process transfer — that is part of B-108",
+    "SHALL NOT implement port compatibility — FdResource is a new type, not an emulation of BEAM ports",
+    "SHALL NOT use finalizers or weak references — Arc Drop is the lifecycle mechanism"
+  ],
+  "verification": [
+    "cargo test passes with FdResource allocation and GC",
+    "FD is closed exactly once when all references are dropped",
+    "GC correctly copies FdResource terms without FD leaks",
+    "Process exit closes all owned FDs",
+    "FdResource round-trips through minor and major GC"
+  ]
+}

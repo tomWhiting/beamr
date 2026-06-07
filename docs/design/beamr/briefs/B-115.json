@@ -1,0 +1,89 @@
+{
+  "id": "B-115",
+  "cluster": "beamr",
+  "title": "Distribution handshake protocol \u2014 challenge-response authentication",
+  "depends_on": [
+    "B-114"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "The distribution handshake authenticates connecting nodes using a shared cookie and challenge-response. Both nodes exchange names, capabilities (distribution flags), and prove knowledge of the cookie via MD5 challenge hashing. This prevents unauthorized nodes from joining the cluster.",
+  "task": "Implement the BEAM distribution handshake protocol for both outbound (initiator) and inbound (responder) sides.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Handshake initiator (outbound)",
+      "spec": "Implement the client side of the handshake: send name + flags, receive challenge, compute response, send response, receive status.",
+      "acceptance": [
+        "Sends node name and distribution flags to remote",
+        "Receives challenge, computes MD5(cookie + challenge) response",
+        "Sends response, receives 'ok' status",
+        "Failed handshake returns HandshakeError",
+        "Test: complete handshake between two local nodes"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/handshake.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Handshake responder (inbound)",
+      "spec": "Implement the server side: receive name, send challenge, receive response, verify, send status.",
+      "acceptance": [
+        "Receives remote node name and flags",
+        "Sends challenge to remote",
+        "Verifies response matches MD5(cookie + challenge)",
+        "Sends 'ok' on success, 'not_allowed' on failure",
+        "Test: reject connection with wrong cookie"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/handshake.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Distribution flags negotiation",
+      "spec": "Exchange and negotiate capability flags during handshake.",
+      "acceptance": [
+        "DistributionFlags bitfield with: PUBLISHED, ATOM_CACHE, EXTENDED_REFERENCES, EXTENDED_PIDS, UTF8_ATOMS, BIG_CREATION, MAP_TAG, HANDSHAKE_23",
+        "Both sides send their flags, intersection determines connection capabilities",
+        "Minimum required flags enforced (reject incompatible nodes)",
+        "Test: flag negotiation produces correct intersection"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/handshake.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement TLS \u2014 plain TCP with cookie authentication only",
+    "SHALL NOT implement distribution flag FRAGMENTS (large message fragmentation) \u2014 that's an optimization for later",
+    "SHALL implement the OTP 23+ handshake (version 6), not the legacy handshake"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

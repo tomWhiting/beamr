@@ -1,0 +1,123 @@
+{
+  "id": "B-103",
+  "cluster": "beamr",
+  "title": "File open/close/read/write BIFs via completion IO",
+  "depends_on": ["B-102"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "This brief provides the basic file I/O BIFs that Erlang and Gleam code uses for reading and writing files. Each operation submits to the CompletionRing (B-100), suspends the calling process via the IoFacility (B-101), and resumes with the result when the completion arrives. File descriptors are managed as FdResource terms (B-102). The BIF surface matches the erlang:open/close/read/write subset that OTP's file module delegates to — not the full file module API (seek, pread, truncate are B-104).",
+  "task": "Implement file_open, file_close, file_read, and file_write as native BIFs. file_open submits an Openat operation and returns an FdResource term. file_close submits a Close operation. file_read and file_write submit Read/Write operations and suspend the process until completion. Handle error mapping from OS errno to Erlang-style {error, Reason} tuples.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "file_open BIF",
+      "spec": "WHEN erlang:open_file/2 is called with a filename binary and mode flags, THE SYSTEM SHALL submit an Openat operation to the CompletionRing, suspend the calling process, and on completion return an FdResource term or {error, Reason}.",
+      "acceptance": [
+        "erlang:open_file/2 registered as BIF with args (Filename :: binary(), Modes :: list())",
+        "Modes supported: [read], [write], [append], [read, write], [{create, true}], [{truncate, true}]",
+        "Mode list parsed to libc O_* flags (O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND)",
+        "Default file permissions: 0o644 for created files",
+        "On success: FdResource term allocated on process heap with owner_pid = calling process",
+        "On failure: {error, Reason} tuple where Reason is atom (enoent, eacces, eexist, etc.)",
+        "Errno to atom mapping for common errors",
+        "Test: open existing file for read, verify FdResource returned",
+        "Test: open nonexistent file, verify {error, enoent}"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/file_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "file_close BIF",
+      "spec": "WHEN erlang:close_file/1 is called with an FdResource term, THE SYSTEM SHALL submit a Close operation to the CompletionRing and return ok or {error, Reason}.",
+      "acceptance": [
+        "erlang:close_file/1 registered as BIF",
+        "Validates argument is an FdResource term",
+        "Calls FdInner::explicit_close() which submits async Close to the ring",
+        "Process suspends until close completes",
+        "Returns ok on success, {error, Reason} on failure",
+        "Closing an already-closed FdResource returns {error, closed}",
+        "Test: open file, close it, verify ok returned"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/file_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "file_read BIF",
+      "spec": "WHEN erlang:read_file/2 is called with an FdResource and byte count, THE SYSTEM SHALL submit a Read operation to the CompletionRing, suspend the process, and on completion return {ok, Binary} or {error, Reason}.",
+      "acceptance": [
+        "erlang:read_file/2 registered as BIF with args (Fd :: fd_resource(), Count :: non_neg_integer())",
+        "Submits Read { fd, buf_len: count, offset: current_position } to the ring",
+        "Process suspends via IoFacility",
+        "On completion: allocate binary term on process heap from read bytes, return {ok, Binary}",
+        "On EOF: return {ok, <<>>} (empty binary)",
+        "On error: return {error, Reason}",
+        "Test: write a temp file, open for read, read contents, verify match"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/file_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "file_write BIF",
+      "spec": "WHEN erlang:write_file/2 is called with an FdResource and a binary, THE SYSTEM SHALL submit a Write operation to the CompletionRing, suspend the process, and on completion return ok or {error, Reason}.",
+      "acceptance": [
+        "erlang:write_file/2 registered as BIF with args (Fd :: fd_resource(), Data :: binary())",
+        "Extracts bytes from binary term via Binary::as_bytes()",
+        "Submits Write { fd, data: bytes.to_vec(), offset: current_position } to the ring",
+        "Process suspends via IoFacility",
+        "On completion: return ok if all bytes written",
+        "On partial write: return {error, {incomplete, BytesWritten}}",
+        "On error: return {error, Reason}",
+        "Test: open file for write, write binary, close, reopen and read, verify content"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/file_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Errno to Erlang atom mapping",
+      "spec": "THE SYSTEM SHALL provide a function that maps OS errno values to Erlang-standard error reason atoms.",
+      "acceptance": [
+        "errno_to_atom(errno: i32) -> Atom function in io/mod.rs",
+        "Mappings: ENOENT->enoent, EACCES->eacces, EEXIST->eexist, EISDIR->eisdir, ENOTDIR->enotdir, ENOSPC->enospc, EMFILE->emfile, ENFILE->enfile, EBADF->ebadf, EPIPE->epipe, EAGAIN->eagain, EINVAL->einval",
+        "Unknown errno: returns atom 'unknown_error'",
+        "Common atoms added to atom table: enoent, eacces, eexist, eisdir, enospc, ebadf, epipe, eagain",
+        "Test: verify mapping for each listed errno"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/io/mod.rs", "crates/beamr/src/atom/table.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement seek, pread, pwrite — those are B-104",
+    "SHALL NOT implement stat, list_dir, mkdir — those are B-105",
+    "SHALL NOT implement the full OTP file module API — only the core primitives",
+    "SHALL NOT manage file positions internally — offset tracking is the caller's responsibility for now (B-104 adds positional IO)"
+  ],
+  "verification": [
+    "cargo test passes with file open/read/write/close cycle",
+    "Temp file round-trip: write data, close, reopen, read, verify data matches",
+    "Error handling: open nonexistent file returns {error, enoent}",
+    "Process exits with open FD — FD is closed by FdResource lifecycle (B-102)",
+    "Multiple processes can have concurrent file operations without interference"
+  ]
+}

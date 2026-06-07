@@ -1,0 +1,78 @@
+{
+  "id": "B-108",
+  "cluster": "beamr",
+  "title": "TCP active/passive mode and controlling process",
+  "depends_on": ["B-107"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "BEAM TCP sockets have two receive modes: passive (the process calls recv explicitly) and active (data arrives as messages in the process mailbox automatically). Active mode is essential for OTP's gen_tcp and gen_server integration — servers receive {tcp, Socket, Data} messages in their receive loop. This brief adds the active/passive mode switch and the controlling process concept (only the controlling process receives active-mode messages). Active mode requires a background read loop that submits reads to the ring and delivers completions as messages.",
+  "task": "Add active/passive mode state to FdResource. In active mode, a background read loop submits continuous reads and delivers data as {tcp, FdResource, Binary} messages to the controlling process. Implement setopts for mode switching and controlling_process for ownership transfer.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Socket mode state on FdResource",
+      "spec": "THE SYSTEM SHALL add mode state to FdInner: active (true/false/once) and controlling_process (pid). WHEN a TCP socket is created, THE SYSTEM SHALL default to passive mode with the creating process as controlling process.",
+      "acceptance": [
+        "FdInner gains mode: AtomicU8 (Passive=0, Active=1, ActiveOnce=2) and controlling_process: AtomicU64",
+        "Default: Passive mode, controlling_process = creating process PID",
+        "Accessor methods: mode(), controlling_process(), set_mode(), set_controlling_process()"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/io/resource.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Active mode read loop",
+      "spec": "WHEN a socket is set to active mode, THE SYSTEM SHALL submit a continuous read to the CompletionRing. WHEN data arrives, THE SYSTEM SHALL deliver {tcp, SocketTerm, DataBinary} as a message to the controlling process and resubmit the read. WHEN the connection closes, THE SYSTEM SHALL deliver {tcp_closed, SocketTerm}. WHEN an error occurs, THE SYSTEM SHALL deliver {tcp_error, SocketTerm, Reason}.",
+      "acceptance": [
+        "Active mode transitions trigger a read submission to the ring",
+        "On read completion: build {tcp, Socket, Data} tuple, enqueue in controlling process mailbox",
+        "Active mode: resubmit read after each delivery (continuous)",
+        "Active-once mode: deliver one message, then switch to passive (no resubmit)",
+        "Connection close (0 bytes): deliver {tcp_closed, Socket}, switch to passive",
+        "Error: deliver {tcp_error, Socket, Reason}, switch to passive",
+        "Test: set socket active, send data from peer, verify {tcp, _, Data} message received"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/io/bridge.rs", "crates/beamr/src/native/tcp_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "setopts and controlling_process BIFs",
+      "spec": "THE SYSTEM SHALL provide BIFs for setting socket options (active/passive mode) and transferring the controlling process.",
+      "acceptance": [
+        "erlang:tcp_setopts/2 with args (Socket, [{active, true|false|once}])",
+        "Switching from passive to active starts the read loop",
+        "Switching from active to passive stops resubmitting reads (in-flight read completes normally)",
+        "erlang:tcp_controlling_process/2 with args (Socket, NewPid)",
+        "Only the current controlling process can transfer control",
+        "Non-controlling process calling this returns {error, not_owner}",
+        "Test: set active once, receive one message, verify socket reverts to passive"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/tcp_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement {active, N} (OTP 25+ flow control) — future enhancement",
+    "SHALL NOT implement packet mode ({packet, N}) — future enhancement",
+    "SHALL NOT implement binary vs list mode — all data delivered as binaries"
+  ],
+  "verification": [
+    "cargo test passes with active mode message delivery",
+    "Active-once delivers exactly one message then reverts to passive",
+    "Controlling process transfer works between processes",
+    "Connection close in active mode delivers tcp_closed message",
+    "Mode switch during in-flight read does not crash or lose data"
+  ]
+}

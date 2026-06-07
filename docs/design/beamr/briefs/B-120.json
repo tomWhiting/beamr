@@ -1,0 +1,68 @@
+{
+  "id": "B-120",
+  "cluster": "beamr",
+  "title": "Remote spawn \u2014 SPAWN_REQUEST/REPLY across nodes",
+  "depends_on": [
+    "B-119"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "SPAWN_REQUEST allows a process on node A to spawn a process on node B. The request carries the MFA and options; the reply carries the new PID. This enables distributed supervision trees where supervisors spawn children on remote nodes.",
+  "task": "Implement SPAWN_REQUEST and SPAWN_REPLY control messages.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "SPAWN_REQUEST handler",
+      "spec": "Handle incoming SPAWN_REQUEST: spawn the process locally and reply with the new PID.",
+      "acceptance": [
+        "Incoming SPAWN_REQUEST decoded: {ReqId, From, GroupLeader, {M,F,A}, OptList}",
+        "Spawns the process on the local scheduler",
+        "Sends SPAWN_REPLY with the new PID back to the requesting node",
+        "Spawn options (link, monitor) applied atomically",
+        "Test: remote spawn request creates a local process"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Remote spawn BIF",
+      "spec": "Register erlang:spawn/4 variant that specifies a target node.",
+      "acceptance": [
+        "spawn(Node, Module, Function, Args) sends SPAWN_REQUEST to target node",
+        "Blocks (or uses async callback) until SPAWN_REPLY received",
+        "Returns the remote PID",
+        "spawn_link and spawn_monitor variants include link/monitor options in the request",
+        "Test: spawn process on remote node, verify PID is node-qualified"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement spawn_opt across nodes with all options \u2014 only link and monitor",
+    "SHALL NOT implement node selection strategies \u2014 caller specifies the exact target node"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

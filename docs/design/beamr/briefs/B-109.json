@@ -1,0 +1,78 @@
+{
+  "id": "B-109",
+  "cluster": "beamr",
+  "title": "UDP socket operations — sendmsg, recvmsg, active/passive",
+  "depends_on": ["B-102"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "UDP is a connectionless protocol used for DNS resolution, logging, metrics, and real-time applications. Unlike TCP, UDP operations are message-oriented: each send/recv handles a complete datagram with source/destination address. io_uring supports sendmsg and recvmsg natively. This brief provides UDP socket BIFs with the same active/passive mode pattern as TCP (B-108), delivering {udp, Socket, IP, Port, Data} messages in active mode.",
+  "task": "Implement UDP open, close, send, recv BIFs using the CompletionRing. Support both active and passive receive modes. Use sendmsg/recvmsg for address-included datagram operations.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "udp_open BIF",
+      "spec": "WHEN erlang:udp_open/1 or erlang:udp_open/2 is called, THE SYSTEM SHALL create a UDP socket, bind to the specified port, and return an FdResource.",
+      "acceptance": [
+        "erlang:udp_open/1 with port (0 for ephemeral), erlang:udp_open/2 with options",
+        "Creates socket with SOCK_DGRAM",
+        "Binds to 0.0.0.0:Port",
+        "Returns FdResource",
+        "Options: {ip, Address}, {active, true|false|once}",
+        "Test: open UDP socket, verify FdResource and bound port"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/native/udp_bifs.rs"],
+        "modify": ["crates/beamr/src/native/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "udp_send and udp_recv BIFs",
+      "spec": "WHEN erlang:udp_send/4 is called, THE SYSTEM SHALL send a datagram to the specified address. WHEN erlang:udp_recv/2 is called in passive mode, THE SYSTEM SHALL suspend until a datagram arrives and return {ok, {Address, Port, Data}}.",
+      "acceptance": [
+        "erlang:udp_send/4 with args (Socket, Host, Port, Data) — sends datagram",
+        "erlang:udp_recv/2 with args (Socket, Length) — receives datagram in passive mode",
+        "erlang:udp_recv/3 with timeout",
+        "Send uses sendmsg via the ring, returns ok or {error, Reason}",
+        "Recv uses recvmsg via the ring, process suspends, returns {ok, {Address, Port, Binary}}",
+        "Length = 0 means receive any size datagram (up to 65535 bytes)",
+        "Test: send datagram to self (loopback), recv it, verify content and source address"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/udp_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "UDP active mode",
+      "spec": "WHEN a UDP socket is set to active mode, THE SYSTEM SHALL deliver incoming datagrams as {udp, Socket, IP, Port, Data} messages to the controlling process.",
+      "acceptance": [
+        "Active mode uses the same background read loop pattern as TCP (B-108 R2)",
+        "Message format: {udp, Socket, IP, InPort, Data} where IP is a 4-tuple of integers",
+        "Active-once: deliver one datagram, switch to passive",
+        "Test: open socket active, send datagram from another socket, verify message delivered"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/udp_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement multicast — future enhancement",
+    "SHALL NOT implement IPv6 — IPv4 first",
+    "SHALL NOT implement connected UDP sockets (connect+send) — use sendmsg directly"
+  ],
+  "verification": [
+    "cargo test passes with UDP send/recv loopback",
+    "Active mode delivers {udp, ...} messages",
+    "Large datagram (>MTU) handling: sendmsg returns error for oversized packets",
+    "Multiple UDP sockets can operate concurrently"
+  ]
+}

@@ -40,7 +40,7 @@
     {
       "id": "R2",
       "title": "Term hashing for ETS keys",
-      "spec": "ETS keys are arbitrary terms. Implement term hashing that is consistent with term equality \u2014 equal terms must hash to the same value.",
+      "spec": "ETS keys are arbitrary terms. Implement term hashing consistent with term equality. Create an EtsKey(Term) newtype that implements Hash (using term_hash) and Eq (using term comparison). DashMap<EtsKey, StoredTerm> uses this newtype for key operations. Do NOT implement Hash directly on Term (global change would affect non-ETS code).",
       "acceptance": [
         "`term_hash(term: Term) -> u64` produces a deterministic hash",
         "Atoms hash by atom index",
@@ -51,7 +51,10 @@
         "Equal terms (per term comparison) produce equal hashes",
         "Test: term_hash(atom(ok)) == term_hash(atom(ok))",
         "Test: term_hash(42) == term_hash(42)",
-        "Test: different terms produce different hashes (probabilistic, test a variety)"
+        "Test: different terms produce different hashes (probabilistic, test a variety)",
+        "EtsKey newtype wraps Term and implements Hash + Eq",
+        "DashMap uses EtsKey as key type, not raw Term",
+        "EtsKey hashing matches EtsKey equality (Hash contract satisfied)"
       ],
       "files": {
         "create": [

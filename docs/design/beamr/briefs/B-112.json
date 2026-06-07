@@ -1,0 +1,120 @@
+{
+  "id": "B-112",
+  "cluster": "beamr",
+  "title": "Node naming and node term type",
+  "depends_on": [
+    "B-016"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "BEAM distribution requires every node to have a unique name (e.g., 'worker@host.local') and every PID/reference to carry a node origin. Currently, PIDs are plain u64 process IDs with no node context. This brief adds the Node concept \u2014 a named identity for the VM instance \u2014 and extends PID and Reference terms to carry their originating node. Without node-qualified identifiers, remote operations cannot distinguish local from remote processes.",
+  "task": "Define the Node type, add a node registry, extend PID and Reference terms with node information, and implement the erlang:node/0 and erlang:node/1 BIFs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Node type and local node identity",
+      "spec": "Define a Node type representing a named BEAM node. The local node is set at VM startup and is immutable for the lifetime of the instance.",
+      "acceptance": [
+        "Node struct with name: Atom and creation: u32 (distinguishes restarts of the same node name)",
+        "Scheduler/SharedState gains local_node: Node field, set at startup",
+        "Node::is_local(other: &Node) -> bool compares name and creation",
+        "Default local node is 'nonode@nohost' (matching BEAM's non-distributed mode)",
+        "Test: create VM with node name, verify node identity"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/mod.rs",
+          "crates/beamr/src/distribution/node.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/lib.rs",
+          "crates/beamr/src/scheduler/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Node-qualified PID terms",
+      "spec": "Extend PID terms to carry their originating node. Local PIDs continue to use the compact immediate representation. Remote PIDs are boxed terms containing the node, process ID, and serial.",
+      "acceptance": [
+        "Local PIDs remain immediate terms (no heap allocation, backward compatible)",
+        "Remote PID is a boxed term: [header] [node_atom] [pid_number] [serial]",
+        "BoxedTag::ExternalPid added (or similar)",
+        "Term::is_local_pid() and Term::is_remote_pid() discriminators",
+        "BinaryRef-style PidRef accessor handles both local and remote transparently",
+        "Test: local PID has no node overhead, remote PID carries node info"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs",
+          "crates/beamr/src/term/boxed/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "erlang:node/0 and erlang:node/1 BIFs",
+      "spec": "Register node/0 (returns the local node name atom) and node/1 (returns the node of a PID, reference, or port term).",
+      "acceptance": [
+        "node() returns the local node name atom",
+        "node(LocalPid) returns the local node name",
+        "node(RemotePid) returns the remote node name",
+        "node(non_pid) returns badarg",
+        "Test: node() returns 'nonode@nohost' in non-distributed mode"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Node-qualified references",
+      "spec": "Extend Reference terms to carry their originating node, same pattern as PIDs.",
+      "acceptance": [
+        "Local references remain compact (backward compatible)",
+        "Remote references carry node information",
+        "erlang:node/1 works on references",
+        "Test: make_ref() produces a local reference, node(Ref) returns local node"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/mod.rs",
+          "crates/beamr/src/term/boxed/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement network connections or handshake \u2014 that's B-114/B-115",
+    "SHALL NOT implement EPMD or name resolution \u2014 that's B-113",
+    "SHALL NOT change the local PID immediate representation \u2014 only add remote PID support",
+    "SHALL support non-distributed mode ('nonode@nohost') as the default"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green",
+    "Existing PID tests pass unchanged (local PIDs unmodified)"
+  ]
+}

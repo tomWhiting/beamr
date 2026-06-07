@@ -1,0 +1,87 @@
+{
+  "id": "B-122",
+  "cluster": "beamr",
+  "title": "Remote links \u2014 LINK/UNLINK/EXIT across nodes",
+  "depends_on": [
+    "B-119"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Cross-node links use LINK and UNLINK control messages for establishment/removal, and EXIT for signal propagation. When a linked process on node B exits, the EXIT control message propagates the signal to node A. Node disconnection is treated as exit reason 'noconnection' for all linked processes on the disconnected node.",
+  "task": "Implement cross-node link lifecycle with exit signal propagation.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Cross-node link establishment and removal",
+      "spec": "Route link/unlink BIFs through distribution when the target is a remote PID.",
+      "acceptance": [
+        "link(RemotePid) sends LINK control to remote node",
+        "Remote node establishes the link locally",
+        "unlink(RemotePid) sends UNLINK control",
+        "Test: link processes on different nodes, verify bidirectional"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs",
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Cross-node exit signal propagation",
+      "spec": "Exit signals for linked processes propagate via EXIT control messages.",
+      "acceptance": [
+        "Process exit with remote links sends EXIT control to each remote node",
+        "Remote node delivers the exit signal to linked processes",
+        "Trap_exit processes receive {EXIT, RemotePid, Reason} messages",
+        "Test: linked processes on A and B, A crashes, B receives exit signal"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Node disconnection as noconnection exit",
+      "spec": "When a distribution connection drops, treat it as exit reason 'noconnection' for all links to processes on the disconnected node.",
+      "acceptance": [
+        "Connection failure triggers 'noconnection' exit signal for all locally-linked processes that have links to the disconnected node",
+        "Monitors receive DOWN with reason 'noconnection'",
+        "Test: disconnect node B, all processes on A linked to B receive noconnection exit"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/connection.rs",
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement unlink acknowledgment protocol (UNLINK_ID, OTP 26+) \u2014 use basic UNLINK",
+    "SHALL treat node disconnection as atomic \u2014 all links/monitors to that node fail simultaneously"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

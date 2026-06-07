@@ -4,7 +4,8 @@
   "title": "Core ETS BIFs \u2014 new, insert, lookup, delete, member, info",
   "depends_on": [
     "B-091",
-    "B-093"
+    "B-093",
+    "B-092"
   ],
   "blocked_by": [],
   "checklist": [

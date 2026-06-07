@@ -1,0 +1,68 @@
+{
+  "id": "B-116",
+  "cluster": "beamr",
+  "title": "Distribution atom cache \u2014 per-connection short index encoding",
+  "depends_on": [
+    "B-115"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Atoms are the most frequent term type in distribution messages. Sending the full atom string on every message wastes bandwidth. The distribution atom cache assigns short indices (0-255) to frequently used atoms per connection, so subsequent messages send the 1-byte index instead of the full string.",
+  "task": "Implement the per-connection atom cache with cache entries, encoding, and decoding.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "AtomCache per connection",
+      "spec": "Each DistConnection maintains a bidirectional atom cache \u2014 one for encoding (local \u2192 remote) and one for decoding (remote \u2192 local).",
+      "acceptance": [
+        "AtomCache struct with 256 slots (matching BEAM's cache size)",
+        "insert(atom: Atom) -> u8 assigns an index, returns it",
+        "lookup_by_index(index: u8) -> Option<Atom> retrieves cached atom",
+        "lookup_by_atom(atom: Atom) -> Option<u8> checks if atom is cached",
+        "Full cache evicts LRU entry",
+        "Test: insert 256 atoms, verify all cached, insert 257th evicts first"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/atom_cache.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Atom cache header encoding/decoding",
+      "spec": "Implement the atom cache header format used in distribution messages to communicate new cache entries.",
+      "acceptance": [
+        "Encode: when sending a message with an uncached atom, include a NEW_ATOM_CACHE_REF entry in the header",
+        "Decode: when receiving a message with cache header entries, update the local cache",
+        "Cached atoms are sent as 1-byte index references (ATOM_CACHE_REF)",
+        "Test: encode message with new atom, decode on other side, verify cache populated"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/atom_cache.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement atom cache for non-distribution contexts \u2014 this is connection-specific",
+    "SHALL NOT implement cache synchronization beyond the message header protocol"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

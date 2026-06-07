@@ -37,13 +37,14 @@
     },
     {
       "id": "R2",
-      "title": "write_concurrency for ordered_set",
-      "spec": "write_concurrency for ordered_set",
+      "title": "write_concurrency for set/bag tables only",
+      "spec": "write_concurrency is supported for set and bag table types (DashMap is already sharded). For ordered_set, write_concurrency is NOT supported in this brief \u2014 hash-based sharding would break the global key ordering required by first/next/last/prev traversal. A concurrent ordered data structure (skip list or concurrent B-tree) is a future optimization.",
       "acceptance": [
-        "`{write_concurrency, true}` parsed from ets:new options",
-        "For ordered_set: use a sharded approach (multiple BTreeMaps partitioned by key hash) to allow concurrent writes to different shards",
-        "For set/bag: no-op (DashMap is already sharded)",
-        "Test: concurrent writes to different keys don't block each other"
+        "`{write_concurrency, true}` parsed and applied for set/bag tables (no-op \u2014 DashMap already sharded)",
+        "`{write_concurrency, true}` on ordered_set is accepted but logged as ignored (single-lock behavior retained)",
+        "ordered_set first/next/last/prev iteration continues to work correctly",
+        "Test: set table with write_concurrency \u2014 concurrent writes succeed",
+        "Test: ordered_set with write_concurrency \u2014 iteration order preserved"
       ],
       "files": {
         "modify": [

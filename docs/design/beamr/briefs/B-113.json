@@ -1,0 +1,88 @@
+{
+  "id": "B-113",
+  "cluster": "beamr",
+  "title": "Name resolution service \u2014 pluggable resolver replacing EPMD",
+  "depends_on": [
+    "B-112"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "BEAM nodes find each other via EPMD (Erlang Port Mapper Daemon), a standalone process that maps node names to TCP ports on a host. beamr replaces EPMD with a pluggable resolver trait \u2014 the default implementation uses DNS SRV records or a static config file, but operators can plug in service discovery (Consul, Kubernetes DNS, etc.).",
+  "task": "Define the NodeResolver trait and a static resolver implementation. The resolver maps node names to (host, port) pairs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "NodeResolver trait",
+      "spec": "Define an async trait for resolving node names to network addresses.",
+      "acceptance": [
+        "NodeResolver trait with async fn resolve(name: &str) -> Result<SocketAddr, ResolveError>",
+        "ResolveError enum: NotFound, NetworkError(String)",
+        "Resolver is Arc<dyn NodeResolver + Send + Sync> for shared use",
+        "Test: mock resolver returns configured address"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/resolver.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Static resolver implementation",
+      "spec": "A resolver backed by a static map of node names to addresses, loaded from configuration.",
+      "acceptance": [
+        "StaticResolver::new(map: HashMap<String, SocketAddr>) creates a resolver",
+        "Resolves known names to configured addresses",
+        "Returns NotFound for unknown names",
+        "Test: configure 3 nodes, resolve each, verify addresses"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/resolver.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Resolver registration in distribution config",
+      "spec": "The distribution subsystem holds a configured resolver, defaulting to StaticResolver with no entries (non-distributed mode).",
+      "acceptance": [
+        "DistributionConfig struct with resolver: Arc<dyn NodeResolver>",
+        "Default config uses empty StaticResolver",
+        "Scheduler gains optional DistributionConfig",
+        "Test: default config resolves nothing (non-distributed mode)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/mod.rs",
+          "crates/beamr/src/scheduler/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement EPMD compatibility \u2014 beamr uses a pluggable resolver, not EPMD",
+    "SHALL NOT implement DNS SRV resolution in this brief \u2014 that's a future resolver implementation",
+    "SHALL NOT open network connections \u2014 that's B-114"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

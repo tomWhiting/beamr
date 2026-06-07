@@ -1,0 +1,85 @@
+{
+  "id": "B-127",
+  "cluster": "beamr",
+  "title": "erlang BIFs batch 2 \u2014 list operation stubs",
+  "depends_on": [
+    "B-038"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Fill remaining lists module BIF gaps needed by OTP: sort/1, sort/2, keyfind/3, keystore/5, keysort/2, nth/2, flatten/1, zip/2, unzip/1, all/2, any/2, filter/2, filtermap/2, foreach/2. These are used throughout OTP for list manipulation.",
+  "task": "Register ~15 lists module BIFs as native stubs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "List query BIFs",
+      "spec": "lists:nth/2 (1-based index), lists:member/2, lists:keyfind/3 (find tuple by key position), lists:last/1.",
+      "acceptance": [
+        "nth(2, [a,b,c]) returns b",
+        "member(b, [a,b,c]) returns true",
+        "keyfind(b, 1, [{a,1},{b,2}]) returns {b,2}",
+        "keyfind(z, 1, [{a,1}]) returns false"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/native/stdlib_stubs/lists_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "List transformation BIFs",
+      "spec": "lists:sort/1, lists:flatten/1, lists:zip/2, lists:unzip/1, lists:filter/2, lists:filtermap/2.",
+      "acceptance": [
+        "sort([3,1,2]) returns [1,2,3]",
+        "flatten([1,[2,[3]]]) returns [1,2,3]",
+        "zip([a,b],[1,2]) returns [{a,1},{b,2}]",
+        "filter uses trampoline for closure invocation"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/stdlib_stubs/lists_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "List key-manipulation BIFs",
+      "spec": "lists:keystore/5, lists:keysort/2, lists:keydelete/3, lists:foreach/2.",
+      "acceptance": [
+        "keystore(a, 1, [{a,1},{b,2}], {a,99}) returns [{a,99},{b,2}]",
+        "keysort(1, [{b,2},{a,1}]) returns [{a,1},{b,2}]",
+        "foreach applies function to each element (side-effect only)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/stdlib_stubs/lists_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement lists:usort or lists:umerge \u2014 uncommon in workflow code",
+    "Higher-order BIFs (filter, sort/2, foreach) use the trampoline calling convention from B-038"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "id": "B-119",
+  "cluster": "beamr",
+  "title": "Distribution control messages \u2014 LINK, EXIT, MONITOR, SEND",
+  "depends_on": [
+    "B-118"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Beyond message send, distribution uses control messages for process lifecycle: LINK establishes cross-node links, EXIT propagates exit signals, MONITOR/DEMONITOR manage cross-node monitors, and EXIT2 sends explicit exit signals. These complete the supervision protocol across node boundaries.",
+  "task": "Implement all distribution control message types for process lifecycle.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Control message dispatch table",
+      "spec": "Define the control message type enum and dispatch incoming control messages to appropriate handlers.",
+      "acceptance": [
+        "ControlOp enum: Send(2), RegSend(6), Link(1), Exit(3), Unlink(4), MonitorP(19), DemonitorP(20), MonitorPExit(21), Exit2(8), SpawnRequest(29), SpawnReply(31)",
+        "Incoming control messages dispatched by op code",
+        "Unknown op codes logged and ignored (forward compatibility)",
+        "Test: dispatch each known op code to correct handler"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "LINK and UNLINK control messages",
+      "spec": "Implement cross-node link establishment and removal.",
+      "acceptance": [
+        "Outbound: when link(LocalPid, RemotePid) is called, send LINK control to remote node",
+        "Inbound: receiving LINK control establishes the link on the local side",
+        "UNLINK removes the cross-node link",
+        "Test: link two processes on different nodes, verify bidirectional"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "EXIT and EXIT2 control messages",
+      "spec": "Propagate exit signals across node boundaries.",
+      "acceptance": [
+        "When a linked process exits, EXIT control sent to remote linked processes",
+        "EXIT carries the exit reason as an ETF-encoded term",
+        "EXIT2 (explicit exit/2 to remote PID) sends the signal",
+        "Remote node delivers the exit signal to the target process (same as local exit signal)",
+        "Test: process on A linked to process on B, A exits, B receives exit signal"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement SEND_SENDER (OTP 21+ optimization) \u2014 use basic SEND",
+    "SHALL NOT implement PAYLOAD_EXIT (exit with large reason) \u2014 use basic EXIT",
+    "SHALL handle all control messages even if some handlers are stubs initially"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

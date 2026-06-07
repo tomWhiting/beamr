@@ -1,0 +1,105 @@
+{
+  "id": "B-111",
+  "cluster": "beamr",
+  "title": "Standard I/O and group_leader integration",
+  "depends_on": ["B-103", "B-082"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "OTP's io module (io:format, io:get_line, io:put_chars) routes I/O through the process's group leader — a designated process that handles I/O requests. Currently, beamr stubs io:put_chars via the IoSink trait (B-015 era), bypassing the group leader protocol entirely. This brief replaces the stub with proper group leader-mediated I/O: io:put_chars sends an io_request message to the group leader process, which writes to stdout/stderr via the CompletionRing (B-103). io:get_line reads from stdin. This makes io:format work correctly in multi-process applications where each process's output is routed through its group leader.",
+  "task": "Replace the io:put_chars stub with group leader message protocol. Implement a standard_io process that handles io_request messages by writing to stdout and reading from stdin via completion IO. Wire io:format, io:put_chars, and io:get_line through the group leader protocol. Each scheduler starts with a standard_io group leader process.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Standard IO server process",
+      "spec": "THE SYSTEM SHALL spawn a standard_io process during scheduler initialization that handles io_request messages by writing to stdout and reading from stdin.",
+      "acceptance": [
+        "standard_io process spawned during Scheduler::new()",
+        "Process runs a receive loop matching {io_request, From, ReplyAs, Request} messages",
+        "For {put_chars, unicode, Chars}: write bytes to stdout FdResource (fd 1), reply {io_reply, ReplyAs, ok}",
+        "For {get_line, unicode, Prompt}: write prompt to stdout, read line from stdin FdResource (fd 0), reply {io_reply, ReplyAs, Data}",
+        "For {get_until, ...}: read until delimiter, reply with accumulated data",
+        "Unrecognized requests: reply {io_reply, ReplyAs, {error, request}}",
+        "Standard FDs (0=stdin, 1=stdout, 2=stderr) wrapped as FdResources at startup"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/io/standard_io.rs"],
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "io:put_chars and io:format via group leader",
+      "spec": "WHEN io:put_chars/1,2 or io:format/2,3 is called, THE SYSTEM SHALL send an io_request message to the calling process's group leader and wait for the io_reply.",
+      "acceptance": [
+        "io:put_chars/1 sends {io_request, self(), ReplyRef, {put_chars, unicode, Chars}} to group_leader()",
+        "io:put_chars/2 takes IoDevice as first arg, sends to that process instead",
+        "io:format/2 formats the string first (using existing io_lib:format stub), then calls put_chars",
+        "Process blocks (selective receive) waiting for {io_reply, ReplyRef, Result}",
+        "Returns ok on success, {error, Reason} on failure",
+        "Remove the old IoSink-based io:put_chars stub",
+        "Test: io:put_chars(<<\"hello\">>), verify output appears on stdout"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/stdlib_stubs/io_bifs.rs",
+          "crates/beamr/src/native/mod.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "io:get_line via group leader",
+      "spec": "WHEN io:get_line/1 is called, THE SYSTEM SHALL send a get_line request to the group leader and return the line read from stdin.",
+      "acceptance": [
+        "io:get_line/1 sends {io_request, self(), ReplyRef, {get_line, unicode, Prompt}} to group_leader()",
+        "Process blocks waiting for io_reply",
+        "Returns the line as a binary (including trailing newline)",
+        "Returns eof atom at end of input",
+        "Test: pipe input to beamr, verify io:get_line returns lines"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/io_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Group leader assignment for spawned processes",
+      "spec": "WHEN a process is spawned, THE SYSTEM SHALL inherit the group leader from the spawning process. THE SYSTEM SHALL set the standard_io process as the initial group leader for the first process.",
+      "acceptance": [
+        "Process::group_leader field (already exists) populated on spawn with parent's group leader",
+        "Scheduler sets the standard_io PID as group_leader for the initial process",
+        "erlang:group_leader/0 returns the current process's group leader PID (B-082 dependency)",
+        "erlang:group_leader/2 sets a new group leader for a process (B-082 dependency)",
+        "Test: spawn child, verify group_leader/0 in child matches parent"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/scheduler/mod.rs",
+          "crates/beamr/src/process/mod.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the full io protocol (get_until with custom functions, setopts on io device) — minimal subset for put_chars, format, get_line",
+    "SHALL NOT implement io:fwrite or io:fread — future additions",
+    "SHALL NOT implement user_drv or terminal handling — beamr is not an interactive shell",
+    "SHALL NOT implement io:format formatting directives (~p, ~w, ~s) beyond delegating to existing io_lib stubs"
+  ],
+  "verification": [
+    "cargo test passes with io:put_chars producing stdout output",
+    "io:format('hello ~s~n', ['world']) produces 'hello world\\n' on stdout",
+    "io:get_line reads a line from stdin",
+    "Group leader inheritance works across process spawns",
+    "Old IoSink stubs are removed — all I/O goes through group leader protocol"
+  ]
+}

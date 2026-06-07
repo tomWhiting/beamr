@@ -1,0 +1,88 @@
+{
+  "id": "B-123",
+  "cluster": "beamr",
+  "title": "Net_kernel and connection supervision \u2014 connect_node, nodes/0",
+  "depends_on": [
+    "B-119"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "net_kernel is the process that manages distribution connections. It provides connect_node/1 (establish connection to a node), disconnect_node/1 (tear down connection), and nodes/0 (list connected nodes). In beamr, net_kernel is implemented as BIFs backed by the ConnectionManager rather than as a BEAM process.",
+  "task": "Implement net_kernel BIFs for connection management.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "net_kernel:connect_node/1",
+      "spec": "Connect to a named node. Resolves the name, establishes TCP connection, performs handshake.",
+      "acceptance": [
+        "connect_node(NodeName) returns true on successful connection",
+        "Returns false if connection fails (name not resolved, handshake rejected)",
+        "If already connected, returns true (idempotent)",
+        "Test: connect two nodes, verify nodes() lists both"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "erlang:nodes/0 and erlang:disconnect_node/1",
+      "spec": "List connected nodes and disconnect from a specific node.",
+      "acceptance": [
+        "nodes() returns list of connected node name atoms",
+        "disconnect_node(NodeName) closes the connection and returns true",
+        "After disconnect, nodes() no longer lists that node",
+        "Disconnection triggers noconnection exit signals (B-122 R3)",
+        "Test: connect, verify in nodes(), disconnect, verify removed"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/mod.rs",
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "erlang:is_alive/0",
+      "spec": "Returns true if the node is alive (distribution started), false otherwise.",
+      "acceptance": [
+        "is_alive() returns false in non-distributed mode (nonode@nohost)",
+        "is_alive() returns true when distribution is configured with a real node name",
+        "Test: verify is_alive reflects distribution state"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/gate3_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement net_kernel as a BEAM process \u2014 implement as BIFs backed by ConnectionManager",
+    "SHALL NOT implement automatic reconnection \u2014 manual connect_node only",
+    "SHALL NOT implement hidden nodes or node types"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

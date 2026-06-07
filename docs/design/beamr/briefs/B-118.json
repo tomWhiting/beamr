@@ -1,0 +1,90 @@
+{
+  "id": "B-118",
+  "cluster": "beamr",
+  "title": "Remote message send \u2014 Pid ! Msg across nodes",
+  "depends_on": [
+    "B-117"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "The fundamental distribution operation: sending a message to a process on another node. When the target PID is remote, the message is ETF-encoded, wrapped in a SEND control message, and written to the connection. The remote node decodes the message and delivers it to the target process's mailbox.",
+  "task": "Implement remote message send and the SEND/REG_SEND control message handlers.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Remote send dispatch",
+      "spec": "When the send instruction (or erlang:send/2) targets a remote PID, route the message through the distribution layer instead of the local mailbox.",
+      "acceptance": [
+        "send to remote PID encodes the message via ETF and writes to the connection",
+        "send to local PID is unchanged (existing behavior)",
+        "If no connection exists to the target node, attempt to connect (or return noconnection)",
+        "Test: send message from node A to node B, verify delivery"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/messaging.rs",
+          "crates/beamr/src/distribution/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "SEND and REG_SEND control messages",
+      "spec": "Implement the distribution control message types for message delivery.",
+      "acceptance": [
+        "SEND control: {2, Cookie, ToPid} + message payload \u2014 delivers to PID on receiving node",
+        "REG_SEND control: {6, FromPid, Cookie, ToName} + message payload \u2014 delivers to registered name",
+        "Incoming SEND decodes the message and enqueues in target PID's mailbox",
+        "Incoming REG_SEND resolves the name via process registry",
+        "Test: send via SEND control, verify mailbox delivery"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Integration test \u2014 cross-node message passing",
+      "spec": "End-to-end test with two beamr instances communicating.",
+      "acceptance": [
+        "Test spawns two beamr schedulers with different node names",
+        "Node A sends a message to a PID on node B",
+        "Node B's process receives the message in its mailbox",
+        "Round-trip: B replies to A, A receives the reply",
+        "Test uses loopback TCP (127.0.0.1)"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/tests/distribution_e2e.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement port-based distribution \u2014 only PID-to-PID messaging",
+    "SHALL NOT implement message ordering guarantees beyond TCP's in-order delivery",
+    "SHALL handle connection failure during send (return noconnection error)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

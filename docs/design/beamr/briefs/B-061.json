@@ -1,0 +1,120 @@
+{
+  "id": "B-061",
+  "cluster": "beamr",
+  "title": "build_stacktrace — stack trace construction",
+  "depends_on": ["B-059"],
+  "blocked_by": [],
+  "checklist": ["C86", "C49"],
+  "stories": [],
+  "purpose": "When an exception is caught via try/catch, the BEAM compiler emits build_stacktrace (opcode 160) to convert the raw exception context into the standard Erlang stacktrace format: a list of {Module, Function, Arity, Info} tuples. Without this opcode, any Gleam rescue or Erlang catch Class:Reason:Stacktrace pattern fails with UnsupportedOpcode. The stacktrace construction has two phases: (1) Capture — at exception time, raise_exception snapshots the current code position and call stack return addresses into a raw trace on the Process. (2) Build — build_stacktrace reads the raw trace, resolves each entry to {Module, Function, Arity, [{line, N}]} using the module's function table and line info, allocates the list on the process heap, and stores it in x(0). The resolution requires two lookup tables on Module that don't currently exist: a function table mapping IP ranges to (function, arity) — derived from func_info instructions in the code — and a line table mapping IPs to line numbers — derived from Line instructions.",
+  "task": "Capture raw stacktraces in raise_exception by snapshotting the current code position and call stack return addresses. Build function and line lookup tables on Module at load time by scanning for func_info and Line instructions. Implement the build_stacktrace opcode handler (opcode 160) to resolve raw traces into standard {M, F, A, Info} tuples allocated on the process heap.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Raw stacktrace capture in raise_exception",
+      "spec": "WHEN an exception is raised, THE SYSTEM SHALL snapshot the current execution context before dispatching to the handler. THE SYSTEM SHALL capture the current module, IP, and MFA as the first entry, followed by one entry per stack frame using pinned_module and return_ip. THE SYSTEM SHALL capture raw stacktraces for ALL handler kinds (Try and Catch). WHEN an exception is cleared (in try_end, catch_end), THE SYSTEM SHALL call process.clear_raw_stacktrace().",
+      "acceptance": [
+        "New struct RawStackEntry { module: Arc<Module>, ip: usize, mfa: Option<(Atom, Atom, u8)> } — carries the pinned module version, instruction pointer, and optional MFA from func_info",
+        "Process gains field raw_stacktrace: Vec<RawStackEntry>",
+        "raise_exception (in exceptions.rs after B-059 R6) captures the raw trace before popping the handler: first entry from current module/IP/MFA, remaining entries from stack frames",
+        "Raw stacktrace is captured for ALL handler kinds (Try and Catch)",
+        "process.clear_raw_stacktrace() called when exception is cleared (in try_end, catch_end)",
+        "Accessor: process.raw_stacktrace() -> &[RawStackEntry]",
+        "Test: raise exception with 3 stack frames, verify raw_stacktrace has 4 entries (current + 3 returns), each with correct module and IP"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/process/mod.rs",
+          "crates/beamr/src/interpreter/opcodes/exceptions.rs"
+        ]
+      },
+      "checklist": ["C49"],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Function lookup table on Module",
+      "spec": "THE SYSTEM SHALL build a sorted table mapping IP ranges to function identity, derived from func_info instructions in the code. THE SYSTEM SHALL build this table at load time in load_module() by scanning the code Vec for Instruction::FuncInfo entries. THE SYSTEM SHALL provide Module::function_at_ip(ip: usize) -> Option<(Atom, u8)> using binary search for the entry with the largest IP <= target IP.",
+      "acceptance": [
+        "Module gains field function_table: Vec<(usize, Atom, u8)> — sorted by IP, each entry is (func_info_ip, function_name, arity)",
+        "Built at load time in load_module() by scanning the code Vec for Instruction::FuncInfo entries and extracting their operands",
+        "New method: Module::function_at_ip(ip: usize) -> Option<(Atom, u8)> — binary search for the entry with the largest IP <= target IP, returns (function_name, arity)",
+        "Private functions are included (func_info appears before every function, not just exports)",
+        "Test: load a module with 3 functions (2 exported, 1 private). Verify function_at_ip resolves all three correctly. Verify IP between functions resolves to the earlier function."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/module.rs",
+          "crates/beamr/src/loader/load.rs"
+        ]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Line lookup table on Module",
+      "spec": "THE SYSTEM SHALL build a sorted table mapping IPs to line numbers, derived from Line instructions in the code. THE SYSTEM SHALL build this table at load time in load_module() by scanning the code Vec for Instruction::Line entries. THE SYSTEM SHALL provide Module::line_at_ip(ip: usize) -> Option<u32> using binary search for the entry with the largest IP <= target IP, returning the line number from self.line_info[index].line. WHEN no Line instruction precedes the target IP or the line info index is out of bounds, THE SYSTEM SHALL return None.",
+      "acceptance": [
+        "Module gains field line_table: Vec<(usize, usize)> — sorted by IP, each entry is (line_instruction_ip, line_info_index)",
+        "Built at load time in load_module() by scanning the code Vec for Instruction::Line { index } entries",
+        "New method: Module::line_at_ip(ip: usize) -> Option<u32> — binary search for the entry with the largest IP <= target IP, returns the line number from self.line_info[index].line",
+        "Returns None if no Line instruction precedes the target IP or if the line info index is out of bounds",
+        "Test: load a module with known line instructions. Verify line_at_ip returns correct line numbers. Verify IP before any Line instruction returns None."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/module.rs",
+          "crates/beamr/src/loader/load.rs"
+        ]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "build_stacktrace opcode handler (opcode 160)",
+      "spec": "WHEN the interpreter encounters Instruction::BuildStacktrace, THE SYSTEM SHALL read process.raw_stacktrace(), resolve each entry to {Module, Function, Arity, Info} using the module's function table and line info, allocate the list on the process heap, and store it in x(0). WHEN a function is unresolvable, THE SYSTEM SHALL use (Atom::UNDEFINED, 0). WHEN line info is available, THE SYSTEM SHALL set Info to [{line, N}]; WHEN not available, THE SYSTEM SHALL set Info to [] (NIL). WHEN process heap is insufficient, THE SYSTEM SHALL return ExecError::HeapFull.",
+      "acceptance": [
+        "build_stacktrace(process) reads process.raw_stacktrace()",
+        "For each RawStackEntry: Module name from entry.module.name (Atom, becomes an atom term), Function and arity from entry.mfa if available (first frame) otherwise resolved via entry.module.function_at_ip(entry.ip) — if unresolvable use (Atom::UNDEFINED, 0), Line number from entry.module.line_at_ip(entry.ip) — if available Info = [{line, N}] else Info = [] (NIL)",
+        "Each stacktrace entry is a 4-tuple {Module, Function, Arity, Info} allocated on the process heap",
+        "The Info proplist [{line, N}] is a cons cell containing a 2-tuple",
+        "Entries are linked into a proper list (most recent frame first)",
+        "Result stored in x(0)",
+        "Raw stacktrace is NOT cleared here (it persists until try_end/catch_end clears it)",
+        "New common atom: Atom::LINE = 'line' for the info proplist key (index 32, after B-059's THROW=30, EXIT_CLASS=31)",
+        "Instruction::BuildStacktrace dispatched in opcodes/mod.rs to the new handler",
+        "If process heap is insufficient, return ExecError::HeapFull (stacktrace construction is best-effort under memory pressure)",
+        "Test: raise exception in a function with known line info. Call build_stacktrace. Verify x(0) is a proper list of 4-tuples with correct M/F/A/line values.",
+        "Test: empty raw stacktrace (shouldn't happen, but defensive) produces NIL in x(0)"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/interpreter/opcodes/exceptions.rs",
+          "crates/beamr/src/interpreter/opcodes/mod.rs",
+          "crates/beamr/src/atom/table.rs"
+        ]
+      },
+      "checklist": ["C86"],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement raw_raise (B-062)",
+    "SHALL NOT include file name information in the Info proplist — only [{line, N}] (file name requires binary construction from the Line chunk's file table, deferred to a later brief)"
+  ],
+  "verification": [
+    "cargo test passes with all existing tests plus new stacktrace tests",
+    "Opcode 160 (build_stacktrace) no longer returns UnsupportedOpcode",
+    "Raw stacktrace captured for both Try and Catch handler kinds",
+    "Function lookup table correctly resolves IP ranges to function identity",
+    "Line lookup table correctly resolves IPs to line numbers",
+    "Stacktrace entries are proper 4-tuples with correct {M, F, A, Info} format",
+    "Raw stacktrace cleared when exception is cleared in try_end/catch_end"
+  ]
+}

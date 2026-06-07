@@ -105,6 +105,33 @@
         "C150"
       ],
       "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Term deep-copy infrastructure for ETS storage",
+      "spec": "ETS stores terms independently of process heaps. Boxed terms (tuples, lists, maps, binaries) contain pointers into the inserting process's heap \u2014 after GC or process exit, those pointers become dangling. THE SYSTEM SHALL deep-copy terms into ETS-owned memory on insert and deep-copy back into the requesting process's heap on lookup. Reuse the existing copy_term pattern from mailbox/mod.rs:208.",
+      "acceptance": [
+        "ETS tables store deep-copied terms in table-owned memory (Box/Vec allocations, not process heap pointers)",
+        "ets:insert deep-copies the tuple from the process heap into table storage",
+        "ets:lookup deep-copies the result from table storage into the requesting process's heap",
+        "After inserting process GCs, the ETS entry is still valid",
+        "After inserting process exits, the ETS entry is still valid",
+        "copy_term function (or equivalent) handles all term types: atoms (no-copy immediate), integers (no-copy immediate), PIDs (no-copy immediate), tuples (recursive copy), lists (recursive copy), maps (recursive copy), binaries (copy or Arc share for refc binaries), closures (recursive copy)",
+        "Test: insert a tuple from process A, GC process A, lookup from process B \u2014 correct data returned",
+        "Test: insert from process A, exit process A, lookup from process B \u2014 correct data returned"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/ets/copy.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/ets/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
     }
   ],
   "boundaries": [

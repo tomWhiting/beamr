@@ -1,0 +1,88 @@
+{
+  "id": "B-117",
+  "cluster": "beamr",
+  "title": "Distribution message encoding \u2014 ETF wire format",
+  "depends_on": [
+    "B-116"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Distribution messages are encoded using the External Term Format (ETF) \u2014 the same binary format used by term_to_binary/binary_to_term. Every term type (atoms, integers, tuples, lists, maps, PIDs, references, binaries) has a defined wire encoding. This brief implements the encoder and decoder for the full term type catalog.",
+  "task": "Implement ETF encoding (Term \u2192 bytes) and decoding (bytes \u2192 Term) for all term types used in distribution.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "ETF encoder \u2014 Term to bytes",
+      "spec": "Encode a Term to its ETF binary representation.",
+      "acceptance": [
+        "encode_term(term: Term, atom_table: &AtomTable) -> Vec<u8>",
+        "Encodes: SMALL_INTEGER_EXT, INTEGER_EXT, ATOM_UTF8_EXT, SMALL_TUPLE_EXT, LARGE_TUPLE_EXT, NIL_EXT, LIST_EXT, BINARY_EXT, NEW_FLOAT_EXT, MAP_EXT, NEW_PID_EXT, NEWER_REFERENCE_EXT",
+        "Output starts with version byte 131",
+        "Test: encode each term type, verify byte output matches BEAM's encoding"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/etf.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "ETF decoder \u2014 bytes to Term",
+      "spec": "Decode an ETF binary representation into a Term, allocating boxed terms on a provided heap.",
+      "acceptance": [
+        "decode_term(bytes: &[u8], heap: &mut Heap, atom_table: &AtomTable) -> Result<Term, DecodeError>",
+        "Handles all tags from R1",
+        "Heap allocation for boxed terms (tuples, lists, maps, binaries)",
+        "Invalid input returns DecodeError, not panic",
+        "Test: round-trip encode/decode for each term type"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/etf.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Distribution message framing",
+      "spec": "Wrap encoded terms in the distribution message frame: 4-byte length prefix + pass-through header + control message + optional payload.",
+      "acceptance": [
+        "write_dist_message(control: &[u8], payload: Option<&[u8]>) -> Vec<u8> produces a framed message",
+        "read_dist_message(stream) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> reads and deframes",
+        "Length prefix is big-endian u32",
+        "Test: frame a message, deframe it, verify content"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/etf.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement COMPRESSED_EXT (zlib compression) \u2014 optimization for later",
+    "SHALL NOT implement ATOM_CACHE_REF encoding here \u2014 that's B-116's responsibility",
+    "SHALL implement the NEW_PID_EXT and NEWER_REFERENCE_EXT formats (not legacy V4_PORT_EXT)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

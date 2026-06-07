@@ -1,0 +1,71 @@
+{
+  "id": "B-124",
+  "cluster": "beamr",
+  "title": "Global name registration \u2014 global:register_name and conflict resolution",
+  "depends_on": [
+    "B-123"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "The global module provides cluster-wide name registration \u2014 a name atom maps to exactly one PID across all connected nodes. Registration uses a leader election protocol to resolve conflicts when the same name is registered on multiple nodes simultaneously.",
+  "task": "Implement global name registration with a simple conflict resolution strategy.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Global name registry",
+      "spec": "A distributed name registry that maps atom names to PIDs across the cluster.",
+      "acceptance": [
+        "global:register_name(Name, Pid) registers the name cluster-wide",
+        "global:whereis_name(Name) returns the PID (local or remote) or undefined",
+        "global:unregister_name(Name) removes the registration",
+        "Registration propagates to all connected nodes",
+        "Test: register on node A, whereis on node B returns correct PID"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/distribution/global.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/native/ets_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Conflict resolution",
+      "spec": "When the same name is registered on two nodes simultaneously (network partition recovery), resolve the conflict.",
+      "acceptance": [
+        "Default resolution: the registration with the lower node name wins (deterministic)",
+        "Losing PID is notified (exit signal or callback)",
+        "Custom resolve function support via global:register_name/3",
+        "Test: register same name on two nodes, reconnect, verify one registration survives"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/global.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the full global lock protocol \u2014 use a simplified single-leader approach",
+    "SHALL NOT implement global:trans (global transactions)",
+    "SHALL handle node disconnection by cleaning up registrations for PIDs on the disconnected node"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

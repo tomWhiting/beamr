@@ -1,0 +1,102 @@
+{
+  "id": "B-101",
+  "cluster": "beamr",
+  "title": "Async completion bridge — CQE to process wakeup",
+  "depends_on": ["B-100", "B-077"],
+  "blocked_by": [],
+  "checklist": [],
+  "stories": [],
+  "purpose": "B-100 provides the CompletionRing trait that submits I/O operations and polls for completions. But completions arrive on the ring thread — they need to reach the BEAM process that initiated the I/O. This brief builds the bridge: when a process submits an I/O operation, it suspends (enters Waiting state). When the completion arrives, the bridge wakes the process with the result in its mailbox or x-registers, and the scheduler resumes it. This is the BEAM port model reimagined for completion I/O: instead of a port process mediating I/O, the process directly submits to the ring and suspends. The bridge uses a dedicated completion poller thread (from the dirty scheduler pool, B-077) that continuously polls the ring and dispatches results to the appropriate processes via the existing wake mechanism (wake_condvar, process status transitions).",
+  "task": "Create an IoCompletionBridge that runs on a dirty scheduler thread, continuously polls the CompletionRing for completions, and dispatches results to waiting processes. Add an IoRequest facility that processes use to submit operations and suspend. Track pending operations in a map from op_id to (pid, callback_type). When a completion arrives, look up the waiting process, store the result, and wake it.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Pending operation registry",
+      "spec": "THE SYSTEM SHALL maintain a concurrent map from op_id (u64) to PendingIo { pid: u64, result_mode: ResultMode } that tracks which process is waiting for which I/O completion.",
+      "acceptance": [
+        "PendingIoRegistry struct with DashMap<u64, PendingIo>",
+        "PendingIo struct: { pid: u64, result_mode: ResultMode }",
+        "ResultMode enum: XRegister (result in x(0) on resume), Message (result sent as message to mailbox), Discard (fire-and-forget)",
+        "register(op_id, pid, mode) and take(op_id) -> Option<PendingIo> methods",
+        "Thread-safe (DashMap)"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/io/bridge.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Completion poller thread",
+      "spec": "THE SYSTEM SHALL spawn a completion poller thread that continuously calls ring.poll_completions() and dispatches each IoCompletion to the waiting process via the pending registry.",
+      "acceptance": [
+        "IoCompletionBridge::start(ring: Arc<dyn CompletionRing>, registry: Arc<PendingIoRegistry>, scheduler: ...) spawns poller thread",
+        "Poller loop: poll_completions with 100ms timeout, process each completion",
+        "For each completion: take(op_id) from registry, look up process by pid",
+        "ResultMode::XRegister: store result term in process x(0), transition process from Waiting to Yielded, wake via condvar",
+        "ResultMode::Message: enqueue result as message in process mailbox, wake if process is in receive-wait",
+        "ResultMode::Discard: log completion, do not wake",
+        "Poller exits cleanly on bridge shutdown",
+        "Test: submit an op, register pending, simulate completion, verify process woken"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/io/bridge.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "IoFacility trait for process-side I/O submission",
+      "spec": "THE SYSTEM SHALL define an IoFacility trait that processes use to submit I/O operations and suspend. THE SYSTEM SHALL inject the facility into NativeServices alongside existing facilities.",
+      "acceptance": [
+        "IoFacility trait with submit_and_suspend(op: IoOp, mode: ResultMode) -> Result<(), IoError> method",
+        "Implementation: submit op to ring, register in pending registry with caller pid, return InstructionOutcome::Waiting to suspend the process",
+        "NativeServices gains io_facility: Option<Arc<dyn IoFacility>> field",
+        "ProcessContext gains io_facility() accessor",
+        "The IoFacility implementation holds references to the CompletionRing and PendingIoRegistry",
+        "Test: submit via facility, verify process transitions to Waiting"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/io/facility.rs"],
+        "modify": [
+          "crates/beamr/src/interpreter/mod.rs",
+          "crates/beamr/src/native/context.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Scheduler integration — ring lifecycle and bridge startup",
+      "spec": "WHEN the Scheduler is constructed, THE SYSTEM SHALL create the CompletionRing (via create_ring()) and start the IoCompletionBridge. THE SYSTEM SHALL inject the IoFacility into NativeServices for all worker threads.",
+      "acceptance": [
+        "Scheduler::new creates the ring and bridge",
+        "Bridge poller thread starts alongside scheduler worker threads",
+        "IoFacility injected into NativeServices for all processes",
+        "Scheduler::shutdown() stops the bridge and ring cleanly",
+        "Ring and bridge are optional (None if IO is not configured) for test scenarios that don't need IO"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement specific I/O operations (file, TCP, UDP) — those are B-103 through B-111",
+    "SHALL NOT implement file descriptor lifecycle — that is B-102",
+    "SHALL NOT add new process status variants — use existing Waiting/Yielded transitions",
+    "SHALL NOT block scheduler worker threads — all I/O completion handling happens on the dedicated poller thread"
+  ],
+  "verification": [
+    "cargo test passes with bridge enabled and disabled (optional feature)",
+    "Process submits I/O op, suspends, and is woken when completion arrives",
+    "Multiple processes can have pending I/O concurrently without interference",
+    "Bridge shutdown is clean — no dangling threads, no stuck processes",
+    "Scheduler with no I/O configuration starts normally (bridge is None)"
+  ]
+}

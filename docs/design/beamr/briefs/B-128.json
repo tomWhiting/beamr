@@ -1,0 +1,86 @@
+{
+  "id": "B-128",
+  "cluster": "beamr",
+  "title": "erlang BIFs batch 3 \u2014 system, memory, and port stubs",
+  "depends_on": [
+    "B-081"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "OTP modules query system state via erlang:statistics/1, erlang:memory/0, erlang:ports/0, and various system introspection BIFs. Most can be stubbed with reasonable defaults \u2014 beamr doesn't have ports or full statistics, but returning empty lists or zero values prevents import failures.",
+  "task": "Register system introspection BIF stubs that return sensible defaults.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "erlang:statistics/1 stubs",
+      "spec": "Return basic statistics for commonly queried items.",
+      "acceptance": [
+        "statistics(wall_clock) returns {TotalMillis, SinceLastMillis}",
+        "statistics(runtime) returns {TotalMillis, SinceLastMillis}",
+        "statistics(reductions) returns {Total, SinceLast}",
+        "Unknown stat item returns badarg"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/system_info_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "erlang:memory/0 and erlang:memory/1",
+      "spec": "Return approximate memory usage.",
+      "acceptance": [
+        "memory() returns proplist with total, processes, system, atom, binary keys",
+        "memory(total) returns total memory in bytes",
+        "Values are approximate (sum of heap sizes + atom table + binary heap)"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/system_info_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Port stubs",
+      "spec": "Stub port-related BIFs that OTP queries during startup.",
+      "acceptance": [
+        "erlang:ports() returns [] (no ports in beamr)",
+        "erlang:port_info/1 returns undefined",
+        "erlang:open_port/2 returns badarg (ports not supported)",
+        "These stubs prevent import failures without implementing the port subsystem"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/system_info_bifs.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement the port subsystem \u2014 stubs only",
+    "SHALL NOT implement full statistics tracking \u2014 approximate values from available data",
+    "SHALL return sensible defaults that don't crash OTP code"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "id": "B-121",
+  "cluster": "beamr",
+  "title": "Remote monitors \u2014 MONITOR_P/DEMONITOR_P/MONITOR_P_EXIT",
+  "depends_on": [
+    "B-119"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C150"
+  ],
+  "stories": [],
+  "purpose": "Cross-node monitors use MONITOR_P (establish), DEMONITOR_P (remove), and MONITOR_P_EXIT (DOWN notification) control messages. When a monitored process on node B exits, node B sends MONITOR_P_EXIT to node A, which delivers the DOWN message to the monitoring process.",
+  "task": "Implement cross-node monitor control messages.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Remote monitor establishment",
+      "spec": "When monitor(process, RemotePid) is called, send MONITOR_P to the remote node.",
+      "acceptance": [
+        "Outbound: monitor on remote PID sends MONITOR_P control with reference",
+        "Inbound: receiving MONITOR_P registers the monitor on the local process",
+        "If the target process is already dead, immediately send MONITOR_P_EXIT back",
+        "Test: monitor remote process, verify monitor established"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs",
+          "crates/beamr/src/native/process_bifs/mod.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "Remote DOWN delivery",
+      "spec": "When a monitored process exits, deliver MONITOR_P_EXIT to all remote monitors.",
+      "acceptance": [
+        "Process exit triggers MONITOR_P_EXIT for each remote monitor",
+        "Remote node receives MONITOR_P_EXIT and delivers DOWN message to the monitoring process",
+        "DOWN message contains correct Ref, Pid, and Reason",
+        "Test: monitor remote process, it exits, verify DOWN received"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Remote demonitor",
+      "spec": "DEMONITOR_P removes a cross-node monitor.",
+      "acceptance": [
+        "demonitor(Ref) for a remote monitor sends DEMONITOR_P to the remote node",
+        "Remote node removes the monitor registration",
+        "No DOWN sent after demonitor even if the process exits",
+        "Test: monitor, demonitor, process exits, no DOWN received"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/distribution/control.rs"
+        ]
+      },
+      "checklist": [
+        "C150"
+      ],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT implement monitor by name across nodes \u2014 only by PID",
+    "SHALL handle node-down as a special DOWN reason (noconnection)"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo clippy --workspace -- -D warnings passes",
+    "cargo test -p beamr passes with all tests green"
+  ]
+}
