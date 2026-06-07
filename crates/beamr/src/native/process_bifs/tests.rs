@@ -1,18 +1,43 @@
 use super::*;
 use crate::atom::{Atom, AtomTable};
 use crate::native::links::{LinkError, LinkFacility, LinkRecord};
-use crate::native::spawn::{SpawnError, SpawnFacility, SpawnRecord};
+use crate::native::spawn::{SpawnError, SpawnFacility, SpawnMonitorResult, SpawnRecord};
 use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
 use crate::native::{BifRegistryImpl, ExceptionClass, ProcessContext};
-use crate::process::ExitReason;
+use crate::process::{ExitReason, Process};
 use crate::term::Term;
-use crate::term::boxed::write_cons;
+use crate::term::boxed::{Reference, Tuple, write_closure, write_cons};
 use std::sync::{Arc, Mutex};
 
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
+}
+
+fn attached_spawn_ctx(
+    next_pid: u64,
+    next_ref: u64,
+    caller_pid: u64,
+    process: &mut Process,
+) -> (Arc<MockSpawnFacility>, ProcessContext<'_>) {
+    let f = Arc::new(MockSpawnFacility::with_reference(next_pid, next_ref));
+    let mut ctx = ProcessContext::new();
+    ctx.attach_process(process, 0);
+    ctx.set_pid(Some(caller_pid));
+    ctx.set_spawn_facility(Some(f.clone()));
+    (f, ctx)
+}
+
+fn assert_spawn_monitor_tuple(term: Term, pid: u64, reference: u64) {
+    let tuple = Tuple::new(term).expect("spawn_monitor returns tuple");
+    assert_eq!(tuple.arity(), 2);
+    assert_eq!(tuple.get(0), Some(Term::pid(pid)));
+    let ref_term = tuple.get(1).expect("reference element");
+    assert_eq!(
+        Reference::new(ref_term).expect("boxed reference").id(),
+        reference
+    );
 }
 
 // ---- erlang:self/0 ----
@@ -148,6 +173,120 @@ fn spawn_link_badarg_without_pid() {
             &mut ctx
         ),
         Err(badarg()),
+    );
+}
+
+// ---- erlang:spawn_monitor/3 ----
+
+#[test]
+fn spawn_monitor_3_returns_pid_and_boxed_reference() {
+    let mut process = Process::new(3, 128);
+    let (f, mut ctx) = attached_spawn_ctx(8, 42, 3, &mut process);
+    let result = bif_spawn_monitor_3(
+        &[Term::atom(Atom::OK), Term::atom(Atom::ERROR), Term::NIL],
+        &mut ctx,
+    )
+    .expect("spawn_monitor/3 succeeds");
+    assert_spawn_monitor_tuple(result, 8, 42);
+    let records = f.spawn_monitor_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].caller_pid, 3);
+    assert_eq!(records[0].link_to, None);
+}
+
+#[test]
+fn spawn_monitor_3_passes_list_args() {
+    let mut process = Process::new(1, 128);
+    let (f, mut ctx) = attached_spawn_ctx(10, 0, 1, &mut process);
+    let mut c2 = [0u64; 2];
+    let tail = write_cons(&mut c2, Term::small_int(2), Term::NIL).expect("tail cons");
+    let mut c1 = [0u64; 2];
+    let list = write_cons(&mut c1, Term::small_int(1), tail).expect("head cons");
+    let result = bif_spawn_monitor_3(
+        &[Term::atom(Atom::OK), Term::atom(Atom::ERROR), list],
+        &mut ctx,
+    )
+    .expect("spawn_monitor/3 succeeds");
+    assert_spawn_monitor_tuple(result, 10, 0);
+    assert_eq!(
+        f.spawn_monitor_records()[0].args,
+        vec![Term::small_int(1), Term::small_int(2)]
+    );
+}
+
+#[test]
+fn spawn_monitor_3_badarg_without_facility() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = ProcessContext::new();
+    ctx.attach_process(&mut process, 0);
+    ctx.set_pid(Some(1));
+    assert_eq!(
+        bif_spawn_monitor_3(
+            &[Term::atom(Atom::OK), Term::atom(Atom::ERROR), Term::NIL],
+            &mut ctx
+        ),
+        Err(badarg()),
+    );
+}
+
+#[test]
+fn spawn_monitor_3_badarg_facility_fails() {
+    let f: Arc<dyn SpawnFacility> = Arc::new(FailingSpawnFacility);
+    let mut process = Process::new(1, 128);
+    let mut ctx = ProcessContext::new();
+    ctx.attach_process(&mut process, 0);
+    ctx.set_pid(Some(1));
+    ctx.set_spawn_facility(Some(f));
+    assert_eq!(
+        bif_spawn_monitor_3(
+            &[Term::atom(Atom::OK), Term::atom(Atom::ERROR), Term::NIL],
+            &mut ctx
+        ),
+        Err(badarg()),
+    );
+}
+
+// ---- erlang:spawn_monitor/1 ----
+
+#[test]
+fn spawn_monitor_1_with_zero_arity_closure() {
+    let mut process = Process::new(1, 128);
+    let (f, mut ctx) = attached_spawn_ctx(42, 7, 1, &mut process);
+    let mut heap = [0u64; 7];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &[]).expect("closure");
+    let result = bif_spawn_monitor_1(&[fun], &mut ctx).expect("spawn_monitor/1 succeeds");
+    assert_spawn_monitor_tuple(result, 42, 7);
+    let records = f.lambda_monitor_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].caller_pid, 1);
+}
+
+#[test]
+fn spawn_monitor_1_badarg_non_zero_arity() {
+    let mut process = Process::new(1, 128);
+    let (_, mut ctx) = attached_spawn_ctx(42, 7, 1, &mut process);
+    let mut heap = [0u64; 7];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 2, 1, 0, &[]).expect("closure");
+    assert_eq!(bif_spawn_monitor_1(&[fun], &mut ctx), Err(badarg()));
+}
+
+#[test]
+fn spawn_monitor_1_badarg_with_captures() {
+    let mut process = Process::new(1, 128);
+    let (_, mut ctx) = attached_spawn_ctx(42, 7, 1, &mut process);
+    let free_vars = [Term::small_int(1)];
+    let mut heap = [0u64; 8];
+    let fun = write_closure(&mut heap, Atom::OK, 0, 0, 1, 0, &free_vars).expect("closure");
+    assert_eq!(bif_spawn_monitor_1(&[fun], &mut ctx), Err(badarg()));
+}
+
+#[test]
+fn spawn_monitor_1_badarg_non_closure() {
+    let mut process = Process::new(1, 128);
+    let (_, mut ctx) = attached_spawn_ctx(42, 7, 1, &mut process);
+    assert_eq!(
+        bif_spawn_monitor_1(&[Term::small_int(42)], &mut ctx),
+        Err(badarg())
     );
 }
 
@@ -302,6 +441,8 @@ fn register_gate2_bifs_registers_all() {
         ("self", 0),
         ("spawn", 3),
         ("spawn_link", 3),
+        ("spawn_monitor", 1),
+        ("spawn_monitor", 3),
         ("link", 1),
         ("unlink", 1),
         ("process_flag", 2),
@@ -519,23 +660,53 @@ fn sup_ctx(
 
 // ---- Mock spawn facility ----
 
+struct LambdaSpawnRecord {
+    caller_pid: u64,
+}
+
 struct MockSpawnFacility {
     next_pid: u64,
+    next_reference: u64,
     records: Mutex<Vec<SpawnRecord>>,
+    spawn_monitor_records: Mutex<Vec<SpawnRecord>>,
+    lambda_monitor_records: Mutex<Vec<LambdaSpawnRecord>>,
 }
 
 impl MockSpawnFacility {
     fn new(next_pid: u64) -> Self {
+        Self::with_reference(next_pid, 0)
+    }
+
+    fn with_reference(next_pid: u64, next_reference: u64) -> Self {
         Self {
             next_pid,
+            next_reference,
             records: Mutex::new(Vec::new()),
+            spawn_monitor_records: Mutex::new(Vec::new()),
+            lambda_monitor_records: Mutex::new(Vec::new()),
         }
     }
+
     fn records(&self) -> Vec<SpawnRecord> {
         self.records
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    fn spawn_monitor_records(&self) -> Vec<SpawnRecord> {
+        self.spawn_monitor_records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn lambda_monitor_records(&self) -> Vec<LambdaSpawnRecord> {
+        self.lambda_monitor_records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect()
     }
 }
 
@@ -561,8 +732,47 @@ impl SpawnFacility for MockSpawnFacility {
         Ok(self.next_pid)
     }
 
+    fn spawn_monitor(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        function: Atom,
+        args: Vec<Term>,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        self.spawn_monitor_records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(SpawnRecord {
+                caller_pid,
+                module,
+                function,
+                args,
+                link_to: None,
+            });
+        Ok(SpawnMonitorResult {
+            pid: self.next_pid,
+            reference: self.next_reference,
+        })
+    }
+
     fn spawn_lambda(&self, _: u64, _: Atom, _: u32, _: Option<u64>) -> Result<u64, SpawnError> {
         Ok(self.next_pid)
+    }
+
+    fn spawn_lambda_monitor(
+        &self,
+        caller_pid: u64,
+        _module: Atom,
+        _lambda_index: u32,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        self.lambda_monitor_records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(LambdaSpawnRecord { caller_pid });
+        Ok(SpawnMonitorResult {
+            pid: self.next_pid,
+            reference: self.next_reference,
+        })
     }
 }
 
@@ -580,7 +790,26 @@ impl SpawnFacility for FailingSpawnFacility {
         Err(SpawnError::UnresolvedMfa)
     }
 
+    fn spawn_monitor(
+        &self,
+        _: u64,
+        _: Atom,
+        _: Atom,
+        _: Vec<Term>,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        Err(SpawnError::UnresolvedMfa)
+    }
+
     fn spawn_lambda(&self, _: u64, _: Atom, _: u32, _: Option<u64>) -> Result<u64, SpawnError> {
+        Err(SpawnError::UnresolvedMfa)
+    }
+
+    fn spawn_lambda_monitor(
+        &self,
+        _: u64,
+        _: Atom,
+        _: u32,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
         Err(SpawnError::UnresolvedMfa)
     }
 }

@@ -77,8 +77,10 @@ pub(in crate::scheduler) fn take_runnable_process(
             let metadata = ProcessMetadata {
                 namespace_id: process.namespace_id(),
                 links: process.links().to_vec(),
+                monitors: process.monitors().to_vec(),
                 trap_exit: process.trap_exit(),
                 pending_exit_messages: Vec::new(),
+                pending_down_messages: Vec::new(),
             };
             *slot = ProcessSlot::Executing(metadata);
             Some(process)
@@ -98,10 +100,36 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
             for linked_pid in &metadata.links {
                 process.add_link(*linked_pid);
             }
+            for monitor in process.monitors().to_vec() {
+                if !metadata
+                    .monitors
+                    .iter()
+                    .any(|metadata_monitor| metadata_monitor.reference() == monitor.reference())
+                {
+                    process.remove_monitor(monitor.reference());
+                }
+            }
+            for monitor in &metadata.monitors {
+                if !process
+                    .monitors()
+                    .iter()
+                    .any(|process_monitor| process_monitor.reference() == monitor.reference())
+                {
+                    process.add_monitor(*monitor);
+                }
+            }
             for (source_pid, reason) in metadata.pending_exit_messages.drain(..) {
                 crate::supervision::link::enqueue_exit_message_pub(
                     &mut process,
                     source_pid,
+                    reason,
+                );
+            }
+            for (reference, target_pid, reason) in metadata.pending_down_messages.drain(..) {
+                crate::supervision::monitor::enqueue_down_message_pub(
+                    &mut process,
+                    reference,
+                    target_pid,
                     reason,
                 );
             }

@@ -440,8 +440,10 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         Mutex::new(ProcessSlot::Executing(ProcessMetadata {
             namespace_id: NamespaceId::DEFAULT,
             links: Vec::new(),
+            monitors: Vec::new(),
             trap_exit: false,
             pending_exit_messages: Vec::new(),
+            pending_down_messages: Vec::new(),
         })),
     );
     shared.exit_tombstones.insert(pid, ExitReason::Error);

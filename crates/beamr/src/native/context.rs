@@ -13,7 +13,9 @@ use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofS
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary::{packed_word_count, write_binary};
-use crate::term::boxed::{write_bigint, write_cons, write_float, write_map, write_tuple};
+use crate::term::boxed::{
+    write_bigint, write_cons, write_float, write_map, write_reference, write_tuple,
+};
 use crate::term::compare;
 use crate::timer::{TimerRef, TimerWheel};
 
@@ -595,6 +597,12 @@ impl<'process> ProcessContext<'process> {
         let words = 1 + elements.len();
         let heap = self.alloc_words(words)?;
         write_tuple(heap, elements).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a reference on the calling process heap.
+    pub fn alloc_reference(&mut self, id: u64) -> Result<Term, Term> {
+        let heap = self.alloc_words(2)?;
+        write_reference(heap, id).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
     /// Allocate a cons cell on the calling process heap.

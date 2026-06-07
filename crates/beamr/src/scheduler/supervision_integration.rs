@@ -9,7 +9,7 @@ use std::{collections::VecDeque, sync::Arc};
 use crate::atom::Atom;
 use crate::namespace::NamespaceId;
 use crate::native::links::{LinkError, LinkFacility};
-use crate::native::spawn::{SpawnError, SpawnFacility};
+use crate::native::spawn::{SpawnError, SpawnFacility, SpawnMonitorResult};
 use crate::native::supervision::{MonitorResult, SupervisionError, SupervisionFacility};
 use crate::process::{ExitReason, ProcessStatus};
 use crate::supervision::link;
@@ -220,17 +220,25 @@ fn deliver_single_down(
         return false;
     };
     let mut slot = lock_or_recover(&entry);
-    let ProcessSlot::Present(ScheduledProcess(watcher)) = &mut *slot else {
-        return false;
-    };
+    match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(watcher)) => {
+            if matches!(watcher.status(), ProcessStatus::Exited(_)) {
+                return false;
+            }
 
-    if matches!(watcher.status(), ProcessStatus::Exited(_)) {
-        return false;
+            watcher.remove_monitor(reference);
+            monitor::enqueue_down_message_pub(watcher, reference, target_pid, reason);
+            true
+        }
+        ProcessSlot::Executing(metadata) => {
+            metadata.remove_monitor(reference);
+            metadata
+                .pending_down_messages
+                .push((reference, target_pid, reason));
+            true
+        }
+        ProcessSlot::Absent => false,
     }
-
-    watcher.remove_monitor(reference);
-    monitor::enqueue_down_message_pub(watcher, reference, target_pid, reason);
-    true
 }
 
 /// Build the `NativeServices` bundle for a scheduler time slice.
@@ -336,6 +344,16 @@ impl SpawnFacility for SchedulerSpawnFacility {
         Ok(child_pid)
     }
 
+    fn spawn_monitor(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        function: Atom,
+        args: Vec<Term>,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        self.spawn_mfa_with_monitor(caller_pid, module, function, args)
+    }
+
     fn spawn_lambda(
         &self,
         caller_pid: u64,
@@ -391,9 +409,128 @@ impl SpawnFacility for SchedulerSpawnFacility {
 
         Ok(child_pid)
     }
+
+    fn spawn_lambda_monitor(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        lambda_index: u32,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        self.spawn_lambda_with_monitor(caller_pid, module, lambda_index)
+    }
 }
 
 impl SchedulerSpawnFacility {
+    fn spawn_mfa_with_monitor(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        function: Atom,
+        args: Vec<Term>,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        let namespace_id = self.caller_namespace(caller_pid);
+        let registry = namespace_registry(&self.shared, namespace_id)
+            .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
+        let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
+        let entry = registry
+            .lookup_mfa(module, function, arity)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
+        let ip = entry
+            .module
+            .label_ip(entry.label)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
+
+        let child_pid = self
+            .shared
+            .next_pid
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.shared.process_table.spawn_with_pid(child_pid);
+
+        let child = super::spawning::build_process(super::spawning::SpawnRequest {
+            pid: child_pid,
+            module: entry.module.name,
+            module_version: Arc::clone(&entry.module),
+            instruction_pointer: ip,
+            args,
+            namespace_id,
+        });
+
+        Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))
+    }
+
+    fn spawn_lambda_with_monitor(
+        &self,
+        caller_pid: u64,
+        module: Atom,
+        lambda_index: u32,
+    ) -> Result<SpawnMonitorResult, SpawnError> {
+        let namespace_id = self.caller_namespace(caller_pid);
+        let registry = namespace_registry(&self.shared, namespace_id)
+            .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
+        let loaded = registry.lookup(module).ok_or(SpawnError::UnresolvedMfa)?;
+        let lambda = loaded
+            .lambdas
+            .get(lambda_index as usize)
+            .ok_or(SpawnError::UnresolvedMfa)?;
+        let ip = loaded
+            .label_ip(lambda.label)
+            .map_err(|_| SpawnError::UnresolvedMfa)?;
+
+        let child_pid = self
+            .shared
+            .next_pid
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.shared.process_table.spawn_with_pid(child_pid);
+
+        let child = super::spawning::build_process(super::spawning::SpawnRequest {
+            pid: child_pid,
+            module: loaded.name,
+            module_version: Arc::clone(&loaded),
+            instruction_pointer: ip,
+            args: Vec::new(),
+            namespace_id,
+        });
+
+        Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))
+    }
+
+    fn register_monitor_insert_and_wake(
+        &self,
+        caller_pid: u64,
+        child_pid: u64,
+        mut child: crate::process::Process,
+    ) -> SpawnMonitorResult {
+        let reference = {
+            let mut ms = lock_or_recover(&self.shared.monitor_set);
+            let reference = ms.allocate_reference_pub();
+            let mon = crate::process::Monitor::new(reference, caller_pid, child_pid);
+            ms.register_monitor(reference, mon, child_pid);
+            child.add_monitor(mon);
+            drop(ms);
+            add_monitor_to_slot(&self.shared, caller_pid, mon);
+            reference
+        };
+
+        self.shared.process_bodies.insert(
+            child_pid,
+            std::sync::Mutex::new(ProcessSlot::Present(ScheduledProcess(child))),
+        );
+
+        self.shared
+            .spawn_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut ws = lock_or_recover(&self.shared.wait_set);
+            ws.woken.push((child_pid, 0));
+        }
+        self.shared.wake_condvar.notify_all();
+
+        SpawnMonitorResult {
+            pid: child_pid,
+            reference,
+        }
+    }
+
     fn caller_namespace(&self, caller_pid: u64) -> NamespaceId {
         if let Some(parent_entry) = self.shared.process_bodies.get(&caller_pid) {
             let parent_slot = lock_or_recover(&parent_entry);
@@ -404,6 +541,24 @@ impl SchedulerSpawnFacility {
             }
         }
         self.namespace_id
+    }
+}
+
+fn add_monitor_to_slot(shared: &SharedState, pid: u64, monitor: crate::process::Monitor) -> bool {
+    let Some(entry) = shared.process_bodies.get(&pid) else {
+        return false;
+    };
+    let mut slot = lock_or_recover(&entry);
+    match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(process)) => {
+            process.add_monitor(monitor);
+            true
+        }
+        ProcessSlot::Executing(metadata) => {
+            metadata.add_monitor(monitor);
+            true
+        }
+        ProcessSlot::Absent => false,
     }
 }
 
