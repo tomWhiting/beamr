@@ -545,7 +545,7 @@ fn compare_closures_raw(left: Term, right: Term) -> Ordering {
 }
 
 fn compare_closures_exact(left: Term, right: Term) -> Ordering {
-    compare_closures_with(left, right, compare_exact)
+    compare_closures_with_raw(left, right, compare_exact)
 }
 
 fn compare_closures_with(
@@ -562,7 +562,9 @@ fn compare_closures_with(
                     Term::atom(right_module),
                     atom_table,
                 ),
-                (left_module, right_module) => left_module.cmp(&right_module),
+                (None, Some(_)) => Ordering::Less,
+                (Some(_), None) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
             } {
                 Ordering::Equal => {}
                 order => return order,
