@@ -28,6 +28,8 @@ type ProcessInfoBif = (&'static str, u8, Capability, NativeFn);
 const PROCESS_INFO_BIFS: &[ProcessInfoBif] = &[
     ("process_info", 1, Capability::Pure, bif_process_info_1),
     ("process_info", 2, Capability::Pure, bif_process_info_2),
+    ("group_leader", 0, Capability::ProcessLocal, bif_group_leader_0),
+    ("group_leader", 2, Capability::ProcessLocal, bif_group_leader_2),
 ];
 
 /// Process-info item understood by the scheduler-backed introspection facility.
@@ -290,6 +292,31 @@ fn bool_to_atom(value: bool) -> Term {
 
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
+}
+
+pub fn bif_group_leader_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    context.group_leader()
+}
+
+pub fn bif_group_leader_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [new_leader, pid] = args else {
+        return Err(badarg());
+    };
+    if !new_leader.is_pid() {
+        return Err(badarg());
+    }
+    let Some(target_pid) = pid.as_pid() else {
+        return Err(badarg());
+    };
+    let facility = context.group_leader_facility().ok_or_else(badarg)?;
+    facility
+        .set_group_leader(target_pid, *new_leader)
+        .map_err(|_| badarg())?;
+    context.set_attached_group_leader(target_pid, *new_leader);
+    Ok(Term::atom(Atom::TRUE))
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ pub(in crate::scheduler) struct SpawnRequest {
     pub(in crate::scheduler) instruction_pointer: usize,
     pub(in crate::scheduler) args: Vec<Term>,
     pub(in crate::scheduler) namespace_id: NamespaceId,
+    pub(in crate::scheduler) group_leader: Term,
 }
 
 impl Scheduler {
@@ -176,6 +177,7 @@ impl Scheduler {
             module_version,
             instruction_pointer,
             namespace_id,
+            group_leader: Term::pid(pid),
             args,
         };
         if trap_exit {
@@ -226,6 +228,7 @@ pub(super) fn materialize_spawn_request(shared: &SharedState, request: SpawnRequ
 
 pub(in crate::scheduler) fn build_process(request: SpawnRequest) -> Process {
     let mut process = Process::new(request.pid, DEFAULT_HEAP_SIZE);
+    process.set_group_leader(request.group_leader);
     process.set_namespace_id(request.namespace_id);
     process.set_code_position(Some(CodePosition {
         module: request.module,

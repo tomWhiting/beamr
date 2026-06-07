@@ -23,7 +23,7 @@ use crate::scheduler::execution::{
 };
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
-use crate::term::boxed;
+use crate::term::{Term, boxed};
 use crate::timer::TimerWheel;
 
 fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
@@ -408,6 +408,33 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
 }
 
 #[test]
+fn linked_test_spawn_inherits_parent_group_leader_not_child_pid() {
+    let registry = Arc::new(ModuleRegistry::new());
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        registry,
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    scheduler.shutdown();
+    let parent = scheduler.spawn_test_process(false);
+    let parent_group_leader = Term::pid(77);
+    assert!(scheduler.set_test_group_leader(parent, parent_group_leader));
+
+    let child = scheduler
+        .spawn_linked_test_process(parent)
+        .unwrap_or_else(|error| panic!("linked child starts: {error}"));
+
+    assert_eq!(
+        scheduler.test_group_leader(child),
+        Some(parent_group_leader)
+    );
+    assert_ne!(scheduler.test_group_leader(child), Some(Term::pid(child)));
+}
+
+#[test]
 fn spawn_link_uses_executing_parent_namespace_and_merges_parent_link() {
     let atoms = AtomTable::new();
     let module_name = atoms.intern("spawn_link_child");
@@ -549,6 +576,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
             current_mfa: None,
             heap_size: 0,
             message_queue_len: 0,
+            group_leader: process.group_leader(),
             pending_exit_messages: Vec::new(),
             pending_down_messages: Vec::new(),
         })),

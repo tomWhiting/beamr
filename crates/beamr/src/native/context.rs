@@ -20,6 +20,7 @@ use crate::term::compare;
 use crate::timer::{TimerRef, TimerWheel};
 
 use super::code_management_bifs::CodeManagementFacility;
+use super::group_leader::GroupLeaderFacility;
 use super::links::LinkFacility;
 use super::process_info_bifs::ProcessInfoFacility;
 use super::registry::RegistryFacility;
@@ -87,6 +88,7 @@ pub struct ProcessContext<'process> {
     atom_table: Option<Arc<AtomTable>>,
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
     link_facility: Option<Arc<dyn LinkFacility>>,
+    group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
     code_management_facility: Option<Arc<dyn CodeManagementFacility>>,
     process_info_facility: Option<Arc<dyn ProcessInfoFacility>>,
@@ -114,6 +116,10 @@ impl fmt::Debug for ProcessContext<'_> {
                 &self.spawn_facility.as_ref().map(|_| ".."),
             )
             .field("link_facility", &self.link_facility.as_ref().map(|_| ".."))
+            .field(
+                "group_leader_facility",
+                &self.group_leader_facility.as_ref().map(|_| ".."),
+            )
             .field(
                 "supervision_facility",
                 &self.supervision_facility.as_ref().map(|_| ".."),
@@ -143,7 +149,6 @@ impl fmt::Debug for ProcessContext<'_> {
             .field("shutdown_requested", &self.shutdown_requested)
             .field("trampoline", &self.trampoline)
             .field("suspend", &self.suspend)
-            .field("exception_class", &self.exception_class)
             .field("exception_stacktrace", &self.exception_stacktrace)
             .finish()
     }
@@ -167,6 +172,7 @@ impl<'process> ProcessContext<'process> {
             atom_table: None,
             spawn_facility: None,
             link_facility: None,
+            group_leader_facility: None,
             supervision_facility: None,
             code_management_facility: None,
             process_info_facility: None,
@@ -193,6 +199,7 @@ impl<'process> ProcessContext<'process> {
             atom_table: None,
             spawn_facility: None,
             link_facility: None,
+            group_leader_facility: None,
             supervision_facility: None,
             code_management_facility: None,
             process_info_facility: None,
@@ -278,6 +285,17 @@ impl<'process> ProcessContext<'process> {
     /// Set the link facility for link management BIFs.
     pub fn set_link_facility(&mut self, facility: Option<Arc<dyn LinkFacility>>) {
         self.link_facility = facility;
+    }
+
+    /// Return the group-leader facility, if one has been configured.
+    #[must_use]
+    pub fn group_leader_facility(&self) -> Option<&dyn GroupLeaderFacility> {
+        self.group_leader_facility.as_deref()
+    }
+
+    /// Set the group-leader facility for process metadata BIFs.
+    pub fn set_group_leader_facility(&mut self, facility: Option<Arc<dyn GroupLeaderFacility>>) {
+        self.group_leader_facility = facility;
     }
 
     /// Return the supervision facility, if one has been configured.
@@ -452,6 +470,26 @@ impl<'process> ProcessContext<'process> {
             return Err(Term::atom(crate::atom::Atom::BADARG));
         };
         Ok(process.dict_put(key, value))
+    }
+
+    /// Return the attached process group leader.
+    pub fn group_leader(&self) -> Result<Term, Term> {
+        let Some(process) = self.process.as_ref() else {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        };
+        Ok(process.group_leader())
+    }
+
+    /// Set the attached process group leader when it matches `pid`.
+    pub fn set_attached_group_leader(&mut self, pid: u64, group_leader: Term) -> bool {
+        let Some(process) = self.process.as_deref_mut() else {
+            return false;
+        };
+        if process.pid() != pid {
+            return false;
+        }
+        process.set_group_leader(group_leader);
+        true
     }
 
     /// Fetch a value from the attached process dictionary.

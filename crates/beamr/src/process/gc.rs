@@ -64,7 +64,7 @@ mod tests {
 
         let roots = root_set(&mut process, 2);
 
-        assert_eq!(roots.as_slice(), &[Term::small_int(1), Term::small_int(2)]);
+        assert_eq!(roots.as_slice(), &[Term::small_int(1), Term::small_int(2), process.group_leader()]);
     }
 
     #[test]
@@ -104,6 +104,7 @@ mod tests {
                 Snapshot::Tuple(vec![Snapshot::Int(14)]),
                 Snapshot::Tuple(vec![Snapshot::Int(15)]),
                 Snapshot::Tuple(vec![Snapshot::Int(16)]),
+                Snapshot::Other,
             ]
         );
     }

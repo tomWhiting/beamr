@@ -261,7 +261,7 @@ pub struct Process {
     links: Vec<u64>,
     monitors: Vec<Monitor>,
     trap_exit: bool,
-    group_leader: Option<u64>,
+    group_leader: Term,
     not_send_sync: PhantomData<Rc<()>>,
 }
 
@@ -293,7 +293,7 @@ impl Process {
             links: Vec::new(),
             monitors: Vec::new(),
             trap_exit: false,
-            group_leader: None,
+            group_leader: Self::initial_group_leader(pid),
             not_send_sync: PhantomData,
         }
     }
@@ -302,6 +302,13 @@ impl Process {
     #[must_use]
     pub const fn pid(&self) -> u64 {
         self.pid
+    }
+
+    const fn initial_group_leader(pid: u64) -> Term {
+        match Term::try_pid(pid) {
+            Some(pid_term) => pid_term,
+            None => Term::NIL,
+        }
     }
 
     /// Current lifecycle status.
@@ -464,6 +471,7 @@ impl Process {
                     .iter()
                     .flat_map(|(key, value)| [*key, *value]),
             )
+            .chain(std::iter::once(self.group_leader))
             .collect()
     }
 
@@ -515,6 +523,9 @@ impl Process {
                 *value = root;
             }
             index += 1;
+        }
+        if let Some(root) = roots.get(index).copied() {
+            self.group_leader = root;
         }
     }
 
@@ -784,14 +795,14 @@ impl Process {
         self.trap_exit = trap_exit;
     }
 
-    /// Group leader placeholder PID, when assigned.
+    /// Group leader PID term.
     #[must_use]
-    pub const fn group_leader(&self) -> Option<u64> {
+    pub const fn group_leader(&self) -> Term {
         self.group_leader
     }
 
-    /// Set group leader placeholder PID.
-    pub const fn set_group_leader(&mut self, group_leader: Option<u64>) {
+    /// Set group leader PID term.
+    pub const fn set_group_leader(&mut self, group_leader: Term) {
         self.group_leader = group_leader;
     }
 
@@ -843,7 +854,7 @@ mod tests {
         assert!(process.links().is_empty());
         assert!(process.monitors().is_empty());
         assert!(!process.trap_exit());
-        assert_eq!(process.group_leader(), None);
+        assert_eq!(process.group_leader(), Term::pid(7));
     }
 
     #[test]

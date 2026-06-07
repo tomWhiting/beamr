@@ -126,6 +126,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
                 current_mfa: process.current_mfa(),
                 heap_size: process.heap().total_used(),
                 message_queue_len: process.mailbox().message_count(),
+                group_leader: process.group_leader(),
                 pending_exit_messages: Vec::new(),
                 pending_down_messages: Vec::new(),
             };

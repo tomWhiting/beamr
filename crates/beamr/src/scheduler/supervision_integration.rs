@@ -50,6 +50,50 @@ pub(super) fn propagate_exit(shared: &SharedState, pid: u64, reason: ExitReason)
     }
 }
 
+/// Real `GroupLeaderFacility` backed by the scheduler's shared state.
+pub(super) struct SchedulerGroupLeaderFacility {
+    pub(super) shared: Arc<SharedState>,
+}
+
+impl crate::native::GroupLeaderFacility for SchedulerGroupLeaderFacility {
+    fn set_group_leader(
+        &self,
+        pid: u64,
+        leader: Term,
+    ) -> Result<(), crate::native::group_leader::GroupLeaderError> {
+        let Some(entry) = self.shared.process_bodies.get(&pid) else {
+            return Err(crate::native::group_leader::GroupLeaderError::NoProc);
+        };
+        let mut slot = lock_or_recover(&entry);
+        match &mut *slot {
+            ProcessSlot::Present(ScheduledProcess(process)) => {
+                process.set_group_leader(leader);
+                Ok(())
+            }
+            ProcessSlot::Executing(metadata) => {
+                metadata.group_leader = leader;
+                Ok(())
+            }
+            ProcessSlot::Absent => Err(crate::native::group_leader::GroupLeaderError::NoProc),
+        }
+    }
+
+    fn group_leader(
+        &self,
+        pid: u64,
+    ) -> Result<Term, crate::native::group_leader::GroupLeaderError> {
+        let Some(entry) = self.shared.process_bodies.get(&pid) else {
+            return Err(crate::native::group_leader::GroupLeaderError::NoProc);
+        };
+        let slot = lock_or_recover(&entry);
+        match &*slot {
+            ProcessSlot::Present(ScheduledProcess(process)) => Ok(process.group_leader()),
+            ProcessSlot::Executing(metadata) => Ok(metadata.group_leader),
+            ProcessSlot::Absent => Err(crate::native::group_leader::GroupLeaderError::NoProc),
+        }
+    }
+}
+
 /// Take the link set from an exiting process. The process body may already
 /// have been removed, absent, or executing, so handle each slot explicitly.
 pub(super) fn take_links_from(shared: &SharedState, pid: u64) -> Vec<u64> {
@@ -253,6 +297,10 @@ pub(super) fn build_native_services(
     let link: Arc<dyn crate::native::links::LinkFacility> = Arc::new(SchedulerLinkFacility {
         shared: Arc::clone(shared),
     });
+    let group_leader: Arc<dyn crate::native::GroupLeaderFacility> =
+        Arc::new(SchedulerGroupLeaderFacility {
+            shared: Arc::clone(shared),
+        });
     let supervision: Arc<dyn crate::native::supervision::SupervisionFacility> =
         Arc::new(SchedulerSupervisionFacility {
             shared: Arc::clone(shared),
@@ -274,6 +322,7 @@ pub(super) fn build_native_services(
         timers: Some(Arc::clone(&shared.timers)),
         spawn_facility: Some(spawn),
         link_facility: Some(link),
+        group_leader_facility: Some(group_leader),
         supervision_facility: Some(supervision),
         process_info_facility: Some(process_info),
         io_sink: Some(Arc::clone(&lock_or_recover(&shared.output_sink))),
@@ -337,6 +386,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
         link_to: Option<u64>,
     ) -> Result<u64, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
+        let group_leader = self.caller_group_leader(caller_pid);
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
@@ -361,6 +411,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             instruction_pointer: ip,
             args,
             namespace_id,
+            group_leader,
         });
 
         if let Some(parent_pid) = link_to {
@@ -409,6 +460,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
         link_to: Option<u64>,
     ) -> Result<u64, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
+        let group_leader = self.caller_group_leader(caller_pid);
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let loaded = registry.lookup(module).ok_or(SpawnError::UnresolvedMfa)?;
@@ -433,6 +485,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             instruction_pointer: ip,
             args: Vec::new(),
             namespace_id,
+            group_leader,
         });
 
         if let Some(parent_pid) = link_to {
@@ -476,6 +529,7 @@ impl SchedulerSpawnFacility {
         args: Vec<Term>,
     ) -> Result<SpawnMonitorResult, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
+        let group_leader = self.caller_group_leader(caller_pid);
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
@@ -500,6 +554,7 @@ impl SchedulerSpawnFacility {
             instruction_pointer: ip,
             args,
             namespace_id,
+            group_leader,
         });
 
         Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))
@@ -512,6 +567,7 @@ impl SchedulerSpawnFacility {
         lambda_index: u32,
     ) -> Result<SpawnMonitorResult, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
+        let group_leader = self.caller_group_leader(caller_pid);
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let loaded = registry.lookup(module).ok_or(SpawnError::UnresolvedMfa)?;
@@ -536,6 +592,7 @@ impl SchedulerSpawnFacility {
             instruction_pointer: ip,
             args: Vec::new(),
             namespace_id,
+            group_leader,
         });
 
         Ok(self.register_monitor_insert_and_wake(caller_pid, child_pid, child))
@@ -588,6 +645,21 @@ impl SchedulerSpawnFacility {
             }
         }
         self.namespace_id
+    }
+
+    fn caller_group_leader(&self, caller_pid: u64) -> Term {
+        if let Some(parent_entry) = self.shared.process_bodies.get(&caller_pid) {
+            let parent_slot = lock_or_recover(&parent_entry);
+            match &*parent_slot {
+                ProcessSlot::Present(ScheduledProcess(parent)) => return parent.group_leader(),
+                ProcessSlot::Executing(metadata) => return metadata.group_leader,
+                ProcessSlot::Absent => {}
+            }
+        }
+        match Term::try_pid(caller_pid) {
+            Some(pid_term) => pid_term,
+            None => Term::NIL,
+        }
     }
 }
 

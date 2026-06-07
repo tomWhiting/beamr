@@ -14,6 +14,7 @@ pub mod etf_bifs;
 pub mod exception_bifs;
 pub mod gate3_bifs;
 pub mod gleam_ffi;
+pub mod group_leader;
 pub mod links;
 pub mod meridian_ffi;
 pub mod otp_stubs;
@@ -44,6 +45,7 @@ pub use code_management_bifs::CodeManagementFacility;
 pub use context::{
     ExceptionClass, NativeContinuation, ProcessContext, SuspendRequest, TrampolineRequest,
 };
+pub use group_leader::GroupLeaderFacility;
 pub use links::LinkFacility;
 pub use process_info_bifs::{
     ProcessInfoFacility, ProcessInfoItem, ProcessInfoStatus, ProcessInfoValue, ProcessMonitorInfo,
