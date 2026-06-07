@@ -211,6 +211,13 @@ fn query_process_info(
     pid: u64,
     item: ProcessInfoItem,
 ) -> Result<Option<ProcessInfoValue>, Term> {
+    if item == ProcessInfoItem::Priority
+        && context.pid() == Some(pid)
+        && let Ok(priority) = context.priority()
+    {
+        return Ok(Some(ProcessInfoValue::Priority(priority)));
+    }
+
     let facility = context.process_info_facility().ok_or_else(badarg)?;
     Ok(facility.process_info(pid, item))
 }
@@ -582,6 +589,30 @@ mod tests {
         let mut process = Process::new(0, 128);
         let mut context =
             context_with_facility(Arc::clone(&atom_table), Arc::clone(&facility), &mut process);
+        let priority = atom_table.intern("priority");
+
+        let result = bif_process_info_2(&[Term::pid(pid), Term::atom(priority)], &mut context)
+            .expect("process_info/2 succeeds");
+        let tuple = tuple_elements(result);
+
+        assert_eq!(tuple[0], Term::atom(priority));
+        assert_eq!(tuple[1], Term::atom(atom_table.intern("high")));
+    }
+
+    #[test]
+    fn process_info_2_reports_attached_process_priority_after_process_flag_change() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let facility = Arc::new(MockProcessInfoFacility::default());
+        let pid = 21;
+        facility.insert(
+            pid,
+            ProcessInfoItem::Priority,
+            ProcessInfoValue::Priority(Priority::Normal),
+        );
+        let mut process = Process::new(pid, 128);
+        let mut context =
+            context_with_facility(Arc::clone(&atom_table), Arc::clone(&facility), &mut process);
+        context.set_priority(Priority::High).expect("set priority");
         let priority = atom_table.intern("priority");
 
         let result = bif_process_info_2(&[Term::pid(pid), Term::atom(priority)], &mut context)
