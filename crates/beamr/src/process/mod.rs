@@ -183,6 +183,11 @@ pub enum ProcessError {
         /// Requested next status.
         to: ProcessStatus,
     },
+    /// The requested float register index is outside BEAM's fr0-fr15 range.
+    InvalidFloatRegister {
+        /// Requested float register index.
+        index: u16,
+    },
 }
 
 impl fmt::Display for ProcessError {
@@ -193,6 +198,9 @@ impl fmt::Display for ProcessError {
                     f,
                     "invalid process status transition from {from:?} to {to:?}"
                 )
+            }
+            Self::InvalidFloatRegister { index } => {
+                write!(f, "invalid float register index {index}")
             }
         }
     }
@@ -230,6 +238,7 @@ pub struct Process {
     receive_timeout: Option<ReceiveTimeout>,
     receive_timer_ref: Option<u64>,
     x_regs: [Term; 1024],
+    float_regs: [f64; 16],
     native_continuation: Option<NativeContinuation>,
     reduction_counter: u32,
     namespace_id: NamespaceId,
@@ -259,6 +268,7 @@ impl Process {
             receive_timeout: None,
             receive_timer_ref: None,
             x_regs: [Term::NIL; 1024],
+            float_regs: [0.0; 16],
             native_continuation: None,
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
             namespace_id: NamespaceId::DEFAULT,
@@ -472,6 +482,24 @@ impl Process {
         self.x_regs[usize::from(n)] = value;
     }
 
+    /// Read float register `index`.
+    pub fn get_float_reg(&self, index: u16) -> Result<f64, ProcessError> {
+        self.float_regs
+            .get(usize::from(index))
+            .copied()
+            .ok_or(ProcessError::InvalidFloatRegister { index })
+    }
+
+    /// Write float register `index`.
+    pub fn set_float_reg(&mut self, index: u16, value: f64) -> Result<(), ProcessError> {
+        let register = self
+            .float_regs
+            .get_mut(usize::from(index))
+            .ok_or(ProcessError::InvalidFloatRegister { index })?;
+        *register = value;
+        Ok(())
+    }
+
     /// Read all X registers.
     #[must_use]
     pub const fn x_regs(&self) -> &[Term; 1024] {
@@ -666,6 +694,7 @@ impl Process {
         self.receive_timeout = None;
         self.receive_timer_ref = None;
         self.x_regs = [Term::NIL; 1024];
+        self.float_regs = [0.0; 16];
         self.reduction_counter = 0;
         self.code_position = None;
         self.current_module = None;
@@ -774,6 +803,44 @@ mod tests {
         assert_eq!(process.x_reg(0), Term::small_int(10));
         assert_eq!(process.x_reg(255), Term::small_int(20));
         assert_eq!(process.x_reg(1), Term::NIL);
+    }
+
+    #[test]
+    fn float_registers_start_at_zero_and_are_independent() {
+        let mut process = Process::new(0, 233);
+
+        assert_eq!(process.get_float_reg(0), Ok(0.0));
+        assert_eq!(process.get_float_reg(15), Ok(0.0));
+        process.set_x_reg(0, Term::small_int(314));
+        assert_eq!(process.set_float_reg(0, 3.14), Ok(()));
+
+        assert_eq!(process.get_float_reg(0), Ok(3.14));
+        assert_eq!(process.get_float_reg(1), Ok(0.0));
+        assert_eq!(process.x_reg(0), Term::small_int(314));
+    }
+
+    #[test]
+    fn float_register_bounds_return_errors() {
+        let mut process = Process::new(0, 233);
+
+        assert_eq!(
+            process.get_float_reg(16),
+            Err(ProcessError::InvalidFloatRegister { index: 16 })
+        );
+        assert_eq!(
+            process.set_float_reg(16, 1.0),
+            Err(ProcessError::InvalidFloatRegister { index: 16 })
+        );
+    }
+
+    #[test]
+    fn terminate_clears_float_registers() {
+        let mut process = Process::new(0, 233);
+        assert_eq!(process.set_float_reg(0, 3.14), Ok(()));
+
+        process.terminate(ExitReason::Normal);
+
+        assert_eq!(process.get_float_reg(0), Ok(0.0));
     }
 
     #[test]

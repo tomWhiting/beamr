@@ -111,6 +111,10 @@ fn validate_operand(
                 None => Ok(()),
             }
         }
+        Operand::FloatRegister(index) if *index >= 16 => Err(validation_error(
+            instruction_index,
+            format!("float register index {index} is out of range"),
+        )),
         Operand::List(operands) => {
             for nested in operands {
                 validate_operand(instruction_index, nested, current_frame_size)?;
@@ -178,6 +182,11 @@ fn validate_control_flow(
         }
         Instruction::TypeTest { fail, .. }
         | Instruction::Comparison { fail, .. }
+        | Instruction::Fadd { fail, .. }
+        | Instruction::Fsub { fail, .. }
+        | Instruction::Fmul { fail, .. }
+        | Instruction::Fdiv { fail, .. }
+        | Instruction::Fnegate { fail, .. }
         | Instruction::TestArity { fail, .. }
         | Instruction::IsTaggedTuple { fail, .. }
         | Instruction::SelectVal { fail, .. }
@@ -325,6 +334,34 @@ fn instruction_operands(instruction: &Instruction) -> Vec<&Operand> {
             source,
             destination,
         } => vec![source, destination],
+        Instruction::Fmove { source, dest } | Instruction::Fconv { source, dest } => {
+            vec![source, dest]
+        }
+        Instruction::Fadd {
+            fail,
+            left,
+            right,
+            dest,
+        }
+        | Instruction::Fsub {
+            fail,
+            left,
+            right,
+            dest,
+        }
+        | Instruction::Fmul {
+            fail,
+            left,
+            right,
+            dest,
+        }
+        | Instruction::Fdiv {
+            fail,
+            left,
+            right,
+            dest,
+        } => vec![fail, left, right, dest],
+        Instruction::Fnegate { fail, source, dest } => vec![fail, source, dest],
         Instruction::Call { arity, label } | Instruction::CallOnly { arity, label } => {
             vec![arity, label]
         }

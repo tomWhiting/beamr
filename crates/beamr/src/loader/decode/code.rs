@@ -240,40 +240,42 @@ fn decode_instruction(
             arity: operands[0].clone(),
             import: operands[1].clone(),
         },
-        96 => Instruction::Generic {
-            opcode,
-            name: "fmove",
-            operands,
+        96 => Instruction::Fmove {
+            source: operands[0].clone(),
+            dest: operands[1].clone(),
         },
-        97 => Instruction::Generic {
-            opcode,
-            name: "fconv",
-            operands,
+        97 => Instruction::Fconv {
+            source: operands[0].clone(),
+            dest: operands[1].clone(),
         },
-        98 => Instruction::Generic {
-            opcode,
-            name: "fadd",
-            operands,
+        98 => Instruction::Fadd {
+            fail: operands[0].clone(),
+            left: operands[1].clone(),
+            right: operands[2].clone(),
+            dest: operands[3].clone(),
         },
-        99 => Instruction::Generic {
-            opcode,
-            name: "fsub",
-            operands,
+        99 => Instruction::Fsub {
+            fail: operands[0].clone(),
+            left: operands[1].clone(),
+            right: operands[2].clone(),
+            dest: operands[3].clone(),
         },
-        100 => Instruction::Generic {
-            opcode,
-            name: "fmul",
-            operands,
+        100 => Instruction::Fmul {
+            fail: operands[0].clone(),
+            left: operands[1].clone(),
+            right: operands[2].clone(),
+            dest: operands[3].clone(),
         },
-        101 => Instruction::Generic {
-            opcode,
-            name: "fdiv",
-            operands,
+        101 => Instruction::Fdiv {
+            fail: operands[0].clone(),
+            left: operands[1].clone(),
+            right: operands[2].clone(),
+            dest: operands[3].clone(),
         },
-        102 => Instruction::Generic {
-            opcode,
-            name: "fnegate",
-            operands,
+        102 => Instruction::Fnegate {
+            fail: operands[0].clone(),
+            source: operands[1].clone(),
+            dest: operands[2].clone(),
         },
         103 => Instruction::MakeFun { operands },
         104 => Instruction::Try {
@@ -487,6 +489,67 @@ mod tests {
                 head: Operand::X(1),
                 tail: Operand::X(2),
             }]
+        );
+    }
+
+    #[test]
+    fn float_opcodes_decode_to_dedicated_variants() {
+        let instructions = decode_instructions(
+            &[
+                96, 0x03, 0x27, 0x00, // fmove X0 fr0
+                97, 0x13, 0x27, 0x10, // fconv X1 fr1
+                98, 0x75, 0x27, 0x00, 0x27, 0x10, 0x27, 0x20, // fadd fail fr0 fr1 fr2
+                99, 0x75, 0x27, 0x00, 0x27, 0x10, 0x27, 0x20, // fsub
+                100, 0x75, 0x27, 0x00, 0x27, 0x10, 0x27, 0x20, // fmul
+                101, 0x75, 0x27, 0x00, 0x27, 0x10, 0x27, 0x20, // fdiv
+                102, 0x75, 0x27, 0x00, 0x27, 0x10, // fnegate fail fr0 fr1
+            ],
+            &[],
+            &[],
+        )
+        .expect("decode float opcodes");
+
+        assert_eq!(
+            instructions,
+            vec![
+                Instruction::Fmove {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fconv {
+                    source: Operand::X(1),
+                    dest: Operand::FloatRegister(1),
+                },
+                Instruction::Fadd {
+                    fail: Operand::Label(7),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fsub {
+                    fail: Operand::Label(7),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fmul {
+                    fail: Operand::Label(7),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fdiv {
+                    fail: Operand::Label(7),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fnegate {
+                    fail: Operand::Label(7),
+                    source: Operand::FloatRegister(0),
+                    dest: Operand::FloatRegister(1),
+                },
+            ]
         );
     }
 
