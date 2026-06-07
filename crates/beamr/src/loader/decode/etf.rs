@@ -31,12 +31,12 @@ pub(super) fn decode_external_term(
         100 | 118 => {
             let len = usize::from(cursor.read_u16()?);
             let bytes = cursor.read_bytes(len)?;
-            decode_atom_literal(bytes, atom_table)
+            decode_atom_literal(bytes, atom_table, budget)
         }
         119 => {
             let len = usize::from(cursor.read_u8()?);
             let bytes = cursor.read_bytes(len)?;
-            decode_atom_literal(bytes, atom_table)
+            decode_atom_literal(bytes, atom_table, budget)
         }
         104 => {
             let arity = usize::from(cursor.read_u8()?);
@@ -122,10 +122,21 @@ pub(super) fn decode_external_term(
     }
 }
 
-fn decode_atom_literal(bytes: &[u8], atom_table: &AtomTable) -> Result<Literal, LoadError> {
+fn decode_atom_literal(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    budget: &mut DecodeBudget,
+) -> Result<Literal, LoadError> {
     let name = std::str::from_utf8(bytes)
         .map_err(|_| LoadError::DecodeError("ETF atom is not valid UTF-8".into()))?;
-    Ok(Literal::Atom(atom_table.intern(name)))
+    let atom = match atom_table.lookup(name) {
+        Some(atom) => atom,
+        None => {
+            budget.charge_atom()?;
+            atom_table.intern(name)
+        }
+    };
+    Ok(Literal::Atom(atom))
 }
 
 fn decode_tuple(
@@ -203,8 +214,16 @@ mod tests {
 
     fn decode_with_budget(bytes: &[u8], budget: &mut DecodeBudget) -> Result<Literal, LoadError> {
         let atoms = AtomTable::with_common_atoms();
+        decode_with_atom_table(bytes, &atoms, budget)
+    }
+
+    fn decode_with_atom_table(
+        bytes: &[u8],
+        atoms: &AtomTable,
+        budget: &mut DecodeBudget,
+    ) -> Result<Literal, LoadError> {
         let mut cursor = BoundedCursor::new(bytes);
-        decode_external_term(&mut cursor, &atoms, budget)
+        decode_external_term(&mut cursor, atoms, budget)
     }
 
     /// Build a term that nests single-element lists `levels` deep, terminated
@@ -305,5 +324,27 @@ mod tests {
             }
             other => panic!("expected nesting DecodeError, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn literal_atom_ext_charges_atom_budget_only_for_new_atoms() {
+        let atoms = AtomTable::with_common_atoms();
+        let mut new_atom_bytes = vec![119u8, 1, b'x'];
+        let mut budget = DecodeBudget::new(16, 16, 4096, 0);
+        match decode_with_atom_table(&new_atom_bytes, &atoms, &mut budget) {
+            Err(LoadError::DecodeError(message)) => assert!(
+                message.contains("atom budget"),
+                "unexpected error: {message}"
+            ),
+            other => panic!("expected atom-budget DecodeError, got {other:?}"),
+        }
+
+        new_atom_bytes.clear();
+        new_atom_bytes.extend_from_slice(&[119u8, 2, b'o', b'k']);
+        let mut budget = DecodeBudget::new(16, 16, 4096, 0);
+        assert_eq!(
+            decode_with_atom_table(&new_atom_bytes, &atoms, &mut budget),
+            Ok(Literal::Atom(atoms.lookup("ok").expect("common ok atom")))
+        );
     }
 }
