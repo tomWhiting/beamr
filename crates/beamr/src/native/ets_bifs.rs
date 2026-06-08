@@ -660,9 +660,11 @@ mod tests {
     use super::{
         bif_delete_1, bif_delete_2, bif_first, bif_foldl, bif_info_2, bif_insert, bif_last,
         bif_lookup, bif_member, bif_new, bif_next, bif_prev, bif_tab2list, register_ets_bifs,
+        resume_ets_foldl,
     };
     use crate::atom::{Atom, AtomTable};
     use crate::ets::EtsRegistry;
+    use crate::native::stdlib_stubs::maps_bifs::ContinuationStep;
     use crate::native::{BifRegistryImpl, NativeContinuation, ProcessContext};
     use crate::process::Process;
     use crate::term::Term;
@@ -843,6 +845,49 @@ mod tests {
     }
 
     #[test]
+    fn tab2list_empty_table_returns_nil_and_ordered_set_is_key_sorted() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let ordered_set = atom_table.intern("ordered_set");
+        let mut process = Process::new(1, 512);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("tab2list_ordered_tab"),
+            &[ordered_set, public],
+        );
+
+        assert_eq!(bif_tab2list(&[tab], &mut context), Ok(Term::NIL));
+
+        for (key, value) in [(3, 30), (1, 10), (2, 20)] {
+            let row = tuple(
+                &mut context,
+                &[Term::small_int(key), Term::small_int(value)],
+            );
+            assert_eq!(
+                bif_insert(&[tab, row], &mut context),
+                Ok(Term::atom(Atom::TRUE))
+            );
+        }
+
+        let result = bif_tab2list(&[tab], &mut context).expect("tab2list");
+        let keys = list_terms(result)
+            .into_iter()
+            .map(|row| {
+                Tuple::new(row)
+                    .and_then(|tuple| tuple.get(0))
+                    .expect("tuple key")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![Term::small_int(1), Term::small_int(2), Term::small_int(3)]
+        );
+    }
+
+    #[test]
     fn foldl_queues_continuation_over_table_entries() {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let registry = Arc::new(EtsRegistry::new());
@@ -878,6 +923,94 @@ mod tests {
             trampoline.continuation,
             Some(NativeContinuation::EtsFoldl(_))
         ));
+    }
+
+    #[test]
+    fn foldl_empty_table_returns_accumulator_and_rejects_wrong_fun_arity() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let set = atom_table.intern("set");
+        let mut process = Process::new(1, 256);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("foldl_empty_tab"),
+            &[set, public],
+        );
+        let mut unary_closure_heap = [0_u64; 7];
+        let unary_fun =
+            write_closure(&mut unary_closure_heap, Atom::OK, 0, 1, 1, 0, &[]).expect("closure");
+        let mut binary_closure_heap = [0_u64; 7];
+        let binary_fun =
+            write_closure(&mut binary_closure_heap, Atom::OK, 0, 2, 1, 0, &[]).expect("closure");
+
+        assert_eq!(
+            bif_foldl(&[binary_fun, Term::small_int(42), tab], &mut context),
+            Ok(Term::small_int(42))
+        );
+        assert!(context.take_trampoline().is_none());
+        assert_eq!(
+            bif_foldl(&[unary_fun, Term::small_int(0), tab], &mut context),
+            Err(Term::atom(Atom::BADARITY))
+        );
+    }
+
+    #[test]
+    fn foldl_resume_passes_element_and_accumulator_until_done() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let ordered_set = atom_table.intern("ordered_set");
+        let mut process = Process::new(1, 512);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("foldl_resume_tab"),
+            &[ordered_set, public],
+        );
+        let first = tuple(&mut context, &[Term::small_int(1), Term::small_int(10)]);
+        let second = tuple(&mut context, &[Term::small_int(2), Term::small_int(20)]);
+        let objects = context.alloc_list(&[second, first]).expect("tuple list");
+        let mut closure_heap = [0_u64; 7];
+        let fun = write_closure(&mut closure_heap, Atom::OK, 0, 2, 1, 0, &[]).expect("closure");
+
+        assert_eq!(
+            bif_insert(&[tab, objects], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(
+            bif_foldl(&[fun, Term::small_int(0), tab], &mut context),
+            Ok(Term::NIL)
+        );
+        let trampoline = context.take_trampoline().expect("foldl trampoline");
+        assert_eq!(trampoline.args, vec![first, Term::small_int(0)]);
+        let Some(NativeContinuation::EtsFoldl(state)) = trampoline.continuation else {
+            panic!("expected foldl continuation");
+        };
+
+        let step = resume_ets_foldl(state, Term::small_int(10)).expect("resume step");
+        let ContinuationStep::Call {
+            fun: step_fun,
+            args,
+            continuation,
+        } = step
+        else {
+            panic!("expected second foldl call");
+        };
+        assert_eq!(step_fun, fun);
+        assert_eq!(args, vec![second, Term::small_int(10)]);
+
+        let NativeContinuation::EtsFoldl(state) = continuation else {
+            panic!("expected foldl continuation");
+        };
+        let final_step = resume_ets_foldl(state, Term::small_int(30)).expect("final resume");
+        let ContinuationStep::Done(result) = final_step else {
+            panic!("expected foldl completion");
+        };
+        assert_eq!(result, Term::small_int(30));
     }
 
     #[test]
@@ -920,6 +1053,65 @@ mod tests {
         assert_eq!(
             bif_prev(&[tab, Term::small_int(3)], &mut context),
             Ok(Term::small_int(2))
+        );
+        assert_eq!(
+            bif_next(&[tab, Term::small_int(0)], &mut context),
+            Ok(Term::small_int(1))
+        );
+        assert_eq!(
+            bif_next(&[tab, Term::small_int(4)], &mut context),
+            Ok(Term::atom(end_of_table))
+        );
+        assert_eq!(
+            bif_prev(&[tab, Term::small_int(4)], &mut context),
+            Ok(Term::small_int(3))
+        );
+        assert_eq!(
+            bif_prev(&[tab, Term::small_int(1)], &mut context),
+            Ok(Term::atom(end_of_table))
+        );
+    }
+
+    #[test]
+    fn set_cursor_traversal_visits_all_keys_once_and_empty_tables_end() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let set = atom_table.intern("set");
+        let end_of_table = atom_table.intern("$end_of_table");
+        let mut process = Process::new(1, 512);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("set_cursor_tab"),
+            &[set, public],
+        );
+
+        assert_eq!(
+            bif_first(&[tab], &mut context),
+            Ok(Term::atom(end_of_table))
+        );
+        assert_eq!(bif_last(&[tab], &mut context), Ok(Term::atom(end_of_table)));
+
+        for key in [Term::small_int(2), Term::small_int(1), Term::small_int(3)] {
+            let row = tuple(&mut context, &[key, key]);
+            assert_eq!(
+                bif_insert(&[tab, row], &mut context),
+                Ok(Term::atom(Atom::TRUE))
+            );
+        }
+
+        let mut visited = Vec::new();
+        let mut cursor = bif_first(&[tab], &mut context).expect("first key");
+        while cursor != Term::atom(end_of_table) {
+            visited.push(cursor);
+            cursor = bif_next(&[tab, cursor], &mut context).expect("next key");
+        }
+        visited.sort();
+        assert_eq!(
+            visited,
+            vec![Term::small_int(1), Term::small_int(2), Term::small_int(3)]
         );
     }
 
