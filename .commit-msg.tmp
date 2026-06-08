@@ -1,1 +1,1 @@
-feat(distribution): add per-connection atom cache codec
+review: harden distribution atom cache header limits

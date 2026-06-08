@@ -184,6 +184,10 @@ impl AtomCacheHeader {
         });
     }
 
+    fn can_encode_another_entry(&self) -> bool {
+        self.entries.len() < usize::from(u8::MAX)
+    }
+
     fn len(&self) -> usize {
         self.entries.len()
     }
@@ -233,9 +237,15 @@ pub fn encode_atom_reference(
     let index = if let Some(index) = cache.lookup_by_atom(atom) {
         index
     } else {
+        if !header.can_encode_another_entry() {
+            return Err(AtomCacheEncodeError::TooManyHeaderEntries);
+        }
         let name = atom_table
             .resolve(atom)
             .ok_or(AtomCacheEncodeError::AtomResolveFailed)?;
+        if name.len() > usize::from(u16::MAX) {
+            return Err(AtomCacheEncodeError::AtomNameTooLong);
+        }
         let index = cache.insert(atom);
         header.push(index, name);
         index
@@ -503,6 +513,34 @@ mod tests {
         assert_eq!(first_header.entries().len(), 1);
         assert!(second_header.entries().is_empty());
         assert_eq!(second_payload, vec![ATOM_CACHE_REF, 0]);
+    }
+
+    #[test]
+    fn too_many_new_atoms_fails_without_partial_payload_or_cache_insert() {
+        let table = AtomTable::new();
+        let atoms: Vec<_> = atom_names(usize::from(u8::MAX) + 1)
+            .iter()
+            .map(|name| table.intern(name))
+            .collect();
+        let mut cache = AtomCache::new();
+        let mut header = AtomCacheHeader::new();
+        let mut payload = Vec::new();
+
+        for atom in atoms.iter().take(usize::from(u8::MAX)).copied() {
+            assert!(
+                encode_atom_reference(atom, &mut cache, &table, &mut header, &mut payload).is_ok()
+            );
+        }
+
+        let payload_len = payload.len();
+        let uncached_atom = atoms[usize::from(u8::MAX)];
+        assert_eq!(
+            encode_atom_reference(uncached_atom, &mut cache, &table, &mut header, &mut payload),
+            Err(super::AtomCacheEncodeError::TooManyHeaderEntries)
+        );
+        assert_eq!(payload.len(), payload_len);
+        assert_eq!(header.entries().len(), usize::from(u8::MAX));
+        assert_eq!(cache.lookup_by_atom(uncached_atom), None);
     }
 
     #[test]
