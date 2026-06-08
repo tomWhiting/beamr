@@ -256,6 +256,7 @@ fn make_shared_state() -> Arc<SharedState> {
             Arc::from(crate::io::create_ring(RingConfig::default())),
             &crate::atom::AtomTable::new(),
         ),
+        local_node: crate::distribution::Node::new(crate::atom::Atom::new(0), 0),
     })
 }
 

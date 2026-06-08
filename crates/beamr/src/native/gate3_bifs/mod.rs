@@ -20,8 +20,6 @@ use crate::native::{
 use crate::term::Term;
 use crate::term::binary::Binary;
 use crate::term::boxed::{Cons, Float, Tuple};
-
-use crate::term::boxed::{Cons, Tuple};
 use crate::term::pid_ref::PidRef;
 use crate::term::reference_ref::ReferenceRef;
 

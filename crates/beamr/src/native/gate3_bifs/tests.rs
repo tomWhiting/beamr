@@ -12,10 +12,9 @@ use crate::process::ExitReason;
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary;
-use crate::term::boxed::{Float, write_closure, write_cons, write_float, write_tuple};
-
 use crate::term::boxed::{
-    write_closure, write_external_pid, write_external_reference, write_tuple,
+    Float, write_closure, write_cons, write_external_pid, write_external_reference, write_float,
+    write_tuple,
 };
 use crate::term::reference_ref::ReferenceRef;
 
