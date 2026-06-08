@@ -1,1 +1,1 @@
-Harden ETS named-table creation and lookup path
+feat(beamr): add ETS iteration and fold BIFs

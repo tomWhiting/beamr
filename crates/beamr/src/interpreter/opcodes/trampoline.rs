@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::module::Module;
+use crate::native::ets_bifs::resume_ets_foldl;
 use crate::native::select::MailboxSnapshot;
 use crate::native::stdlib_stubs::lists_bifs::resume_lists_map;
 use crate::native::stdlib_stubs::maps_bifs::{ContinuationStep, resume_maps_continuation};
@@ -136,6 +137,7 @@ pub fn handle_native_continuation(
         NativeContinuation::ListsMap(state) => {
             resume_lists_map(state, closure_result, &mut context)
         }
+        NativeContinuation::EtsFoldl(state) => resume_ets_foldl(state, closure_result),
         NativeContinuation::GleamResultTry => Ok(ContinuationStep::Done(closure_result)),
     }
     .map_err(|_| ExecError::Badarg)?;

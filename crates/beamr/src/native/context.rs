@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::atom::AtomTable;
 use crate::io::{IoSink, NullSink};
+use crate::native::ets_bifs::EtsFoldlState;
 use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
 use crate::process::{Priority, Process};
 use crate::term::Term;
@@ -57,6 +58,8 @@ pub enum NativeContinuation {
     Maps(MapsHofState),
     /// Continuation for lists:map/2.
     ListsMap(ListsMapState),
+    /// Continuation for ets:foldl/3.
+    EtsFoldl(EtsFoldlState),
     /// Continuation for Gleam result.try/2 compatibility.
     GleamResultTry,
 }
