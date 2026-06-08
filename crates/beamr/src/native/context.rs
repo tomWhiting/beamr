@@ -26,6 +26,7 @@ use crate::timer::{TimerRef, TimerWheel};
 use super::code_management_bifs::CodeManagementFacility;
 use super::ets_bifs::EtsFacility;
 use super::group_leader::GroupLeaderFacility;
+use super::io_message::IoMessageFacility;
 use super::links::LinkFacility;
 use super::process_info_bifs::ProcessInfoFacility;
 use super::registry::RegistryFacility;
@@ -186,6 +187,7 @@ pub struct ProcessContext<'process> {
     system_info_facility: Option<Arc<dyn SystemInfoFacility>>,
     ets_facility: Option<Arc<dyn EtsFacility>>,
     io_facility: Option<Arc<dyn IoFacility>>,
+    io_message_facility: Option<Arc<dyn IoMessageFacility>>,
     file_io_facility: Option<Arc<dyn FileIoFacility>>,
     io_sink: Arc<dyn IoSink>,
     exception_class: ExceptionClass,
@@ -239,6 +241,10 @@ impl fmt::Debug for ProcessContext<'_> {
             .field("ets_facility", &self.ets_facility.as_ref().map(|_| ".."))
             .field("io_facility", &self.io_facility.as_ref().map(|_| ".."))
             .field(
+                "io_message_facility",
+                &self.io_message_facility.as_ref().map(|_| ".."),
+            )
+            .field(
                 "file_io_facility",
                 &self.file_io_facility.as_ref().map(|_| ".."),
             )
@@ -279,6 +285,7 @@ impl<'process> ProcessContext<'process> {
             system_info_facility: None,
             ets_facility: None,
             io_facility: None,
+            io_message_facility: None,
             file_io_facility: None,
             io_sink: Arc::new(NullSink),
             exception_class: ExceptionClass::Error,
@@ -309,6 +316,7 @@ impl<'process> ProcessContext<'process> {
             system_info_facility: None,
             ets_facility: None,
             io_facility: None,
+            io_message_facility: None,
             file_io_facility: None,
             io_sink: Arc::new(NullSink),
             exception_class: ExceptionClass::Error,
@@ -620,6 +628,19 @@ impl<'process> ProcessContext<'process> {
     /// Set the async I/O facility for I/O BIFs.
     pub fn set_io_facility(&mut self, facility: Option<Arc<dyn IoFacility>>) {
         self.io_facility = facility;
+    }
+
+    // --- IO message facility ---
+
+    /// Return the IO message facility, if one has been configured.
+    #[must_use]
+    pub fn io_message_facility(&self) -> Option<&dyn IoMessageFacility> {
+        self.io_message_facility.as_deref()
+    }
+
+    /// Set the IO message facility for group-leader protocol BIFs.
+    pub fn set_io_message_facility(&mut self, facility: Option<Arc<dyn IoMessageFacility>>) {
+        self.io_message_facility = facility;
     }
 
     /// Submit an I/O operation for the attached pid and request suspension.

@@ -248,6 +248,12 @@ fn make_shared_state() -> Arc<SharedState> {
         file_io_orphans: DashMap::new(),
         file_io_results: DashMap::new(),
         file_io_canceled: DashSet::new(),
+        standard_io_pid: u64::MAX,
+        standard_io_server: crate::io::StandardIoServer::new(
+            u64::MAX,
+            Arc::from(crate::io::create_ring(RingConfig::default())),
+            &crate::atom::AtomTable::new(),
+        ),
     })
 }
 

@@ -15,6 +15,7 @@ use crate::module::{Module, ModuleRegistry};
 use crate::native::code_management_bifs::CodeManagementFacility;
 use crate::native::ets_bifs::EtsFacility;
 use crate::native::group_leader::GroupLeaderFacility;
+use crate::native::io_message::IoMessageFacility;
 use crate::native::links::LinkFacility;
 use crate::native::process_info_bifs::ProcessInfoFacility;
 use crate::native::spawn::SpawnFacility;
@@ -52,6 +53,8 @@ pub struct NativeServices {
     pub ets_facility: Option<Arc<dyn EtsFacility>>,
     /// Async I/O facility for process-side ring submissions.
     pub io_facility: Option<Arc<dyn IoFacility>>,
+    /// IO message facility for group-leader protocol BIFs.
+    pub io_message_facility: Option<Arc<dyn IoMessageFacility>>,
     /// Completion-ring backed facility for file BIFs.
     pub file_io_facility: Option<Arc<dyn FileIoFacility>>,
 }
@@ -119,6 +122,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         system_info_facility: None,
         ets_facility: None,
         io_facility: None,
+        io_message_facility: None,
         file_io_facility: None,
     };
     run_loop(process, module, None, &empty)
@@ -143,6 +147,7 @@ pub fn run_with_registry(
         system_info_facility: None,
         ets_facility: None,
         io_facility: None,
+        io_message_facility: None,
         file_io_facility: None,
     };
     run_loop(process, initial_module, Some(registry), &empty)
@@ -167,6 +172,7 @@ pub fn run_with_timer_services(
         system_info_facility: None,
         ets_facility: None,
         io_facility: None,
+        io_message_facility: None,
         file_io_facility: None,
     };
     run_loop(process, initial_module, None, &services)

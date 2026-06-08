@@ -145,19 +145,20 @@ fn shared_state_metric_accessors_report_scheduler_process_and_atom_counts() {
 
     assert_eq!(scheduler.scheduler_count(), 2);
     assert_eq!(scheduler.thread_count(), scheduler.scheduler_count());
-    assert_eq!(scheduler.process_count(), 0);
+    // Standard IO server is pre-registered as process 0.
+    assert_eq!(scheduler.process_count(), 1);
     assert_eq!(scheduler.atom_count(), atom_table.len());
     assert_eq!(scheduler.atom_limit(), atom_table.limit());
 
     let pid = scheduler
         .shared
-        .spawn_counter
-        .fetch_add(1, Ordering::Relaxed) as u64;
+        .next_pid
+        .fetch_add(1, Ordering::Relaxed);
     scheduler.process_table().spawn_with_pid(pid);
-    assert_eq!(scheduler.process_count(), 1);
+    assert_eq!(scheduler.process_count(), 2);
     let removed = scheduler.process_table().remove(pid);
     assert!(removed.is_some());
-    assert_eq!(scheduler.process_count(), 0);
+    assert_eq!(scheduler.process_count(), 1);
 
     scheduler.shutdown();
 }
@@ -433,6 +434,12 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         file_io_orphans: DashMap::new(),
         file_io_results: DashMap::new(),
         file_io_canceled: DashSet::new(),
+        standard_io_pid: u64::MAX,
+        standard_io_server: crate::io::StandardIoServer::new(
+            u64::MAX,
+            Arc::from(crate::io::create_ring(RingConfig::default())),
+            &crate::atom::AtomTable::new(),
+        ),
     });
     let mut process = Process::new(1, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
@@ -703,6 +710,12 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         file_io_orphans: DashMap::new(),
         file_io_results: DashMap::new(),
         file_io_canceled: DashSet::new(),
+        standard_io_pid: u64::MAX,
+        standard_io_server: crate::io::StandardIoServer::new(
+            u64::MAX,
+            Arc::from(crate::io::create_ring(RingConfig::default())),
+            &crate::atom::AtomTable::new(),
+        ),
     });
     let pid = 1;
     shared.process_table.spawn_with_pid(pid);

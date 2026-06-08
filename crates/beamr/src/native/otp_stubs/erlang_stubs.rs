@@ -76,14 +76,6 @@ pub fn bif_os_type(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     context.alloc_tuple(&[Term::atom(unix), Term::atom(darwin)])
 }
 
-/// `io:get_line/1` -- stub returning an empty binary.
-pub fn bif_io_get_line(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let [_prompt] = args else {
-        return Err(badarg());
-    };
-    context.alloc_binary(b"")
-}
-
 /// `code:priv_dir/1` -- stub returning `{error, bad_name}`.
 pub fn bif_code_priv_dir(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [_app] = args else {

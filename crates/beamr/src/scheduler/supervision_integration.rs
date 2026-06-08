@@ -11,6 +11,7 @@ use crate::ets::{EtsError, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::io::{CompletionRing, IoOp};
 use crate::namespace::NamespaceId;
 use crate::native::ets_bifs::EtsFacility;
+use crate::native::io_message::IoMessageFacility;
 use crate::native::links::{LinkError, LinkFacility};
 use crate::native::spawn::{
     SpawnError, SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult,
@@ -406,11 +407,41 @@ pub(super) fn build_native_services(
         code_management_facility: Some(code_management),
         system_info_facility: Some(system_info),
         io_facility: shared.io_facility.clone(),
+        io_message_facility: Some(Arc::new(SchedulerIoMessageFacility {
+            shared: Arc::clone(shared),
+        })),
         file_io_facility: Some(file_io_facility),
     }
 }
 
 // ── Facility implementations ────────────────────────────────────────────────
+
+struct SchedulerIoMessageFacility {
+    shared: Arc<SharedState>,
+}
+
+impl IoMessageFacility for SchedulerIoMessageFacility {
+    fn send_message(&self, sender_pid: u64, target_pid: u64, message: Term) -> bool {
+        let _ = sender_pid;
+        let Some(entry) = self.shared.process_bodies.get(&target_pid) else {
+            return false;
+        };
+        let mut slot = lock_or_recover(&entry);
+        match &mut *slot {
+            ProcessSlot::Present(process) => {
+                process.0.mailbox_mut().push_owned(message);
+            }
+            ProcessSlot::Executing(metadata) => {
+                metadata.pending_io_messages.push(message);
+            }
+            ProcessSlot::Absent => return false,
+        }
+        drop(slot);
+        drop(entry);
+        wake_process(&self.shared, target_pid);
+        true
+    }
+}
 
 struct SchedulerFileIoFacility {
     shared: Arc<SharedState>,

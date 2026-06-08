@@ -17,7 +17,7 @@ use crate::native::{
 use crate::term::Term;
 
 use erlang_stubs::{
-    bif_code_priv_dir, bif_connect_node, bif_ensure_all_started, bif_io_get_line, bif_os_getenv_0,
+    bif_code_priv_dir, bif_connect_node, bif_ensure_all_started, bif_os_getenv_0,
     bif_os_getenv_1, bif_os_putenv, bif_os_type, bif_os_unsetenv, bif_string_split,
 };
 use gleam_stubs::{
@@ -123,8 +123,6 @@ const OTP_STUBS: &[OtpBif] = &[
     ("os", "putenv", 2, Capability::ExternalIo, bif_os_putenv),
     ("os", "unsetenv", 1, Capability::ExternalIo, bif_os_unsetenv),
     ("os", "type", 0, Capability::ExternalIo, bif_os_type),
-    // io
-    ("io", "get_line", 1, Capability::ExternalIo, bif_io_get_line),
     // code
     (
         "code",

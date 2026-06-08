@@ -59,7 +59,8 @@ use gleam_stdlib_ffi2::{
     bif_wrap_list,
 };
 use io_bifs::{
-    bif_io_format_3, bif_io_lib_format_2, bif_io_put_chars_1, bif_io_put_chars_2, bif_io_setopts_2,
+    bif_io_format_2, bif_io_format_3, bif_io_get_line_1, bif_io_lib_format_2,
+    bif_io_put_chars_1, bif_io_put_chars_2, bif_io_setopts_2,
 };
 use lists_bifs::{
     bif_lists_append_1, bif_lists_append_2, bif_lists_join, bif_lists_map, bif_lists_reverse_2,
@@ -734,10 +735,26 @@ const STDLIB_STUBS: &[StubBif] = &[
     (
         "io",
         "format",
+        2,
+        Capability::ExternalIo,
+        None,
+        bif_io_format_2,
+    ),
+    (
+        "io",
+        "format",
         3,
         Capability::ExternalIo,
         None,
         bif_io_format_3,
+    ),
+    (
+        "io",
+        "get_line",
+        1,
+        Capability::ExternalIo,
+        None,
+        bif_io_get_line_1,
     ),
     (
         "io",
@@ -1214,6 +1231,8 @@ fn bif_json_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
 
 #[cfg(test)]
 mod gleam_stdlib_ffi2_tests;
+#[cfg(test)]
+mod io_bifs_tests;
 #[cfg(test)]
 mod math_bifs_tests;
 #[cfg(test)]
