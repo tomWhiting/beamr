@@ -1,1 +1,1 @@
-review(ets): harden concurrency option tests
+test(beamr): harden ETS iteration and fold coverage
