@@ -1,11 +1,9 @@
-//! Distribution identity primitives.
+//! Distribution identity primitives and node resolution.
 
 mod node;
+pub mod resolver;
 
 pub use node::{DEFAULT_NODE_NAME, Node};
-//! Distribution configuration and node resolution.
-
-pub mod resolver;
 
 use std::collections::HashMap;
 use std::fmt;

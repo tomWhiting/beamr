@@ -99,9 +99,7 @@ pub(super) struct SharedState {
     standard_io_pid: u64,
 
     // Kept for ownership: dropping SharedState must also stop the backing standard I/O server.
-
     #[allow(dead_code)]
-    standard_io_server: StandardIoServer,
     _standard_io_server: StandardIoServer,
 
     #[cfg(test)]
