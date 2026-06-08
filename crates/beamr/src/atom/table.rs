@@ -73,6 +73,9 @@ impl Atom {
     pub const BOF: Self = Self(59);
     pub const CUR: Self = Self(60);
     pub const EOF: Self = Self(61);
+    pub const ECONNREFUSED: Self = Self(62);
+    pub const ECONNRESET: Self = Self(63);
+    pub const EINPROGRESS: Self = Self(64);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -146,6 +149,9 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("bof", Atom::BOF),
     ("cur", Atom::CUR),
     ("eof", Atom::EOF),
+    ("econnrefused", Atom::ECONNREFUSED),
+    ("econnreset", Atom::ECONNRESET),
+    ("einprogress", Atom::EINPROGRESS),
 ];
 
 /// Concurrent intern table for atom strings.

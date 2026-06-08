@@ -13,9 +13,10 @@ use crate::native::{
 };
 use crate::process::{CodePosition, Process, ReceiveTimeout};
 use crate::term::Term;
+use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
 
-use super::{register_tcp_bifs, tcp_accept, tcp_listen};
+use super::{register_tcp_bifs, tcp_accept, tcp_connect, tcp_listen, tcp_recv, tcp_send};
 
 const PID: u64 = 77;
 
@@ -136,15 +137,29 @@ fn option_tuple(key: Term, value: Term) -> Term {
     write_tuple(tuple, &[key, value]).expect("option tuple")
 }
 
+fn binary_term(bytes: &[u8]) -> Term {
+    let words = 2 + packed_word_count(bytes.len());
+    let heap = Box::leak(vec![0_u64; words].into_boxed_slice());
+    write_binary(heap, bytes).expect("binary")
+}
+
 #[test]
-fn register_tcp_bifs_registers_listener_and_accept_mfas() {
+fn register_tcp_bifs_registers_listener_accept_connect_send_recv_mfas() {
     let atom_table = AtomTable::new();
     let registry = BifRegistryImpl::new();
 
     register_tcp_bifs(&registry, &atom_table).expect("tcp registration");
 
     let erlang = atom_table.intern("erlang");
-    for (name, arity) in [("tcp_listen", 2), ("tcp_accept", 1), ("tcp_accept", 2)] {
+    for (name, arity) in [
+        ("tcp_listen", 2),
+        ("tcp_accept", 1),
+        ("tcp_accept", 2),
+        ("tcp_connect", 3),
+        ("tcp_send", 2),
+        ("tcp_recv", 2),
+        ("tcp_recv", 3),
+    ] {
         let function = atom_table.intern(name);
         let entry = registry
             .lookup(erlang, function, arity)
@@ -314,6 +329,367 @@ fn tcp_accept_timeout_reentry_returns_timeout() {
         .expect("fd resource");
 
     let result = tcp_accept(&[resource, Term::small_int(1)], &mut context).expect("timeout");
+
+    let tuple = Tuple::new(result).expect("error tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::TIMEOUT)));
+    assert!(facility.submitted().is_empty());
+}
+
+#[test]
+fn tcp_connect_submits_connect_and_suspends() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+    let host = binary_term(b"127.0.0.1");
+
+    let result =
+        tcp_connect(&[host, Term::small_int(9), Term::NIL], &mut context).expect("connect submit");
+
+    assert_eq!(result, Term::atom(Atom::OK));
+    assert!(matches!(
+        facility.submitted().as_slice(),
+        [IoOp::Connect { fd, addr }]
+            if *fd >= 0 && *addr == SocketAddr::from((Ipv4Addr::LOCALHOST, 9))
+    ));
+    assert!(matches!(
+        facility.tracked().as_slice(),
+        [(PID, 0, FileIoContinuation::Connect { .. })]
+    ));
+    assert_eq!(context.take_suspend().expect("suspend").timeout_ms, None);
+}
+
+#[test]
+fn tcp_connect_completion_returns_ok_fd_resource() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let inner = Arc::new(FdInner::new(fd, PID));
+    facility.push_completion(
+        FileIoContinuation::Connect {
+            fd: Arc::clone(&inner),
+        },
+        Ok(IoResult::Connected),
+    );
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(facility));
+
+    let result = tcp_connect(
+        &[binary_term(b"127.0.0.1"), Term::small_int(9), Term::NIL],
+        &mut context,
+    )
+    .expect("connect completion");
+
+    let tuple = Tuple::new(result).expect("ok tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::OK)));
+    let resource = FdResource::new(tuple.get(1).expect("fd resource")).expect("fd resource");
+    assert_eq!(resource.fd(), fd);
+    assert_eq!(resource.owner_pid(), PID);
+}
+
+#[test]
+fn tcp_connect_refused_returns_econnrefused() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let inner = Arc::new(FdInner::new(fd, PID));
+    facility.push_completion(
+        FileIoContinuation::Connect { fd: inner },
+        Err(io::Error::from_raw_os_error(libc::ECONNREFUSED)),
+    );
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(facility));
+
+    let result = tcp_connect(
+        &[binary_term(b"127.0.0.1"), Term::small_int(9), Term::NIL],
+        &mut context,
+    )
+    .expect("connect refused");
+
+    let tuple = Tuple::new(result).expect("error tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::ECONNREFUSED)));
+}
+
+#[test]
+fn tcp_send_submits_stream_write() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+    let resource = context
+        .alloc_fd_resource(Arc::new(FdInner::new(fd, PID)))
+        .expect("fd resource");
+
+    let result = tcp_send(&[resource, binary_term(b"hello")], &mut context).expect("send submit");
+
+    assert_eq!(result, Term::atom(Atom::OK));
+    assert_eq!(
+        facility.submitted(),
+        vec![IoOp::Write {
+            fd,
+            data: b"hello".to_vec(),
+            offset: u64::MAX,
+        }]
+    );
+    assert!(matches!(
+        facility.tracked().as_slice(),
+        [(PID, 0, FileIoContinuation::TcpWrite { remaining, .. })] if remaining == b"hello"
+    ));
+}
+
+#[test]
+fn tcp_send_resubmits_partial_write_then_returns_ok() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let inner = Arc::new(FdInner::new(fd, PID));
+    facility.push_completion(
+        FileIoContinuation::TcpWrite {
+            fd: Arc::clone(&inner),
+            remaining: b"abcdef".to_vec(),
+            bytes_written: 0,
+        },
+        Ok(IoResult::BytesWritten(2)),
+    );
+    facility.push_completion(
+        FileIoContinuation::TcpWrite {
+            fd: inner,
+            remaining: b"cdef".to_vec(),
+            bytes_written: 2,
+        },
+        Ok(IoResult::BytesWritten(4)),
+    );
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+
+    let first = tcp_send(&[Term::NIL, Term::NIL], &mut context).expect("partial completion");
+    assert_eq!(first, Term::atom(Atom::OK));
+    assert_eq!(
+        facility.submitted(),
+        vec![IoOp::Write {
+            fd,
+            data: b"cdef".to_vec(),
+            offset: u64::MAX,
+        }]
+    );
+
+    let second = tcp_send(&[Term::NIL, Term::NIL], &mut context).expect("final completion");
+    assert_eq!(second, Term::atom(Atom::OK));
+}
+
+#[test]
+fn tcp_send_connection_reset_returns_closed() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    facility.push_completion(
+        FileIoContinuation::TcpWrite {
+            fd: Arc::new(FdInner::new(fd, PID)),
+            remaining: b"x".to_vec(),
+            bytes_written: 0,
+        },
+        Err(io::Error::from_raw_os_error(libc::ECONNRESET)),
+    );
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(facility));
+
+    let result = tcp_send(&[Term::NIL, Term::NIL], &mut context).expect("closed");
+
+    let tuple = Tuple::new(result).expect("error tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::CLOSED)));
+}
+
+#[test]
+fn tcp_recv_submits_stream_read_with_timeout() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+    let resource = context
+        .alloc_fd_resource(Arc::new(FdInner::new(fd, PID)))
+        .expect("fd resource");
+
+    let result = tcp_recv(
+        &[resource, Term::small_int(5), Term::small_int(100)],
+        &mut context,
+    )
+    .expect("recv submit");
+
+    assert_eq!(result, Term::atom(Atom::OK));
+    assert_eq!(
+        facility.submitted(),
+        vec![IoOp::Read {
+            fd,
+            buf_len: 5,
+            offset: u64::MAX,
+        }]
+    );
+    assert_eq!(
+        context.take_suspend().expect("suspend").timeout_ms,
+        Some(100)
+    );
+}
+
+#[test]
+fn tcp_recv_zero_length_uses_default_buffer() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+    let resource = context
+        .alloc_fd_resource(Arc::new(FdInner::new(fd, PID)))
+        .expect("fd resource");
+
+    let result = tcp_recv(&[resource, Term::small_int(0)], &mut context).expect("recv submit");
+
+    assert_eq!(result, Term::atom(Atom::OK));
+    assert_eq!(
+        facility.submitted(),
+        vec![IoOp::Read {
+            fd,
+            buf_len: 64 * 1024,
+            offset: u64::MAX,
+        }]
+    );
+}
+
+#[test]
+fn tcp_recv_large_exact_length_reads_in_bounded_chunks() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+    let resource = context
+        .alloc_fd_resource(Arc::new(FdInner::new(fd, PID)))
+        .expect("fd resource");
+
+    let result = tcp_recv(
+        &[resource, Term::small_int((64 * 1024 + 1) as i64)],
+        &mut context,
+    )
+    .expect("large recv submit");
+
+    assert_eq!(result, Term::atom(Atom::OK));
+    assert_eq!(
+        facility.submitted(),
+        vec![IoOp::Read {
+            fd,
+            buf_len: 64 * 1024,
+            offset: u64::MAX,
+        }]
+    );
+}
+
+#[test]
+fn tcp_recv_exact_length_accumulates_multiple_reads() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let inner = Arc::new(FdInner::new(fd, PID));
+    facility.push_completion(
+        FileIoContinuation::TcpRead {
+            fd: Arc::clone(&inner),
+            requested_len: 5,
+            accumulated: Vec::new(),
+            timeout_ms: None,
+        },
+        Ok(IoResult::BytesRead(2, b"he".to_vec())),
+    );
+    facility.push_completion(
+        FileIoContinuation::TcpRead {
+            fd: inner,
+            requested_len: 5,
+            accumulated: b"he".to_vec(),
+            timeout_ms: None,
+        },
+        Ok(IoResult::BytesRead(3, b"llo".to_vec())),
+    );
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+
+    let first = tcp_recv(&[Term::NIL, Term::NIL], &mut context).expect("partial recv");
+    assert_eq!(first, Term::atom(Atom::OK));
+    assert_eq!(
+        facility.submitted(),
+        vec![IoOp::Read {
+            fd,
+            buf_len: 3,
+            offset: u64::MAX,
+        }]
+    );
+
+    let second = tcp_recv(&[Term::NIL, Term::NIL], &mut context).expect("complete recv");
+    let tuple = Tuple::new(second).expect("ok tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::OK)));
+    let binary = Binary::new(tuple.get(1).expect("binary")).expect("binary");
+    assert_eq!(binary.as_bytes(), b"hello");
+}
+
+#[test]
+fn tcp_recv_zero_byte_close_returns_closed() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    facility.push_completion(
+        FileIoContinuation::TcpRead {
+            fd: Arc::new(FdInner::new(fd, PID)),
+            requested_len: 1,
+            accumulated: Vec::new(),
+            timeout_ms: None,
+        },
+        Ok(IoResult::BytesRead(0, Vec::new())),
+    );
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, Some(facility));
+
+    let result = tcp_recv(&[Term::NIL, Term::NIL], &mut context).expect("closed");
+
+    let tuple = Tuple::new(result).expect("error tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::CLOSED)));
+}
+
+#[test]
+fn tcp_recv_timeout_returns_timeout() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("fd stand-in");
+    let fd = listener.into_raw_fd();
+    let mut process = Process::new(PID, 128);
+    process.set_receive_timeout(Some(ReceiveTimeout {
+        timeout_position: CodePosition {
+            module: Atom::OK,
+            instruction_pointer: 0,
+        },
+        milliseconds: 1,
+    }));
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+    let resource = context
+        .alloc_fd_resource(Arc::new(FdInner::new(fd, PID)))
+        .expect("fd resource");
+
+    let result = tcp_recv(
+        &[resource, Term::small_int(1), Term::small_int(1)],
+        &mut context,
+    )
+    .expect("timeout");
 
     let tuple = Tuple::new(result).expect("error tuple");
     assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));

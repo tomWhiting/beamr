@@ -103,6 +103,21 @@ pub enum FileIoContinuation {
     UdpRecv,
     /// Active-mode UDP receive (scheduler-driven, not BIF-resumed).
     UdpActiveRecv { fd: Arc<FdInner> },
+    /// `erlang:tcp_connect/3` completion.
+    Connect { fd: Arc<FdInner> },
+    /// `erlang:tcp_send/2` completion.
+    TcpWrite {
+        fd: Arc<FdInner>,
+        remaining: Vec<u8>,
+        bytes_written: usize,
+    },
+    /// `erlang:tcp_recv/2,3` completion.
+    TcpRead {
+        fd: Arc<FdInner>,
+        requested_len: usize,
+        accumulated: Vec<u8>,
+        timeout_ms: Option<u64>,
+    },
 }
 
 /// Completion facility used by file BIFs to submit ring work and retrieve resume completions.

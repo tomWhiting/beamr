@@ -56,6 +56,9 @@ mod tests {
         assert_eq!(errno_to_atom(libc::EROFS), Atom::EROFS);
         assert_eq!(errno_to_atom(libc::ENAMETOOLONG), Atom::ENAMETOOLONG);
         assert_eq!(errno_to_atom(libc::EPERM), Atom::EPERM);
+        assert_eq!(errno_to_atom(libc::ECONNREFUSED), Atom::ECONNREFUSED);
+        assert_eq!(errno_to_atom(libc::ECONNRESET), Atom::ECONNRESET);
+        assert_eq!(errno_to_atom(libc::EINPROGRESS), Atom::EINPROGRESS);
         assert_eq!(errno_to_atom(i32::MAX), Atom::UNKNOWN_ERROR);
     }
 }
@@ -82,6 +85,9 @@ pub fn errno_to_atom(errno: i32) -> Atom {
         libc::EROFS => Atom::EROFS,
         libc::ENAMETOOLONG => Atom::ENAMETOOLONG,
         libc::EPERM => Atom::EPERM,
+        libc::ECONNREFUSED => Atom::ECONNREFUSED,
+        libc::ECONNRESET => Atom::ECONNRESET,
+        libc::EINPROGRESS => Atom::EINPROGRESS,
         _ => Atom::UNKNOWN_ERROR,
     }
 }

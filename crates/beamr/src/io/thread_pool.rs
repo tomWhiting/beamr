@@ -367,9 +367,63 @@ fn connect_fd(fd: RawFd, addr: SocketAddr) -> io::Result<IoResult> {
     // SAFETY: `storage` contains a sockaddr matching `len` and is alive for the call.
     let rc = unsafe { libc::connect(fd, (&storage as *const libc::sockaddr_storage).cast(), len) };
     if rc < 0 {
-        Err(io::Error::last_os_error())
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(errno) if errno == libc::EINPROGRESS || errno == libc::EALREADY => {
+                wait_for_connect(fd)
+            }
+            _ => Err(error),
+        }
     } else {
         Ok(IoResult::Connected)
+    }
+}
+
+fn wait_for_connect(fd: RawFd) -> io::Result<IoResult> {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: `poll_fd` points to one initialized poll descriptor.
+        let rc = unsafe { libc::poll(&mut poll_fd, 1, -1) };
+        if rc < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(error);
+        }
+        if rc == 0 {
+            continue;
+        }
+        if poll_fd.revents & libc::POLLNVAL != 0 {
+            return Err(io::Error::from_raw_os_error(libc::EBADF));
+        }
+        if poll_fd.revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) == 0 {
+            continue;
+        }
+        let mut error: libc::c_int = 0;
+        let mut len = mem::size_of_val(&error) as libc::socklen_t;
+        // SAFETY: `error` and `len` are valid output storage for SO_ERROR.
+        let getsockopt_rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&mut error as *mut libc::c_int).cast(),
+                &mut len,
+            )
+        };
+        if getsockopt_rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return if error == 0 {
+            Ok(IoResult::Connected)
+        } else {
+            Err(io::Error::from_raw_os_error(error))
+        };
     }
 }
 
