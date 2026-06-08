@@ -142,6 +142,10 @@ fn finish_file_info(
     completion: FileIoCompletion,
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
+    if !matches!(completion.continuation, FileIoContinuation::FileInfo) {
+        return error_tuple(context, Atom::UNKNOWN_ERROR);
+    }
+
     match completion.completion.result {
         Ok(IoResult::StatResult(data)) => file_info_tuple(context, &data),
         Ok(_) => error_tuple(context, Atom::UNKNOWN_ERROR),
@@ -153,6 +157,10 @@ fn finish_list_dir(
     completion: FileIoCompletion,
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
+    if !matches!(completion.continuation, FileIoContinuation::ListDir) {
+        return error_tuple(context, Atom::UNKNOWN_ERROR);
+    }
+
     match completion.completion.result {
         Ok(IoResult::DirList(entries)) => {
             let mut terms = Vec::with_capacity(entries.len());
@@ -171,6 +179,10 @@ fn finish_ok_metadata(
     completion: FileIoCompletion,
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
+    if !is_ok_metadata_continuation(&completion.continuation) {
+        return error_tuple(context, Atom::UNKNOWN_ERROR);
+    }
+
     match completion.completion.result {
         Ok(IoResult::Completed) => Ok(Term::atom(Atom::OK)),
         Ok(_) => error_tuple(context, Atom::UNKNOWN_ERROR),
@@ -178,10 +190,30 @@ fn finish_ok_metadata(
     }
 }
 
+fn is_ok_metadata_continuation(continuation: &FileIoContinuation) -> bool {
+    matches!(
+        continuation,
+        FileIoContinuation::MakeDir
+            | FileIoContinuation::DelFile
+            | FileIoContinuation::DelDir
+            | FileIoContinuation::Rename
+    )
+}
+
 fn statx_basic_stats_mask() -> u32 {
     #[cfg(target_os = "linux")]
     {
-        libc::STATX_BASIC_STATS
+        libc::STATX_TYPE
+            | libc::STATX_MODE
+            | libc::STATX_NLINK
+            | libc::STATX_UID
+            | libc::STATX_GID
+            | libc::STATX_ATIME
+            | libc::STATX_MTIME
+            | libc::STATX_CTIME
+            | libc::STATX_INO
+            | libc::STATX_SIZE
+            | libc::STATX_BLOCKS
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -211,11 +243,11 @@ fn file_info_tuple(context: &mut ProcessContext, data: &StatxData) -> Result<Ter
 }
 
 fn file_type_atom(atom_table: &AtomTable, mode: u32) -> Atom {
-    match mode & u32::from(libc::S_IFMT) {
-        value if value == u32::from(libc::S_IFREG) => atom_table.intern("regular"),
-        value if value == u32::from(libc::S_IFDIR) => atom_table.intern("directory"),
-        value if value == u32::from(libc::S_IFLNK) => atom_table.intern("symlink"),
-        value if value == u32::from(libc::S_IFBLK) || value == u32::from(libc::S_IFCHR) => {
+    match mode & libc::S_IFMT as u32 {
+        value if value == libc::S_IFREG as u32 => atom_table.intern("regular"),
+        value if value == libc::S_IFDIR as u32 => atom_table.intern("directory"),
+        value if value == libc::S_IFLNK as u32 => atom_table.intern("symlink"),
+        value if value == libc::S_IFBLK as u32 || value == libc::S_IFCHR as u32 => {
             atom_table.intern("device")
         }
         _ => atom_table.intern("other"),
@@ -223,8 +255,8 @@ fn file_type_atom(atom_table: &AtomTable, mode: u32) -> Atom {
 }
 
 fn access_atom(atom_table: &AtomTable, mode: u32) -> Atom {
-    let read_bits = u32::from(libc::S_IRUSR | libc::S_IRGRP | libc::S_IROTH);
-    let write_bits = u32::from(libc::S_IWUSR | libc::S_IWGRP | libc::S_IWOTH);
+    let read_bits = (libc::S_IRUSR | libc::S_IRGRP | libc::S_IROTH) as u32;
+    let write_bits = (libc::S_IWUSR | libc::S_IWGRP | libc::S_IWOTH) as u32;
     let readable = mode & read_bits != 0;
     let writable = mode & write_bits != 0;
     match (readable, writable) {

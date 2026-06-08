@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex};
 use crate::atom::{Atom, AtomTable};
 use crate::io::{CompletionRing, IoCompletion, IoOp, IoResult, StatxData};
 use crate::native::{
-    BifRegistry, BifRegistryImpl, FileIoCompletion, FileIoContinuation, FileIoFacility,
-    ProcessContext,
+    BifRegistryImpl, FileIoCompletion, FileIoContinuation, FileIoFacility, ProcessContext,
 };
 use crate::process::Process;
 use crate::term::Term;
@@ -195,7 +194,7 @@ fn file_info_submits_statx_and_finishes_record_tuple() {
     facility.push_completion(
         FileIoContinuation::FileInfo,
         Ok(IoResult::StatResult(StatxData {
-            mode: libc::S_IFREG | 0o644,
+            mode: libc::S_IFREG as u32 | 0o644,
             size: 12,
             dev_major: 1,
             dev_minor: 2,
@@ -267,6 +266,52 @@ fn list_dir_returns_ok_list_of_filename_binaries() {
         tail = cons.tail();
     }
     assert_eq!(names, vec![b"a.txt".to_vec(), b"b.bin".to_vec()]);
+}
+
+#[test]
+fn completion_handlers_reject_mismatched_file_io_continuations() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let mut process = Process::new(PID, 256);
+    let mut context = heap_context(&mut process, Arc::clone(&atom_table), Arc::clone(&facility));
+    let filename = binary(&mut context, b"/tmp/beamr-mismatched-completion");
+
+    facility.push_completion(
+        FileIoContinuation::ListDir,
+        Ok(IoResult::StatResult(StatxData {
+            mode: libc::S_IFREG as u32,
+            ..StatxData::default()
+        })),
+    );
+    let result = file_info(&[filename], &mut context).expect("file_info mismatch result");
+    assert_error_reason(result, Atom::UNKNOWN_ERROR);
+
+    facility.push_completion(
+        FileIoContinuation::FileInfo,
+        Ok(IoResult::DirList(vec![b"entry".to_vec()])),
+    );
+    let result = list_dir(&[filename], &mut context).expect("list_dir mismatch result");
+    assert_error_reason(result, Atom::UNKNOWN_ERROR);
+
+    facility.push_completion(FileIoContinuation::FileInfo, Ok(IoResult::Completed));
+    let result = make_dir(&[filename], &mut context).expect("make_dir mismatch result");
+    assert_error_reason(result, Atom::UNKNOWN_ERROR);
+}
+
+#[test]
+fn metadata_error_completion_returns_errno_reason_tuple() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let mut process = Process::new(PID, 256);
+    let mut context = heap_context(&mut process, atom_table, Arc::clone(&facility));
+    let filename = binary(&mut context, b"/tmp/beamr-missing-file");
+
+    facility.push_completion(
+        FileIoContinuation::DelFile,
+        Err(io::Error::from_raw_os_error(libc::ENOENT)),
+    );
+    let result = del_file(&[filename], &mut context).expect("del_file error result");
+    assert_error_reason(result, Atom::ENOENT);
 }
 
 #[test]
@@ -346,4 +391,11 @@ fn blocking_helpers_cover_real_directory_cycle() {
     fs::rename(&file, &renamed).expect("rename file");
     fs::remove_file(&renamed).expect("remove file");
     fs::remove_dir(&dir).expect("remove dir");
+}
+
+fn assert_error_reason(result: Term, reason: Atom) {
+    let tuple = tuple(result);
+    assert_eq!(tuple.arity(), 2);
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(reason)));
 }
