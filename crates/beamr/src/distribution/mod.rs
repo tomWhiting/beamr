@@ -1,6 +1,7 @@
-//! Distribution identity primitives and node resolution.
+//! Distribution identity primitives, node resolution, and connection management.
 
 mod node;
+pub mod connection;
 pub mod resolver;
 
 pub use node::{DEFAULT_NODE_NAME, Node};
@@ -34,4 +35,3 @@ impl fmt::Debug for DistributionConfig {
             .finish()
     }
 }
-
