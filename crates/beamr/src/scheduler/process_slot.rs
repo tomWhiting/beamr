@@ -1,8 +1,15 @@
+use crate::ets::{EtsTableId, OwnedTerm};
 use crate::namespace::NamespaceId;
 use crate::process::{ExitReason, Monitor, Priority};
 use crate::term::Term;
 
 use super::ScheduledProcess;
+
+pub(super) struct PendingEtsTransferMessage {
+    pub(super) table_id: EtsTableId,
+    pub(super) from_pid: u64,
+    pub(super) data: OwnedTerm,
+}
 
 pub(super) struct ProcessMetadata {
     pub(super) namespace_id: NamespaceId,
@@ -17,6 +24,7 @@ pub(super) struct ProcessMetadata {
     pub(super) pending_exit_messages: Vec<(u64, ExitReason)>,
     pub(super) pending_down_messages: Vec<(u64, u64, ExitReason)>,
     pub(super) pending_io_messages: Vec<Term>,
+    pub(super) pending_ets_transfer_messages: Vec<PendingEtsTransferMessage>,
 }
 
 impl ProcessMetadata {

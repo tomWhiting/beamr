@@ -1,1 +1,1 @@
-fix(beamr): remove obsolete ETS cleanup wrapper
+fix(beamr): queue ETS transfer messages for executing heirs

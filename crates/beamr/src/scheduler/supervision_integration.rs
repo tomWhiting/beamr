@@ -72,26 +72,39 @@ pub(super) fn deliver_ets_transfer(
     };
     let transfer_atom = atom_table.intern("ETS-TRANSFER");
     let mut slot = lock_or_recover(&entry);
-    let message = match &mut *slot {
+    let delivered = match &mut *slot {
         ProcessSlot::Present(ScheduledProcess(process)) => {
-            build_ets_transfer_message(process, transfer_atom, table_id, from_pid, data)
+            let Some(message) =
+                build_ets_transfer_message(process, transfer_atom, table_id, from_pid, data)
+            else {
+                return false;
+            };
+            process.mailbox_mut().push_owned(message);
+            true
         }
-        ProcessSlot::Executing(_) | ProcessSlot::Absent => None,
+        ProcessSlot::Executing(metadata) => {
+            let Ok(data) = crate::ets::copy_term_to_ets(data) else {
+                return false;
+            };
+            metadata.pending_ets_transfer_messages.push(
+                super::process_slot::PendingEtsTransferMessage {
+                    table_id,
+                    from_pid,
+                    data,
+                },
+            );
+            true
+        }
+        ProcessSlot::Absent => false,
     };
-    let Some(message) = message else {
-        return false;
-    };
-    if let ProcessSlot::Present(ScheduledProcess(process)) = &mut *slot {
-        process.mailbox_mut().push_owned(message);
-        drop(slot);
+    drop(slot);
+    if delivered {
         wake_process(shared, recipient_pid);
-        true
-    } else {
-        false
     }
+    delivered
 }
 
-fn build_ets_transfer_message(
+pub(super) fn build_ets_transfer_message(
     process: &mut Process,
     transfer_atom: Atom,
     table_id: EtsTableId,
