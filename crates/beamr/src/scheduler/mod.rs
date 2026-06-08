@@ -88,6 +88,8 @@ pub(super) struct SharedState {
     io_bridge: Mutex<Option<IoCompletionBridge>>,
     io_facility: Option<Arc<dyn IoFacility>>,
     standard_io_pid: u64,
+    // Owned by SharedState so the scheduler retains the standard group-leader I/O service state.
+    #[allow(dead_code)]
     standard_io_server: StandardIoServer,
     #[cfg(test)]
     idle_parks: AtomicUsize,
