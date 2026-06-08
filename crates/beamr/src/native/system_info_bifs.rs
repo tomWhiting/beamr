@@ -372,14 +372,6 @@ mod tests {
             .to_vec()
     }
 
-    fn call_statistics(item: &str) -> Term {
-        let atom_table = Arc::new(AtomTable::with_common_atoms());
-        let item_atom = atom_table.intern(item);
-        let mut process = Process::new(1, 128);
-        let mut context = context(&mut process, atom_table);
-        bif_statistics_1(&[Term::atom(item_atom)], &mut context).expect("statistics succeeds")
-    }
-
     fn call_memory_one(item: &str) -> Term {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let item_atom = atom_table.intern(item);
@@ -440,17 +432,27 @@ mod tests {
 
     #[test]
     fn statistics_returns_total_since_last_tuples() {
-        let wall_clock = Tuple::new(call_statistics("wall_clock")).expect("wall_clock tuple");
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let mut process = Process::new(1, 512);
+        let mut ctx = context(&mut process, Arc::clone(&atom_table));
+
+        let wc_atom = atom_table.intern("wall_clock");
+        let wall_clock_term = bif_statistics_1(&[Term::atom(wc_atom)], &mut ctx).expect("wall_clock");
+        let wall_clock = Tuple::new(wall_clock_term).expect("wall_clock tuple");
         assert_eq!(wall_clock.arity(), 2);
         assert_eq!(wall_clock.get(0).and_then(Term::as_small_int), Some(100));
         assert_eq!(wall_clock.get(1).and_then(Term::as_small_int), Some(0));
 
-        let runtime = Tuple::new(call_statistics("runtime")).expect("runtime tuple");
+        let rt_atom = atom_table.intern("runtime");
+        let runtime_term = bif_statistics_1(&[Term::atom(rt_atom)], &mut ctx).expect("runtime");
+        let runtime = Tuple::new(runtime_term).expect("runtime tuple");
         assert_eq!(runtime.arity(), 2);
         assert_eq!(runtime.get(0).and_then(Term::as_small_int), Some(20));
         assert_eq!(runtime.get(1).and_then(Term::as_small_int), Some(0));
 
-        let reductions = Tuple::new(call_statistics("reductions")).expect("reductions tuple");
+        let red_atom = atom_table.intern("reductions");
+        let reductions_term = bif_statistics_1(&[Term::atom(red_atom)], &mut ctx).expect("reductions");
+        let reductions = Tuple::new(reductions_term).expect("reductions tuple");
         assert_eq!(reductions.arity(), 2);
         assert_eq!(reductions.get(0).and_then(Term::as_small_int), Some(1_000));
         assert_eq!(reductions.get(1).and_then(Term::as_small_int), Some(0));
