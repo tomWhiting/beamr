@@ -74,11 +74,6 @@ impl PartialEq<u64> for EtsOwner {
     }
 }
 
-impl PartialEq<EtsOwner> for u64 {
-    fn eq(&self, other: &EtsOwner) -> bool {
-        *self == other.get()
-    }
-}
 
 /// ETS ownership heir configured at table creation.
 #[derive(Debug)]

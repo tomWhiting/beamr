@@ -1419,7 +1419,7 @@ mod tests {
         let table = created_table(&registry, tab);
         let metadata_heir = table.metadata().heir.as_ref().expect("heir stored");
         assert_eq!(metadata_heir.pid, 99);
-        assert_ne!(metadata_heir.data.root(), data);
+        assert_ne!(metadata_heir.data.root().raw(), data.raw());
 
         let none_option = tuple_option(&mut context, heir, Term::atom(none));
         let none_options = context.alloc_list(&[none_option]).expect("option list");
