@@ -3,6 +3,7 @@
 pub mod atom_cache;
 pub mod connection;
 pub mod control;
+pub mod control_lifecycle;
 pub mod etf;
 pub mod handshake;
 mod node;
