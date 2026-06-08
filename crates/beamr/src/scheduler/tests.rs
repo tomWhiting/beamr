@@ -3,11 +3,13 @@ use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
+use std::task::{Context, Poll, Wake, Waker};
 
 use dashmap::{DashMap, DashSet};
 
 use super::*;
 use crate::atom::{Atom, AtomTable};
+use crate::distribution::{ResolveError, ResolveFuture};
 use crate::ets::{EtsTableMetadata, EtsTableType, Protection};
 use crate::hook::{Hook, HookDecision};
 use crate::io::{NullSink, RingConfig};
@@ -30,6 +32,42 @@ use crate::timer::TimerWheel;
 
 fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
     EtsTableMetadata::new(name, 0, EtsTableType::Set, Protection::Protected, owner)
+}
+
+struct NoopWake;
+
+impl Wake for NoopWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn block_on_ready(future: ResolveFuture<'_>) -> Result<std::net::SocketAddr, ResolveError> {
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+    let mut future = future;
+    match future.as_mut().poll(&mut context) {
+        Poll::Ready(result) => result,
+        Poll::Pending => panic!("resolver test future should be ready immediately"),
+    }
+}
+
+#[test]
+fn default_distribution_config_resolves_nothing() {
+    assert!(SchedulerConfig::default().distribution.is_none());
+
+    let scheduler = Scheduler::new(SchedulerConfig::default(), Arc::new(ModuleRegistry::new()))
+        .expect("scheduler should start");
+
+    assert_eq!(
+        block_on_ready(
+            scheduler
+                .distribution_config()
+                .resolver
+                .resolve("missing@localhost")
+        ),
+        Err(ResolveError::NotFound)
+    );
+
+    scheduler.shutdown();
 }
 
 #[test]
@@ -150,10 +188,7 @@ fn shared_state_metric_accessors_report_scheduler_process_and_atom_counts() {
     assert_eq!(scheduler.atom_count(), atom_table.len());
     assert_eq!(scheduler.atom_limit(), atom_table.limit());
 
-    let pid = scheduler
-        .shared
-        .next_pid
-        .fetch_add(1, Ordering::Relaxed);
+    let pid = scheduler.shared.next_pid.fetch_add(1, Ordering::Relaxed);
     scheduler.process_table().spawn_with_pid(pid);
     assert_eq!(scheduler.process_count(), 2);
     let removed = scheduler.process_table().remove(pid);
