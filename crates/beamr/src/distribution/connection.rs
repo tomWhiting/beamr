@@ -41,6 +41,71 @@ impl fmt::Display for ConnectError {
             Self::Io(error) => write!(formatter, "distribution TCP connection failed: {error}"),
         }
     }
+
+    #[tokio::test]
+    async fn manual_disconnect_removes_connection_and_notifies_once() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("failed to bind local listener: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
+        tokio::spawn(async move {
+            let _accepted = listener.accept().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let callback_count_for_hook = Arc::clone(&callback_count);
+        manager.register_connection_down(move |event| {
+            assert_eq!(event.reason, ConnectionDownReason::ManualDisconnect);
+            callback_count_for_hook.fetch_add(1, Ordering::SeqCst);
+        });
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+
+        assert!(manager.connect_node(node).await);
+        assert!(manager.disconnect_node(node));
+        assert!(manager.disconnect_node(node));
+
+        assert!(manager.get_connection(node).is_none());
+        assert!(manager.connected_nodes().is_empty());
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Return the node-name atoms for all active distribution connections.
+    #[must_use]
+    pub fn connected_nodes(&self) -> Vec<Atom> {
+        self.inner
+            .connections
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    /// Idempotently connect to a node-name atom, returning `false` for transport failures.
+    pub async fn connect_node(&self, node: Atom) -> bool {
+        if self.get_connection(node).is_some() {
+            return true;
+        }
+        let Some(node_name) = self.inner.atom_table.resolve(node).map(str::to_owned) else {
+            return false;
+        };
+        self.connect(&node_name).await.is_ok()
+    }
+
+    /// Manually disconnect an active node and emit the connection-down hook once.
+    pub fn disconnect_node(&self, node: Atom) -> bool {
+        let Some(connection) = self.get_connection(node) else {
+            return true;
+        };
+        connection.mark_down(ConnectionDownReason::ManualDisconnect);
+        true
+    }
 }
 
 impl std::error::Error for ConnectError {}
@@ -54,6 +119,8 @@ pub enum ConnectionDownReason {
     ReadError,
     /// A write operation reported an error.
     WriteError,
+    /// The local node explicitly closed the connection.
+    ManualDisconnect,
 }
 
 /// Event emitted when a connection is removed from the active connection table.
@@ -317,7 +384,8 @@ impl ConnectionManager {
             .inbound_identifier
             .write()
             .unwrap_or_else(|error| error.into_inner());
-        let identifier: Arc<dyn Fn(SocketAddr) -> Option<Atom> + Send + Sync> = Arc::new(identifier);
+        let identifier: Arc<dyn Fn(SocketAddr) -> Option<Atom> + Send + Sync> =
+            Arc::new(identifier);
         *slot = Some(identifier.clone());
         drop(slot);
         self.identify_pending_inbound(&identifier);
@@ -425,6 +493,19 @@ impl ConnectionManager {
         connection
     }
 
+    /// Register a pre-connected standard stream for native BIF unit tests.
+    #[cfg(test)]
+    pub(crate) fn register_test_connection(
+        &self,
+        node: Atom,
+        peer_addr: SocketAddr,
+        stream: std::net::TcpStream,
+    ) -> io::Result<Arc<DistConnection>> {
+        stream.set_nonblocking(true)?;
+        let stream = TcpStream::from_std(stream)?;
+        Ok(self.register_connection(node, peer_addr, stream))
+    }
+
     fn spawn_read_lifecycle(&self, connection: Arc<DistConnection>, mut read_half: OwnedReadHalf) {
         tokio::spawn(async move {
             let mut buffer = [0_u8; 1];
@@ -508,7 +589,9 @@ mod tests {
 
     #[tokio::test]
     async fn empty_manager_has_no_connections() {
-        let manager = manager_with_resolver(Arc::new(StaticResolver::new(std::collections::HashMap::new())));
+        let manager = manager_with_resolver(Arc::new(StaticResolver::new(
+            std::collections::HashMap::new(),
+        )));
         let node = manager.inner.atom_table.intern("missing@127.0.0.1");
 
         assert_eq!(manager.connection_count(), 0);
@@ -529,9 +612,10 @@ mod tests {
             let _accepted = listener.accept().await;
         });
 
-        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([
-            ("remote@127.0.0.1".to_string(), addr),
-        ])));
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
         let manager = manager_with_resolver(resolver);
         let connection = manager
             .connect("remote@127.0.0.1")
@@ -545,6 +629,42 @@ mod tests {
                 .get_connection(node)
                 .expect("connection should be present"),
         ));
+    }
+
+    #[tokio::test]
+    async fn connect_node_is_idempotent_and_lists_node() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("failed to bind local listener: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
+        tokio::spawn(async move {
+            let _accepted = listener.accept().await;
+        });
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+
+        assert!(manager.connect_node(node).await);
+        assert!(manager.connect_node(node).await);
+        assert_eq!(manager.connected_nodes(), vec![node]);
+        assert_eq!(manager.connection_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn connect_node_returns_false_for_unresolved_node() {
+        let manager = manager_with_resolver(Arc::new(StaticResolver::new(
+            std::collections::HashMap::new(),
+        )));
+        let node = manager.inner.atom_table.intern("missing@127.0.0.1");
+
+        assert!(!manager.connect_node(node).await);
+        assert!(manager.connected_nodes().is_empty());
     }
 
     #[tokio::test]
@@ -586,9 +706,10 @@ mod tests {
         });
         let accepted = tokio::spawn(async move { listener.accept().await });
 
-        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([
-            ("remote@127.0.0.1".to_string(), addr),
-        ])));
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
         let manager = manager_with_resolver(resolver);
         let callback_count = Arc::new(AtomicUsize::new(0));
         let callback_count_for_hook = Arc::clone(&callback_count);
@@ -623,9 +744,10 @@ mod tests {
         });
         let accepted = tokio::spawn(async move { listener.accept().await });
 
-        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([
-            ("remote@127.0.0.1".to_string(), addr),
-        ])));
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
         let manager = manager_with_resolver(resolver);
         let callback_count = Arc::new(AtomicUsize::new(0));
         let callback_count_for_hook = Arc::clone(&callback_count);

@@ -84,12 +84,16 @@ pub fn bif_code_priv_dir(args: &[Term], context: &mut ProcessContext) -> Result<
     context.alloc_tuple(&[Term::atom(Atom::ERROR), Term::atom(Atom::BADARG)])
 }
 
-/// `net_kernel:connect_node/1` -- stub returning `false`.
-pub fn bif_connect_node(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    let [_node] = args else {
+/// `net_kernel:connect_node/1` -- manually connect to a named node.
+pub fn bif_connect_node(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [node] = args else {
         return Err(badarg());
     };
-    Ok(Term::atom(Atom::FALSE))
+    let node = node.as_atom().ok_or_else(badarg)?;
+    let connected = context
+        .net_kernel()
+        .is_some_and(|net_kernel| net_kernel.connect_node(node));
+    Ok(Term::atom(if connected { Atom::TRUE } else { Atom::FALSE }))
 }
 
 /// `string:split/2` -- stub returning `[Input]`.

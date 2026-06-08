@@ -210,6 +210,14 @@ fn make_shared_state() -> Arc<SharedState> {
     let module_registry = Arc::new(ModuleRegistry::new());
     let namespace_store = DashMap::new();
     namespace_store.insert(NamespaceId::DEFAULT, Arc::clone(&module_registry));
+    let atom_table = Arc::new(crate::atom::AtomTable::new());
+    let distribution = DistributionConfig::default();
+    let net_kernel = Arc::new(crate::distribution::NetKernel::new(
+        crate::distribution::ConnectionManager::new(
+            Arc::clone(&atom_table),
+            distribution.resolver.clone(),
+        ),
+    ));
 
     Arc::new(SharedState {
         shutdown: AtomicBool::new(false),
@@ -233,14 +241,14 @@ fn make_shared_state() -> Arc<SharedState> {
         link_set: std::sync::Mutex::new(LinkSet::new()),
         monitor_set: std::sync::Mutex::new(MonitorSet::new()),
         hook: crate::hook::Hook::new(),
-        distribution: DistributionConfig::default(),
+        distribution,
         timers: Arc::new(std::sync::Mutex::new(crate::timer::TimerWheel::new())),
         output_sink: std::sync::Mutex::new(Arc::new(crate::io::NullSink)),
         io_ring: None,
         io_registry: None,
         io_bridge: std::sync::Mutex::new(None),
         io_facility: None,
-        atom_table: Arc::new(crate::atom::AtomTable::new()),
+        atom_table,
         ets_registry: Arc::new(crate::ets::EtsRegistry::new()),
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
@@ -258,6 +266,7 @@ fn make_shared_state() -> Arc<SharedState> {
             &crate::atom::AtomTable::new(),
         ),
         local_node: crate::distribution::Node::new(crate::atom::Atom::new(0), 0),
+        net_kernel,
     })
 }
 

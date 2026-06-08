@@ -397,6 +397,7 @@ pub(super) fn build_native_services(
     crate::interpreter::NativeServices {
         atom_table: Some(Arc::clone(&shared.atom_table)),
         local_node: Some(shared.local_node),
+        net_kernel: Some(Arc::clone(&shared.net_kernel)),
         ets_facility: Some(ets_facility),
         timers: Some(Arc::clone(&shared.timers)),
         spawn_facility: Some(spawn),

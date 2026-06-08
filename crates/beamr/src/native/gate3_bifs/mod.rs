@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::atom::{Atom, AtomTable};
+use crate::distribution::DEFAULT_NODE_NAME;
 use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
@@ -22,7 +23,6 @@ use crate::term::binary::Binary;
 use crate::term::boxed::{Cons, Float, Tuple};
 use crate::term::pid_ref::PidRef;
 use crate::term::reference_ref::ReferenceRef;
-
 
 pub use additional::{
     bif_binary_part, bif_bit_size, bif_is_bitstring, bif_is_map_key, bif_map_size, bif_round,
@@ -46,6 +46,14 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("make_ref", 0, Capability::Pure, bif_make_ref),
     ("node", 0, Capability::Pure, bif_node_0),
     ("node", 1, Capability::Pure, bif_node_1),
+    ("is_alive", 0, Capability::Pure, bif_is_alive_0),
+    ("nodes", 0, Capability::ExternalIo, bif_nodes_0),
+    (
+        "disconnect_node",
+        1,
+        Capability::ExternalIo,
+        bif_disconnect_node_1,
+    ),
     (
         "is_process_alive",
         1,
@@ -234,6 +242,52 @@ pub fn bif_node_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
         return Ok(Term::atom(reference.node().unwrap_or(local_node.name)));
     }
     Err(badarg())
+}
+
+/// erlang:is_alive/0 — true when distribution is configured with a non-default node name.
+pub fn bif_is_alive_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+
+    let alive = context
+        .local_node()
+        .and_then(|node| {
+            context
+                .atom_table()
+                .and_then(|table| table.resolve(node.name))
+        })
+        .is_some_and(|name| name != DEFAULT_NODE_NAME);
+    Ok(Term::atom(if alive { Atom::TRUE } else { Atom::FALSE }))
+}
+
+/// erlang:nodes/0 — returns connected visible node names.
+pub fn bif_nodes_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+
+    let elements: Vec<Term> = context
+        .net_kernel()
+        .map(|net_kernel| net_kernel.nodes().into_iter().map(Term::atom).collect())
+        .unwrap_or_default();
+    context.alloc_list(&elements)
+}
+
+/// erlang:disconnect_node/1 — manually closes a distribution connection.
+pub fn bif_disconnect_node_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [node_term] = args else {
+        return Err(badarg());
+    };
+    let node = node_term.as_atom().ok_or_else(badarg)?;
+    let disconnected = context
+        .net_kernel()
+        .is_some_and(|net_kernel| net_kernel.disconnect_node(node));
+    Ok(Term::atom(if disconnected {
+        Atom::TRUE
+    } else {
+        Atom::FALSE
+    }))
 }
 
 /// erlang:phash2/1 — deterministic portable hash in the default range.

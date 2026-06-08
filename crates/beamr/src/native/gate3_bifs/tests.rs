@@ -1,6 +1,8 @@
 use super::*;
 use crate::atom::{Atom, AtomTable};
-use crate::distribution::Node;
+use crate::distribution::connection::ConnectionManager;
+use crate::distribution::resolver::StaticResolver;
+use crate::distribution::{DEFAULT_NODE_NAME, NetKernel, Node};
 use crate::native::spawn::{
     SpawnError, SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult, SpawnRecord,
 };
@@ -331,6 +333,114 @@ fn node_1_badarg_for_non_pid_non_reference() {
     let mut ctx = context_with_local_node(&mut process, &atom_table);
 
     assert_eq!(bif_node_1(&[Term::small_int(1)], &mut ctx), Err(badarg()));
+}
+
+#[test]
+fn is_alive_false_without_distribution_node() {
+    let mut ctx = ProcessContext::new();
+
+    assert_eq!(bif_is_alive_0(&[], &mut ctx), Ok(Term::atom(Atom::FALSE)));
+}
+
+#[test]
+fn is_alive_false_for_default_node_name() {
+    let table = Arc::new(AtomTable::with_common_atoms());
+    let mut ctx = ProcessContext::new();
+    ctx.set_atom_table(Some(Arc::clone(&table)));
+    ctx.set_local_node(Some(Node::new(table.intern(DEFAULT_NODE_NAME), 0)));
+
+    assert_eq!(bif_is_alive_0(&[], &mut ctx), Ok(Term::atom(Atom::FALSE)));
+}
+
+#[test]
+fn is_alive_true_for_real_node_name() {
+    let table = Arc::new(AtomTable::with_common_atoms());
+    let mut ctx = ProcessContext::new();
+    ctx.set_atom_table(Some(Arc::clone(&table)));
+    ctx.set_local_node(Some(Node::new(table.intern("beamr@test"), 0)));
+
+    assert_eq!(bif_is_alive_0(&[], &mut ctx), Ok(Term::atom(Atom::TRUE)));
+}
+
+#[test]
+fn nodes_returns_connected_node_atoms() {
+    let table = Arc::new(AtomTable::with_common_atoms());
+    let node = table.intern("remote@test");
+    let manager = ConnectionManager::new(
+        Arc::clone(&table),
+        Arc::new(StaticResolver::new(std::collections::HashMap::new())),
+    );
+    let net_kernel = Arc::new(NetKernel::new(manager.clone()));
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    ctx.set_net_kernel(Some(net_kernel));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("failed to bind listener: {error}"));
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("failed to read listener addr: {error}"));
+    let client = std::net::TcpStream::connect(addr)
+        .unwrap_or_else(|error| panic!("failed to connect client: {error}"));
+    let (server, peer_addr) = listener
+        .accept()
+        .unwrap_or_else(|error| panic!("failed to accept client: {error}"));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|error| panic!("failed to build test runtime: {error}"));
+    runtime.block_on(async {
+        manager
+            .register_test_connection(node, peer_addr, server)
+            .unwrap_or_else(|error| panic!("failed to register test connection: {error}"));
+    });
+    drop(client);
+
+    let list = bif_nodes_0(&[], &mut ctx).expect("nodes/0 result");
+    let cons = Cons::new(list).expect("single-node list");
+    assert_eq!(cons.head(), Term::atom(node));
+    assert_eq!(cons.tail(), Term::NIL);
+}
+
+#[test]
+fn disconnect_node_removes_node_from_nodes() {
+    let table = Arc::new(AtomTable::with_common_atoms());
+    let node = table.intern("remote@test");
+    let manager = ConnectionManager::new(
+        Arc::clone(&table),
+        Arc::new(StaticResolver::new(std::collections::HashMap::new())),
+    );
+    let net_kernel = Arc::new(NetKernel::new(manager.clone()));
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    ctx.set_net_kernel(Some(net_kernel));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("failed to bind listener: {error}"));
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("failed to read listener addr: {error}"));
+    let client = std::net::TcpStream::connect(addr)
+        .unwrap_or_else(|error| panic!("failed to connect client: {error}"));
+    let (server, peer_addr) = listener
+        .accept()
+        .unwrap_or_else(|error| panic!("failed to accept client: {error}"));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|error| panic!("failed to build test runtime: {error}"));
+    runtime.block_on(async {
+        manager
+            .register_test_connection(node, peer_addr, server)
+            .unwrap_or_else(|error| panic!("failed to register test connection: {error}"));
+    });
+    drop(client);
+
+    assert_eq!(
+        bif_disconnect_node_1(&[Term::atom(node)], &mut ctx),
+        Ok(Term::atom(Atom::TRUE))
+    );
+    assert_eq!(bif_nodes_0(&[], &mut ctx), Ok(Term::NIL));
 }
 
 // ---- erlang:is_process_alive/1 ----

@@ -182,6 +182,7 @@ pub enum ExceptionClass {
 pub struct ProcessContext<'process> {
     pid: Option<u64>,
     local_node: Option<crate::distribution::Node>,
+    net_kernel: Option<Arc<crate::distribution::NetKernel>>,
     process: Option<&'process mut Process>,
     live_x: usize,
     timers: Option<Arc<Mutex<TimerWheel>>>,
@@ -213,6 +214,7 @@ impl fmt::Debug for ProcessContext<'_> {
         f.debug_struct("ProcessContext")
             .field("pid", &self.pid)
             .field("local_node", &self.local_node)
+            .field("net_kernel", &self.net_kernel.as_ref().map(|_| ".."))
             .field("process_heap", &self.process.as_ref().map(|_| ".."))
             .field("live_x", &self.live_x)
             .field("timers", &self.timers)
@@ -287,6 +289,8 @@ impl<'process> ProcessContext<'process> {
         Self {
             pid: None,
             local_node: None,
+            net_kernel: None,
+            net_kernel: None,
             process: None,
             live_x: 256,
             timers: None,
@@ -362,6 +366,17 @@ impl<'process> ProcessContext<'process> {
     /// Set the immutable local node identity for node-aware BIFs.
     pub fn set_local_node(&mut self, node: Option<crate::distribution::Node>) {
         self.local_node = node;
+    }
+
+    /// Return the net-kernel distribution facade, if one has been configured.
+    #[must_use]
+    pub fn net_kernel(&self) -> Option<&crate::distribution::NetKernel> {
+        self.net_kernel.as_deref()
+    }
+
+    /// Set the net-kernel distribution facade for distribution BIFs.
+    pub fn set_net_kernel(&mut self, net_kernel: Option<Arc<crate::distribution::NetKernel>>) {
+        self.net_kernel = net_kernel;
     }
 
     /// Returns true when the attached process is re-entering a timed suspend after expiry.

@@ -464,6 +464,14 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
     let atoms = AtomTable::new();
     let module_name = atoms.intern("slice_pin");
     let registry = Arc::new(ModuleRegistry::new());
+    let atom_table = Arc::new(crate::atom::AtomTable::new());
+    let distribution = DistributionConfig::default();
+    let net_kernel = Arc::new(crate::distribution::NetKernel::new(
+        crate::distribution::ConnectionManager::new(
+            Arc::clone(&atom_table),
+            distribution.resolver.clone(),
+        ),
+    ));
     let module_v1 = registry.insert(test_module(
         module_name,
         vec![
@@ -500,14 +508,14 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         link_set: Mutex::new(LinkSet::new()),
         monitor_set: Mutex::new(MonitorSet::new()),
         hook: Hook::new(),
-        distribution: DistributionConfig::default(),
+        distribution,
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
         io_ring: None,
         io_registry: None,
         io_bridge: Mutex::new(None),
         io_facility: None,
-        atom_table: Arc::new(crate::atom::AtomTable::new()),
+        atom_table,
         ets_registry: Arc::new(crate::ets::EtsRegistry::new()),
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
@@ -525,6 +533,8 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
             &crate::atom::AtomTable::new(),
         ),
         local_node: crate::distribution::Node::new(crate::atom::Atom::new(0), 0),
+        net_kernel,
+        net_kernel,
     });
     let mut process = Process::new(1, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
@@ -751,6 +761,14 @@ fn process_info_reads_executing_process_metadata() {
 
 #[test]
 fn tombstone_after_wait_store_prevents_wait_parking() {
+    let atom_table = Arc::new(crate::atom::AtomTable::new());
+    let distribution = DistributionConfig::default();
+    let net_kernel = Arc::new(crate::distribution::NetKernel::new(
+        crate::distribution::ConnectionManager::new(
+            Arc::clone(&atom_table),
+            distribution.resolver.clone(),
+        ),
+    ));
     let shared = Arc::new(SharedState {
         shutdown: AtomicBool::new(false),
         process_table: ProcessTable::new(),
@@ -776,14 +794,14 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         link_set: Mutex::new(LinkSet::new()),
         monitor_set: Mutex::new(MonitorSet::new()),
         hook: Hook::new(),
-        distribution: DistributionConfig::default(),
+        distribution,
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
         io_ring: None,
         io_registry: None,
         io_bridge: Mutex::new(None),
         io_facility: None,
-        atom_table: Arc::new(crate::atom::AtomTable::new()),
+        atom_table,
         ets_registry: Arc::new(crate::ets::EtsRegistry::new()),
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),

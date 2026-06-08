@@ -9,7 +9,7 @@ pub mod pattern;
 use std::sync::{Arc, Mutex};
 
 use crate::atom::AtomTable;
-use crate::distribution::Node;
+use crate::distribution::{NetKernel, Node};
 use crate::error::ExecError;
 use crate::io::{IoFacility, IoSink};
 use crate::module::{Module, ModuleRegistry};
@@ -34,6 +34,8 @@ pub struct NativeServices {
     pub atom_table: Option<Arc<AtomTable>>,
     /// Local node identity for node-aware BIFs.
     pub local_node: Option<Node>,
+    /// Net-kernel facade for distribution connection BIFs.
+    pub net_kernel: Option<Arc<NetKernel>>,
     /// Timer wheel for asynchronous timer BIFs.
     pub timers: Option<Arc<Mutex<TimerWheel>>>,
     /// Spawn facility for process creation BIFs.
@@ -117,6 +119,9 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
     let empty = NativeServices {
         atom_table: None,
         local_node: None,
+        net_kernel: None,
+        net_kernel: None,
+        net_kernel: None,
         timers: None,
         spawn_facility: None,
         link_facility: None,
