@@ -23,6 +23,7 @@ num_cpus = "1.17.0"
 rand = "0.10.1"
 rustix = { version = "1.1.4", features = ["fs", "net"] }
 serde_json = { version = "1.0.150", optional = true }
+tokio = { version = "1.52.3", features = ["net", "io-util", "time", "rt", "macros", "sync"] }
 
 [dev-dependencies]
 proptest = "1.11.0"
