@@ -1,1 +1,1 @@
-fix(ets): harden match spec eval error handling
+feat(ets): add match and select query BIFs

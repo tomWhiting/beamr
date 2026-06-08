@@ -1,7 +1,6 @@
 use dashmap::{DashMap, mapref::entry::Entry};
 
-use crate::term::Term;
-use crate::term::hash::EtsKey;
+use crate::term::{Term, compare, hash::EtsKey};
 
 use super::{EtsError, EtsTable, EtsTableMetadata, tuple_key};
 
@@ -42,6 +41,10 @@ impl EtsTable for EtsBag {
 
     fn delete_key(&self, key: Term) -> bool {
         delete_key(&self.storage, key)
+    }
+
+    fn delete_object(&self, tuple: Term) -> bool {
+        delete_object(&self.storage, tuple, self.metadata.keypos)
     }
 
     fn tab2list(&self) -> Vec<Term> {
@@ -88,6 +91,10 @@ impl EtsTable for EtsDuplicateBag {
         delete_key(&self.storage, key)
     }
 
+    fn delete_object(&self, tuple: Term) -> bool {
+        delete_object(&self.storage, tuple, self.metadata.keypos)
+    }
+
     fn tab2list(&self) -> Vec<Term> {
         tab2list(&self.storage)
     }
@@ -120,6 +127,26 @@ fn lookup_key(storage: &DashMap<EtsKey, Vec<Term>>, key: Term) -> Vec<Term> {
 
 fn delete_key(storage: &DashMap<EtsKey, Vec<Term>>, key: Term) -> bool {
     storage.remove(&EtsKey::new(key)).is_some()
+}
+
+fn delete_object(storage: &DashMap<EtsKey, Vec<Term>>, tuple: Term, keypos: usize) -> bool {
+    let Ok(key) = tuple_key(tuple, keypos) else {
+        return false;
+    };
+    let ets_key = EtsKey::new(key);
+    let (deleted, remove_bucket) = match storage.get_mut(&ets_key) {
+        Some(mut entry) => {
+            let values = entry.value_mut();
+            let original_len = values.len();
+            values.retain(|value| !compare::exact_eq(*value, tuple));
+            (values.len() != original_len, values.is_empty())
+        }
+        None => (false, false),
+    };
+    if remove_bucket {
+        storage.remove(&ets_key);
+    }
+    deleted
 }
 
 fn tab2list(storage: &DashMap<EtsKey, Vec<Term>>) -> Vec<Term> {

@@ -9,7 +9,7 @@ use std::{
 use crate::{
     atom::AtomTable,
     ets::{EtsError, EtsTable, EtsTableMetadata},
-    term::{Term, boxed::Tuple},
+    term::{Term, boxed::Tuple, compare},
 };
 
 use super::TermKey;
@@ -146,6 +146,23 @@ impl EtsTable for EtsOrderedSet {
     fn delete_key(&self, key: Term) -> bool {
         let key = self.key(key);
         self.with_rows_mut(|rows| rows.remove(&key).is_some())
+    }
+
+    fn delete_object(&self, tuple: Term) -> bool {
+        let Ok(key) = self.tuple_key(tuple) else {
+            return false;
+        };
+        self.with_rows_mut(|rows| {
+            if rows
+                .get(&key)
+                .is_some_and(|value| compare::exact_eq(*value, tuple))
+            {
+                rows.remove(&key);
+                true
+            } else {
+                false
+            }
+        })
     }
 
     fn tab2list(&self) -> Vec<Term> {
