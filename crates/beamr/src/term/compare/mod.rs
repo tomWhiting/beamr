@@ -4,10 +4,12 @@
 
 use std::cmp::Ordering;
 
+use super::pid_ref::PidRef;
+use super::reference_ref::ReferenceRef;
 use super::{
     Term,
     binary_ref::BinaryRef,
-    boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple},
+    boxed::{BigInt, Closure, Cons, Float, Map, Tuple},
 };
 use crate::atom::AtomTable;
 
@@ -101,11 +103,11 @@ fn rank(term: Term) -> TermRank {
         TermRank::Number
     } else if term.is_atom() {
         TermRank::Atom
-    } else if Reference::new(term).is_some() {
+    } else if ReferenceRef::new(term).is_some() {
         TermRank::Reference
     } else if Closure::new(term).is_some() {
         TermRank::Fun
-    } else if term.is_pid() {
+    } else if PidRef::new(term).is_some() {
         TermRank::Pid
     } else if Tuple::new(term).is_some() {
         TermRank::Tuple
@@ -139,10 +141,10 @@ fn compare_same_rank(
     match term_rank {
         TermRank::Number => compare_numbers(left, right),
         TermRank::Atom => compare_atoms_by_name(left, right, atom_table),
-        TermRank::Reference => reference_id(left).cmp(&reference_id(right)),
+        TermRank::Reference => reference_key(left).cmp(&reference_key(right)),
         TermRank::Fun => compare_closures(left, right, atom_table),
         TermRank::Port => Ordering::Equal,
-        TermRank::Pid => left.as_pid().cmp(&right.as_pid()),
+        TermRank::Pid => pid_key(left).cmp(&pid_key(right)),
         TermRank::Tuple => compare_tuples(left, right, atom_table),
         TermRank::Map => compare_maps(left, right, atom_table),
         TermRank::Nil => Ordering::Equal,
@@ -156,10 +158,10 @@ fn compare_same_rank_raw(left: Term, right: Term, term_rank: TermRank) -> Orderi
     match term_rank {
         TermRank::Number => compare_numbers(left, right),
         TermRank::Atom => left.raw().cmp(&right.raw()),
-        TermRank::Reference => reference_id(left).cmp(&reference_id(right)),
+        TermRank::Reference => reference_key(left).cmp(&reference_key(right)),
         TermRank::Fun => compare_closures_raw(left, right),
         TermRank::Port => Ordering::Equal,
-        TermRank::Pid => left.as_pid().cmp(&right.as_pid()),
+        TermRank::Pid => pid_key(left).cmp(&pid_key(right)),
         TermRank::Tuple => compare_tuples_raw(left, right),
         TermRank::Map => compare_maps_raw(left, right),
         TermRank::Nil => Ordering::Equal,
@@ -229,7 +231,7 @@ fn exact_kind(term: Term) -> ExactKind {
         ExactKind::Closure
     } else if Map::new(term).is_some() {
         ExactKind::Map
-    } else if Reference::new(term).is_some() {
+    } else if ReferenceRef::new(term).is_some() {
         ExactKind::Reference
     } else if BinaryRef::new(term).is_some() {
         ExactKind::Binary
@@ -244,14 +246,14 @@ fn compare_same_exact_kind(left: Term, right: Term, kind: ExactKind) -> Ordering
     match kind {
         ExactKind::SmallInt => left.as_small_int().cmp(&right.as_small_int()),
         ExactKind::Atom => left.raw().cmp(&right.raw()),
-        ExactKind::Pid => left.as_pid().cmp(&right.as_pid()),
+        ExactKind::Pid => pid_key(left).cmp(&pid_key(right)),
         ExactKind::Nil => Ordering::Equal,
         ExactKind::Tuple => compare_tuples_exact(left, right),
         ExactKind::Float => float_bits(left).cmp(&float_bits(right)),
         ExactKind::BigInt => compare_bigints(left, right),
         ExactKind::Closure => compare_closures_exact(left, right),
         ExactKind::Map => compare_maps_exact(left, right),
-        ExactKind::Reference => reference_id(left).cmp(&reference_id(right)),
+        ExactKind::Reference => reference_key(left).cmp(&reference_key(right)),
         ExactKind::Binary => binary_bytes(left).cmp(binary_bytes(right)),
         ExactKind::List => compare_lists_exact(left, right),
         ExactKind::Other => left.raw().cmp(&right.raw()),
@@ -289,8 +291,19 @@ fn float_bits(term: Term) -> Option<u64> {
     Some(float.value().to_bits())
 }
 
-fn reference_id(term: Term) -> Option<u64> {
-    Reference::new(term).map(Reference::id)
+fn pid_key(term: Term) -> Option<(Option<u32>, u64, u64)> {
+    PidRef::new(term).map(|pid| {
+        (
+            pid.node().map(|node| node.index()),
+            pid.pid_number(),
+            pid.serial(),
+        )
+    })
+}
+
+fn reference_key(term: Term) -> Option<(Option<u32>, u64)> {
+    ReferenceRef::new(term)
+        .map(|reference| (reference.node().map(|node| node.index()), reference.id()))
 }
 
 fn binary_bytes(term: Term) -> &'static [u8] {

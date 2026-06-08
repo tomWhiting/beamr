@@ -355,6 +355,10 @@ pub struct Reference {
 impl Reference {
     pub fn new(term: Term) -> Option<Self> {
         let ptr = header_ptr(term, BoxedTag::Reference)?;
+        if BoxedHeader::size(word_at(ptr, 0)) != 1 {
+            return None;
+        }
+
         Some(Self { ptr })
     }
 
@@ -362,6 +366,79 @@ impl Reference {
         // SAFETY: reference payload is one u64 id immediately after the header.
         unsafe { *self.ptr.add(1) }
     }
+}
+
+/// Borrowed accessor for a boxed remote PID.
+#[derive(Copy, Clone, Debug)]
+pub struct ExternalPid {
+    ptr: *const u64,
+}
+
+impl ExternalPid {
+    pub fn new(term: Term) -> Option<Self> {
+        let ptr = header_ptr(term, BoxedTag::ExternalPid)?;
+        if BoxedHeader::size(word_at(ptr, 0)) != 3
+            || Term::from_raw(word_at(ptr, 1)).as_atom().is_none()
+        {
+            return None;
+        }
+
+        Some(Self { ptr })
+    }
+
+    pub fn node(self) -> Option<Atom> {
+        Term::from_raw(self.word(1)).as_atom()
+    }
+
+    pub fn pid_number(self) -> u64 {
+        self.word(2)
+    }
+
+    pub fn serial(self) -> u64 {
+        self.word(3)
+    }
+
+    fn word(self, offset: usize) -> u64 {
+        // SAFETY: external PID payload contains fixed words after the header.
+        unsafe { *self.ptr.add(offset) }
+    }
+}
+
+/// Borrowed accessor for a boxed remote reference.
+#[derive(Copy, Clone, Debug)]
+pub struct ExternalReference {
+    ptr: *const u64,
+}
+
+impl ExternalReference {
+    pub fn new(term: Term) -> Option<Self> {
+        let ptr = header_ptr(term, BoxedTag::ExternalReference)?;
+        if BoxedHeader::size(word_at(ptr, 0)) != 2
+            || Term::from_raw(word_at(ptr, 1)).as_atom().is_none()
+        {
+            return None;
+        }
+
+        Some(Self { ptr })
+    }
+
+    pub fn node(self) -> Option<Atom> {
+        Term::from_raw(self.word(1)).as_atom()
+    }
+
+    pub fn id(self) -> u64 {
+        self.word(2)
+    }
+
+    fn word(self, offset: usize) -> u64 {
+        // SAFETY: external reference payload contains fixed words after the header.
+        unsafe { *self.ptr.add(offset) }
+    }
+}
+
+fn word_at(ptr: *const u64, offset: usize) -> u64 {
+    // SAFETY: caller has verified that `ptr` is a boxed object header pointer.
+    unsafe { *ptr.add(offset) }
 }
 
 fn header_ptr(term: Term, expected_tag: BoxedTag) -> Option<*const u64> {

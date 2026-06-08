@@ -8,7 +8,10 @@
 mod accessors;
 
 pub use crate::io::resource::FdResource;
-pub use accessors::{BigInt, Closure, Cons, Float, Map, ProcBin, Reference, SubBinary, Tuple};
+pub use accessors::{
+    BigInt, Closure, Cons, ExternalPid, ExternalReference, Float, Map, ProcBin, Reference,
+    SubBinary, Tuple,
+};
 
 use crate::{atom::Atom, term::Term};
 
@@ -32,6 +35,8 @@ pub enum BoxedTag {
     ProcBin = 0x19,
     SubBinary = 0x1A,
     FdResource = 0x1B,
+    ExternalPid = 0x1C,
+    ExternalReference = 0x1D,
 }
 
 impl BoxedTag {
@@ -49,6 +54,8 @@ impl BoxedTag {
             bits if bits == Self::ProcBin as u64 => Some(Self::ProcBin),
             bits if bits == Self::SubBinary as u64 => Some(Self::SubBinary),
             bits if bits == Self::FdResource as u64 => Some(Self::FdResource),
+            bits if bits == Self::ExternalPid as u64 => Some(Self::ExternalPid),
+            bits if bits == Self::ExternalReference as u64 => Some(Self::ExternalReference),
             _ => None,
         }
     }
@@ -85,6 +92,38 @@ pub fn write_tuple(heap: &mut [u64], elements: &[Term]) -> Option<Term> {
     for (slot, element) in heap[1..].iter_mut().zip(elements.iter()) {
         *slot = element.raw();
     }
+
+    Some(Term::boxed_ptr(heap.as_ptr()))
+}
+
+/// Writes a remote PID layout (`header, node_atom, pid_number, serial`) into `heap`.
+pub fn write_external_pid(
+    heap: &mut [u64],
+    node: Atom,
+    pid_number: u64,
+    serial: u64,
+) -> Option<Term> {
+    if heap.len() < 4 {
+        return None;
+    }
+
+    heap[0] = BoxedHeader::new(BoxedTag::ExternalPid, 3);
+    heap[1] = Term::atom(node).raw();
+    heap[2] = pid_number;
+    heap[3] = serial;
+
+    Some(Term::boxed_ptr(heap.as_ptr()))
+}
+
+/// Writes a remote reference layout (`header, node_atom, id`) into `heap`.
+pub fn write_external_reference(heap: &mut [u64], node: Atom, id: u64) -> Option<Term> {
+    if heap.len() < 3 {
+        return None;
+    }
+
+    heap[0] = BoxedHeader::new(BoxedTag::ExternalReference, 2);
+    heap[1] = Term::atom(node).raw();
+    heap[2] = id;
 
     Some(Term::boxed_ptr(heap.as_ptr()))
 }
@@ -211,6 +250,8 @@ mod tests {
             BoxedTag::ProcBin,
             BoxedTag::SubBinary,
             BoxedTag::FdResource,
+            BoxedTag::ExternalPid,
+            BoxedTag::ExternalReference,
         ];
 
         for (index, tag) in tags.iter().copied().enumerate() {
@@ -290,6 +331,33 @@ mod tests {
         let third_cons = Cons::new(second_cons.tail()).expect("third");
         assert_eq!(third_cons.head(), Term::small_int(3));
         assert_eq!(third_cons.tail(), Term::NIL);
+    }
+
+    #[test]
+    fn external_pid_write_then_read_round_trip() {
+        let mut heap = [0_u64; 4];
+        let term = write_external_pid(&mut heap, Atom::OK, 123, 4).expect("external pid fits");
+
+        assert!(term.is_boxed());
+        assert_eq!(BoxedHeader::tag(heap[0]), Some(BoxedTag::ExternalPid));
+        assert_eq!(BoxedHeader::size(heap[0]), 3);
+        let pid = ExternalPid::new(term).expect("external pid accessor");
+        assert_eq!(pid.node(), Some(Atom::OK));
+        assert_eq!(pid.pid_number(), 123);
+        assert_eq!(pid.serial(), 4);
+    }
+
+    #[test]
+    fn external_reference_write_then_read_round_trip() {
+        let mut heap = [0_u64; 3];
+        let term = write_external_reference(&mut heap, Atom::OK, 987).expect("external ref fits");
+
+        assert!(term.is_boxed());
+        assert_eq!(BoxedHeader::tag(heap[0]), Some(BoxedTag::ExternalReference));
+        assert_eq!(BoxedHeader::size(heap[0]), 2);
+        let reference = ExternalReference::new(term).expect("external reference accessor");
+        assert_eq!(reference.node(), Some(Atom::OK));
+        assert_eq!(reference.id(), 987);
     }
 
     #[test]

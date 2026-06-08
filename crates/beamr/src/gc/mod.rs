@@ -238,6 +238,8 @@ pub(crate) fn rewrite_copied_object(
         BoxedTag::Float
         | BoxedTag::BigInt
         | BoxedTag::Reference
+        | BoxedTag::ExternalPid
+        | BoxedTag::ExternalReference
         | BoxedTag::Binary
         | BoxedTag::BinaryBuilder => {}
     }

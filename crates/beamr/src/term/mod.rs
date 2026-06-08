@@ -12,6 +12,8 @@ pub mod compare;
 pub mod hash;
 #[cfg(feature = "json")]
 pub mod json;
+pub mod pid_ref;
+pub mod reference_ref;
 pub mod shared_binary;
 pub mod sub_binary;
 
@@ -178,9 +180,19 @@ impl Term {
         matches!(self.tag(), Tag::Atom)
     }
 
-    /// Returns `true` when this term is an immediate pid.
-    pub const fn is_pid(self) -> bool {
+    /// Returns `true` when this term is any PID term.
+    pub fn is_pid(self) -> bool {
+        self.is_local_pid() || self.is_remote_pid()
+    }
+
+    /// Returns `true` when this term is an immediate local PID.
+    pub const fn is_local_pid(self) -> bool {
         matches!(self.tag(), Tag::Pid)
+    }
+
+    /// Returns `true` when this term is a boxed remote PID.
+    pub fn is_remote_pid(self) -> bool {
+        boxed::ExternalPid::new(self).is_some()
     }
 
     /// Returns `true` only for the canonical empty list / nil value.
@@ -252,7 +264,7 @@ impl Term {
 
     /// Decodes this term as local pid data, if it is one.
     pub const fn as_pid(self) -> Option<u64> {
-        if self.is_pid() {
+        if self.is_local_pid() {
             Some(self.0 >> TAG_BITS)
         } else {
             None
@@ -336,6 +348,8 @@ mod tests {
 
             assert_eq!(term.as_pid(), Some(pid));
             assert!(term.is_pid());
+            assert!(term.is_local_pid());
+            assert!(!term.is_remote_pid());
             assert_eq!(term.tag(), Tag::Pid);
             assert!(!term.is_small_int());
             assert!(!term.is_atom());

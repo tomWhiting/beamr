@@ -12,6 +12,7 @@ use self::dirty::DirtyPool;
 use self::execution::scheduler_loop;
 use self::spawning::SpawnRequest;
 use crate::atom::AtomTable;
+use crate::distribution::{DEFAULT_NODE_NAME, Node};
 use crate::error::ExecError;
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::hook::Hook;
@@ -48,6 +49,8 @@ pub struct SchedulerConfig {
     pub dirty_io_threads: Option<usize>,
     pub dirty_queue_depth: Option<usize>,
     pub io: Option<RingConfig>,
+    pub node_name: Option<String>,
+    pub creation: Option<u32>,
 }
 pub(super) struct SharedState {
     shutdown: AtomicBool,
@@ -56,6 +59,7 @@ pub(super) struct SharedState {
     namespace_store: DashMap<NamespaceId, Arc<ModuleRegistry>>,
     next_namespace_id: AtomicU64,
     atom_table: Arc<AtomTable>,
+    local_node: Node,
     ets_registry: Arc<EtsRegistry>,
     bif_registry: Arc<BifRegistryImpl>,
     capability_policy: Arc<dyn CapabilityPolicy>,
@@ -88,6 +92,9 @@ pub(super) struct SharedState {
     io_bridge: Mutex<Option<IoCompletionBridge>>,
     io_facility: Option<Arc<dyn IoFacility>>,
     standard_io_pid: u64,
+
+    // Kept for ownership: dropping SharedState must also stop the backing standard I/O server.
+
     #[allow(dead_code)]
     standard_io_server: StandardIoServer,
     #[cfg(test)]
@@ -299,6 +306,11 @@ impl Scheduler {
         let standard_io_ring: Arc<dyn CompletionRing> =
             Arc::from(crate::io::create_ring(RingConfig::default()));
         let standard_io_pid = 0u64;
+        let local_node_name = config.node_name.as_deref().unwrap_or(DEFAULT_NODE_NAME);
+        let local_node = Node::new(
+            atom_table.intern(local_node_name),
+            config.creation.unwrap_or(0),
+        );
         let standard_io_server =
             StandardIoServer::new(standard_io_pid, standard_io_ring, atom_table.as_ref());
         let shared = Arc::new(SharedState {
@@ -308,6 +320,7 @@ impl Scheduler {
             namespace_store,
             next_namespace_id: AtomicU64::new(1),
             atom_table,
+            local_node,
             ets_registry: Arc::new(EtsRegistry::new()),
             bif_registry,
             capability_policy,
@@ -468,6 +481,10 @@ impl Scheduler {
     #[must_use]
     pub fn atom_limit(&self) -> usize {
         self.shared.atom_table.limit()
+    }
+    #[must_use]
+    pub fn local_node(&self) -> Node {
+        self.shared.local_node
     }
     #[must_use]
     pub fn worker_names(&self) -> &[String] {

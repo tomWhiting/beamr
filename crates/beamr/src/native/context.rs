@@ -17,7 +17,8 @@ use crate::native::stdlib_stubs::{lists_hof_bifs::ListsHofState, maps_bifs::Maps
 use crate::process::{Priority, Process};
 use crate::term::Term;
 use crate::term::boxed::{
-    write_bigint, write_cons, write_float, write_map, write_reference, write_tuple,
+    write_bigint, write_cons, write_external_pid, write_external_reference, write_float, write_map,
+    write_reference, write_tuple,
 };
 use crate::term::compare;
 use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
@@ -180,6 +181,7 @@ pub enum ExceptionClass {
 
 pub struct ProcessContext<'process> {
     pid: Option<u64>,
+    local_node: Option<crate::distribution::Node>,
     process: Option<&'process mut Process>,
     live_x: usize,
     timers: Option<Arc<Mutex<TimerWheel>>>,
@@ -210,6 +212,7 @@ impl fmt::Debug for ProcessContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProcessContext")
             .field("pid", &self.pid)
+            .field("local_node", &self.local_node)
             .field("process_heap", &self.process.as_ref().map(|_| ".."))
             .field("live_x", &self.live_x)
             .field("timers", &self.timers)
@@ -283,6 +286,7 @@ impl<'process> ProcessContext<'process> {
     pub fn new() -> Self {
         Self {
             pid: None,
+            local_node: None,
             process: None,
             live_x: 256,
             timers: None,
@@ -315,6 +319,7 @@ impl<'process> ProcessContext<'process> {
     pub fn with_timer_services(pid: u64, timers: Arc<Mutex<TimerWheel>>) -> Self {
         Self {
             pid: Some(pid),
+            local_node: None,
             process: None,
             live_x: 256,
             timers: Some(timers),
@@ -346,6 +351,17 @@ impl<'process> ProcessContext<'process> {
     #[must_use]
     pub fn pid(&self) -> Option<u64> {
         self.pid
+    }
+
+    /// Return the immutable local node identity when provided by the runtime.
+    #[must_use]
+    pub fn local_node(&self) -> Option<crate::distribution::Node> {
+        self.local_node
+    }
+
+    /// Set the immutable local node identity for node-aware BIFs.
+    pub fn set_local_node(&mut self, node: Option<crate::distribution::Node>) {
+        self.local_node = node;
     }
 
     /// Returns true when the attached process is re-entering a timed suspend after expiry.
@@ -989,6 +1005,29 @@ impl<'process> ProcessContext<'process> {
     pub fn alloc_reference(&mut self, id: u64) -> Result<Term, Term> {
         let heap = self.alloc_words(2)?;
         write_reference(heap, id).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a remote PID on the calling process heap.
+    pub fn alloc_external_pid(
+        &mut self,
+        node: crate::atom::Atom,
+        pid_number: u64,
+        serial: u64,
+    ) -> Result<Term, Term> {
+        let heap = self.alloc_words(4)?;
+        write_external_pid(heap, node, pid_number, serial)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a remote reference on the calling process heap.
+    pub fn alloc_external_reference(
+        &mut self,
+        node: crate::atom::Atom,
+        id: u64,
+    ) -> Result<Term, Term> {
+        let heap = self.alloc_words(3)?;
+        write_external_reference(heap, node, id)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
     /// Allocate a cons cell on the calling process heap.

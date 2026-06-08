@@ -9,8 +9,10 @@ use std::hash::{Hash, Hasher};
 use super::{
     Term,
     binary_ref::BinaryRef,
-    boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple},
+    boxed::{BigInt, Closure, Cons, Float, Map, Tuple},
     compare,
+    pid_ref::PidRef,
+    reference_ref::ReferenceRef,
 };
 
 /// ETS-only key wrapper for hash maps keyed by arbitrary BEAM terms.
@@ -125,9 +127,12 @@ fn hash_term(term: Term, state: &mut StableHasher) {
     } else if let Some(atom) = term.as_atom() {
         hash_kind(HashKind::Atom, state);
         state.write_u64(u64::from(atom.index()));
-    } else if let Some(pid) = term.as_pid() {
+    } else if let Some(pid) = PidRef::new(term) {
         hash_kind(HashKind::Pid, state);
-        state.write_u64(pid);
+        state.write_u8(u8::from(pid.node().is_some()));
+        state.write_u32(pid.node().map_or(0, |node| node.index()));
+        state.write_u64(pid.pid_number());
+        state.write_u64(pid.serial());
     } else if term.is_nil() {
         hash_kind(HashKind::Nil, state);
     } else if let Some(tuple) = Tuple::new(term) {
@@ -141,8 +146,10 @@ fn hash_term(term: Term, state: &mut StableHasher) {
         hash_closure(closure, state);
     } else if let Some(map) = Map::new(term) {
         hash_map(map, state);
-    } else if let Some(reference) = Reference::new(term) {
+    } else if let Some(reference) = ReferenceRef::new(term) {
         hash_kind(HashKind::Reference, state);
+        state.write_u8(u8::from(reference.node().is_some()));
+        state.write_u32(reference.node().map_or(0, |node| node.index()));
         state.write_u64(reference.id());
     } else if let Some(binary) = BinaryRef::new(term) {
         hash_kind(HashKind::Binary, state);

@@ -21,6 +21,11 @@ use crate::term::Term;
 use crate::term::binary::Binary;
 use crate::term::boxed::{Cons, Float, Tuple};
 
+use crate::term::boxed::{Cons, Tuple};
+use crate::term::pid_ref::PidRef;
+use crate::term::reference_ref::ReferenceRef;
+
+
 pub use additional::{
     bif_binary_part, bif_bit_size, bif_is_bitstring, bif_is_map_key, bif_map_size, bif_round,
     bif_trunc, bif_unary_minus,
@@ -41,6 +46,8 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("send", 2, Capability::Pure, bif_send),
     ("tuple_size", 1, Capability::Pure, bif_tuple_size),
     ("make_ref", 0, Capability::Pure, bif_make_ref),
+    ("node", 0, Capability::Pure, bif_node_0),
+    ("node", 1, Capability::Pure, bif_node_1),
     (
         "is_process_alive",
         1,
@@ -198,19 +205,37 @@ pub fn bif_tuple_size(args: &[Term], _context: &mut ProcessContext) -> Result<Te
         .ok_or_else(badarg)
 }
 
-/// erlang:make_ref/0 — returns a unique reference as a small integer.
-///
-/// Uses a global monotonic counter. The reference is returned as a small
-/// integer (same simplification as monitor/2 in Gate 2).
-pub fn bif_make_ref(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+/// erlang:make_ref/0 — returns a unique local reference.
+pub fn bif_make_ref(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     if !args.is_empty() {
         return Err(badarg());
     }
     let id = REF_COUNTER.fetch_add(1, Ordering::Relaxed);
-    i64::try_from(id)
-        .ok()
-        .and_then(Term::try_small_int)
-        .ok_or_else(badarg)
+    context.alloc_reference(id)
+}
+
+/// erlang:node/0 — returns the local node name atom.
+pub fn bif_node_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    let local_node = context.local_node().ok_or_else(badarg)?;
+    Ok(Term::atom(local_node.name))
+}
+
+/// erlang:node/1 — returns the originating node of a PID or reference term.
+pub fn bif_node_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [term] = args else {
+        return Err(badarg());
+    };
+    let local_node = context.local_node().ok_or_else(badarg)?;
+    if let Some(pid) = PidRef::new(*term) {
+        return Ok(Term::atom(pid.node().unwrap_or(local_node.name)));
+    }
+    if let Some(reference) = ReferenceRef::new(*term) {
+        return Ok(Term::atom(reference.node().unwrap_or(local_node.name)));
+    }
+    Err(badarg())
 }
 
 /// erlang:phash2/1 — deterministic portable hash in the default range.
@@ -516,10 +541,15 @@ pub fn bif_demonitor_2(args: &[Term], context: &mut ProcessContext) -> Result<Te
     let [ref_term, opts_term] = args else {
         return Err(badarg());
     };
-    let reference = ref_term.as_small_int().ok_or_else(badarg)?;
-    if reference < 0 {
-        return Err(badarg());
-    }
+    let reference = if let Some(reference) = ReferenceRef::new(*ref_term) {
+        reference.id()
+    } else {
+        let legacy_reference = ref_term.as_small_int().ok_or_else(badarg)?;
+        if legacy_reference < 0 {
+            return Err(badarg());
+        }
+        legacy_reference as u64
+    };
 
     let mut opt_flush = false;
     let mut opt_info = false;
@@ -543,7 +573,7 @@ pub fn bif_demonitor_2(args: &[Term], context: &mut ProcessContext) -> Result<Te
 
     let caller_pid = context.pid().ok_or_else(badarg)?;
     let facility = context.supervision_facility().ok_or_else(badarg)?;
-    let result = facility.demonitor(caller_pid, reference as u64);
+    let result = facility.demonitor(caller_pid, reference);
 
     // `flush` option: in a real implementation this would also flush
     // any pending DOWN message from the mailbox. Since BIFs don't

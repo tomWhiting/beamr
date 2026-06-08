@@ -414,6 +414,7 @@ fn submit_dirty_call(
         ProcessContext::with_timer_services(process.pid(), Arc::clone(&shared.timers));
     let services = supervision_integration::build_native_services(shared, process.namespace_id());
     context.set_atom_table(services.atom_table);
+    context.set_local_node(services.local_node);
     context.set_spawn_facility(services.spawn_facility);
     context.set_link_facility(services.link_facility);
     context.set_group_leader_facility(services.group_leader_facility);

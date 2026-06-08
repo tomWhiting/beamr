@@ -10,7 +10,8 @@ use crate::loader::decode::{BifOp, ComparisonOp, TypeTestOp};
 use crate::module::{Module, ResolvedImportTarget};
 use crate::native::ProcessContext;
 use crate::process::{CodePosition, Process};
-use crate::term::boxed::{Closure, Cons, Float, Map, Reference, Tuple};
+use crate::term::boxed::{Closure, Cons, Float, Map, Tuple};
+use crate::term::reference_ref::ReferenceRef;
 use crate::term::{Term, binary_ref::BinaryRef, compare};
 
 use super::core;
@@ -263,7 +264,7 @@ fn matches_type(op: TypeTestOp, value: Term, arity: Option<usize>) -> Result<boo
         TypeTestOp::IsNumber => value.is_small_int() || Float::new(value).is_some(),
         TypeTestOp::IsAtom => value.is_atom(),
         TypeTestOp::IsPid => value.is_pid(),
-        TypeTestOp::IsReference => Reference::new(value).is_some(),
+        TypeTestOp::IsReference => ReferenceRef::new(value).is_some(),
         TypeTestOp::IsPort => false,
         TypeTestOp::IsNil => value.is_nil(),
         TypeTestOp::IsBinary | TypeTestOp::IsBitstr => BinaryRef::new(value).is_some(),

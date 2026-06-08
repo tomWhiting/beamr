@@ -228,7 +228,9 @@ fn rebase_boxed_block_terms(block: &mut [u64], mappings: &[(*const u64, *const u
             | BoxedTag::Binary
             | BoxedTag::BinaryBuilder
             | BoxedTag::ProcBin
-            | BoxedTag::FdResource,
+            | BoxedTag::FdResource
+            | BoxedTag::ExternalPid
+            | BoxedTag::ExternalReference,
         )
         | None => {}
     }

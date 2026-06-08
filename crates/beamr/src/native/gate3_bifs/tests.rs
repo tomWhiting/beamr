@@ -1,5 +1,6 @@
 use super::*;
 use crate::atom::{Atom, AtomTable};
+use crate::distribution::Node;
 use crate::native::spawn::{
     SpawnError, SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult, SpawnRecord,
 };
@@ -12,6 +13,12 @@ use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary;
 use crate::term::boxed::{Float, write_closure, write_cons, write_float, write_tuple};
+
+use crate::term::boxed::{
+    write_closure, write_external_pid, write_external_reference, write_tuple,
+};
+use crate::term::reference_ref::ReferenceRef;
+
 use std::sync::{Arc, Mutex};
 
 fn context(process: &mut Process) -> ProcessContext<'_> {
@@ -219,11 +226,11 @@ fn tuple_size_badarg_wrong_arity() {
 // ---- erlang:make_ref/0 ----
 
 #[test]
-fn make_ref_returns_small_int() {
+fn make_ref_returns_local_reference() {
     let mut process = Process::new(1, 128);
     let mut ctx = context(&mut process);
     let result = bif_make_ref(&[], &mut ctx).expect("make_ref");
-    assert!(result.as_small_int().is_some());
+    assert!(ReferenceRef::new(result).is_some());
 }
 
 #[test]
@@ -240,6 +247,91 @@ fn make_ref_badarg_wrong_arity() {
     let mut process = Process::new(1, 128);
     let mut ctx = context(&mut process);
     assert_eq!(bif_make_ref(&[Term::small_int(1)], &mut ctx), Err(badarg()));
+}
+
+// ---- erlang:node/0,1 ----
+
+fn context_with_local_node<'a>(
+    process: &'a mut Process,
+    atom_table: &AtomTable,
+) -> ProcessContext<'a> {
+    let local_name = atom_table.intern("nonode@nohost");
+    let mut ctx = context(process);
+    ctx.set_local_node(Some(Node::new(local_name, 0)));
+    ctx
+}
+
+#[test]
+fn node_0_returns_local_node_name() {
+    let atom_table = AtomTable::new();
+    let mut process = Process::new(1, 128);
+    let mut ctx = context_with_local_node(&mut process, &atom_table);
+    let local_name = atom_table.intern("nonode@nohost");
+
+    assert_eq!(bif_node_0(&[], &mut ctx), Ok(Term::atom(local_name)));
+}
+
+#[test]
+fn node_1_returns_local_node_for_local_pid() {
+    let atom_table = AtomTable::new();
+    let mut process = Process::new(1, 128);
+    let mut ctx = context_with_local_node(&mut process, &atom_table);
+    let local_name = atom_table.intern("nonode@nohost");
+
+    assert_eq!(
+        bif_node_1(&[Term::pid(1)], &mut ctx),
+        Ok(Term::atom(local_name))
+    );
+}
+
+#[test]
+fn node_1_returns_remote_node_for_remote_pid() {
+    let atom_table = AtomTable::new();
+    let remote_name = atom_table.intern("remote@example.test");
+    let mut process = Process::new(1, 128);
+    let mut ctx = context_with_local_node(&mut process, &atom_table);
+    let mut heap = [0_u64; 4];
+    let pid = write_external_pid(&mut heap, remote_name, 42, 3).expect("remote pid");
+
+    assert_eq!(bif_node_1(&[pid], &mut ctx), Ok(Term::atom(remote_name)));
+}
+
+#[test]
+fn node_1_returns_local_node_for_local_reference() {
+    let atom_table = AtomTable::new();
+    let mut process = Process::new(1, 128);
+    let mut ctx = context_with_local_node(&mut process, &atom_table);
+    let local_name = atom_table.intern("nonode@nohost");
+    let reference = bif_make_ref(&[], &mut ctx).expect("make_ref");
+
+    assert_eq!(
+        bif_node_1(&[reference], &mut ctx),
+        Ok(Term::atom(local_name))
+    );
+}
+
+#[test]
+fn node_1_returns_remote_node_for_remote_reference() {
+    let atom_table = AtomTable::new();
+    let remote_name = atom_table.intern("remote@example.test");
+    let mut process = Process::new(1, 128);
+    let mut ctx = context_with_local_node(&mut process, &atom_table);
+    let mut heap = [0_u64; 3];
+    let reference = write_external_reference(&mut heap, remote_name, 99).expect("remote ref");
+
+    assert_eq!(
+        bif_node_1(&[reference], &mut ctx),
+        Ok(Term::atom(remote_name))
+    );
+}
+
+#[test]
+fn node_1_badarg_for_non_pid_non_reference() {
+    let atom_table = AtomTable::new();
+    let mut process = Process::new(1, 128);
+    let mut ctx = context_with_local_node(&mut process, &atom_table);
+
+    assert_eq!(bif_node_1(&[Term::small_int(1)], &mut ctx), Err(badarg()));
 }
 
 // ---- erlang:is_process_alive/1 ----
@@ -622,6 +714,8 @@ fn register_gate3_bifs_registers_all() {
         ("send", 2),
         ("tuple_size", 1),
         ("make_ref", 0),
+        ("node", 0),
+        ("node", 1),
         ("is_process_alive", 1),
         ("spawn", 1),
         ("spawn_link", 1),
