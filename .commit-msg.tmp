@@ -1,1 +1,1 @@
-feat(beamr): add pluggable distribution node resolver
+review: harden B-113 distribution resolver wiring
