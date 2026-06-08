@@ -14,6 +14,7 @@ pub mod etf_bifs;
 pub mod ets_bifs;
 pub mod exception_bifs;
 pub mod file_bifs;
+pub mod file_meta_bifs;
 pub mod gate3_bifs;
 pub mod gleam_ffi;
 pub mod group_leader;

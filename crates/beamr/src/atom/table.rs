@@ -56,17 +56,23 @@ impl Atom {
     pub const EPIPE: Self = Self(42);
     pub const EAGAIN: Self = Self(43);
     pub const EINVAL: Self = Self(44);
-    pub const UNKNOWN_ERROR: Self = Self(45);
-    pub const CLOSED: Self = Self(46);
-    pub const INCOMPLETE: Self = Self(47);
-    pub const READ: Self = Self(48);
-    pub const WRITE: Self = Self(49);
-    pub const APPEND: Self = Self(50);
-    pub const CREATE: Self = Self(51);
-    pub const TRUNCATE: Self = Self(52);
-    pub const BOF: Self = Self(53);
-    pub const CUR: Self = Self(54);
-    pub const EOF: Self = Self(55);
+    pub const ENOTEMPTY: Self = Self(45);
+    pub const EXDEV: Self = Self(46);
+    pub const ELOOP: Self = Self(47);
+    pub const EROFS: Self = Self(48);
+    pub const ENAMETOOLONG: Self = Self(49);
+    pub const EPERM: Self = Self(50);
+    pub const UNKNOWN_ERROR: Self = Self(51);
+    pub const CLOSED: Self = Self(52);
+    pub const INCOMPLETE: Self = Self(53);
+    pub const READ: Self = Self(54);
+    pub const WRITE: Self = Self(55);
+    pub const APPEND: Self = Self(56);
+    pub const CREATE: Self = Self(57);
+    pub const TRUNCATE: Self = Self(58);
+    pub const BOF: Self = Self(59);
+    pub const CUR: Self = Self(60);
+    pub const EOF: Self = Self(61);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -123,6 +129,12 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("epipe", Atom::EPIPE),
     ("eagain", Atom::EAGAIN),
     ("einval", Atom::EINVAL),
+    ("enotempty", Atom::ENOTEMPTY),
+    ("exdev", Atom::EXDEV),
+    ("eloop", Atom::ELOOP),
+    ("erofs", Atom::EROFS),
+    ("enametoolong", Atom::ENAMETOOLONG),
+    ("eperm", Atom::EPERM),
     ("unknown_error", Atom::UNKNOWN_ERROR),
     ("closed", Atom::CLOSED),
     ("incomplete", Atom::INCOMPLETE),

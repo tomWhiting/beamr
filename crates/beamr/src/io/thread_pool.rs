@@ -187,6 +187,16 @@ fn execute_op(op: IoOp) -> io::Result<IoResult> {
             flags,
             mask,
         } => statx_fd(dir_fd, &path, flags, mask),
+        IoOp::ListDir { path } => {
+            crate::native::file_meta_bifs::read_dir_entries(&path).map(IoResult::DirList)
+        }
+        IoOp::MakeDir { path } => std::fs::create_dir(path).map(|()| IoResult::Completed),
+        IoOp::DelFile { path } => std::fs::remove_file(path).map(|()| IoResult::Completed),
+        IoOp::DelDir { path } => std::fs::remove_dir(path).map(|()| IoResult::Completed),
+        IoOp::Rename {
+            source,
+            destination,
+        } => std::fs::rename(source, destination).map(|()| IoResult::Completed),
         IoOp::Nop => Ok(IoResult::Completed),
     }
 }

@@ -49,6 +49,19 @@ pub enum IoOp {
         flags: i32,
         mask: u32,
     },
+    /// List a directory's entry filenames.
+    ListDir { path: PathBuf },
+    /// Create a directory.
+    MakeDir { path: PathBuf },
+    /// Delete a file.
+    DelFile { path: PathBuf },
+    /// Delete an empty directory.
+    DelDir { path: PathBuf },
+    /// Rename a file or directory.
+    Rename {
+        source: PathBuf,
+        destination: PathBuf,
+    },
     /// Complete without performing I/O.
     Nop,
 }
@@ -103,6 +116,8 @@ pub enum IoResult {
     Opened(RawFd),
     /// Stat result.
     StatResult(StatxData),
+    /// Directory entry filename list.
+    DirList(Vec<Vec<u8>>),
     /// Generic successful completion.
     Completed,
 }

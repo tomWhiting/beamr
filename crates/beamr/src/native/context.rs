@@ -83,6 +83,18 @@ pub enum FileIoContinuation {
     },
     /// `erlang:file_seek/3` EOF completion.
     SeekEof { fd: Arc<FdInner>, offset: i64 },
+    /// `erlang:file_info/1` completion.
+    FileInfo,
+    /// `erlang:list_dir/1` completion.
+    ListDir,
+    /// `erlang:make_dir/1` completion.
+    MakeDir,
+    /// `erlang:del_file/1` completion.
+    DelFile,
+    /// `erlang:del_dir/1` completion.
+    DelDir,
+    /// `erlang:rename/2` completion.
+    Rename,
 }
 
 /// Completion facility used by file BIFs to submit ring work and retrieve resume completions.

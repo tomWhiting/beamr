@@ -60,6 +60,7 @@ pub fn register_gate1_bifs(
     crate::native::ets_bifs::register_ets_bifs(registry, atom_table)?;
     crate::native::exception_bifs::register_exception_bifs(registry, atom_table)?;
     crate::native::file_bifs::register_file_bifs(registry, atom_table)?;
+    crate::native::file_meta_bifs::register_file_meta_bifs(registry, atom_table)?;
     crate::native::process_info_bifs::register_process_info_bifs(registry, atom_table)?;
     crate::native::system_info_bifs::register_system_info_bifs(registry, atom_table)?;
 

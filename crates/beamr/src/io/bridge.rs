@@ -153,6 +153,7 @@ fn io_completion_to_term(result: io::Result<IoResult>) -> Term {
         | Ok(IoResult::Closed)
         | Ok(IoResult::Synced)
         | Ok(IoResult::StatResult(_))
+        | Ok(IoResult::DirList(_))
         | Ok(IoResult::Completed) => Term::small_int(0),
         Err(error) => match error.raw_os_error() {
             Some(code) => i64_to_term(-i64::from(code)),
