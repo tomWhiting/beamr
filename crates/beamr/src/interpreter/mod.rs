@@ -120,8 +120,6 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         atom_table: None,
         local_node: None,
         net_kernel: None,
-        net_kernel: None,
-        net_kernel: None,
         timers: None,
         spawn_facility: None,
         link_facility: None,
@@ -149,6 +147,7 @@ pub fn run_with_registry(
     let empty = NativeServices {
         atom_table: None,
         local_node: None,
+        net_kernel: None,
         timers: None,
         spawn_facility: None,
         link_facility: None,
@@ -176,6 +175,7 @@ pub fn run_with_timer_services(
     let services = NativeServices {
         atom_table: None,
         local_node: None,
+        net_kernel: None,
         timers: Some(timers),
         spawn_facility: None,
         link_facility: None,

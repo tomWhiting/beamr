@@ -41,71 +41,6 @@ impl fmt::Display for ConnectError {
             Self::Io(error) => write!(formatter, "distribution TCP connection failed: {error}"),
         }
     }
-
-    #[tokio::test]
-    async fn manual_disconnect_removes_connection_and_notifies_once() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap_or_else(|error| panic!("failed to bind local listener: {error}"));
-        let addr = listener
-            .local_addr()
-            .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
-        tokio::spawn(async move {
-            let _accepted = listener.accept().await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        });
-
-        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
-            "remote@127.0.0.1".to_string(),
-            addr,
-        )])));
-        let manager = manager_with_resolver(resolver);
-        let callback_count = Arc::new(AtomicUsize::new(0));
-        let callback_count_for_hook = Arc::clone(&callback_count);
-        manager.register_connection_down(move |event| {
-            assert_eq!(event.reason, ConnectionDownReason::ManualDisconnect);
-            callback_count_for_hook.fetch_add(1, Ordering::SeqCst);
-        });
-        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
-
-        assert!(manager.connect_node(node).await);
-        assert!(manager.disconnect_node(node));
-        assert!(manager.disconnect_node(node));
-
-        assert!(manager.get_connection(node).is_none());
-        assert!(manager.connected_nodes().is_empty());
-        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
-    }
-
-    /// Return the node-name atoms for all active distribution connections.
-    #[must_use]
-    pub fn connected_nodes(&self) -> Vec<Atom> {
-        self.inner
-            .connections
-            .iter()
-            .map(|entry| *entry.key())
-            .collect()
-    }
-
-    /// Idempotently connect to a node-name atom, returning `false` for transport failures.
-    pub async fn connect_node(&self, node: Atom) -> bool {
-        if self.get_connection(node).is_some() {
-            return true;
-        }
-        let Some(node_name) = self.inner.atom_table.resolve(node).map(str::to_owned) else {
-            return false;
-        };
-        self.connect(&node_name).await.is_ok()
-    }
-
-    /// Manually disconnect an active node and emit the connection-down hook once.
-    pub fn disconnect_node(&self, node: Atom) -> bool {
-        let Some(connection) = self.get_connection(node) else {
-            return true;
-        };
-        connection.mark_down(ConnectionDownReason::ManualDisconnect);
-        true
-    }
 }
 
 impl std::error::Error for ConnectError {}
@@ -422,6 +357,36 @@ impl ConnectionManager {
             .map(|entry| Arc::clone(entry.value()))
     }
 
+    /// Return the node-name atoms for all active distribution connections.
+    #[must_use]
+    pub fn connected_nodes(&self) -> Vec<Atom> {
+        self.inner
+            .connections
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    /// Idempotently connect to a node-name atom, returning `false` for transport failures.
+    pub async fn connect_node(&self, node: Atom) -> bool {
+        if self.get_connection(node).is_some() {
+            return true;
+        }
+        let Some(node_name) = self.inner.atom_table.resolve(node).map(str::to_owned) else {
+            return false;
+        };
+        self.connect(&node_name).await.is_ok()
+    }
+
+    /// Manually disconnect an active node and emit the connection-down hook once.
+    pub fn disconnect_node(&self, node: Atom) -> bool {
+        let Some(connection) = self.get_connection(node) else {
+            return true;
+        };
+        connection.mark_down(ConnectionDownReason::ManualDisconnect);
+        true
+    }
+
     /// Create a manager and start a dedicated asynchronous TCP accept loop.
     pub async fn start(
         listen_addr: SocketAddr,
@@ -729,6 +694,41 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         assert!(manager.get_connection(node).is_none());
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn manual_disconnect_removes_connection_and_notifies_once() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("failed to bind local listener: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
+        tokio::spawn(async move {
+            let _accepted = listener.accept().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let callback_count_for_hook = Arc::clone(&callback_count);
+        manager.register_connection_down(move |event| {
+            assert_eq!(event.reason, ConnectionDownReason::ManualDisconnect);
+            callback_count_for_hook.fetch_add(1, Ordering::SeqCst);
+        });
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+
+        assert!(manager.connect_node(node).await);
+        assert!(manager.disconnect_node(node));
+        assert!(manager.disconnect_node(node));
+
+        assert!(manager.get_connection(node).is_none());
+        assert!(manager.connected_nodes().is_empty());
         assert_eq!(callback_count.load(Ordering::SeqCst), 1);
     }
 

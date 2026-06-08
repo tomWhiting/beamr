@@ -290,7 +290,6 @@ impl<'process> ProcessContext<'process> {
             pid: None,
             local_node: None,
             net_kernel: None,
-            net_kernel: None,
             process: None,
             live_x: 256,
             timers: None,
@@ -324,6 +323,7 @@ impl<'process> ProcessContext<'process> {
         Self {
             pid: Some(pid),
             local_node: None,
+            net_kernel: None,
             process: None,
             live_x: 256,
             timers: Some(timers),
