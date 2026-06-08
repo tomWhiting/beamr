@@ -19,6 +19,7 @@ crossbeam-queue = "0.3.12"
 dashmap = "6.1.0"
 flate2 = "1.1.9"
 libc = "0.2.186"
+md5 = "0.8.0"
 num_cpus = "1.17.0"
 rand = "0.10.1"
 rustix = { version = "1.1.4", features = ["fs", "net"] }
