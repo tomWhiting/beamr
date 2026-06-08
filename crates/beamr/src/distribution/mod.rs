@@ -2,6 +2,7 @@
 
 pub mod atom_cache;
 pub mod connection;
+pub mod etf;
 pub mod handshake;
 mod node;
 pub mod resolver;

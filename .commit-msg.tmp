@@ -1,1 +1,1 @@
-Harden net_kernel facade runtime handling and stable node listing
+feat(distribution): add ETF wire codec and pass-through framing
