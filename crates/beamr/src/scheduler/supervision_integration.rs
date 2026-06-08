@@ -76,7 +76,7 @@ pub(super) fn deliver_ets_transfer(
         ProcessSlot::Present(ScheduledProcess(process)) => {
             build_ets_transfer_message(process, transfer_atom, table_id, from_pid, data)
         }
-        ProcessSlot::Executing(_metadata) | ProcessSlot::Absent => None,
+        ProcessSlot::Executing(_) | ProcessSlot::Absent => None,
     };
     let Some(message) = message else {
         return false;

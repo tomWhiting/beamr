@@ -611,6 +611,7 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
                 return Err(badarg());
             }
         } else if let Some(tuple) = Tuple::new(option) {
+            let option_name = tuple.get(0).ok_or_else(badarg)?;
             if option_name == Term::atom(heir) {
                 parse_heir_option(tuple, none, &mut options)?;
                 tail = cons.tail();
@@ -619,7 +620,6 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
             if tuple.arity() != 2 {
                 return Err(badarg());
             }
-            let option_name = tuple.get(0).ok_or_else(badarg)?;
             let option_value = tuple.get(1).ok_or_else(badarg)?;
             if option_name == Term::atom(keypos) {
                 let keypos_value = option_value

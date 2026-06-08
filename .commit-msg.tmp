@@ -1,1 +1,1 @@
-feat(beamr): implement ETS ownership transfer heir and give_away
+fix(beamr): repair ETS heir transfer build errors
