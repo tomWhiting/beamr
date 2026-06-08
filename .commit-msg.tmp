@@ -1,1 +1,1 @@
-feat(beamr): add TCP listen and accept BIFs
+harden TCP listen/accept BIF error paths

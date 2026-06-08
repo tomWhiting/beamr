@@ -49,9 +49,12 @@ pub fn tcp_listen(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
     let port = parse_port(*port_term)?;
     let options = ListenOptions::parse(*options_term, context.atom_table().ok_or_else(badarg)?)?;
 
-    let fd = create_listener_socket(port, options)?;
+    let fd = match create_listener_socket(port, options) {
+        Ok(fd) => fd,
+        Err(reason) => return error_tuple(context, reason),
+    };
     let owner_pid = context.pid().ok_or_else(badarg)?;
-    context.alloc_fd_resource(Arc::new(FdInner::new(fd, owner_pid)))
+    alloc_fd_resource_or_close(context, fd, owner_pid)
 }
 
 /// erlang:tcp_accept/1 and erlang:tcp_accept/2.
@@ -132,12 +135,12 @@ impl ListenOptions {
     }
 }
 
-fn create_listener_socket(port: u16, options: ListenOptions) -> Result<RawFd, Term> {
+fn create_listener_socket(port: u16, options: ListenOptions) -> Result<RawFd, Atom> {
     // SAFETY: `socket` is called with a valid address family, socket type, and
     // protocol. The returned fd is checked for failure before use.
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
     if fd < 0 {
-        return Err(error_term_from_last_os_error());
+        return Err(error_reason(io::Error::last_os_error()));
     }
 
     if let Err(reason) = configure_and_listen(fd, port, options) {
@@ -147,10 +150,10 @@ fn create_listener_socket(port: u16, options: ListenOptions) -> Result<RawFd, Te
     Ok(fd)
 }
 
-fn configure_and_listen(fd: RawFd, port: u16, options: ListenOptions) -> Result<(), Term> {
+fn configure_and_listen(fd: RawFd, port: u16, options: ListenOptions) -> Result<(), Atom> {
     if options.reuseaddr {
         let value: libc::c_int = 1;
-        let optlen = libc::socklen_t::try_from(mem::size_of_val(&value)).map_err(|_| badarg())?;
+        let optlen = mem::size_of_val(&value) as libc::socklen_t;
         // SAFETY: `fd` is an open socket; `value` points to a valid c_int for the
         // duration of the call and `optlen` matches that value's size.
         let result = unsafe {
@@ -163,12 +166,12 @@ fn configure_and_listen(fd: RawFd, port: u16, options: ListenOptions) -> Result<
             )
         };
         if result < 0 {
-            return Err(error_term_from_last_os_error());
+            return Err(error_reason(io::Error::last_os_error()));
         }
     }
 
     let mut addr = sockaddr_in(options.ip, port);
-    let addr_len = libc::socklen_t::try_from(mem::size_of_val(&addr)).map_err(|_| badarg())?;
+    let addr_len = mem::size_of_val(&addr) as libc::socklen_t;
     // SAFETY: `addr` is a fully initialized IPv4 sockaddr for `fd`'s address
     // family and `addr_len` matches its size.
     let bind_result = unsafe {
@@ -179,14 +182,14 @@ fn configure_and_listen(fd: RawFd, port: u16, options: ListenOptions) -> Result<
         )
     };
     if bind_result < 0 {
-        return Err(error_term_from_last_os_error());
+        return Err(error_reason(io::Error::last_os_error()));
     }
 
     // SAFETY: `fd` is a bound stream socket and `options.backlog` is a validated
     // non-negative backlog accepted by the OS listen call.
     let listen_result = unsafe { libc::listen(fd, options.backlog) };
     if listen_result < 0 {
-        return Err(error_term_from_last_os_error());
+        return Err(error_reason(io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -198,8 +201,14 @@ fn finish_accept(completion: FileIoCompletion, context: &mut ProcessContext) -> 
     }
     match completion.completion.result {
         Ok(IoResult::Accepted(fd, _peer)) => {
-            let owner_pid = context.pid().ok_or_else(badarg)?;
-            let fd_term = context.alloc_fd_resource(Arc::new(FdInner::new(fd, owner_pid)))?;
+            let owner_pid = match context.pid() {
+                Some(pid) => pid,
+                None => {
+                    close_raw_fd(fd);
+                    return Err(badarg());
+                }
+            };
+            let fd_term = alloc_fd_resource_or_close(context, fd, owner_pid)?;
             ok_tuple(context, fd_term)
         }
         Ok(_) => error_tuple(context, Atom::UNKNOWN_ERROR),
@@ -278,8 +287,18 @@ fn error_tuple(context: &mut ProcessContext, reason: Atom) -> Result<Term, Term>
     context.alloc_tuple(&[Term::atom(Atom::ERROR), Term::atom(reason)])
 }
 
-fn error_term_from_last_os_error() -> Term {
-    Term::atom(error_reason(io::Error::last_os_error()))
+fn alloc_fd_resource_or_close(
+    context: &mut ProcessContext,
+    fd: RawFd,
+    owner_pid: u64,
+) -> Result<Term, Term> {
+    match context.alloc_fd_resource(Arc::new(FdInner::new(fd, owner_pid))) {
+        Ok(resource) => Ok(resource),
+        Err(reason) => {
+            close_raw_fd(fd);
+            Err(reason)
+        }
+    }
 }
 
 fn error_reason(error: io::Error) -> Atom {

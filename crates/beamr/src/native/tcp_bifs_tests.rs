@@ -167,6 +167,34 @@ fn tcp_listen_returns_fd_resource_for_random_port() {
 }
 
 #[test]
+fn tcp_listen_in_use_port_returns_error_tuple() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind occupied port");
+    let port = occupied.local_addr().expect("occupied addr").port();
+    let ip_key = Term::atom(atom_table.intern("ip"));
+    let ip_tuple = Box::leak(Box::new([0_u64; 5]));
+    let ip_value = write_tuple(
+        ip_tuple,
+        &[
+            Term::small_int(127),
+            Term::small_int(0),
+            Term::small_int(0),
+            Term::small_int(1),
+        ],
+    )
+    .expect("ip tuple");
+    let options = list1(option_tuple(ip_key, ip_value));
+    let mut process = Process::new(PID, 128);
+    let mut context = context(&mut process, atom_table, None);
+
+    let result = tcp_listen(&[Term::small_int(i64::from(port)), options], &mut context)
+        .expect("listen error tuple");
+
+    let tuple = Tuple::new(result).expect("error tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+}
+
+#[test]
 fn tcp_listen_parses_ipv4_backlog_and_reuseaddr_options() {
     let atom_table = Arc::new(AtomTable::with_common_atoms());
     let ip_key = Term::atom(atom_table.intern("ip"));
