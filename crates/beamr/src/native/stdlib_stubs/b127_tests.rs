@@ -49,8 +49,8 @@ fn tuple_to_vec(term: Term) -> Vec<Term> {
 }
 
 fn closure(process: &mut Process, unique_id: u64) -> Term {
-    let heap = process.heap_mut().alloc_slice(3).expect("closure heap");
-    write_closure(heap, Atom::OK, 0, 0, 1, unique_id, &[]).expect("closure")
+    let heap = process.heap_mut().alloc_slice(7).expect("closure heap");
+    write_closure(heap, Atom::OK, 0, 1, 1, unique_id, &[]).expect("closure")
 }
 
 #[test]
