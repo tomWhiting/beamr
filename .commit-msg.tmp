@@ -1,1 +1,1 @@
-feat(beamr): register B-129 utility BIFs
+review(beamr): harden B-129 BIF edge coverage

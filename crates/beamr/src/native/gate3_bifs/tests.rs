@@ -441,6 +441,14 @@ fn phash2_rejects_invalid_range() {
         bif_phash2_2(&[Term::small_int(1), Term::small_int(0)], &mut ctx),
         Err(badarg())
     );
+    assert_eq!(
+        bif_phash2_2(&[Term::small_int(1), Term::small_int(-1)], &mut ctx),
+        Err(badarg())
+    );
+    assert_eq!(
+        bif_phash2_2(&[Term::small_int(1), Term::atom(Atom::OK)], &mut ctx),
+        Err(badarg())
+    );
 }
 
 // ---- erlang:monotonic_time/system_time/time_offset ----
@@ -473,6 +481,20 @@ fn time_unit_millisecond_converts_native_time() {
         .as_small_int()
         .expect("millisecond small int");
     assert!(millis <= native / 1_000 + 1);
+}
+
+#[test]
+fn time_unit_rejects_unknown_or_non_atom_units() {
+    let mut process = Process::new(1, 128);
+    let (table, mut ctx) = context_with_atom_table(&mut process);
+    assert_eq!(
+        bif_monotonic_time_1(&[atom(&table, "fortnight")], &mut ctx),
+        Err(badarg())
+    );
+    assert_eq!(
+        bif_system_time_1(&[Term::small_int(1)], &mut ctx),
+        Err(badarg())
+    );
 }
 
 #[test]
@@ -530,6 +552,24 @@ fn unique_integer_rejects_unknown_option() {
     let (table, mut ctx) = context_with_atom_table(&mut process);
     let options = list2(atom(&table, "positive"), atom(&table, "unknown"));
     assert_eq!(bif_unique_integer_1(&[options], &mut ctx), Err(badarg()));
+}
+
+#[test]
+fn unique_integer_rejects_improper_and_non_atom_options() {
+    let mut process = Process::new(1, 128);
+    let (table, mut ctx) = context_with_atom_table(&mut process);
+    let mut improper_heap = [0u64; 2];
+    let improper = write_cons(
+        &mut improper_heap,
+        atom(&table, "positive"),
+        Term::small_int(1),
+    )
+    .expect("improper options");
+    let mut non_atom_heap = [0u64; 2];
+    let non_atom =
+        write_cons(&mut non_atom_heap, Term::small_int(1), Term::NIL).expect("non-atom options");
+    assert_eq!(bif_unique_integer_1(&[improper], &mut ctx), Err(badarg()));
+    assert_eq!(bif_unique_integer_1(&[non_atom], &mut ctx), Err(badarg()));
 }
 
 // ---- erlang:min/2, max/2, abs/1 ----
@@ -653,6 +693,8 @@ fn all_three_gates_coexist() {
     // Gate 3
     assert!(reg.lookup(erlang, at.intern("element"), 2).is_some());
     assert!(reg.lookup(erlang, at.intern("make_ref"), 0).is_some());
+    assert!(reg.lookup(erlang, at.intern("term_to_binary"), 1).is_some());
+    assert!(reg.lookup(erlang, at.intern("binary_to_term"), 1).is_some());
 }
 
 // ---- Helpers ----
