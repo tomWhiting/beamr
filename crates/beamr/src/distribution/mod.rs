@@ -1,6 +1,7 @@
 //! Distribution identity primitives, node resolution, and connection management.
 
 mod node;
+pub mod atom_cache;
 pub mod connection;
 pub mod handshake;
 pub mod resolver;

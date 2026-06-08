@@ -55,6 +55,12 @@ impl StandardIoServer {
         }
     }
 
+    /// Return the pid owned by this standard I/O server.
+    #[must_use]
+    pub const fn pid(&self) -> u64 {
+        self.pid
+    }
+
     /// Drain and handle all currently arrived `io_request` messages.
     pub fn run_available(&self, process: &mut Process, messages: &dyn IoMessageFacility) {
         process.mailbox_mut().drain_arrival();
