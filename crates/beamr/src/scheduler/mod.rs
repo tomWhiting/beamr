@@ -16,7 +16,7 @@ use crate::error::ExecError;
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::hook::Hook;
 use crate::io::{
-    CompletionRing, CompletionRingIoFacility, IoCompletionBridge, IoCompletion, IoFacility, IoSink,
+    CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoSink,
     IoWakeTarget, NullSink, PendingIoRegistry, RingConfig, create_ring,
 };
 use crate::module::ModuleRegistry;
@@ -110,6 +110,35 @@ impl SharedState {
     pub(super) fn delete_tables_owned_by(&self, owner: u64) -> usize {
         let before = self.ets_registry.table_count();
         self.ets_registry.delete_tables_owned_by(owner);
+        before.saturating_sub(self.ets_registry.table_count())
+    }
+
+    pub(super) fn transfer_or_delete_tables_owned_by(&self, owner: u64) -> usize {
+        let before = self.ets_registry.table_count();
+        let owned_ids = self.ets_registry.table_ids_owned_by(owner);
+        for table_id in owned_ids {
+            let Some(table) = self.ets_registry.lookup_table(table_id) else {
+                continue;
+            };
+            let Some(heir) = &table.metadata().heir else {
+                let _deleted = self.ets_registry.delete_table(table_id);
+                continue;
+            };
+            if self.process_table.get(heir.pid).is_some()
+                && supervision_integration::deliver_ets_transfer(
+                    self,
+                    heir.pid,
+                    table_id,
+                    owner,
+                    heir.data.root(),
+                    &self.atom_table,
+                )
+                && self.ets_registry.transfer_table_owner(table_id, heir.pid)
+            {
+                continue;
+            }
+            let _deleted = self.ets_registry.delete_table(table_id);
+        }
         before.saturating_sub(self.ets_registry.table_count())
     }
 

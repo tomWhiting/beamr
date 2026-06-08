@@ -1,6 +1,8 @@
 use crate::atom::Atom;
+use crate::ets::OwnedTerm;
 use crate::term::Term;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Unique, monotonically increasing ETS table identifier.
 pub type EtsTableId = u64;
@@ -41,21 +43,67 @@ impl fmt::Display for AccessOp {
     }
 }
 
+/// Atomic ETS owner pid stored inside otherwise stable table metadata.
+pub struct EtsOwner(AtomicU64);
+
+impl EtsOwner {
+    #[must_use]
+    pub const fn new(pid: u64) -> Self {
+        Self(AtomicU64::new(pid))
+    }
+
+    #[must_use]
+    pub fn get(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub fn set(&self, pid: u64) {
+        self.0.store(pid, Ordering::Release);
+    }
+}
+
+impl fmt::Debug for EtsOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
+impl PartialEq<u64> for EtsOwner {
+    fn eq(&self, other: &u64) -> bool {
+        self.get() == *other
+    }
+}
+
+impl PartialEq<EtsOwner> for u64 {
+    fn eq(&self, other: &EtsOwner) -> bool {
+        *self == other.get()
+    }
+}
+
+/// ETS ownership heir configured at table creation.
+#[derive(Debug)]
+pub struct EtsHeir {
+    pub pid: u64,
+    pub data: OwnedTerm,
+}
+
 /// Metadata common to all ETS table implementations.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct EtsTableMetadata {
     pub name: Option<Atom>,
     pub id: EtsTableId,
     pub table_type: EtsTableType,
     pub protection: Protection,
     /// Owning process identifier.
-    pub owner: u64,
+    pub owner: EtsOwner,
     /// 1-based tuple element position used as the key.
     pub keypos: usize,
     /// Hint that table reads should be allowed to proceed concurrently.
     pub read_concurrency: bool,
     /// Hint that table writes should be allowed to proceed concurrently.
     pub write_concurrency: bool,
+    /// Optional ownership heir and transfer payload.
+    pub heir: Option<EtsHeir>,
 }
 
 impl EtsTableMetadata {
@@ -73,10 +121,11 @@ impl EtsTableMetadata {
             id,
             table_type,
             protection,
-            owner,
+            owner: EtsOwner::new(owner),
             keypos: 1,
             read_concurrency: false,
             write_concurrency: false,
+            heir: None,
         }
     }
 }
@@ -120,6 +169,9 @@ impl std::error::Error for EtsError {}
 /// call [`EtsTable::check_access`] before invoking reads or writes.
 pub trait EtsTable: Send + Sync {
     fn metadata(&self) -> &EtsTableMetadata;
+    fn transfer_owner(&self, new_owner: u64) {
+        self.metadata().owner.set(new_owner);
+    }
     fn insert(&self, tuple: Term) -> Result<(), EtsError>;
     fn lookup(&self, key: Term) -> Vec<Term>;
     fn delete_key(&self, key: Term) -> bool;
@@ -132,7 +184,7 @@ pub trait EtsTable: Send + Sync {
             (Protection::Public, _) => true,
             (Protection::Protected, AccessOp::Read) => true,
             (Protection::Protected, AccessOp::Write) | (Protection::Private, _) => {
-                caller_pid == metadata.owner
+                metadata.owner == caller_pid
             }
         };
 
@@ -164,10 +216,11 @@ mod tests {
                     id: 42,
                     table_type: EtsTableType::Set,
                     protection,
-                    owner: 7,
+                    owner: EtsOwner::new(7),
                     keypos: 1,
                     read_concurrency: false,
                     write_concurrency: false,
+                    heir: None,
                 },
             }
         }
@@ -206,10 +259,11 @@ mod tests {
             id: 12,
             table_type: EtsTableType::Bag,
             protection: Protection::Protected,
-            owner: 34,
+            owner: EtsOwner::new(34),
             keypos: 2,
             read_concurrency: true,
             write_concurrency: true,
+            heir: None,
         };
 
         assert_eq!(metadata.name, Some(Atom::new(9)));

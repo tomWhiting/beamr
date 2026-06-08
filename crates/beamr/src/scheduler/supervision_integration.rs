@@ -7,8 +7,10 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use crate::atom::Atom;
+use crate::ets::{EtsError, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::io::{CompletionRing, IoOp};
 use crate::namespace::NamespaceId;
+use crate::native::ets_bifs::EtsFacility;
 use crate::native::links::{LinkError, LinkFacility};
 use crate::native::spawn::{
     SpawnError, SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult,
@@ -20,6 +22,7 @@ use crate::process::{ExitReason, Priority, Process, ProcessStatus};
 use crate::supervision::link;
 use crate::supervision::monitor;
 use crate::term::Term;
+use crate::term::boxed;
 
 use super::execution::{cleanup_exited_process, wake_process};
 use super::spawning::SpawnRequest;
@@ -54,6 +57,52 @@ pub(super) fn propagate_exit(shared: &SharedState, pid: u64, reason: ExitReason)
         let cascade = process_exit_signal(shared, source_pid, target_pid, signal_reason);
         worklist.extend(cascade);
     }
+}
+
+pub(super) fn deliver_ets_transfer(
+    shared: &SharedState,
+    recipient_pid: u64,
+    table_id: EtsTableId,
+    from_pid: u64,
+    data: Term,
+    atom_table: &crate::atom::AtomTable,
+) -> bool {
+    let Some(entry) = shared.process_bodies.get(&recipient_pid) else {
+        return false;
+    };
+    let transfer_atom = atom_table.intern("ETS-TRANSFER");
+    let mut slot = lock_or_recover(&entry);
+    let message = match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(process)) => {
+            build_ets_transfer_message(process, transfer_atom, table_id, from_pid, data)
+        }
+        ProcessSlot::Executing(_metadata) | ProcessSlot::Absent => None,
+    };
+    let Some(message) = message else {
+        return false;
+    };
+    if let ProcessSlot::Present(ScheduledProcess(process)) = &mut *slot {
+        process.mailbox_mut().push_owned(message);
+        drop(slot);
+        wake_process(shared, recipient_pid);
+        true
+    } else {
+        false
+    }
+}
+
+fn build_ets_transfer_message(
+    process: &mut Process,
+    transfer_atom: Atom,
+    table_id: EtsTableId,
+    from_pid: u64,
+    data: Term,
+) -> Option<Term> {
+    let table = Term::try_small_int(i64::try_from(table_id).ok()?)?;
+    let from = Term::try_pid(from_pid)?;
+    let data = crate::ets::copy_term_to_heap(data, process.heap_mut()).ok()?;
+    let words = process.heap_mut().alloc_slice(5).ok()?;
+    boxed::write_tuple(words, &[Term::atom(transfer_atom), table, from, data])
 }
 
 /// Real `GroupLeaderFacility` backed by the scheduler's shared state.
@@ -159,7 +208,7 @@ fn process_exit_signal(
 
                 // Record tombstone and remove resources owned by the terminated process.
                 shared.exit_tombstones.insert(target_pid, propagated_reason);
-                let _deleted_tables = shared.delete_tables_owned_by(target_pid);
+                let _deleted_tables = shared.transfer_or_delete_tables_owned_by(target_pid);
                 {
                     let mut ls = lock_or_recover(&shared.link_set);
                     ls.process_exited_tombstone(target_pid, propagated_reason);
@@ -216,7 +265,7 @@ fn process_exit_signal(
                     .filter(|linked_pid| *linked_pid != source_pid)
                     .collect();
                 shared.exit_tombstones.insert(target_pid, propagated_reason);
-                let _deleted_tables = shared.delete_tables_owned_by(target_pid);
+                let _deleted_tables = shared.transfer_or_delete_tables_owned_by(target_pid);
                 {
                     let mut ls = lock_or_recover(&shared.link_set);
                     ls.process_exited_tombstone(target_pid, propagated_reason);
@@ -325,7 +374,9 @@ pub(super) fn build_native_services(
         Arc::new(SchedulerSystemInfoFacility {
             shared: Arc::clone(shared),
         });
-    let ets_facility: Arc<dyn crate::native::EtsFacility> = shared.ets_registry.clone();
+    let ets_facility: Arc<dyn crate::native::EtsFacility> = Arc::new(SchedulerEtsFacility {
+        shared: Arc::clone(shared),
+    });
     let file_io_facility: Arc<dyn FileIoFacility> = Arc::new(SchedulerFileIoFacility {
         shared: Arc::clone(shared),
     });
@@ -350,6 +401,61 @@ pub(super) fn build_native_services(
 
 struct SchedulerFileIoFacility {
     shared: Arc<SharedState>,
+}
+
+struct SchedulerEtsFacility {
+    shared: Arc<SharedState>,
+}
+
+impl EtsFacility for SchedulerEtsFacility {
+    fn create_table(&self, metadata: EtsTableMetadata) -> Result<EtsTableId, EtsError> {
+        self.shared.ets_registry.try_create_table(metadata)
+    }
+
+    fn lookup_table(&self, id: EtsTableId) -> Option<Arc<dyn EtsTable>> {
+        self.shared.ets_registry.lookup_table(id)
+    }
+
+    fn lookup_named_table(&self, name: Atom) -> Option<Arc<dyn EtsTable>> {
+        self.shared.ets_registry.lookup_named_table(name)
+    }
+
+    fn lookup_table_by_name(&self, name: Atom) -> Option<EtsTableId> {
+        self.shared.ets_registry.lookup_table_by_name(name)
+    }
+
+    fn delete_table(&self, id: EtsTableId) -> bool {
+        self.shared.ets_registry.delete_table(id)
+    }
+
+    fn give_away_table(
+        &self,
+        table_id: EtsTableId,
+        new_owner: u64,
+        from_pid: u64,
+        gift_data: Term,
+        atom_table: &crate::atom::AtomTable,
+    ) -> Result<(), EtsError> {
+        if !deliver_ets_transfer(
+            &self.shared,
+            new_owner,
+            table_id,
+            from_pid,
+            gift_data,
+            atom_table,
+        ) {
+            return Err(EtsError::Badarg);
+        }
+        if self
+            .shared
+            .ets_registry
+            .transfer_table_owner(table_id, new_owner)
+        {
+            Ok(())
+        } else {
+            Err(EtsError::Badarg)
+        }
+    }
 }
 
 impl FileIoFacility for SchedulerFileIoFacility {
@@ -1102,7 +1208,7 @@ impl SupervisionFacility for SchedulerSupervisionFacility {
 
 fn shared_exit_tombstone(shared: &SharedState, pid: u64, reason: ExitReason) {
     shared.exit_tombstones.insert(pid, reason);
-    let _deleted_tables = shared.delete_tables_owned_by(pid);
+    let _deleted_tables = shared.transfer_or_delete_tables_owned_by(pid);
     let mut ls = lock_or_recover(&shared.link_set);
     ls.process_exited_tombstone(pid, reason);
 }

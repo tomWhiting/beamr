@@ -449,7 +449,7 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     reason: ExitReason,
 ) {
     shared.exit_tombstones.insert(pid, reason);
-    let _deleted_tables = shared.delete_tables_owned_by(pid);
+    let _deleted_tables = shared.transfer_or_delete_tables_owned_by(pid);
     supervision_integration::propagate_exit(shared, pid, reason);
     close_owned_fd_resources_on_exit(shared, pid);
     let _removed = shared.process_table.remove(pid);
