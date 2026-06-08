@@ -3,6 +3,7 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -91,11 +92,14 @@ impl IoCompletionBridge {
                     }
                 }
             })
-            .ok();
+            .unwrap_or_else(|error| {
+                shutdown.store(true, Ordering::Release);
+                panic!("failed to spawn beamr-io-completion thread: {error}");
+            });
 
         Self {
             shutdown,
-            handle: Mutex::new(handle),
+            handle: Mutex::new(Some(handle)),
         }
     }
 
@@ -106,7 +110,7 @@ impl IoCompletionBridge {
             Ok(mut guard) => guard.take(),
             Err(error) => error.into_inner().take(),
         };
-        if let Some(handle) = handle
+        if let Some(handle) = handle.filter(|handle| handle.thread().id() != thread::current().id())
             && let Err(payload) = handle.join()
         {
             std::panic::resume_unwind(payload);

@@ -508,7 +508,7 @@ impl<'process> ProcessContext<'process> {
     pub fn submit_io_and_suspend(&mut self, op: IoOp, mode: ResultMode) -> Result<(), IoError> {
         let pid = self.pid.ok_or(IoError::MissingPid)?;
         let Some(facility) = self.io_facility.as_ref() else {
-            return Err(IoError::MissingPid);
+            return Err(IoError::Unavailable);
         };
         facility.submit_and_suspend_for_pid(pid, op, mode)?;
         self.request_suspend(None);

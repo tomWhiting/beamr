@@ -562,6 +562,8 @@ impl IoWakeTarget for SharedState {
         let mut slot = lock_or_recover(&entry);
         if let ProcessSlot::Present(process) = &mut *slot {
             process.0.mailbox_mut().push_owned(term);
+        } else if let ProcessSlot::Executing(metadata) = &mut *slot {
+            metadata.pending_io_messages.push(term);
         }
         drop(slot);
         execution::wake_process(self, pid);

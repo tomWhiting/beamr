@@ -133,6 +133,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
                 group_leader: process.group_leader(),
                 pending_exit_messages: Vec::new(),
                 pending_down_messages: Vec::new(),
+                pending_io_messages: Vec::new(),
             };
             *slot = ProcessSlot::Executing(metadata);
             process

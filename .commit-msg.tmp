@@ -1,1 +1,1 @@
-feat(beamr): bridge async io completions to scheduler wakeups
+Harden async I/O completion bridge and scheduler message delivery

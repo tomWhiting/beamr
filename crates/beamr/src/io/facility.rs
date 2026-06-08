@@ -11,12 +11,15 @@ use super::{CompletionRing, IoOp};
 pub enum IoError {
     /// The facility was asked to submit without a known caller pid.
     MissingPid,
+    /// No asynchronous I/O facility is configured for the current runtime.
+    Unavailable,
 }
 
 impl fmt::Display for IoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingPid => f.write_str("I/O submission requires a caller pid"),
+            Self::Unavailable => f.write_str("asynchronous I/O is not configured"),
         }
     }
 }
