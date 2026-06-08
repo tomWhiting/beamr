@@ -1,1 +1,1 @@
-feat(beamr): add net kernel connection BIFs
+Harden net_kernel facade runtime handling and stable node listing

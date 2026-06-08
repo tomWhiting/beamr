@@ -12,6 +12,9 @@ pub use node::{DEFAULT_NODE_NAME, Node};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use std::thread;
+
+use tokio::runtime::Runtime;
 
 pub use resolver::{NodeResolver, ResolveError, ResolveFuture, Resolver, StaticResolver};
 
@@ -26,13 +29,29 @@ pub struct DistributionConfig {
 #[derive(Clone)]
 pub struct NetKernel {
     connections: ConnectionManager,
+    runtime: Option<Arc<Runtime>>,
 }
 
 impl NetKernel {
     /// Create a facade backed by a distribution connection manager.
     #[must_use]
     pub fn new(connections: ConnectionManager) -> Self {
-        Self { connections }
+        Self::try_new(connections).unwrap_or_else(|_| Self {
+            connections,
+            runtime: None,
+        })
+    }
+
+    /// Fallible constructor for tests or callers that want to handle runtime initialization errors.
+    pub fn try_new(connections: ConnectionManager) -> std::io::Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()?;
+        Ok(Self {
+            connections,
+            runtime: Some(Arc::new(runtime)),
+        })
     }
 
     /// Return the backing connection manager.
@@ -43,13 +62,24 @@ impl NetKernel {
 
     /// Connect to `node`, mapping all connection failures to `false`.
     pub fn connect_node(&self, node: crate::atom::Atom) -> bool {
-        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
+        if self.connections.get_connection(node).is_some() {
+            return true;
+        }
+
+        let Some(runtime) = self.runtime.as_ref() else {
             return false;
         };
-        runtime.block_on(self.connections.connect_node(node))
+        let connections = self.connections.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            thread::scope(|scope| {
+                scope
+                    .spawn(|| runtime.block_on(connections.connect_node(node)))
+                    .join()
+                    .unwrap_or(false)
+            })
+        } else {
+            runtime.block_on(connections.connect_node(node))
+        }
     }
 
     /// Return node-name atoms for active connections.

@@ -360,11 +360,14 @@ impl ConnectionManager {
     /// Return the node-name atoms for all active distribution connections.
     #[must_use]
     pub fn connected_nodes(&self) -> Vec<Atom> {
-        self.inner
+        let mut nodes: Vec<_> = self
+            .inner
             .connections
             .iter()
             .map(|entry| *entry.key())
-            .collect()
+            .collect();
+        nodes.sort_unstable_by_key(|node| node.index());
+        nodes
     }
 
     /// Idempotently connect to a node-name atom, returning `false` for transport failures.
