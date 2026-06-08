@@ -36,22 +36,16 @@ impl NetKernel {
     /// Create a facade backed by a distribution connection manager.
     #[must_use]
     pub fn new(connections: ConnectionManager) -> Self {
-        Self::try_new(connections).unwrap_or_else(|_| Self {
-            connections,
-            runtime: None,
-        })
-    }
-
-    /// Fallible constructor for tests or callers that want to handle runtime initialization errors.
-    pub fn try_new(connections: ConnectionManager) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
-            .build()?;
-        Ok(Self {
+            .build()
+            .ok()
+            .map(Arc::new);
+        Self {
             connections,
-            runtime: Some(Arc::new(runtime)),
-        })
+            runtime,
+        }
     }
 
     /// Return the backing connection manager.

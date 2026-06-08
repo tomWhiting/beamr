@@ -75,6 +75,7 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
         ets_facility: None,
         io_facility: None,
         io_message_facility: None,
+        net_kernel: None,
         file_io_facility: None,
         tcp_io_facility: None,
     };
