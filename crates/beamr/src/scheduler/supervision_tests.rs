@@ -233,6 +233,7 @@ fn make_shared_state() -> Arc<SharedState> {
         link_set: std::sync::Mutex::new(LinkSet::new()),
         monitor_set: std::sync::Mutex::new(MonitorSet::new()),
         hook: crate::hook::Hook::new(),
+        distribution: DistributionConfig::default(),
         timers: Arc::new(std::sync::Mutex::new(crate::timer::TimerWheel::new())),
         output_sink: std::sync::Mutex::new(Arc::new(crate::io::NullSink)),
         io_ring: None,
@@ -251,7 +252,7 @@ fn make_shared_state() -> Arc<SharedState> {
         file_io_results: DashMap::new(),
         file_io_canceled: DashSet::new(),
         standard_io_pid: u64::MAX,
-        standard_io_server: crate::io::StandardIoServer::new(
+        _standard_io_server: crate::io::StandardIoServer::new(
             u64::MAX,
             Arc::from(crate::io::create_ring(RingConfig::default())),
             &crate::atom::AtomTable::new(),

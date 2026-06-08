@@ -13,6 +13,8 @@ use self::execution::scheduler_loop;
 use self::spawning::SpawnRequest;
 use crate::atom::AtomTable;
 use crate::distribution::{DEFAULT_NODE_NAME, Node};
+use crate::distribution::DistributionConfig;
+
 use crate::error::ExecError;
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::hook::Hook;
@@ -51,6 +53,8 @@ pub struct SchedulerConfig {
     pub io: Option<RingConfig>,
     pub node_name: Option<String>,
     pub creation: Option<u32>,
+    pub distribution: Option<DistributionConfig>,
+
 }
 pub(super) struct SharedState {
     shutdown: AtomicBool,
@@ -85,6 +89,7 @@ pub(super) struct SharedState {
     link_set: Mutex<LinkSet>,
     monitor_set: Mutex<MonitorSet>,
     hook: Hook,
+    distribution: DistributionConfig,
     timers: Arc<Mutex<TimerWheel>>,
     output_sink: Mutex<Arc<dyn IoSink>>,
     io_ring: Option<Arc<dyn CompletionRing>>,
@@ -97,6 +102,8 @@ pub(super) struct SharedState {
 
     #[allow(dead_code)]
     standard_io_server: StandardIoServer,
+    _standard_io_server: StandardIoServer,
+
     #[cfg(test)]
     idle_parks: AtomicUsize,
 }
@@ -299,6 +306,7 @@ impl Scheduler {
             Some((ring, registry, facility)) => (Some(ring), Some(registry), Some(facility)),
             None => (None, None, None),
         };
+        let distribution = config.distribution.unwrap_or_default();
         let namespace_store = DashMap::new();
         namespace_store.insert(NamespaceId::DEFAULT, Arc::clone(&module_registry));
         let file_io_ring: Arc<dyn CompletionRing> =
@@ -346,6 +354,7 @@ impl Scheduler {
             link_set: Mutex::new(LinkSet::new()),
             monitor_set: Mutex::new(MonitorSet::new()),
             hook: Hook::new(),
+            distribution,
             timers: Arc::new(Mutex::new(TimerWheel::new())),
             output_sink: Mutex::new(Arc::new(NullSink)),
             io_ring,
@@ -353,7 +362,7 @@ impl Scheduler {
             io_bridge: Mutex::new(None),
             io_facility,
             standard_io_pid,
-            standard_io_server,
+            _standard_io_server: standard_io_server,
             #[cfg(test)]
             idle_parks: AtomicUsize::new(0),
         });
@@ -505,6 +514,10 @@ impl Scheduler {
     #[must_use]
     pub fn timers(&self) -> &Arc<Mutex<TimerWheel>> {
         &self.shared.timers
+    }
+    #[must_use]
+    pub fn distribution_config(&self) -> &DistributionConfig {
+        &self.shared.distribution
     }
     pub fn set_output_sink(&self, sink: Arc<dyn IoSink>) {
         *lock_or_recover(&self.shared.output_sink) = sink;

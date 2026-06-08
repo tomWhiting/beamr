@@ -3,11 +3,13 @@ use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
+use std::task::{Context, Poll, Wake, Waker};
 
 use dashmap::{DashMap, DashSet};
 
 use super::*;
 use crate::atom::{Atom, AtomTable};
+use crate::distribution::{ResolveError, ResolveFuture};
 use crate::ets::{EtsTableMetadata, EtsTableType, Protection};
 use crate::hook::{Hook, HookDecision};
 use crate::io::{NullSink, RingConfig};
@@ -30,6 +32,42 @@ use crate::timer::TimerWheel;
 
 fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
     EtsTableMetadata::new(name, 0, EtsTableType::Set, Protection::Protected, owner)
+}
+
+struct NoopWake;
+
+impl Wake for NoopWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn block_on_ready(future: ResolveFuture<'_>) -> Result<std::net::SocketAddr, ResolveError> {
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+    let mut future = future;
+    match future.as_mut().poll(&mut context) {
+        Poll::Ready(result) => result,
+        Poll::Pending => panic!("resolver test future should be ready immediately"),
+    }
+}
+
+#[test]
+fn default_distribution_config_resolves_nothing() {
+    assert!(SchedulerConfig::default().distribution.is_none());
+
+    let scheduler = Scheduler::new(SchedulerConfig::default(), Arc::new(ModuleRegistry::new()))
+        .expect("scheduler should start");
+
+    assert_eq!(
+        block_on_ready(
+            scheduler
+                .distribution_config()
+                .resolver
+                .resolve("missing@localhost")
+        ),
+        Err(ResolveError::NotFound)
+    );
+
+    scheduler.shutdown();
 }
 
 #[test]
@@ -462,6 +500,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         link_set: Mutex::new(LinkSet::new()),
         monitor_set: Mutex::new(MonitorSet::new()),
         hook: Hook::new(),
+        distribution: DistributionConfig::default(),
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
         io_ring: None,
@@ -480,7 +519,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         file_io_results: DashMap::new(),
         file_io_canceled: DashSet::new(),
         standard_io_pid: u64::MAX,
-        standard_io_server: crate::io::StandardIoServer::new(
+        _standard_io_server: crate::io::StandardIoServer::new(
             u64::MAX,
             Arc::from(crate::io::create_ring(RingConfig::default())),
             &crate::atom::AtomTable::new(),
@@ -737,6 +776,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         link_set: Mutex::new(LinkSet::new()),
         monitor_set: Mutex::new(MonitorSet::new()),
         hook: Hook::new(),
+        distribution: DistributionConfig::default(),
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
         io_ring: None,
@@ -757,7 +797,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         file_io_results: DashMap::new(),
         file_io_canceled: DashSet::new(),
         standard_io_pid: u64::MAX,
-        standard_io_server: crate::io::StandardIoServer::new(
+        _standard_io_server: crate::io::StandardIoServer::new(
             u64::MAX,
             Arc::from(crate::io::create_ring(RingConfig::default())),
             &crate::atom::AtomTable::new(),

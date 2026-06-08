@@ -123,6 +123,7 @@ fn dirty_nif_round_trip_does_not_block_normal_scheduler() {
             dirty_io_threads: Some(1),
             dirty_queue_depth: Some(8),
             io: None,
+            distribution: None,
         },
         Arc::clone(&registry),
     )
@@ -162,6 +163,7 @@ fn dirty_nif_error_resumes_and_raises_exception() {
             dirty_io_threads: Some(1),
             dirty_queue_depth: Some(8),
             io: None,
+            distribution: None,
         },
         Arc::clone(&registry),
     )
