@@ -92,6 +92,8 @@ pub(super) struct SharedState {
     io_bridge: Mutex<Option<IoCompletionBridge>>,
     io_facility: Option<Arc<dyn IoFacility>>,
     standard_io_pid: u64,
+    // Kept for ownership: dropping SharedState must also stop the backing standard I/O server.
+    #[allow(dead_code)]
     standard_io_server: StandardIoServer,
     #[cfg(test)]
     idle_parks: AtomicUsize,
