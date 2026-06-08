@@ -757,7 +757,7 @@ mod tests {
         let compiled = CompiledMatchSpec::compile(spec, &table).expect("spec compiles");
         let object = heap.tuple(&[Term::small_int(5), atom(&table, "hello")]);
 
-        let mut process = Process::new(1, 233, 34);
+        let mut process = Process::new(1, 233);
         let mut context = ProcessContext::new();
         context.attach_process(&mut process, 0);
         context.set_atom_table(Some(Arc::clone(&table)));
