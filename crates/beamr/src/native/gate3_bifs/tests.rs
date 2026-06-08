@@ -11,7 +11,7 @@ use crate::process::ExitReason;
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary;
-use crate::term::boxed::{write_closure, write_tuple};
+use crate::term::boxed::{Float, write_closure, write_cons, write_float, write_tuple};
 use std::sync::{Arc, Mutex};
 
 fn context(process: &mut Process) -> ProcessContext<'_> {
@@ -22,6 +22,29 @@ fn context(process: &mut Process) -> ProcessContext<'_> {
 
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
+}
+
+fn context_with_atom_table(process: &mut Process) -> (Arc<AtomTable>, ProcessContext<'_>) {
+    let table = Arc::new(AtomTable::with_common_atoms());
+    let mut ctx = context(process);
+    ctx.set_atom_table(Some(table.clone()));
+    (table, ctx)
+}
+
+fn atom(table: &AtomTable, name: &str) -> Term {
+    Term::atom(table.intern(name))
+}
+
+fn list2(head: Term, tail_head: Term) -> Term {
+    let tail_heap = Box::leak(Box::new([0u64; 2]));
+    let head_heap = Box::leak(Box::new([0u64; 2]));
+    let tail = write_cons(tail_heap, tail_head, Term::NIL).expect("tail cons");
+    write_cons(head_heap, head, tail).expect("head cons")
+}
+
+fn float(value: f64) -> Term {
+    let heap = Box::leak(Box::new([0u64; 2]));
+    write_float(heap, value).expect("float")
 }
 
 // ---- erlang:element/2 ----
@@ -392,6 +415,160 @@ fn iolist_size_rejects_complex_iolist_stub() {
     assert_eq!(bif_iolist_size(&[list], &mut ctx), Err(badarg()));
 }
 
+// ---- erlang:phash2/1,2 ----
+
+#[test]
+fn phash2_is_deterministic_and_range_bounded() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    let term = Term::small_int(42);
+    let hash1 = bif_phash2_1(&[term], &mut ctx).expect("phash2/1");
+    let hash2 = bif_phash2_1(&[term], &mut ctx).expect("phash2/1 again");
+    assert_eq!(hash1, hash2);
+    let hash = hash1.as_small_int().expect("small int hash");
+    assert!((0..(1_i64 << 27)).contains(&hash));
+
+    let ranged = bif_phash2_2(&[term, Term::small_int(10)], &mut ctx).expect("phash2/2");
+    let ranged = ranged.as_small_int().expect("small int ranged hash");
+    assert!((0..10).contains(&ranged));
+}
+
+#[test]
+fn phash2_rejects_invalid_range() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    assert_eq!(
+        bif_phash2_2(&[Term::small_int(1), Term::small_int(0)], &mut ctx),
+        Err(badarg())
+    );
+}
+
+// ---- erlang:monotonic_time/system_time/time_offset ----
+
+#[test]
+fn monotonic_time_is_nondecreasing() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    let first = bif_monotonic_time_0(&[], &mut ctx)
+        .expect("monotonic 1")
+        .as_small_int()
+        .expect("small int");
+    let second = bif_monotonic_time_0(&[], &mut ctx)
+        .expect("monotonic 2")
+        .as_small_int()
+        .expect("small int");
+    assert!(second >= first);
+}
+
+#[test]
+fn time_unit_millisecond_converts_native_time() {
+    let mut process = Process::new(1, 128);
+    let (table, mut ctx) = context_with_atom_table(&mut process);
+    let native = bif_monotonic_time_0(&[], &mut ctx)
+        .expect("native")
+        .as_small_int()
+        .expect("native small int");
+    let millis = bif_monotonic_time_1(&[atom(&table, "millisecond")], &mut ctx)
+        .expect("millisecond")
+        .as_small_int()
+        .expect("millisecond small int");
+    assert!(millis <= native / 1_000 + 1);
+}
+
+#[test]
+fn system_time_and_time_offset_return_small_ints() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    assert!(
+        bif_system_time_0(&[], &mut ctx)
+            .expect("system time")
+            .as_small_int()
+            .is_some()
+    );
+    assert!(
+        bif_time_offset_0(&[], &mut ctx)
+            .expect("time offset")
+            .as_small_int()
+            .is_some()
+    );
+}
+
+// ---- erlang:unique_integer/0,1 ----
+
+#[test]
+fn unique_integer_returns_unique_positive_monotonic_values() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    let first = bif_unique_integer_0(&[], &mut ctx)
+        .expect("unique 1")
+        .as_small_int()
+        .expect("small int");
+    let second = bif_unique_integer_0(&[], &mut ctx)
+        .expect("unique 2")
+        .as_small_int()
+        .expect("small int");
+    assert_ne!(first, second);
+    assert!(first > 0);
+    assert!(second > first);
+}
+
+#[test]
+fn unique_integer_accepts_positive_and_monotonic_options() {
+    let mut process = Process::new(1, 128);
+    let (table, mut ctx) = context_with_atom_table(&mut process);
+    let options = list2(atom(&table, "positive"), atom(&table, "monotonic"));
+    let value = bif_unique_integer_1(&[options], &mut ctx)
+        .expect("unique options")
+        .as_small_int()
+        .expect("small int");
+    assert!(value > 0);
+}
+
+#[test]
+fn unique_integer_rejects_unknown_option() {
+    let mut process = Process::new(1, 128);
+    let (table, mut ctx) = context_with_atom_table(&mut process);
+    let options = list2(atom(&table, "positive"), atom(&table, "unknown"));
+    assert_eq!(bif_unique_integer_1(&[options], &mut ctx), Err(badarg()));
+}
+
+// ---- erlang:min/2, max/2, abs/1 ----
+
+#[test]
+fn min_and_max_use_beam_term_order_with_atom_names() {
+    let mut process = Process::new(1, 128);
+    let (table, mut ctx) = context_with_atom_table(&mut process);
+    assert_eq!(
+        bif_min_2(&[Term::small_int(1), Term::small_int(2)], &mut ctx),
+        Ok(Term::small_int(1))
+    );
+    assert_eq!(
+        bif_max_2(&[Term::small_int(1), Term::small_int(2)], &mut ctx),
+        Ok(Term::small_int(2))
+    );
+    let z_atom = atom(&table, "z");
+    let a_atom = atom(&table, "a");
+    assert_eq!(bif_min_2(&[z_atom, a_atom], &mut ctx), Ok(a_atom));
+    assert_eq!(bif_max_2(&[a_atom, z_atom], &mut ctx), Ok(z_atom));
+}
+
+#[test]
+fn abs_handles_numbers_and_rejects_non_numbers() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    assert_eq!(
+        bif_abs_1(&[Term::small_int(-5)], &mut ctx),
+        Ok(Term::small_int(5))
+    );
+    assert_eq!(
+        bif_abs_1(&[Term::small_int(5)], &mut ctx),
+        Ok(Term::small_int(5))
+    );
+    let float_result = bif_abs_1(&[float(-2.5)], &mut ctx).expect("float abs");
+    assert_eq!(Float::new(float_result).expect("float").value(), 2.5);
+    assert_eq!(bif_abs_1(&[Term::atom(Atom::OK)], &mut ctx), Err(badarg()));
+}
+
 // ---- Registration ----
 
 #[test]
@@ -432,6 +609,19 @@ fn register_gate3_bifs_registers_all() {
         ("binary_part", 3),
         ("bit_size", 1),
         ("-", 1),
+        // B-129 hashing, time, unique values, and misc utilities.
+        ("phash2", 1),
+        ("phash2", 2),
+        ("monotonic_time", 0),
+        ("system_time", 0),
+        ("monotonic_time", 1),
+        ("system_time", 1),
+        ("time_offset", 0),
+        ("unique_integer", 0),
+        ("unique_integer", 1),
+        ("min", 2),
+        ("max", 2),
+        ("abs", 1),
     ] {
         assert!(
             reg.lookup(erlang, at.intern(name), arity).is_some(),
