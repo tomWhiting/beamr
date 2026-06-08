@@ -27,6 +27,25 @@ pub enum FdState {
     Closed = 2,
 }
 
+/// Socket receive mode for stream/datagram active delivery.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FdMode {
+    Passive = 0,
+    Active = 1,
+    ActiveOnce = 2,
+}
+
+impl FdMode {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Active,
+            2 => Self::ActiveOnce,
+            _ => Self::Passive,
+        }
+    }
+}
+
 impl FdState {
     fn from_u8(value: u8) -> Self {
         match value {
@@ -43,6 +62,8 @@ pub struct FdInner {
     fd: RawFd,
     owner_pid: u64,
     state: AtomicU8,
+    mode: AtomicU8,
+    controlling_process: AtomicU64,
     current_offset: AtomicU64,
 }
 
@@ -53,6 +74,8 @@ impl FdInner {
             fd,
             owner_pid,
             state: AtomicU8::new(FdState::Open as u8),
+            mode: AtomicU8::new(FdMode::Passive as u8),
+            controlling_process: AtomicU64::new(owner_pid),
             current_offset: AtomicU64::new(0),
         }
     }
@@ -73,6 +96,28 @@ impl FdInner {
     #[must_use]
     pub fn state(&self) -> FdState {
         FdState::from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    /// Returns the active/passive receive mode.
+    #[must_use]
+    pub fn mode(&self) -> FdMode {
+        FdMode::from_u8(self.mode.load(Ordering::Acquire))
+    }
+
+    /// Set the active/passive receive mode.
+    pub fn set_mode(&self, mode: FdMode) {
+        self.mode.store(mode as u8, Ordering::Release);
+    }
+
+    /// Returns the process that receives active socket messages.
+    #[must_use]
+    pub fn controlling_process(&self) -> u64 {
+        self.controlling_process.load(Ordering::Acquire)
+    }
+
+    /// Set the process that receives active socket messages.
+    pub fn set_controlling_process(&self, pid: u64) {
+        self.controlling_process.store(pid, Ordering::Release);
     }
 
     /// Returns the tracked sequential file offset.
@@ -188,6 +233,12 @@ impl FdResource {
     #[must_use]
     pub fn fd(self) -> RawFd {
         self.inner_ref().fd()
+    }
+
+    /// Returns the active/passive receive mode.
+    #[must_use]
+    pub fn mode(self) -> FdMode {
+        self.inner_ref().mode()
     }
 
     /// Returns the owning process PID.

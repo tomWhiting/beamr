@@ -1,4 +1,8 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use crate::ets::{EtsTableId, OwnedTerm};
+use crate::io::resource::FdInner;
 use crate::namespace::NamespaceId;
 use crate::process::{ExitReason, Monitor, Priority};
 use crate::term::Term;
@@ -9,6 +13,13 @@ pub(super) struct PendingEtsTransferMessage {
     pub(super) table_id: EtsTableId,
     pub(super) from_pid: u64,
     pub(super) data: OwnedTerm,
+}
+
+/// A UDP datagram queued for delivery to a process currently executing on a scheduler thread.
+pub struct UdpActiveMessage {
+    pub fd: Arc<FdInner>,
+    pub bytes: Vec<u8>,
+    pub addr: SocketAddr,
 }
 
 pub(super) struct ProcessMetadata {
@@ -25,6 +36,7 @@ pub(super) struct ProcessMetadata {
     pub(super) pending_down_messages: Vec<(u64, u64, ExitReason)>,
     pub(super) pending_io_messages: Vec<Term>,
     pub(super) pending_ets_transfer_messages: Vec<PendingEtsTransferMessage>,
+    pub(super) pending_udp_messages: Vec<UdpActiveMessage>,
 }
 
 impl ProcessMetadata {

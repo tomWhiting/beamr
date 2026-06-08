@@ -161,6 +161,16 @@ fn drain_injected(shared: &SharedState, queue: &RunQueue, inject: &SegQueue<Spaw
 mod core;
 pub(in crate::scheduler) use core::cleanup_exited_process;
 use core::run_process;
+use std::net::SocketAddr;
+
+use super::process_slot::UdpActiveMessage;
+use super::{ProcessSlot, ScheduledProcess};
+use crate::atom::AtomTable;
+use crate::io::IoResult;
+use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, FdMode, write_fd_resource};
+use crate::process::Process;
+use crate::term::boxed::write_tuple;
+use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 #[cfg(test)]
 pub(in crate::scheduler) use core::{
     SliceOutcome, cleanup_if_tombstoned_after_store, execute_slice, store_runnable_process,
@@ -182,19 +192,139 @@ fn drain_file_io_completions(shared: &SharedState) {
     {
         let op_id = completion.op_id;
         if let Some((_, (pid, continuation))) = shared.file_io_pending.remove(&op_id) {
-            shared.file_io_results.insert(
-                pid,
-                crate::native::FileIoCompletion {
-                    op_id,
-                    continuation,
-                    completion,
-                },
-            );
-            wake_process(shared, pid);
+            if let crate::native::FileIoContinuation::UdpActiveRecv { fd } = continuation {
+                handle_udp_active_completion(shared, fd, completion);
+            } else {
+                shared.file_io_results.insert(
+                    pid,
+                    crate::native::FileIoCompletion {
+                        op_id,
+                        continuation,
+                        completion,
+                    },
+                );
+                wake_process(shared, pid);
+            }
         } else if shared.file_io_canceled.remove(&op_id).is_none() {
             shared.file_io_orphans.insert(op_id, completion);
         }
     }
+}
+
+fn handle_udp_active_completion(
+    shared: &SharedState,
+    fd: std::sync::Arc<FdInner>,
+    completion: crate::io::IoCompletion,
+) {
+    if fd.state() != crate::io::resource::FdState::Open {
+        return;
+    }
+    let mode = fd.mode();
+    if mode == FdMode::Passive {
+        return;
+    }
+    match completion.result {
+        Ok(IoResult::DatagramReceived { bytes, data, addr }) => {
+            deliver_udp_active_datagram(shared, &fd, bytes, &data, addr);
+            match mode {
+                FdMode::Active => {
+                    let op_id = shared.file_io_ring.submit(crate::io::IoOp::RecvMsg {
+                        fd: fd.fd(),
+                        buf_len: 65_535,
+                    });
+                    shared.file_io_pending.insert(
+                        op_id,
+                        (
+                            fd.controlling_process(),
+                            crate::native::FileIoContinuation::UdpActiveRecv { fd },
+                        ),
+                    );
+                }
+                FdMode::ActiveOnce => fd.set_mode(FdMode::Passive),
+                FdMode::Passive => {}
+            }
+        }
+        Ok(_) | Err(_) => fd.set_mode(FdMode::Passive),
+    }
+}
+
+fn deliver_udp_active_datagram(
+    shared: &SharedState,
+    fd: &std::sync::Arc<FdInner>,
+    bytes: usize,
+    data: &[u8],
+    addr: SocketAddr,
+) -> Option<Term> {
+    let target = fd.controlling_process();
+    let entry = shared.process_bodies.get(&target)?;
+    let mut slot = super::lock_or_recover(&entry);
+    match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(process)) => {
+            let message = build_udp_active_message_for_process(
+                &shared.atom_table,
+                process,
+                fd,
+                data.get(..bytes)?,
+                addr,
+            )?;
+            process.mailbox_mut().push_owned(message);
+        }
+        ProcessSlot::Executing(metadata) => {
+            metadata.pending_udp_messages.push(UdpActiveMessage {
+                fd: std::sync::Arc::clone(fd),
+                bytes: data.get(..bytes)?.to_vec(),
+                addr,
+            });
+        }
+        ProcessSlot::Absent => return None,
+    }
+    drop(slot);
+    wake_process(shared, target);
+    Some(Term::atom(crate::atom::Atom::OK))
+}
+
+pub(in crate::scheduler) fn build_udp_active_message_for_process(
+    atom_table: &AtomTable,
+    process: &mut Process,
+    fd: &std::sync::Arc<FdInner>,
+    datagram: &[u8],
+    addr: SocketAddr,
+) -> Option<Term> {
+    let SocketAddr::V4(v4) = addr else {
+        return None;
+    };
+    let binary_words = alloc_binary_word_count(datagram.len());
+    let needed_words = FD_RESOURCE_WORDS + binary_words + 1 + 4 + 1 + 5;
+    if crate::gc::ensure_space(process, needed_words, 0).is_err() {
+        return None;
+    }
+    let socket = {
+        let heap = process.heap_mut().alloc_slice(FD_RESOURCE_WORDS).ok()?;
+        write_fd_resource(heap, std::sync::Arc::clone(fd))?
+    };
+    let ip = {
+        let octets = v4.ip().octets();
+        let terms = [
+            Term::try_small_int(i64::from(octets[0]))?,
+            Term::try_small_int(i64::from(octets[1]))?,
+            Term::try_small_int(i64::from(octets[2]))?,
+            Term::try_small_int(i64::from(octets[3]))?,
+        ];
+        let heap = process.heap_mut().alloc_slice(1 + terms.len()).ok()?;
+        write_tuple(heap, &terms)?
+    };
+    let binary = {
+        let heap = process.heap_mut().alloc_slice(binary_words).ok()?;
+        alloc_binary(heap, datagram)?
+    };
+    let udp = Term::atom(atom_table.intern("udp"));
+    let port = Term::try_small_int(i64::from(v4.port()))?;
+    let message_terms = [udp, socket, ip, port, binary];
+    let heap = process
+        .heap_mut()
+        .alloc_slice(1 + message_terms.len())
+        .ok()?;
+    write_tuple(heap, &message_terms)
 }
 
 fn drain_woken(shared: &SharedState, queue: &RunQueue, my_index: usize) {

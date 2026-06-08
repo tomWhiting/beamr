@@ -23,6 +23,57 @@ use crate::io::ring::{CompletionRing, IoCompletion, IoOp, IoResult, StatxData};
 
 const DEFAULT_POOL_SIZE: usize = 4;
 
+fn sendmsg_fd(fd: RawFd, data: &[u8], addr: SocketAddr) -> io::Result<IoResult> {
+    let (storage, len) = socket_addr_to_raw(addr);
+    let iov = libc::iovec {
+        iov_base: data.as_ptr().cast_mut().cast(),
+        iov_len: data.len(),
+    };
+    // SAFETY: zeroed msghdr is filled with valid pointers below before the libc call.
+    let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+    msg.msg_name = (&storage as *const libc::sockaddr_storage)
+        .cast_mut()
+        .cast();
+    msg.msg_namelen = len;
+    msg.msg_iov = (&iov as *const libc::iovec).cast_mut();
+    msg.msg_iovlen = 1;
+    // SAFETY: `msg` references address and iovec storage alive for the duration of sendmsg.
+    let rc = unsafe { libc::sendmsg(fd, &msg, 0) };
+    if rc < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(IoResult::DatagramSent(rc as usize))
+    }
+}
+
+fn recvmsg_fd(fd: RawFd, buf_len: usize) -> io::Result<IoResult> {
+    let mut buffer = vec![0_u8; buf_len];
+    // SAFETY: zeroed storage is filled by recvmsg on success before being read.
+    let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+    let mut iov = libc::iovec {
+        iov_base: buffer.as_mut_ptr().cast(),
+        iov_len: buffer.len(),
+    };
+    // SAFETY: zeroed msghdr is filled with valid pointers below before the libc call.
+    let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+    msg.msg_name = (&mut storage as *mut libc::sockaddr_storage).cast();
+    msg.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    // SAFETY: `msg` references writable address storage and buffer alive for recvmsg.
+    let rc = unsafe { libc::recvmsg(fd, &mut msg, 0) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes = rc as usize;
+    buffer.truncate(bytes);
+    sockaddr_to_addr(&storage).map(|addr| IoResult::DatagramReceived {
+        bytes,
+        data: buffer,
+        addr,
+    })
+}
+
 enum WorkerMessage {
     Run { op_id: u64, op: IoOp },
     Shutdown,
@@ -173,6 +224,8 @@ fn execute_op(op: IoOp) -> io::Result<IoResult> {
         IoOp::Write { fd, data, offset } => write_fd(fd, &data, offset),
         IoOp::Accept { listener_fd } => accept_fd(listener_fd),
         IoOp::Connect { fd, addr } => connect_fd(fd, addr),
+        IoOp::SendMsg { fd, data, addr } => sendmsg_fd(fd, &data, addr),
+        IoOp::RecvMsg { fd, buf_len } => recvmsg_fd(fd, buf_len),
         IoOp::Close { fd } => close_fd(fd),
         IoOp::Fsync { fd } => fsync_fd(fd),
         IoOp::Openat {

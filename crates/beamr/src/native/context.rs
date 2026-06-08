@@ -97,6 +97,12 @@ pub enum FileIoContinuation {
     Rename,
     /// `erlang:tcp_accept/1,2` completion.
     Accept,
+    /// `erlang:udp_send/4` completion.
+    UdpSend { expected_len: usize },
+    /// `erlang:udp_recv/2,3` completion.
+    UdpRecv,
+    /// Active-mode UDP receive (scheduler-driven, not BIF-resumed).
+    UdpActiveRecv { fd: Arc<FdInner> },
 }
 
 /// Completion facility used by file BIFs to submit ring work and retrieve resume completions.

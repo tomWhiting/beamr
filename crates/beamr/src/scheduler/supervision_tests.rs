@@ -136,6 +136,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
                 pending_down_messages: Vec::new(),
                 pending_io_messages: Vec::new(),
                 pending_ets_transfer_messages: Vec::new(),
+                pending_udp_messages: Vec::new(),
             };
             *slot = ProcessSlot::Executing(metadata);
             process

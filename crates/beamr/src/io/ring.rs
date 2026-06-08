@@ -62,6 +62,14 @@ pub enum IoOp {
         source: PathBuf,
         destination: PathBuf,
     },
+    /// Send one datagram to `addr` with sendmsg-style address inclusion.
+    SendMsg {
+        fd: RawFd,
+        data: Vec<u8>,
+        addr: SocketAddr,
+    },
+    /// Receive one datagram and its source address with recvmsg-style address inclusion.
+    RecvMsg { fd: RawFd, buf_len: usize },
     /// Complete without performing I/O.
     Nop,
 }
@@ -116,6 +124,14 @@ pub enum IoResult {
     Opened(RawFd),
     /// Stat result.
     StatResult(StatxData),
+    /// Datagram bytes sent.
+    DatagramSent(usize),
+    /// Datagram bytes received with peer address and exact data buffer.
+    DatagramReceived {
+        bytes: usize,
+        data: Vec<u8>,
+        addr: SocketAddr,
+    },
     /// Directory entry filename list.
     DirList(Vec<Vec<u8>>),
     /// Generic successful completion.
