@@ -624,6 +624,10 @@ impl crate::native::SystemInfoFacility for SchedulerSystemInfoFacility {
     fn atom_limit(&self) -> usize {
         self.shared.atom_table.limit()
     }
+
+    fn memory_summary(&self) -> crate::native::system_info_bifs::MemorySummary {
+        self.shared.memory_summary()
+    }
 }
 
 impl SpawnFacility for SchedulerSpawnFacility {

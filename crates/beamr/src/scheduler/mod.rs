@@ -156,6 +156,38 @@ impl SharedState {
     pub(super) fn atom_count(&self) -> usize {
         self.atom_table.len()
     }
+
+    /// Return an approximate memory summary for OTP compatibility probes.
+    #[must_use]
+    pub(super) fn memory_summary(&self) -> crate::native::system_info_bifs::MemorySummary {
+        let mut process_heap_words = 0usize;
+        let mut binary = 0usize;
+
+        for entry in &self.process_bodies {
+            match &*lock_or_recover(&entry) {
+                ProcessSlot::Present(scheduled) => {
+                    if matches!(scheduled.0.status(), ProcessStatus::Exited(_)) {
+                        continue;
+                    }
+                    process_heap_words =
+                        process_heap_words.saturating_add(scheduled.0.heap().total_used());
+                    binary = binary.saturating_add(scheduled.0.virtual_binary_heap());
+                }
+                ProcessSlot::Executing(metadata) => {
+                    process_heap_words = process_heap_words.saturating_add(metadata.heap_size);
+                }
+                ProcessSlot::Absent => {}
+            }
+        }
+
+        let processes = process_heap_words
+            .saturating_mul(crate::native::system_info_bifs::WORDSIZE_BYTES)
+            .saturating_add(binary);
+        let atom = self
+            .atom_count()
+            .saturating_mul(crate::native::system_info_bifs::WORDSIZE_BYTES);
+        crate::native::system_info_bifs::MemorySummary::from_components(processes, atom, binary)
+    }
 }
 
 #[derive(Default)]
