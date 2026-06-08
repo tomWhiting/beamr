@@ -2,6 +2,7 @@
 
 pub mod bag;
 pub mod copy;
+pub mod match_spec;
 pub mod ordered_set;
 pub mod set;
 pub mod table;
@@ -18,6 +19,7 @@ use crate::term::boxed::Tuple;
 
 pub use bag::{EtsBag, EtsDuplicateBag};
 pub use copy::{OwnedTerm, copy_term_to_ets, copy_term_to_heap};
+pub use match_spec::{CompiledMatchSpec, MatchSpec, MatchSpecError};
 pub use ordered_set::EtsOrderedSet;
 pub use set::EtsSet;
 pub use table::{
