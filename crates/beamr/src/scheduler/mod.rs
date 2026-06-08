@@ -364,7 +364,7 @@ impl Scheduler {
             #[cfg(test)]
             idle_parks: AtomicUsize::new(0),
         });
-        let standard_io_pid = shared.standard_io_server.pid();
+        let standard_io_pid = shared._standard_io_server.pid();
         shared.process_table.spawn_with_pid(standard_io_pid);
         shared.process_bodies.insert(
             standard_io_pid,
