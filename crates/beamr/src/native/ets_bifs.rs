@@ -666,19 +666,50 @@ mod tests {
     }
 
     #[test]
-    fn ets_new_rejects_write_concurrency_auto() {
+    fn ets_new_accepts_explicit_false_concurrency_options() {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let registry = Arc::new(EtsRegistry::new());
-        let table_name = atom_table.intern("auto_concurrency_tab");
+        let table_name = atom_table.intern("false_concurrency_tab");
+        let read_concurrency = atom_table.intern("read_concurrency");
         let write_concurrency = atom_table.intern("write_concurrency");
+        let mut process = Process::new(1, 256);
+        let mut context = context(&mut process, Arc::clone(&atom_table), Arc::clone(&registry));
+        let read_option = tuple_option(&mut context, read_concurrency, Term::atom(Atom::FALSE));
+        let write_option = tuple_option(&mut context, write_concurrency, Term::atom(Atom::FALSE));
+        let options = context
+            .alloc_list(&[read_option, write_option])
+            .expect("option list");
+
+        let tab = bif_new(&[Term::atom(table_name), options], &mut context).expect("new table");
+        let table = created_table(&registry, tab);
+
+        assert!(!table.metadata().read_concurrency);
+        assert!(!table.metadata().write_concurrency);
+    }
+
+    #[test]
+    fn ets_new_rejects_non_boolean_concurrency_options() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let write_table_name = atom_table.intern("auto_write_concurrency_tab");
+        let read_table_name = atom_table.intern("auto_read_concurrency_tab");
+        let write_concurrency = atom_table.intern("write_concurrency");
+        let read_concurrency = atom_table.intern("read_concurrency");
         let auto = atom_table.intern("auto");
-        let mut process = Process::new(1, 128);
+        let mut process = Process::new(1, 256);
         let mut context = context(&mut process, Arc::clone(&atom_table), registry);
-        let option = tuple_option(&mut context, write_concurrency, Term::atom(auto));
-        let options = context.alloc_list(&[option]).expect("option list");
+        let write_option = tuple_option(&mut context, write_concurrency, Term::atom(auto));
+        let write_options = context.alloc_list(&[write_option]).expect("option list");
 
         assert_eq!(
-            bif_new(&[Term::atom(table_name), options], &mut context),
+            bif_new(&[Term::atom(write_table_name), write_options], &mut context),
+            Err(Term::atom(Atom::BADARG))
+        );
+
+        let read_option = tuple_option(&mut context, read_concurrency, Term::small_int(1));
+        let read_options = context.alloc_list(&[read_option]).expect("option list");
+        assert_eq!(
+            bif_new(&[Term::atom(read_table_name), read_options], &mut context),
             Err(Term::atom(Atom::BADARG))
         );
     }

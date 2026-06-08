@@ -1,1 +1,1 @@
-feat(ets): support read and write concurrency table options
+review(ets): harden concurrency option tests

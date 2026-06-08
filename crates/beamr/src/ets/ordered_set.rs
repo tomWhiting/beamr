@@ -155,7 +155,11 @@ impl EtsTable for EtsOrderedSet {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, thread};
+    use std::{
+        sync::{Arc, mpsc},
+        thread,
+        time::Duration,
+    };
 
     use crate::{
         atom::AtomTable,
@@ -326,20 +330,51 @@ mod tests {
         );
         assert_eq!(table.insert(row), Ok(()));
 
-        let handles = (0..8)
-            .map(|_| {
-                let table = Arc::clone(&table);
-                thread::spawn(move || {
-                    for _ in 0..128 {
-                        assert_eq!(table.lookup(Term::small_int(1)), vec![row]);
-                    }
-                })
+        let (first_reader_started_tx, first_reader_started_rx) = mpsc::channel();
+        let (release_first_reader_tx, release_first_reader_rx) = mpsc::channel();
+        let holding_reader = {
+            let table = Arc::clone(&table);
+            thread::spawn(move || {
+                table.with_rows(|rows| {
+                    assert_eq!(rows.get(&table.key(Term::small_int(1))).copied(), Some(row));
+                    first_reader_started_tx
+                        .send(())
+                        .expect("test coordinator receives first reader signal");
+                    release_first_reader_rx
+                        .recv()
+                        .expect("test coordinator releases first reader");
+                });
             })
-            .collect::<Vec<_>>();
+        };
+        first_reader_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first reader acquired read lock");
 
-        for handle in handles {
-            handle.join().expect("reader thread completes");
-        }
+        let (concurrent_reader_tx, concurrent_reader_rx) = mpsc::channel();
+        let concurrent_reader = {
+            let table = Arc::clone(&table);
+            thread::spawn(move || {
+                concurrent_reader_tx
+                    .send(table.lookup(Term::small_int(1)))
+                    .expect("test coordinator receives concurrent reader result");
+            })
+        };
+        assert_eq!(
+            concurrent_reader_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("second reader is not blocked by first reader"),
+            vec![row]
+        );
+
+        release_first_reader_tx
+            .send(())
+            .expect("first reader release signal sends");
+        holding_reader
+            .join()
+            .expect("holding reader thread completes");
+        concurrent_reader
+            .join()
+            .expect("concurrent reader thread completes");
     }
 
     #[test]
