@@ -448,7 +448,8 @@ fn file_seek_rejects_unrepresentable_position_without_mutating_offset() {
     let mut context = heap_context(&mut process, Arc::clone(&facility));
     let fd = pipe_read_fd();
     let inner = Arc::new(FdInner::new(fd, PID));
-    inner.set_current_offset(5);
+    let base = Term::SMALL_INT_MAX as u64;
+    inner.set_current_offset(base);
     let resource = context
         .alloc_fd_resource(Arc::clone(&inner))
         .expect("fd resource allocation");
@@ -456,14 +457,14 @@ fn file_seek_rejects_unrepresentable_position_without_mutating_offset() {
     let result = file_seek(
         &[
             resource,
-            Term::small_int(Term::SMALL_INT_MAX),
-            Term::atom(Atom::BOF),
+            Term::small_int(1),
+            Term::atom(Atom::CUR),
         ],
         &mut context,
     )
     .expect("unrepresentable seek result");
     assert_eq!(error_reason(result), Term::atom(Atom::EINVAL));
-    assert_eq!(inner.current_offset(), 5);
+    assert_eq!(inner.current_offset(), base);
     assert!(facility.submitted().is_empty());
 }
 
