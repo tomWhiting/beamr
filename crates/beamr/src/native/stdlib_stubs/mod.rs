@@ -15,6 +15,7 @@ pub mod gleam_stdlib_ffi;
 pub mod gleam_stdlib_ffi2;
 pub mod io_bifs;
 pub mod lists_bifs;
+pub mod lists_hof_bifs;
 pub mod maps_bifs;
 pub mod math_bifs;
 pub mod sample_support_bifs;
@@ -63,9 +64,12 @@ use io_bifs::{
     bif_io_put_chars_2, bif_io_setopts_2,
 };
 use lists_bifs::{
-    bif_lists_append_1, bif_lists_append_2, bif_lists_join, bif_lists_map, bif_lists_reverse_2,
-    bif_lists_seq,
+    bif_lists_append_1, bif_lists_append_2, bif_lists_flatten, bif_lists_join, bif_lists_keydelete,
+    bif_lists_keyfind, bif_lists_keysort, bif_lists_keystore, bif_lists_last, bif_lists_member,
+    bif_lists_nth, bif_lists_reverse_2, bif_lists_seq, bif_lists_sort, bif_lists_unzip,
+    bif_lists_zip,
 };
+use lists_hof_bifs::{bif_lists_filter, bif_lists_filtermap, bif_lists_foreach, bif_lists_map};
 use maps_bifs::{
     bif_maps_filter, bif_maps_find, bif_maps_fold, bif_maps_keys, bif_maps_merge_with,
     bif_maps_put, bif_maps_to_list, bif_maps_update_with, bif_maps_values, bif_maps_with,
@@ -850,6 +854,51 @@ const STDLIB_STUBS: &[StubBif] = &[
         bif_lists_append_2,
     ),
     ("lists", "join", 2, Capability::Pure, None, bif_lists_join),
+    ("lists", "nth", 2, Capability::Pure, None, bif_lists_nth),
+    (
+        "lists",
+        "member",
+        2,
+        Capability::Pure,
+        None,
+        bif_lists_member,
+    ),
+    (
+        "lists",
+        "keyfind",
+        3,
+        Capability::Pure,
+        None,
+        bif_lists_keyfind,
+    ),
+    ("lists", "last", 1, Capability::Pure, None, bif_lists_last),
+    ("lists", "sort", 1, Capability::Pure, None, bif_lists_sort),
+    (
+        "lists",
+        "flatten",
+        1,
+        Capability::Pure,
+        None,
+        bif_lists_flatten,
+    ),
+    ("lists", "zip", 2, Capability::Pure, None, bif_lists_zip),
+    ("lists", "unzip", 1, Capability::Pure, None, bif_lists_unzip),
+    (
+        "lists",
+        "filter",
+        2,
+        Capability::Pure,
+        None,
+        bif_lists_filter,
+    ),
+    (
+        "lists",
+        "filtermap",
+        2,
+        Capability::Pure,
+        None,
+        bif_lists_filtermap,
+    ),
     ("lists", "map", 2, Capability::Pure, None, bif_lists_map),
     (
         "lists",
@@ -860,6 +909,38 @@ const STDLIB_STUBS: &[StubBif] = &[
         bif_lists_reverse_2,
     ),
     ("lists", "seq", 2, Capability::Pure, None, bif_lists_seq),
+    (
+        "lists",
+        "keystore",
+        4,
+        Capability::Pure,
+        None,
+        bif_lists_keystore,
+    ),
+    (
+        "lists",
+        "keysort",
+        2,
+        Capability::Pure,
+        None,
+        bif_lists_keysort,
+    ),
+    (
+        "lists",
+        "keydelete",
+        3,
+        Capability::Pure,
+        None,
+        bif_lists_keydelete,
+    ),
+    (
+        "lists",
+        "foreach",
+        2,
+        Capability::Pure,
+        None,
+        bif_lists_foreach,
+    ),
     (
         "timer",
         "sleep",
@@ -1195,6 +1276,8 @@ fn badarg() -> Term {
 mod b033_tests;
 #[cfg(test)]
 mod b038_tests;
+#[cfg(test)]
+mod b127_tests;
 #[cfg(test)]
 mod bitwise_bifs_tests;
 #[cfg(test)]

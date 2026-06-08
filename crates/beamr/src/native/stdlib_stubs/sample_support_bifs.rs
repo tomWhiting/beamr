@@ -7,7 +7,7 @@ use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Closure, Tuple};
 
 use super::gleam_stdlib_ffi::bif_string_replace;
-use super::lists_bifs::bif_lists_map;
+use super::lists_hof_bifs::bif_lists_map;
 
 pub fn bif_gleam_list_map(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     bif_lists_map(args, context)

@@ -13,7 +13,7 @@ use crate::io::{
     CompletionRing, IoCompletion, IoError, IoFacility, IoOp, IoSink, NullSink, ResultMode,
 };
 use crate::native::ets_bifs::EtsFoldlState;
-use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
+use crate::native::stdlib_stubs::{lists_hof_bifs::ListsHofState, maps_bifs::MapsHofState};
 use crate::process::{Priority, Process};
 use crate::term::Term;
 use crate::term::boxed::{
@@ -60,8 +60,8 @@ pub struct TrampolineRequest {
 pub enum NativeContinuation {
     /// Continuation for maps higher-order BIFs.
     Maps(MapsHofState),
-    /// Continuation for lists:map/2.
-    ListsMap(ListsMapState),
+    /// Continuation for lists higher-order BIFs.
+    Lists(ListsHofState),
     /// Continuation for ets:foldl/3.
     EtsFoldl(EtsFoldlState),
     /// Continuation for Gleam result.try/2 compatibility.
