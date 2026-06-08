@@ -1,1 +1,1 @@
-Harden B-107 TCP client transfer implementation
+feat(distribution): add per-connection atom cache codec

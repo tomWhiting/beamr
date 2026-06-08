@@ -5,6 +5,7 @@
 //! supervision primitives, and a native function interface.
 pub mod atom;
 pub mod constant_pool;
+pub mod distribution;
 pub mod error;
 pub mod etf;
 pub mod ets;
