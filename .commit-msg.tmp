@@ -1,1 +1,1 @@
-feat(ets): add internal match spec compiler
+fix(ets): harden match spec eval error handling

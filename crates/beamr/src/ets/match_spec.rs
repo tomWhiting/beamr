@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use crate::atom::AtomTable;
 use crate::native::ProcessContext;
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::{Cons, Tuple};
+use crate::term::boxed::{BigInt, Cons, Tuple};
 use crate::term::{Term, compare};
 
 /// Parsed, executable ETS match specification.
@@ -103,8 +103,8 @@ pub enum MatchSpecError {
 }
 
 trait TermAllocator {
-    fn alloc_tuple(&mut self, elements: &[Term]) -> Option<Term>;
-    fn alloc_list(&mut self, elements: &[Term]) -> Option<Term>;
+    fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term>;
+    fn alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term>;
 }
 
 struct ProcessAllocator<'context, 'process> {
@@ -112,31 +112,33 @@ struct ProcessAllocator<'context, 'process> {
 }
 
 impl TermAllocator for ProcessAllocator<'_, '_> {
-    fn alloc_tuple(&mut self, elements: &[Term]) -> Option<Term> {
-        self.context.alloc_tuple(elements).ok()
+    fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> {
+        self.context.alloc_tuple(elements)
     }
 
-    fn alloc_list(&mut self, elements: &[Term]) -> Option<Term> {
-        self.context.alloc_list(elements).ok()
+    fn alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term> {
+        self.context.alloc_list(elements)
     }
 }
 
 struct LeakingAllocator;
 
 impl TermAllocator for LeakingAllocator {
-    fn alloc_tuple(&mut self, elements: &[Term]) -> Option<Term> {
+    fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> {
         let leaked = Box::leak(vec![0_u64; 1 + elements.len()].into_boxed_slice());
         crate::term::boxed::write_tuple(leaked, elements)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
-    fn alloc_list(&mut self, elements: &[Term]) -> Option<Term> {
+    fn alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term> {
         let mut tail = Term::NIL;
         for element in elements.iter().rev().copied() {
             let mut words = vec![0_u64; 2].into_boxed_slice();
-            tail = crate::term::boxed::write_cons(&mut words, element, tail)?;
+            tail = crate::term::boxed::write_cons(&mut words, element, tail)
+                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
             let _leaked: &'static mut [u64] = Box::leak(words);
         }
-        Some(tail)
+        Ok(tail)
     }
 }
 
@@ -158,7 +160,7 @@ impl CompiledMatchSpec {
             .atom_table_arc()
             .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
         let mut allocator = ProcessAllocator { context };
-        Ok(self.eval_with_allocator(tuple, atom_table.as_ref(), &mut allocator))
+        self.eval_with_allocator(tuple, atom_table.as_ref(), &mut allocator)
     }
 
     /// Evaluate against one object using a permanent fallback heap for constructed results.
@@ -171,6 +173,8 @@ impl CompiledMatchSpec {
         let atom_table = AtomTable::with_common_atoms();
         let mut allocator = LeakingAllocator;
         self.eval_with_allocator(tuple, &atom_table, &mut allocator)
+            .ok()
+            .flatten()
     }
 
     fn eval_with_allocator(
@@ -178,7 +182,7 @@ impl CompiledMatchSpec {
         object: Term,
         atom_table: &AtomTable,
         allocator: &mut dyn TermAllocator,
-    ) -> Option<Term> {
+    ) -> Result<Option<Term>, Term> {
         for clause in &self.spec.clauses {
             let mut bindings = vec![None; clause.max_variable.saturating_add(1)];
             if !clause.matches_head(object, &mut bindings) {
@@ -191,9 +195,9 @@ impl CompiledMatchSpec {
             {
                 continue;
             }
-            return clause.eval_body(object, &bindings, allocator);
+            return clause.eval_body(object, &bindings, allocator).map(Some);
         }
-        None
+        Ok(None)
     }
 }
 
@@ -288,12 +292,12 @@ impl MatchClause {
         object: Term,
         bindings: &[Option<Term>],
         allocator: &mut dyn TermAllocator,
-    ) -> Option<Term> {
+    ) -> Result<Term, Term> {
         let mut result = Term::NIL;
         for expr in &self.body {
             result = expr.eval(object, bindings, allocator)?;
         }
-        Some(result)
+        Ok(result)
     }
 }
 
@@ -322,7 +326,7 @@ impl Guard {
                 };
                 match test {
                     TypeTest::Atom => value.is_atom(),
-                    TypeTest::Integer => value.is_small_int(),
+                    TypeTest::Integer => value.is_small_int() || BigInt::new(value).is_some(),
                     TypeTest::Binary => BinaryRef::new(value).is_some(),
                     TypeTest::Tuple => Tuple::new(value).is_some(),
                     TypeTest::List => value.is_list() || value.is_nil(),
@@ -347,10 +351,10 @@ impl BodyExpr {
         object: Term,
         bindings: &[Option<Term>],
         allocator: &mut dyn TermAllocator,
-    ) -> Option<Term> {
+    ) -> Result<Term, Term> {
         match self {
-            Self::Variable(index) => bindings.get(*index).copied().flatten(),
-            Self::Literal(term) => Some(*term),
+            Self::Variable(index) => bindings.get(*index).copied().flatten().ok_or_else(badarg),
+            Self::Literal(term) => Ok(*term),
             Self::Tuple(elements) => {
                 let evaluated = eval_body_exprs(elements, object, bindings, allocator)?;
                 allocator.alloc_tuple(&evaluated)
@@ -359,7 +363,7 @@ impl BodyExpr {
                 let evaluated = eval_body_exprs(elements, object, bindings, allocator)?;
                 allocator.alloc_list(&evaluated)
             }
-            Self::ReturnObject => Some(object),
+            Self::ReturnObject => Ok(object),
             Self::ReturnBindings => {
                 let mut values = Vec::new();
                 for value in bindings.iter().skip(1).copied().flatten() {
@@ -376,12 +380,16 @@ fn eval_body_exprs(
     object: Term,
     bindings: &[Option<Term>],
     allocator: &mut dyn TermAllocator,
-) -> Option<Vec<Term>> {
+) -> Result<Vec<Term>, Term> {
     let mut evaluated = Vec::with_capacity(exprs.len());
     for expr in exprs {
         evaluated.push(expr.eval(object, bindings, allocator)?);
     }
-    Some(evaluated)
+    Ok(evaluated)
+}
+
+fn badarg() -> Term {
+    Term::atom(crate::atom::Atom::BADARG)
 }
 
 fn match_pattern(pattern: &Pattern, value: Term, bindings: &mut [Option<Term>]) -> bool {
@@ -683,6 +691,13 @@ mod tests {
             self.cons_words.push(words);
             term
         }
+
+        fn bigint(&mut self, negative: bool, limbs: &[u64]) -> Term {
+            let mut words = vec![0_u64; 3 + limbs.len()].into_boxed_slice();
+            let term = boxed::write_bigint(&mut words, negative, limbs).expect("test bigint fits");
+            self.tuple_words.push(words);
+            term
+        }
     }
 
     fn atom(table: &AtomTable, name: &str) -> Term {
@@ -803,6 +818,23 @@ mod tests {
 
         assert_eq!(compiled.eval(matching), Some(Term::small_int(3)));
         assert_eq!(compiled.eval(non_matching), None);
+    }
+
+    #[test]
+    fn is_integer_type_test_accepts_bigints() {
+        let table = AtomTable::with_common_atoms();
+        let mut heap = TestHeap::new();
+        let head = heap.tuple(&[atom(&table, "$1")]);
+        let guard = heap.tuple(&[atom(&table, "is_integer"), atom(&table, "$1")]);
+        let guards = heap.list(&[guard]);
+        let body = heap.list(&[atom(&table, "$1")]);
+        let clause = heap.tuple(&[head, guards, body]);
+        let spec = heap.list(&[clause]);
+        let compiled = CompiledMatchSpec::compile(spec, &table).expect("spec compiles");
+        let bigint = heap.bigint(false, &[u64::MAX, 1]);
+        let object = heap.tuple(&[bigint]);
+
+        assert_eq!(compiled.eval(object), Some(bigint));
     }
 
     #[test]
