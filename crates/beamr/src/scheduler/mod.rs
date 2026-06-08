@@ -88,6 +88,7 @@ pub(super) struct SharedState {
     io_bridge: Mutex<Option<IoCompletionBridge>>,
     io_facility: Option<Arc<dyn IoFacility>>,
     standard_io_pid: u64,
+    #[allow(dead_code)]
     standard_io_server: StandardIoServer,
     #[cfg(test)]
     idle_parks: AtomicUsize,
