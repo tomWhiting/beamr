@@ -150,10 +150,7 @@ fn shared_state_metric_accessors_report_scheduler_process_and_atom_counts() {
     assert_eq!(scheduler.atom_count(), atom_table.len());
     assert_eq!(scheduler.atom_limit(), atom_table.limit());
 
-    let pid = scheduler
-        .shared
-        .next_pid
-        .fetch_add(1, Ordering::Relaxed);
+    let pid = scheduler.shared.next_pid.fetch_add(1, Ordering::Relaxed);
     scheduler.process_table().spawn_with_pid(pid);
     assert_eq!(scheduler.process_count(), 2);
     let removed = scheduler.process_table().remove(pid);
@@ -730,6 +727,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
             priority: process.priority(),
             current_mfa: None,
             heap_size: 0,
+            binary_heap_size: 0,
             message_queue_len: 0,
             group_leader: process.group_leader(),
             pending_exit_messages: Vec::new(),

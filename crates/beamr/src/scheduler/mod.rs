@@ -176,14 +176,14 @@ impl SharedState {
                 }
                 ProcessSlot::Executing(metadata) => {
                     process_heap_words = process_heap_words.saturating_add(metadata.heap_size);
+                    binary = binary.saturating_add(metadata.binary_heap_size);
                 }
                 ProcessSlot::Absent => {}
             }
         }
 
-        let processes = process_heap_words
-            .saturating_mul(crate::native::system_info_bifs::WORDSIZE_BYTES)
-            .saturating_add(binary);
+        let processes =
+            process_heap_words.saturating_mul(crate::native::system_info_bifs::WORDSIZE_BYTES);
         let atom = self
             .atom_count()
             .saturating_mul(crate::native::system_info_bifs::WORDSIZE_BYTES);

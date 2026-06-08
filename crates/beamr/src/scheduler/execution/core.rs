@@ -99,6 +99,7 @@ pub(in crate::scheduler) fn take_runnable_process(
                 priority: process.priority(),
                 current_mfa: process.current_mfa(),
                 heap_size: process.heap().total_used(),
+                binary_heap_size: process.virtual_binary_heap(),
                 message_queue_len: process.mailbox().message_count(),
                 group_leader: process.group_leader(),
                 pending_exit_messages: Vec::new(),
@@ -179,27 +180,23 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
                 process.mailbox_mut().push_owned(message);
             }
             for udp_msg in metadata.pending_udp_messages.drain(..) {
-                if let Some(message) =
-                    super::build_udp_active_message_for_process(
-                        &shared.atom_table,
-                        &mut process,
-                        &udp_msg.fd,
-                        &udp_msg.bytes,
-                        udp_msg.addr,
-                    )
-                {
+                if let Some(message) = super::build_udp_active_message_for_process(
+                    &shared.atom_table,
+                    &mut process,
+                    &udp_msg.fd,
+                    &udp_msg.bytes,
+                    udp_msg.addr,
+                ) {
                     process.mailbox_mut().push_owned(message);
                 }
             }
             for tcp_msg in metadata.pending_tcp_messages.drain(..) {
-                if let Some(message) =
-                    super::build_tcp_active_message_for_process(
-                        &shared.atom_table,
-                        &mut process,
-                        &tcp_msg.fd,
-                        &tcp_msg.bytes,
-                    )
-                {
+                if let Some(message) = super::build_tcp_active_message_for_process(
+                    &shared.atom_table,
+                    &mut process,
+                    &tcp_msg.fd,
+                    &tcp_msg.bytes,
+                ) {
                     process.mailbox_mut().push_owned(message);
                 }
             }

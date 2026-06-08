@@ -130,6 +130,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
                 priority: process.priority(),
                 current_mfa: process.current_mfa(),
                 heap_size: process.heap().total_used(),
+                binary_heap_size: process.virtual_binary_heap(),
                 message_queue_len: process.mailbox().message_count(),
                 group_leader: process.group_leader(),
                 pending_exit_messages: Vec::new(),

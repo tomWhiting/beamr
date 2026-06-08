@@ -36,6 +36,7 @@ pub(super) struct ProcessMetadata {
     pub(super) priority: Priority,
     pub(super) current_mfa: Option<(crate::atom::Atom, crate::atom::Atom, u8)>,
     pub(super) heap_size: usize,
+    pub(super) binary_heap_size: usize,
     pub(super) message_queue_len: usize,
     pub(super) group_leader: Term,
     pub(super) pending_exit_messages: Vec<(u64, ExitReason)>,
