@@ -230,6 +230,7 @@ struct ConnectionManagerInner {
     connect_timeout: Duration,
     connection_down_hook: ConnectionDownHook,
     inbound_identifier: RwLock<Option<Arc<InboundIdentifier>>>,
+    pending_inbound: DashMap<SocketAddr, TcpStream>,
 }
 
 impl ConnectionManagerInner {
@@ -278,6 +279,7 @@ impl ConnectionManager {
                 connect_timeout,
                 connection_down_hook: ConnectionDownHook::new(),
                 inbound_identifier: RwLock::new(None),
+                pending_inbound: DashMap::new(),
             }),
         }
     }
@@ -315,7 +317,10 @@ impl ConnectionManager {
             .inbound_identifier
             .write()
             .unwrap_or_else(|error| error.into_inner());
-        *slot = Some(Arc::new(identifier));
+        let identifier = Arc::new(identifier);
+        *slot = Some(identifier.clone());
+        drop(slot);
+        self.identify_pending_inbound(&identifier);
     }
 
     /// Remove the temporary inbound identification seam.
@@ -332,6 +337,12 @@ impl ConnectionManager {
     #[must_use]
     pub fn connection_count(&self) -> usize {
         self.inner.connections.len()
+    }
+
+    /// Number of inbound TCP streams waiting for B-115 handshake identification.
+    #[must_use]
+    pub fn pending_inbound_count(&self) -> usize {
+        self.inner.pending_inbound.len()
     }
 
     /// Look up an active distribution connection by node-name atom.
@@ -456,8 +467,28 @@ impl ConnectionManager {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        if let Some(node) = identifier.and_then(|identifier| identifier(peer_addr)) {
+        if let Some(node) = identifier
+            .as_ref()
+            .and_then(|identifier| identifier(peer_addr))
+        {
             self.register_connection(node, peer_addr, stream);
+        } else {
+            self.inner.pending_inbound.insert(peer_addr, stream);
+        }
+    }
+
+    fn identify_pending_inbound(&self, identifier: &Arc<InboundIdentifier>) {
+        let identified: Vec<_> = self
+            .inner
+            .pending_inbound
+            .iter()
+            .filter_map(|entry| identifier(*entry.key()).map(|node| (*entry.key(), node)))
+            .collect();
+
+        for (peer_addr, node) in identified {
+            if let Some((_, stream)) = self.inner.pending_inbound.remove(&peer_addr) {
+                self.register_connection(node, peer_addr, stream);
+            }
         }
     }
 }
@@ -531,17 +562,15 @@ mod tests {
             .unwrap_or_else(|error| panic!("failed to open pending inbound stream: {error}"));
         tokio::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(manager.connection_count(), 0);
-        drop(pending_stream);
+        assert_eq!(manager.pending_inbound_count(), 1);
 
         let node = manager.inner.atom_table.intern("client@127.0.0.1");
         manager.register_inbound_identifier(move |_| Some(node));
-        let identified_stream = TcpStream::connect(accept.local_addr())
-            .await
-            .unwrap_or_else(|error| panic!("failed to open identified inbound stream: {error}"));
         tokio::time::sleep(Duration::from_millis(25)).await;
 
         assert!(manager.get_connection(node).is_some());
-        drop(identified_stream);
+        assert_eq!(manager.pending_inbound_count(), 0);
+        drop(pending_stream);
     }
 
     #[tokio::test]
@@ -575,6 +604,49 @@ mod tests {
         };
         drop(remote_stream);
         tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(manager.get_connection(node).is_none());
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn write_error_removes_connection_and_notifies_once() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to bind local listener: {error}");
+            });
+        let addr = listener.local_addr().unwrap_or_else(|error| {
+            panic!("failed to inspect local listener: {error}");
+        });
+        let accepted = tokio::spawn(async move { listener.accept().await });
+
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert("remote@127.0.0.1", addr);
+        let manager = manager_with_resolver(resolver);
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let callback_count_for_hook = Arc::clone(&callback_count);
+        manager.register_connection_down(move |_| {
+            callback_count_for_hook.fetch_add(1, Ordering::SeqCst);
+        });
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+        let connection = manager
+            .connect("remote@127.0.0.1")
+            .await
+            .unwrap_or_else(|error| panic!("connect failed: {error}"));
+
+        let Ok(Ok((remote_stream, _))) = accepted.await else {
+            panic!("listener did not accept test connection");
+        };
+        drop(remote_stream);
+
+        for _ in 0..8 {
+            if connection.write_raw(b"probe").await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
 
         assert!(manager.get_connection(node).is_none());
         assert_eq!(callback_count.load(Ordering::SeqCst), 1);

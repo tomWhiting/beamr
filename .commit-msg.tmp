@@ -1,1 +1,1 @@
-feat(beamr): add distribution TCP connection manager
+review: harden distribution connection manager pending lifecycle
