@@ -63,16 +63,19 @@ mod tests {
     use crate::atom::Atom;
     use crate::ets::{EtsTableId, EtsTableType, Protection};
     use crate::term::boxed;
+    use std::sync::Arc;
+    use std::thread;
 
     fn metadata(keypos: usize) -> EtsTableMetadata {
-        EtsTableMetadata {
-            name: None,
-            id: EtsTableId::from(1_u64),
-            table_type: EtsTableType::Set,
-            protection: Protection::Protected,
-            owner: 1,
-            keypos,
-        }
+        let mut metadata = EtsTableMetadata::new(
+            None,
+            EtsTableId::from(1_u64),
+            EtsTableType::Set,
+            Protection::Protected,
+            1,
+        );
+        metadata.keypos = keypos;
+        metadata
     }
 
     #[test]
@@ -146,5 +149,36 @@ mod tests {
 
         assert_eq!(table.lookup(Term::small_int(99)), vec![tuple]);
         assert_eq!(table.lookup(Term::atom(Atom::OK)), Vec::<Term>::new());
+    }
+
+    #[test]
+    fn write_concurrency_option_allows_concurrent_inserts() {
+        let mut metadata = metadata(1);
+        metadata.write_concurrency = true;
+        let table = Arc::new(EtsSet::new(metadata));
+        let handles = (0_i64..16)
+            .map(|key| {
+                let table = Arc::clone(&table);
+                thread::spawn(move || {
+                    let heap = Box::leak(Box::new([0_u64; 3]));
+                    let tuple = boxed::write_tuple(
+                        &mut heap[..],
+                        &[Term::small_int(key), Term::small_int(key * 10)],
+                    )
+                    .expect("tuple fits");
+                    table.insert(tuple).expect("insert succeeds");
+                    (key, tuple)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let inserted = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("writer thread completes"))
+            .collect::<Vec<_>>();
+
+        for (key, tuple) in inserted {
+            assert_eq!(table.lookup(Term::small_int(key)), vec![tuple]);
+        }
     }
 }

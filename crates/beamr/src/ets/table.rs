@@ -52,6 +52,10 @@ pub struct EtsTableMetadata {
     pub owner: u64,
     /// 1-based tuple element position used as the key.
     pub keypos: usize,
+    /// Hint that table reads should be allowed to proceed concurrently.
+    pub read_concurrency: bool,
+    /// Hint that table writes should be allowed to proceed concurrently.
+    pub write_concurrency: bool,
 }
 
 impl EtsTableMetadata {
@@ -71,6 +75,8 @@ impl EtsTableMetadata {
             protection,
             owner,
             keypos: 1,
+            read_concurrency: false,
+            write_concurrency: false,
         }
     }
 }
@@ -159,6 +165,8 @@ mod tests {
                     protection,
                     owner: 7,
                     keypos: 1,
+                    read_concurrency: false,
+                    write_concurrency: false,
                 },
             }
         }
@@ -195,6 +203,8 @@ mod tests {
             protection: Protection::Protected,
             owner: 34,
             keypos: 2,
+            read_concurrency: true,
+            write_concurrency: true,
         };
 
         assert_eq!(metadata.name, Some(Atom::new(9)));
@@ -203,6 +213,8 @@ mod tests {
         assert_eq!(metadata.protection, Protection::Protected);
         assert_eq!(metadata.owner, 34);
         assert_eq!(metadata.keypos, 2);
+        assert!(metadata.read_concurrency);
+        assert!(metadata.write_concurrency);
     }
 
     #[test]

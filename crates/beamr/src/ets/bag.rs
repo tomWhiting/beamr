@@ -139,14 +139,7 @@ mod tests {
     };
 
     fn metadata(table_type: EtsTableType) -> EtsTableMetadata {
-        EtsTableMetadata {
-            name: None,
-            id: 1,
-            table_type,
-            protection: Protection::Public,
-            owner: 7,
-            keypos: 1,
-        }
+        EtsTableMetadata::new(None, 1, table_type, Protection::Public, 7)
     }
 
     fn tuple_with_terms(words: &mut [u64], key: Term, value: Term) -> Term {

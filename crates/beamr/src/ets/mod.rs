@@ -185,14 +185,7 @@ mod tests {
     use crate::term::{Term, boxed};
 
     fn metadata(table_type: EtsTableType) -> EtsTableMetadata {
-        EtsTableMetadata {
-            name: Some(Atom::OK),
-            id: 0,
-            table_type,
-            protection: Protection::Protected,
-            owner: 7,
-            keypos: 1,
-        }
+        EtsTableMetadata::new(Some(Atom::OK), 0, table_type, Protection::Protected, 7)
     }
 
     #[test]

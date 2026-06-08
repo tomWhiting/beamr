@@ -29,14 +29,7 @@ use crate::term::{Term, boxed};
 use crate::timer::TimerWheel;
 
 fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
-    EtsTableMetadata {
-        name,
-        id: 0,
-        table_type: EtsTableType::Set,
-        protection: Protection::Protected,
-        owner,
-        keypos: 1,
-    }
+    EtsTableMetadata::new(name, 0, EtsTableType::Set, Protection::Protected, owner)
 }
 
 #[test]

@@ -1,1 +1,1 @@
-Harden ETS named-table creation and lookup path
+feat(ets): support read and write concurrency table options

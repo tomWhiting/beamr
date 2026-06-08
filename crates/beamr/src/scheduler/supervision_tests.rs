@@ -183,14 +183,7 @@ fn fd_is_closed(fd: RawFd) -> bool {
 }
 
 fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
-    EtsTableMetadata {
-        name,
-        id: 0,
-        table_type: EtsTableType::Set,
-        protection: Protection::Protected,
-        owner,
-        keypos: 1,
-    }
+    EtsTableMetadata::new(name, 0, EtsTableType::Set, Protection::Protected, owner)
 }
 
 fn make_shared_state() -> Arc<SharedState> {

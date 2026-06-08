@@ -81,6 +81,8 @@ struct NewOptions {
     protection: Protection,
     named_table: bool,
     keypos: usize,
+    read_concurrency: bool,
+    write_concurrency: bool,
 }
 
 /// Registers all ETS BIFs under the `ets` module.
@@ -121,6 +123,8 @@ pub fn bif_new(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term
         protection: options.protection,
         owner,
         keypos: options.keypos,
+        read_concurrency: options.read_concurrency,
+        write_concurrency: options.write_concurrency,
     };
     let table_id = facility
         .create_table(metadata)
@@ -267,6 +271,8 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
         protection: Protection::Protected,
         named_table: false,
         keypos: 1,
+        read_concurrency: false,
+        write_concurrency: false,
     };
     let set = atom_table.intern("set");
     let ordered_set = atom_table.intern("ordered_set");
@@ -277,6 +283,8 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
     let private = atom_table.intern("private");
     let named_table = atom_table.intern("named_table");
     let keypos = atom_table.intern("keypos");
+    let read_concurrency = atom_table.intern("read_concurrency");
+    let write_concurrency = atom_table.intern("write_concurrency");
 
     let mut tail = options_term;
     while !tail.is_nil() {
@@ -303,16 +311,25 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
                 return Err(badarg());
             }
         } else if let Some(tuple) = Tuple::new(option) {
-            if tuple.arity() != 2 || tuple.get(0) != Some(Term::atom(keypos)) {
+            if tuple.arity() != 2 {
                 return Err(badarg());
             }
-            let keypos_value = tuple
-                .get(1)
-                .and_then(Term::as_small_int)
-                .and_then(|value| usize::try_from(value).ok())
-                .filter(|value| *value > 0)
-                .ok_or_else(badarg)?;
-            options.keypos = keypos_value;
+            let option_name = tuple.get(0).ok_or_else(badarg)?;
+            let option_value = tuple.get(1).ok_or_else(badarg)?;
+            if option_name == Term::atom(keypos) {
+                let keypos_value = option_value
+                    .as_small_int()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                    .ok_or_else(badarg)?;
+                options.keypos = keypos_value;
+            } else if option_name == Term::atom(read_concurrency) {
+                options.read_concurrency = parse_bool_option(option_value)?;
+            } else if option_name == Term::atom(write_concurrency) {
+                options.write_concurrency = parse_bool_option(option_value)?;
+            } else {
+                return Err(badarg());
+            }
         } else {
             return Err(badarg());
         }
@@ -320,6 +337,16 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
     }
 
     Ok(options)
+}
+
+fn parse_bool_option(value: Term) -> Result<bool, Term> {
+    if value == Term::atom(Atom::TRUE) {
+        Ok(true)
+    } else if value == Term::atom(Atom::FALSE) {
+        Ok(false)
+    } else {
+        Err(badarg())
+    }
 }
 
 fn parse_insert_objects(object_or_objects: Term) -> Result<Vec<Term>, Term> {
@@ -486,6 +513,10 @@ mod tests {
         context.alloc_tuple(elements).expect("tuple allocation")
     }
 
+    fn tuple_option(context: &mut ProcessContext, name: Atom, value: Term) -> Term {
+        tuple(context, &[Term::atom(name), value])
+    }
+
     fn list_terms(list: Term) -> Vec<Term> {
         let mut values = Vec::new();
         let mut tail = list;
@@ -505,6 +536,14 @@ mod tests {
     ) -> Term {
         let options = atom_list(context, options);
         bif_new(&[Term::atom(name), options], context).expect("ets:new succeeds")
+    }
+
+    fn created_table(registry: &EtsRegistry, tab: Term) -> Arc<dyn crate::ets::EtsTable> {
+        let table_id = tab
+            .as_small_int()
+            .and_then(|value| u64::try_from(value).ok())
+            .expect("unnamed table returns positive numeric id");
+        registry.lookup_table(table_id).expect("table exists")
     }
 
     #[test]
@@ -545,6 +584,103 @@ mod tests {
         let result = bif_new(&[Term::atom(table_name), options], &mut context).expect("new table");
 
         assert_eq!(result.as_small_int(), Some(1));
+    }
+
+    #[test]
+    fn ets_new_defaults_concurrency_options_to_false() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let table_name = atom_table.intern("default_concurrency_tab");
+        let mut process = Process::new(1, 128);
+        let mut context = context(&mut process, Arc::clone(&atom_table), Arc::clone(&registry));
+        let options = context.alloc_list(&[]).expect("empty option list");
+
+        let tab = bif_new(&[Term::atom(table_name), options], &mut context).expect("new table");
+        let table = created_table(&registry, tab);
+
+        assert!(!table.metadata().read_concurrency);
+        assert!(!table.metadata().write_concurrency);
+    }
+
+    #[test]
+    fn ets_new_parses_read_concurrency_option() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let table_name = atom_table.intern("read_concurrency_tab");
+        let read_concurrency = atom_table.intern("read_concurrency");
+        let mut process = Process::new(1, 128);
+        let mut context = context(&mut process, Arc::clone(&atom_table), Arc::clone(&registry));
+        let option = tuple_option(&mut context, read_concurrency, Term::atom(Atom::TRUE));
+        let options = context.alloc_list(&[option]).expect("option list");
+
+        let tab = bif_new(&[Term::atom(table_name), options], &mut context).expect("new table");
+        let table = created_table(&registry, tab);
+
+        assert!(table.metadata().read_concurrency);
+        assert!(!table.metadata().write_concurrency);
+    }
+
+    #[test]
+    fn ets_new_parses_write_concurrency_option() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let table_name = atom_table.intern("write_concurrency_tab");
+        let write_concurrency = atom_table.intern("write_concurrency");
+        let mut process = Process::new(1, 128);
+        let mut context = context(&mut process, Arc::clone(&atom_table), Arc::clone(&registry));
+        let option = tuple_option(&mut context, write_concurrency, Term::atom(Atom::TRUE));
+        let options = context.alloc_list(&[option]).expect("option list");
+
+        let tab = bif_new(&[Term::atom(table_name), options], &mut context).expect("new table");
+        let table = created_table(&registry, tab);
+
+        assert!(!table.metadata().read_concurrency);
+        assert!(table.metadata().write_concurrency);
+    }
+
+    #[test]
+    fn ets_new_parses_read_and_write_concurrency_together() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let table_name = atom_table.intern("both_concurrency_tab");
+        let ordered_set = atom_table.intern("ordered_set");
+        let read_concurrency = atom_table.intern("read_concurrency");
+        let write_concurrency = atom_table.intern("write_concurrency");
+        let mut process = Process::new(1, 256);
+        let mut context = context(&mut process, Arc::clone(&atom_table), Arc::clone(&registry));
+        let read_option = tuple_option(&mut context, read_concurrency, Term::atom(Atom::TRUE));
+        let write_option = tuple_option(&mut context, write_concurrency, Term::atom(Atom::TRUE));
+        let options = context
+            .alloc_list(&[Term::atom(ordered_set), read_option, write_option])
+            .expect("option list");
+
+        let tab = bif_new(&[Term::atom(table_name), options], &mut context).expect("new table");
+        let table = created_table(&registry, tab);
+
+        assert_eq!(
+            table.metadata().table_type,
+            crate::ets::EtsTableType::OrderedSet
+        );
+        assert!(table.metadata().read_concurrency);
+        assert!(table.metadata().write_concurrency);
+    }
+
+    #[test]
+    fn ets_new_rejects_write_concurrency_auto() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let table_name = atom_table.intern("auto_concurrency_tab");
+        let write_concurrency = atom_table.intern("write_concurrency");
+        let auto = atom_table.intern("auto");
+        let mut process = Process::new(1, 128);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let option = tuple_option(&mut context, write_concurrency, Term::atom(auto));
+        let options = context.alloc_list(&[option]).expect("option list");
+
+        assert_eq!(
+            bif_new(&[Term::atom(table_name), options], &mut context),
+            Err(Term::atom(Atom::BADARG))
+        );
     }
 
     #[test]
