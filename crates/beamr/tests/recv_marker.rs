@@ -62,6 +62,7 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
     }));
     let services = NativeServices {
         atom_table: Some(atoms),
+        local_node: None,
         timers: None,
         spawn_facility: None,
         link_facility: None,

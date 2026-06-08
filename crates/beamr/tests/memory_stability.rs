@@ -24,6 +24,7 @@ fn bif_and_literal_heavy_workload_does_not_grow_monotonically() {
     let registry = ModuleRegistry::new();
     let services = NativeServices {
         atom_table: Some(Arc::clone(&atom_table)),
+        local_node: None,
         timers: None,
         spawn_facility: None,
         link_facility: None,
