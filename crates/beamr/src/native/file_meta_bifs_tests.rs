@@ -99,6 +99,8 @@ impl FileIoFacility for MockFileIoFacility {
             .pop_front()
     }
 
+    fn cancel_pending_file_io_for_pid(&self, _pid: u64) {}
+
     fn ring(&self) -> &dyn CompletionRing {
         &self.ring
     }
