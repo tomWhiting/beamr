@@ -314,3 +314,7 @@ fn error_reason(error: io::Error) -> Atom {
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
 }
+
+#[cfg(test)]
+#[path = "file_bifs_tests.rs"]
+mod tests;
