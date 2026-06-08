@@ -1,1 +1,1 @@
-feat(beamr): add system statistics memory and port stubs
+fix(beamr): bind system info atom name lifetime

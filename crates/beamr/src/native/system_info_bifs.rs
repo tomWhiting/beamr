@@ -243,7 +243,10 @@ fn facility_small_int(context: &ProcessContext, metric: SystemInfoMetric) -> Res
     small_int(value)
 }
 
-fn atom_name(term: Term, context: &ProcessContext) -> Result<&str, Term> {
+fn atom_name<'context>(
+    term: Term,
+    context: &'context ProcessContext<'_>,
+) -> Result<&'context str, Term> {
     let item = term.as_atom().ok_or_else(badarg)?;
     let table = context.atom_table().ok_or_else(badarg)?;
     table.resolve(item).ok_or_else(badarg)
