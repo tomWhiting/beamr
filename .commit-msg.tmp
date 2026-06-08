@@ -1,1 +1,1 @@
-feat(beamr): implement distribution challenge-response handshake
+fix(beamr): allow retained standard io server owner
