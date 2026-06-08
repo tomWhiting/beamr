@@ -9,7 +9,9 @@ mod additional;
 mod registry_bifs;
 mod type_conversion;
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{
@@ -17,7 +19,7 @@ use crate::native::{
 };
 use crate::term::Term;
 use crate::term::binary::Binary;
-use crate::term::boxed::{Cons, Tuple};
+use crate::term::boxed::{Cons, Float, Tuple};
 
 pub use additional::{
     bif_binary_part, bif_bit_size, bif_is_bitstring, bif_is_map_key, bif_map_size, bif_round,
@@ -104,10 +106,39 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("binary_part", 3, Capability::Pure, bif_binary_part),
     ("bit_size", 1, Capability::Pure, bif_bit_size),
     ("-", 1, Capability::Pure, bif_unary_minus),
+    // Hashing BIFs (B-129)
+    ("phash2", 1, Capability::Pure, bif_phash2_1),
+    ("phash2", 2, Capability::Pure, bif_phash2_2),
+    // Time BIFs (B-129)
+    ("monotonic_time", 0, Capability::Clock, bif_monotonic_time_0),
+    ("system_time", 0, Capability::Clock, bif_system_time_0),
+    ("monotonic_time", 1, Capability::Clock, bif_monotonic_time_1),
+    ("system_time", 1, Capability::Clock, bif_system_time_1),
+    ("time_offset", 0, Capability::Clock, bif_time_offset_0),
+    // Unique-value BIFs (B-129)
+    ("unique_integer", 0, Capability::Pure, bif_unique_integer_0),
+    ("unique_integer", 1, Capability::Pure, bif_unique_integer_1),
+    // Misc utility BIFs (B-129). ETF term_to_binary/1 and binary_to_term/1
+    // are registered by Gate 1's ETF registration path and intentionally not
+    // duplicated here.
+    ("min", 2, Capability::Pure, bif_min_2),
+    ("max", 2, Capability::Pure, bif_max_2),
+    ("abs", 1, Capability::Pure, bif_abs_1),
 ];
 
 /// Global monotonic counter for make_ref/0.
 static REF_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Global monotonic counter for unique_integer/0,1.
+static UNIQUE_INTEGER_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// VM-local epoch for native monotonic time units.
+///
+/// Native time units are microseconds so current UNIX wall time fits in the
+/// runtime's immediate small-integer representation.
+static MONOTONIC_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+const PHASH2_DEFAULT_RANGE: u64 = 1 << 27;
 
 /// Registers all Gate 3 BIFs into the VM-owned BIF registry.
 pub fn register_gate3_bifs(
@@ -176,6 +207,221 @@ pub fn bif_make_ref(args: &[Term], _context: &mut ProcessContext) -> Result<Term
         return Err(badarg());
     }
     let id = REF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    i64::try_from(id)
+        .ok()
+        .and_then(Term::try_small_int)
+        .ok_or_else(badarg)
+}
+
+/// erlang:phash2/1 — deterministic portable hash in the default range.
+pub fn bif_phash2_1(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [term] = args else {
+        return Err(badarg());
+    };
+    phash2(*term, PHASH2_DEFAULT_RANGE)
+}
+
+/// erlang:phash2/2 — deterministic portable hash modulo Range.
+pub fn bif_phash2_2(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    let [term, range_term] = args else {
+        return Err(badarg());
+    };
+    let range = range_term
+        .as_small_int()
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(badarg)?;
+    phash2(*term, range)
+}
+
+fn phash2(term: Term, range: u64) -> Result<Term, Term> {
+    let value = crate::term::hash::term_hash(term) % range;
+    i64::try_from(value)
+        .ok()
+        .and_then(Term::try_small_int)
+        .ok_or_else(badarg)
+}
+
+/// erlang:monotonic_time/0 — returns elapsed VM-local native time units.
+pub fn bif_monotonic_time_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    native_time_term(monotonic_time_native()?)
+}
+
+/// erlang:system_time/0 — returns wall-clock native time units since UNIX epoch.
+pub fn bif_system_time_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    native_time_term(system_time_native()?)
+}
+
+/// erlang:monotonic_time/1 — returns monotonic time converted to Unit.
+pub fn bif_monotonic_time_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [unit_term] = args else {
+        return Err(badarg());
+    };
+    let unit = parse_time_unit(*unit_term, context)?;
+    native_time_term(convert_native_time(monotonic_time_native()?, unit)?)
+}
+
+/// erlang:system_time/1 — returns wall-clock time converted to Unit.
+pub fn bif_system_time_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [unit_term] = args else {
+        return Err(badarg());
+    };
+    let unit = parse_time_unit(*unit_term, context)?;
+    native_time_term(convert_native_time(system_time_native()?, unit)?)
+}
+
+/// erlang:time_offset/0 — returns system_time(native) - monotonic_time(native).
+pub fn bif_time_offset_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    let offset = i128::from(system_time_native()?) - i128::from(monotonic_time_native()?);
+    i64::try_from(offset)
+        .ok()
+        .and_then(Term::try_small_int)
+        .ok_or_else(badarg)
+}
+
+/// erlang:unique_integer/0 — returns a globally unique integer.
+pub fn bif_unique_integer_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    next_unique_integer()
+}
+
+/// erlang:unique_integer/1 — returns a globally unique integer with options.
+pub fn bif_unique_integer_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [options_term] = args else {
+        return Err(badarg());
+    };
+    parse_unique_integer_options(*options_term, context)?;
+    next_unique_integer()
+}
+
+/// erlang:min/2 — returns the smaller term by BEAM term ordering.
+pub fn bif_min_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [left, right] = args else {
+        return Err(badarg());
+    };
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    if crate::term::compare::cmp(*left, *right, atom_table).is_gt() {
+        Ok(*right)
+    } else {
+        Ok(*left)
+    }
+}
+
+/// erlang:max/2 — returns the larger term by BEAM term ordering.
+pub fn bif_max_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [left, right] = args else {
+        return Err(badarg());
+    };
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    if crate::term::compare::cmp(*left, *right, atom_table).is_lt() {
+        Ok(*right)
+    } else {
+        Ok(*left)
+    }
+}
+
+/// erlang:abs/1 — returns the absolute value of an integer or float.
+pub fn bif_abs_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [value] = args else {
+        return Err(badarg());
+    };
+    if let Some(integer) = value.as_small_int() {
+        return integer
+            .checked_abs()
+            .and_then(Term::try_small_int)
+            .ok_or_else(badarg);
+    }
+    let value = Float::new(*value).ok_or_else(badarg)?.value();
+    if !value.is_finite() {
+        return Err(badarg());
+    }
+    context.alloc_float(value.abs())
+}
+
+#[derive(Copy, Clone)]
+enum TimeUnit {
+    Native,
+    Nanosecond,
+    Microsecond,
+    Millisecond,
+    Second,
+}
+
+fn monotonic_time_native() -> Result<i64, Term> {
+    let epoch = MONOTONIC_EPOCH.get_or_init(Instant::now);
+    duration_to_native(epoch.elapsed())
+}
+
+fn system_time_native() -> Result<i64, Term> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| badarg())?;
+    duration_to_native(elapsed)
+}
+
+fn duration_to_native(duration: Duration) -> Result<i64, Term> {
+    i64::try_from(duration.as_micros()).map_err(|_| badarg())
+}
+
+fn native_time_term(value: i64) -> Result<Term, Term> {
+    Term::try_small_int(value).ok_or_else(badarg)
+}
+
+fn parse_time_unit(unit_term: Term, context: &mut ProcessContext) -> Result<TimeUnit, Term> {
+    let unit_atom = unit_term.as_atom().ok_or_else(badarg)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    match atom_table.resolve(unit_atom) {
+        Some("native") => Ok(TimeUnit::Native),
+        Some("nanosecond") => Ok(TimeUnit::Nanosecond),
+        Some("microsecond") => Ok(TimeUnit::Microsecond),
+        Some("millisecond") => Ok(TimeUnit::Millisecond),
+        Some("second") => Ok(TimeUnit::Second),
+        _ => Err(badarg()),
+    }
+}
+
+fn convert_native_time(value: i64, unit: TimeUnit) -> Result<i64, Term> {
+    match unit {
+        TimeUnit::Native | TimeUnit::Microsecond => Ok(value),
+        TimeUnit::Nanosecond => value.checked_mul(1_000).ok_or_else(badarg),
+        TimeUnit::Millisecond => Ok(value / 1_000),
+        TimeUnit::Second => Ok(value / 1_000_000),
+    }
+}
+
+fn parse_unique_integer_options(
+    options_term: Term,
+    context: &mut ProcessContext,
+) -> Result<(), Term> {
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let mut current = options_term;
+    loop {
+        if current.is_nil() {
+            return Ok(());
+        }
+        let cons = Cons::new(current).ok_or_else(badarg)?;
+        let option = cons.head().as_atom().ok_or_else(badarg)?;
+        match atom_table.resolve(option) {
+            Some("positive" | "monotonic") => {}
+            _ => return Err(badarg()),
+        }
+        current = cons.tail();
+    }
+}
+
+fn next_unique_integer() -> Result<Term, Term> {
+    let id = UNIQUE_INTEGER_COUNTER.fetch_add(1, Ordering::Relaxed);
     i64::try_from(id)
         .ok()
         .and_then(Term::try_small_int)
