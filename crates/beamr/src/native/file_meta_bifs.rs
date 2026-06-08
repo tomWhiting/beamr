@@ -1,0 +1,295 @@
+//! File metadata BIFs.
+
+use std::ffi::OsStr;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use crate::atom::{Atom, AtomTable};
+use crate::io::{IoOp, IoResult, StatxData, errno_to_atom};
+use crate::native::{
+    BifRegistryImpl, Capability, FileIoCompletion, FileIoContinuation, NativeRegistrationError,
+    ProcessContext,
+};
+use crate::term::Term;
+use crate::term::binary::Binary;
+
+/// Registers Erlang file metadata BIFs.
+pub fn register_file_meta_bifs(
+    registry: &BifRegistryImpl,
+    atom_table: &AtomTable,
+) -> Result<(), NativeRegistrationError> {
+    let erlang = atom_table.intern("erlang");
+    for (name, arity, function) in [
+        ("file_info", 1, file_info as crate::native::NativeFn),
+        ("list_dir", 1, list_dir as crate::native::NativeFn),
+        ("make_dir", 1, make_dir as crate::native::NativeFn),
+        ("del_file", 1, del_file as crate::native::NativeFn),
+        ("del_dir", 1, del_dir as crate::native::NativeFn),
+        ("rename", 2, rename as crate::native::NativeFn),
+    ] {
+        registry.register(
+            erlang,
+            atom_table.intern(name),
+            arity,
+            function,
+            Capability::ExternalIo,
+        )?;
+    }
+    Ok(())
+}
+
+/// erlang:file_info/1.
+pub fn file_info(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if let Some(completion) = context.take_file_io_completion() {
+        return finish_file_info(completion, context);
+    }
+
+    let [filename] = args else {
+        return Err(badarg());
+    };
+    let path = filename_path(*filename)?;
+    context.submit_file_io(
+        IoOp::Statx {
+            dir_fd: libc::AT_FDCWD,
+            path,
+            flags: libc::AT_SYMLINK_NOFOLLOW,
+            mask: statx_basic_stats_mask(),
+        },
+        FileIoContinuation::FileInfo,
+    )?;
+    Ok(Term::atom(Atom::OK))
+}
+
+/// erlang:list_dir/1.
+pub fn list_dir(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if let Some(completion) = context.take_file_io_completion() {
+        return finish_list_dir(completion, context);
+    }
+
+    let [dirname] = args else {
+        return Err(badarg());
+    };
+    context.submit_file_io(
+        IoOp::ListDir {
+            path: filename_path(*dirname)?,
+        },
+        FileIoContinuation::ListDir,
+    )?;
+    Ok(Term::atom(Atom::OK))
+}
+
+/// erlang:make_dir/1.
+pub fn make_dir(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    submit_unary_metadata(args, context, FileIoContinuation::MakeDir, |path| {
+        IoOp::MakeDir { path }
+    })
+}
+
+/// erlang:del_file/1.
+pub fn del_file(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    submit_unary_metadata(args, context, FileIoContinuation::DelFile, |path| {
+        IoOp::DelFile { path }
+    })
+}
+
+/// erlang:del_dir/1.
+pub fn del_dir(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    submit_unary_metadata(args, context, FileIoContinuation::DelDir, |path| {
+        IoOp::DelDir { path }
+    })
+}
+
+/// erlang:rename/2.
+pub fn rename(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if let Some(completion) = context.take_file_io_completion() {
+        return finish_ok_metadata(completion, context);
+    }
+
+    let [source, destination] = args else {
+        return Err(badarg());
+    };
+    context.submit_file_io(
+        IoOp::Rename {
+            source: filename_path(*source)?,
+            destination: filename_path(*destination)?,
+        },
+        FileIoContinuation::Rename,
+    )?;
+    Ok(Term::atom(Atom::OK))
+}
+
+fn submit_unary_metadata<F>(
+    args: &[Term],
+    context: &mut ProcessContext,
+    continuation: FileIoContinuation,
+    op: F,
+) -> Result<Term, Term>
+where
+    F: FnOnce(PathBuf) -> IoOp,
+{
+    if let Some(completion) = context.take_file_io_completion() {
+        return finish_ok_metadata(completion, context);
+    }
+
+    let [filename] = args else {
+        return Err(badarg());
+    };
+    context.submit_file_io(op(filename_path(*filename)?), continuation)?;
+    Ok(Term::atom(Atom::OK))
+}
+
+fn finish_file_info(
+    completion: FileIoCompletion,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    match completion.completion.result {
+        Ok(IoResult::StatResult(data)) => file_info_tuple(context, &data),
+        Ok(_) => error_tuple(context, Atom::UNKNOWN_ERROR),
+        Err(error) => error_tuple(context, error_reason(error)),
+    }
+}
+
+fn finish_list_dir(
+    completion: FileIoCompletion,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    match completion.completion.result {
+        Ok(IoResult::DirList(entries)) => {
+            let mut terms = Vec::with_capacity(entries.len());
+            for entry in entries {
+                terms.push(context.alloc_binary(&entry)?);
+            }
+            let list = context.alloc_list(&terms)?;
+            ok_tuple(context, list)
+        }
+        Ok(_) => error_tuple(context, Atom::UNKNOWN_ERROR),
+        Err(error) => error_tuple(context, error_reason(error)),
+    }
+}
+
+fn finish_ok_metadata(
+    completion: FileIoCompletion,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    match completion.completion.result {
+        Ok(IoResult::Completed) => Ok(Term::atom(Atom::OK)),
+        Ok(_) => error_tuple(context, Atom::UNKNOWN_ERROR),
+        Err(error) => error_tuple(context, error_reason(error)),
+    }
+}
+
+fn statx_basic_stats_mask() -> u32 {
+    #[cfg(target_os = "linux")]
+    {
+        libc::STATX_BASIC_STATS
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
+fn file_info_tuple(context: &mut ProcessContext, data: &StatxData) -> Result<Term, Term> {
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let fields = [
+        Term::atom(atom_table.intern("file_info")),
+        unsigned_term(data.size)?,
+        Term::atom(file_type_atom(atom_table, data.mode)),
+        Term::atom(access_atom(atom_table, data.mode)),
+        signed_term(data.atime_sec)?,
+        signed_term(data.mtime_sec)?,
+        signed_term(data.ctime_sec)?,
+        unsigned_term(u64::from(data.mode))?,
+        unsigned_term(data.nlink)?,
+        unsigned_term(u64::from(data.dev_major))?,
+        unsigned_term(u64::from(data.dev_minor))?,
+        unsigned_term(data.inode)?,
+        unsigned_term(u64::from(data.uid))?,
+        unsigned_term(u64::from(data.gid))?,
+    ];
+    context.alloc_tuple(&fields)
+}
+
+fn file_type_atom(atom_table: &AtomTable, mode: u32) -> Atom {
+    match mode & libc::S_IFMT {
+        libc::S_IFREG => atom_table.intern("regular"),
+        libc::S_IFDIR => atom_table.intern("directory"),
+        libc::S_IFLNK => atom_table.intern("symlink"),
+        libc::S_IFBLK | libc::S_IFCHR => atom_table.intern("device"),
+        _ => atom_table.intern("other"),
+    }
+}
+
+fn access_atom(atom_table: &AtomTable, mode: u32) -> Atom {
+    let readable = mode & (libc::S_IRUSR | libc::S_IRGRP | libc::S_IROTH) != 0;
+    let writable = mode & (libc::S_IWUSR | libc::S_IWGRP | libc::S_IWOTH) != 0;
+    match (readable, writable) {
+        (true, true) => atom_table.intern("read_write"),
+        (true, false) => Atom::READ,
+        (false, true) => Atom::WRITE,
+        (false, false) => atom_table.intern("none"),
+    }
+}
+
+fn unsigned_term(value: u64) -> Result<Term, Term> {
+    i64::try_from(value)
+        .ok()
+        .and_then(Term::try_small_int)
+        .ok_or_else(badarg)
+}
+
+fn signed_term(value: i64) -> Result<Term, Term> {
+    Term::try_small_int(value).ok_or_else(badarg)
+}
+
+fn filename_path(term: Term) -> Result<PathBuf, Term> {
+    let bytes = Binary::new(term).ok_or_else(badarg)?.as_bytes();
+    let filename = std::str::from_utf8(bytes).map_err(|_| badarg())?;
+    Ok(PathBuf::from(filename))
+}
+
+/// Return the byte-oriented filename component for directory entries.
+pub(crate) fn os_filename_bytes(name: &OsStr) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        name.as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        name.to_string_lossy().as_bytes().to_vec()
+    }
+}
+
+/// Blocking directory listing helper used by completion-ring worker backends.
+pub(crate) fn read_dir_entries(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        entries.push(os_filename_bytes(&entry.file_name()));
+    }
+    Ok(entries)
+}
+
+fn ok_tuple(context: &mut ProcessContext, value: Term) -> Result<Term, Term> {
+    context.alloc_tuple(&[Term::atom(Atom::OK), value])
+}
+
+fn error_tuple(context: &mut ProcessContext, reason: Atom) -> Result<Term, Term> {
+    context.alloc_tuple(&[Term::atom(Atom::ERROR), Term::atom(reason)])
+}
+
+fn error_reason(error: io::Error) -> Atom {
+    error
+        .raw_os_error()
+        .map(errno_to_atom)
+        .unwrap_or(Atom::UNKNOWN_ERROR)
+}
+
+fn badarg() -> Term {
+    Term::atom(Atom::BADARG)
+}
+
+#[cfg(test)]
+#[path = "file_meta_bifs_tests.rs"]
+mod tests;

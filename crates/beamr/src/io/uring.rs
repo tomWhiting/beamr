@@ -51,6 +51,9 @@ enum InFlightOp {
         path: CString,
         stat: Box<libc::statx>,
     },
+    Ready {
+        result: io::Result<IoResult>,
+    },
     Nop,
 }
 
@@ -359,6 +362,29 @@ fn build_entry(op_id: u64, op: IoOp) -> io::Result<(io_uring::squeue::Entry, InF
                     .user_data(op_id);
             Ok((entry, InFlightOp::Statx { path, stat }))
         }
+        IoOp::ListDir { path } => Ok(ready_result(
+            op_id,
+            crate::native::file_meta_bifs::read_dir_entries(&path).map(IoResult::DirList),
+        )),
+        IoOp::MakeDir { path } => Ok(ready_result(
+            op_id,
+            std::fs::create_dir(path).map(|()| IoResult::Completed),
+        )),
+        IoOp::DelFile { path } => Ok(ready_result(
+            op_id,
+            std::fs::remove_file(path).map(|()| IoResult::Completed),
+        )),
+        IoOp::DelDir { path } => Ok(ready_result(
+            op_id,
+            std::fs::remove_dir(path).map(|()| IoResult::Completed),
+        )),
+        IoOp::Rename {
+            source,
+            destination,
+        } => Ok(ready_result(
+            op_id,
+            std::fs::rename(source, destination).map(|()| IoResult::Completed),
+        )),
         IoOp::Nop => Ok((opcode::Nop::new().build().user_data(op_id), InFlightOp::Nop)),
     }
 }
@@ -407,6 +433,7 @@ fn decode_completion(op_id: u64, result: i32, op: InFlightOp) -> IoCompletion {
         InFlightOp::Fsync => Ok(IoResult::Synced),
         InFlightOp::Openat { path: _path } => Ok(IoResult::Opened(result)),
         InFlightOp::Statx { path: _path, stat } => Ok(IoResult::StatResult(statx_to_data(&stat))),
+        InFlightOp::Ready { result } => result,
         InFlightOp::Nop => Ok(IoResult::Completed),
     };
     IoCompletion {
@@ -426,6 +453,13 @@ fn complete_error(
         op_id,
         result: Err(error),
     });
+}
+
+fn ready_result(op_id: u64, result: io::Result<IoResult>) -> (io_uring::squeue::Entry, InFlightOp) {
+    (
+        opcode::Nop::new().build().user_data(op_id),
+        InFlightOp::Ready { result },
+    )
 }
 
 fn path_to_cstring(path: &Path) -> io::Result<CString> {

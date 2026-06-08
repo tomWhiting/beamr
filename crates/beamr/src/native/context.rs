@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use crate::atom::AtomTable;
 use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, write_fd_resource};
-use crate::io::{CompletionRing, IoCompletion, IoError, IoFacility, IoOp, IoSink, NullSink, ResultMode};
+use crate::io::{
+    CompletionRing, IoCompletion, IoError, IoFacility, IoOp, IoSink, NullSink, ResultMode,
+};
 use crate::native::ets_bifs::EtsFoldlState;
 use crate::native::stdlib_stubs::{lists_bifs::ListsMapState, maps_bifs::MapsHofState};
 use crate::process::{Priority, Process};
@@ -76,6 +78,18 @@ pub enum FileIoContinuation {
     Read,
     /// `erlang:write_file/2` completion.
     Write { expected_len: usize },
+    /// `erlang:file_info/1` completion.
+    FileInfo,
+    /// `erlang:list_dir/1` completion.
+    ListDir,
+    /// `erlang:make_dir/1` completion.
+    MakeDir,
+    /// `erlang:del_file/1` completion.
+    DelFile,
+    /// `erlang:del_dir/1` completion.
+    DelDir,
+    /// `erlang:rename/2` completion.
+    Rename,
 }
 
 /// Completion facility used by file BIFs to submit ring work and retrieve resume completions.
