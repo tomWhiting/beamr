@@ -1,1 +1,1 @@
-fix(beamr): repair ETS heir transfer build errors
+fix(beamr): remove obsolete ETS cleanup wrapper
