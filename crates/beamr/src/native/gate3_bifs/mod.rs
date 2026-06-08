@@ -25,7 +25,10 @@ pub use additional::{
 };
 pub use registry_bifs::{bif_register, bif_unregister, bif_whereis};
 pub use type_conversion::{
-    bif_atom_to_binary, bif_binary_to_existing_atom, bif_binary_to_list, bif_list_to_binary,
+    bif_atom_to_binary, bif_atom_to_binary_1, bif_atom_to_binary_2, bif_atom_to_list,
+    bif_binary_to_atom, bif_binary_to_existing_atom, bif_binary_to_existing_atom_2,
+    bif_binary_to_list, bif_float_to_binary_2, bif_float_to_list, bif_list_to_atom,
+    bif_list_to_binary, bif_list_to_existing_atom, bif_list_to_float, bif_list_to_integer,
     bif_map_get,
 };
 
@@ -45,12 +48,37 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("spawn", 1, Capability::Pure, bif_spawn_1),
     ("spawn_link", 1, Capability::Pure, bif_spawn_link_1),
     // Type conversion BIFs (R1)
-    ("atom_to_binary", 2, Capability::Pure, bif_atom_to_binary),
+    ("list_to_atom", 1, Capability::Pure, bif_list_to_atom),
+    ("atom_to_list", 1, Capability::Pure, bif_atom_to_list),
+    (
+        "list_to_existing_atom",
+        1,
+        Capability::Pure,
+        bif_list_to_existing_atom,
+    ),
+    ("list_to_integer", 1, Capability::Pure, bif_list_to_integer),
+    ("list_to_float", 1, Capability::Pure, bif_list_to_float),
+    ("float_to_list", 1, Capability::Pure, bif_float_to_list),
+    (
+        "float_to_binary",
+        2,
+        Capability::Pure,
+        bif_float_to_binary_2,
+    ),
+    ("binary_to_atom", 1, Capability::Pure, bif_binary_to_atom),
+    ("atom_to_binary", 1, Capability::Pure, bif_atom_to_binary_1),
+    ("atom_to_binary", 2, Capability::Pure, bif_atom_to_binary_2),
     (
         "binary_to_existing_atom",
         1,
         Capability::Pure,
         bif_binary_to_existing_atom,
+    ),
+    (
+        "binary_to_existing_atom",
+        2,
+        Capability::Pure,
+        bif_binary_to_existing_atom_2,
     ),
     ("binary_to_list", 1, Capability::Pure, bif_binary_to_list),
     ("list_to_binary", 1, Capability::Pure, bif_list_to_binary),

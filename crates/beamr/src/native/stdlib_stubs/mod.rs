@@ -59,8 +59,8 @@ use gleam_stdlib_ffi2::{
     bif_wrap_list,
 };
 use io_bifs::{
-    bif_io_format_2, bif_io_format_3, bif_io_get_line_1, bif_io_lib_format_2,
-    bif_io_put_chars_1, bif_io_put_chars_2, bif_io_setopts_2,
+    bif_io_format_2, bif_io_format_3, bif_io_get_line_1, bif_io_lib_format_2, bif_io_put_chars_1,
+    bif_io_put_chars_2, bif_io_setopts_2,
 };
 use lists_bifs::{
     bif_lists_append_1, bif_lists_append_2, bif_lists_join, bif_lists_map, bif_lists_reverse_2,
@@ -86,9 +86,9 @@ use string_bifs::{
     bif_uppercase as bif_string_uppercase,
 };
 use type_conversion_bifs::{
-    bif_atom_to_binary, bif_binary_to_float, bif_binary_to_integer, bif_binary_to_integer_radix,
-    bif_float, bif_integer_to_binary, bif_integer_to_binary_radix, bif_integer_to_list,
-    bif_iolist_to_binary, bif_list_to_bitstring, bif_list_to_tuple, bif_tuple_to_list,
+    bif_binary_to_float, bif_binary_to_integer, bif_binary_to_integer_radix, bif_float,
+    bif_integer_to_binary, bif_integer_to_binary_radix, bif_integer_to_list, bif_iolist_to_binary,
+    bif_list_to_bitstring, bif_list_to_tuple, bif_tuple_to_list,
 };
 use uri_bifs::{
     bif_parse_query, bif_percent_decode, bif_percent_encode, bif_uri_parse,
@@ -106,14 +106,6 @@ type StubBif = (
 );
 
 const STDLIB_STUBS: &[StubBif] = &[
-    (
-        "erlang",
-        "atom_to_binary",
-        1,
-        Capability::Pure,
-        None,
-        bif_atom_to_binary,
-    ),
     (
         "erlang",
         "binary_to_float",

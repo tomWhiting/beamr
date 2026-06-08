@@ -507,7 +507,6 @@ fn register_stdlib_stubs_registers_all_expected_mfas() {
     register_stdlib_stubs(&registry, &atom_table).expect("registration should succeed");
 
     let expected = [
-        ("erlang", "atom_to_binary", 1),
         ("erlang", "binary_to_float", 1),
         ("erlang", "binary_to_integer", 1),
         ("erlang", "binary_to_integer", 2),
