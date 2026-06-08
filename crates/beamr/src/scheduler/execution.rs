@@ -191,7 +191,7 @@ fn drain_file_io_completions(shared: &SharedState) {
                 },
             );
             wake_process(shared, pid);
-        } else {
+        } else if shared.file_io_canceled.remove(&op_id).is_none() {
             shared.file_io_orphans.insert(op_id, completion);
         }
     }

@@ -60,6 +60,7 @@ pub fn register_gate1_bifs(
     crate::native::ets_bifs::register_ets_bifs(registry, atom_table)?;
     crate::native::exception_bifs::register_exception_bifs(registry, atom_table)?;
     crate::native::file_bifs::register_file_bifs(registry, atom_table)?;
+    crate::native::tcp_bifs::register_tcp_bifs(registry, atom_table)?;
     crate::native::process_info_bifs::register_process_info_bifs(registry, atom_table)?;
     crate::native::system_info_bifs::register_system_info_bifs(registry, atom_table)?;
 
@@ -704,6 +705,9 @@ mod tests {
             ("close_file", 1, Capability::ExternalIo),
             ("read_file", 2, Capability::ExternalIo),
             ("write_file", 2, Capability::ExternalIo),
+            ("tcp_listen", 2, Capability::ExternalIo),
+            ("tcp_accept", 1, Capability::ExternalIo),
+            ("tcp_accept", 2, Capability::ExternalIo),
             ("process_info", 1, Capability::Pure),
             ("process_info", 2, Capability::Pure),
             ("system_info", 1, Capability::Pure),

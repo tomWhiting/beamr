@@ -16,7 +16,7 @@ use crate::error::ExecError;
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::hook::Hook;
 use crate::io::{
-    CompletionRing, CompletionRingIoFacility, IoCompletionBridge, IoCompletion, IoFacility, IoSink,
+    CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoSink,
     IoWakeTarget, NullSink, PendingIoRegistry, RingConfig, create_ring,
 };
 use crate::module::ModuleRegistry;
@@ -33,7 +33,7 @@ use crate::supervision::monitor::MonitorSet;
 use crate::term::Term;
 use crate::timer::TimerWheel;
 use crossbeam_queue::SegQueue;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 pub use module_management::{HotLoadResult, PurgeResult};
 use process_slot::{ProcessMetadata, ProcessSlot};
 use run_queue::{PriorityStealers, RunQueue};
@@ -77,6 +77,7 @@ pub(super) struct SharedState {
     file_io_pending: DashMap<u64, (u64, FileIoContinuation)>,
     file_io_orphans: DashMap<u64, IoCompletion>,
     file_io_results: DashMap<u64, FileIoCompletion>,
+    file_io_canceled: DashSet<u64>,
     link_set: Mutex<LinkSet>,
     monitor_set: Mutex<MonitorSet>,
     hook: Hook,
@@ -263,6 +264,7 @@ impl Scheduler {
             file_io_pending: DashMap::new(),
             file_io_orphans: DashMap::new(),
             file_io_results: DashMap::new(),
+            file_io_canceled: DashSet::new(),
             link_set: Mutex::new(LinkSet::new()),
             monitor_set: Mutex::new(MonitorSet::new()),
             hook: Hook::new(),

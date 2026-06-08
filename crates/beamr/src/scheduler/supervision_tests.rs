@@ -6,7 +6,7 @@ use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 use super::*;
 use crate::atom::Atom;
@@ -231,6 +231,7 @@ fn make_shared_state() -> Arc<SharedState> {
         file_io_pending: DashMap::new(),
         file_io_orphans: DashMap::new(),
         file_io_results: DashMap::new(),
+        file_io_canceled: DashSet::new(),
     })
 }
 

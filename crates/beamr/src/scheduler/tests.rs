@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 use super::*;
 use crate::atom::{Atom, AtomTable};
@@ -432,6 +432,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         file_io_pending: DashMap::new(),
         file_io_orphans: DashMap::new(),
         file_io_results: DashMap::new(),
+        file_io_canceled: DashSet::new(),
     });
     let mut process = Process::new(1, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
@@ -701,6 +702,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         file_io_pending: DashMap::new(),
         file_io_orphans: DashMap::new(),
         file_io_results: DashMap::new(),
+        file_io_canceled: DashSet::new(),
     });
     let pid = 1;
     shared.process_table.spawn_with_pid(pid);

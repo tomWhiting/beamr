@@ -99,6 +99,13 @@ impl FileIoFacility for MockFileIoFacility {
             .pop_front()
     }
 
+    fn cancel_pending_file_io_for_pid(&self, pid: u64) {
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .retain(|(pending_pid, _, _)| *pending_pid != pid);
+    }
+
     fn ring(&self) -> &dyn CompletionRing {
         &self.ring
     }

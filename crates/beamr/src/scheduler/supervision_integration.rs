@@ -384,6 +384,21 @@ impl FileIoFacility for SchedulerFileIoFacility {
             .map(|(_, result)| result)
     }
 
+    fn cancel_pending_file_io_for_pid(&self, pid: u64) {
+        let op_ids: Vec<u64> = self
+            .shared
+            .file_io_pending
+            .iter()
+            .filter_map(|entry| (entry.value().0 == pid).then_some(*entry.key()))
+            .collect();
+        for op_id in op_ids {
+            if self.shared.file_io_pending.remove(&op_id).is_some() {
+                self.shared.file_io_canceled.insert(op_id);
+            }
+        }
+        self.shared.file_io_results.remove(&pid);
+    }
+
     fn ring(&self) -> &dyn CompletionRing {
         self.shared.file_io_ring.as_ref()
     }
