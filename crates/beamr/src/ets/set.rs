@@ -3,7 +3,7 @@
 use dashmap::DashMap;
 
 use crate::ets::{EtsError, EtsTable, EtsTableMetadata};
-use crate::term::{Term, boxed::Tuple, hash::EtsKey};
+use crate::term::{Term, boxed::Tuple, compare, hash::EtsKey};
 
 /// ETS `set` table backed by a concurrent hash map.
 pub struct EtsSet {
@@ -50,6 +50,17 @@ impl EtsTable for EtsSet {
 
     fn delete_key(&self, key: Term) -> bool {
         self.entries.remove(&EtsKey::new(key)).is_some()
+    }
+
+    fn delete_object(&self, tuple: Term) -> bool {
+        let Ok(key) = self.tuple_key(tuple) else {
+            return false;
+        };
+        self.entries
+            .remove_if(&EtsKey::new(key), |_key, value| {
+                compare::exact_eq(*value, tuple)
+            })
+            .is_some()
     }
 
     fn tab2list(&self) -> Vec<Term> {

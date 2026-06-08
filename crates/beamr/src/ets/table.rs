@@ -123,6 +123,7 @@ pub trait EtsTable: Send + Sync {
     fn insert(&self, tuple: Term) -> Result<(), EtsError>;
     fn lookup(&self, key: Term) -> Vec<Term>;
     fn delete_key(&self, key: Term) -> bool;
+    fn delete_object(&self, tuple: Term) -> bool;
     fn tab2list(&self) -> Vec<Term>;
 
     fn check_access(&self, caller_pid: u64, operation: AccessOp) -> Result<(), EtsError> {
@@ -186,6 +187,10 @@ mod tests {
         }
 
         fn delete_key(&self, _key: Term) -> bool {
+            false
+        }
+
+        fn delete_object(&self, _tuple: Term) -> bool {
             false
         }
 

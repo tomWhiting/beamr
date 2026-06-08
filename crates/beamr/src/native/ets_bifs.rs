@@ -3,20 +3,20 @@
 //! These BIFs expose the core ETS table lifecycle and lookup operations through
 //! the normal native-function registry under the `ets` module.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::atom::{Atom, AtomTable};
 use crate::ets::{
-    AccessOp, EtsError, EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata, EtsTableType,
-    Protection, TermKey,
+    AccessOp, CompiledMatchSpec, EtsError, EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata,
+    EtsTableType, Protection, TermKey,
 };
 use crate::native::stdlib_stubs::maps_bifs::ContinuationStep;
 use crate::native::{
     BifRegistryImpl, Capability, NativeContinuation, NativeFn, NativeRegistrationError,
     ProcessContext,
 };
-use crate::term::Term;
 use crate::term::boxed::{Closure, Cons, Tuple};
+use crate::term::{Term, compare};
 
 /// Scheduler-facing ETS registry operations used by ETS BIFs.
 pub trait EtsFacility: Send + Sync {
@@ -62,6 +62,14 @@ const ETS_BIFS: &[EtsBif] = &[
     ("lookup", 2, bif_lookup),
     ("tab2list", 1, bif_tab2list),
     ("foldl", 3, bif_foldl),
+    ("match", 1, bif_match_1),
+    ("match", 2, bif_match_2),
+    ("match", 3, bif_match_3),
+    ("match_object", 2, bif_match_object),
+    ("match_delete", 2, bif_match_delete),
+    ("select", 1, bif_select_1),
+    ("select", 2, bif_select_2),
+    ("select", 3, bif_select_3),
     ("delete", 1, bif_delete_1),
     ("delete", 2, bif_delete_2),
     ("member", 2, bif_member),
@@ -245,6 +253,109 @@ pub fn resume_ets_foldl(
     } else {
         Ok(ContinuationStep::Done(closure_result))
     }
+}
+
+/// ets:match/1 — resume a paginated match continuation.
+pub fn bif_match_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [continuation] = args else {
+        return Err(badarg());
+    };
+    let continuation =
+        MatchContinuation::parse(*continuation, MatchContinuationKind::Match, context)?;
+    let table = resolve_readable_table(continuation.tab, context)?;
+    collect_match_page(
+        &table,
+        continuation.pattern,
+        continuation.position,
+        continuation.limit,
+        context,
+    )
+}
+
+/// ets:match/2 — return bound variables for all objects matching a pattern.
+pub fn bif_match_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [tab, pattern] = args else {
+        return Err(badarg());
+    };
+    let table = resolve_readable_table(*tab, context)?;
+    let results = collect_match_results(&table, *pattern, MatchResultMode::Bindings, context)?;
+    context.alloc_list(&results)
+}
+
+/// ets:match/3 — return a limited page of bound-variable results plus a continuation.
+pub fn bif_match_3(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [tab, pattern, limit] = args else {
+        return Err(badarg());
+    };
+    let limit = parse_positive_limit(*limit)?;
+    let table = resolve_readable_table(*tab, context)?;
+    collect_match_page(&table, *pattern, 0, limit, context)
+}
+
+/// ets:match_object/2 — return all objects matching a pattern.
+pub fn bif_match_object(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [tab, pattern] = args else {
+        return Err(badarg());
+    };
+    let table = resolve_readable_table(*tab, context)?;
+    let results = collect_match_results(&table, *pattern, MatchResultMode::Object, context)?;
+    context.alloc_list(&results)
+}
+
+/// ets:select/1 — resume a paginated select continuation.
+pub fn bif_select_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [continuation] = args else {
+        return Err(badarg());
+    };
+    let continuation =
+        MatchContinuation::parse(*continuation, MatchContinuationKind::Select, context)?;
+    let table = resolve_readable_table(continuation.tab, context)?;
+    collect_select_page(
+        &table,
+        continuation.pattern,
+        continuation.position,
+        continuation.limit,
+        context,
+    )
+}
+
+/// ets:select/2 — evaluate a match specification against all table objects.
+pub fn bif_select_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [tab, spec] = args else {
+        return Err(badarg());
+    };
+    let table = resolve_readable_table(*tab, context)?;
+    let results = collect_select_results(&table, *spec, 0, None, context)?.results;
+    context.alloc_list(&results)
+}
+
+/// ets:select/3 — evaluate a limited page of match-spec results plus a continuation.
+pub fn bif_select_3(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [tab, spec, limit] = args else {
+        return Err(badarg());
+    };
+    let limit = parse_positive_limit(*limit)?;
+    let table = resolve_readable_table(*tab, context)?;
+    collect_select_page(&table, *spec, 0, limit, context)
+}
+
+/// ets:match_delete/2 — delete every object matching a pattern.
+pub fn bif_match_delete(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [tab, pattern] = args else {
+        return Err(badarg());
+    };
+    let table = resolve_existing_table(*tab, context, MissingTable::Badarg)?;
+    let caller = context.pid().ok_or_else(badarg)?;
+    table
+        .check_access(caller, AccessOp::Write)
+        .map_err(|_| badarg())?;
+
+    for object in table.tab2list() {
+        if ets_pattern_match(*pattern, object, context)?.is_some() {
+            let _deleted = table.delete_object(object);
+        }
+    }
+    Ok(Term::atom(Atom::TRUE))
 }
 
 /// ets:first/1 — return the first key in a table snapshot or '$end_of_table'.
@@ -481,6 +592,244 @@ fn parse_insert_objects(object_or_objects: Term) -> Result<Vec<Term>, Term> {
 }
 
 #[derive(Copy, Clone)]
+enum MatchResultMode {
+    Bindings,
+    Object,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum MatchContinuationKind {
+    Match,
+    Select,
+}
+
+struct MatchContinuation {
+    tab: Term,
+    position: usize,
+    limit: usize,
+    pattern: Term,
+}
+
+struct PagedResults {
+    results: Vec<Term>,
+    next_position: Option<usize>,
+}
+
+impl MatchContinuation {
+    fn parse(
+        term: Term,
+        expected_kind: MatchContinuationKind,
+        context: &ProcessContext,
+    ) -> Result<Self, Term> {
+        let tuple = Tuple::new(term).ok_or_else(badarg)?;
+        if tuple.arity() != 5 {
+            return Err(badarg());
+        }
+        let tag = tuple.get(0).ok_or_else(badarg)?;
+        let table_id = tuple.get(1).ok_or_else(badarg)?;
+        let position = tuple.get(2).ok_or_else(badarg)?;
+        let limit = tuple.get(3).ok_or_else(badarg)?;
+        let pattern = tuple.get(4).ok_or_else(badarg)?;
+        if tag != continuation_tag(expected_kind, context)? {
+            return Err(badarg());
+        }
+        Ok(Self {
+            tab: table_id,
+            position: position
+                .as_small_int()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(badarg)?,
+            limit: parse_positive_limit(limit)?,
+            pattern,
+        })
+    }
+}
+
+fn collect_match_results(
+    table: &Arc<dyn EtsTable>,
+    pattern: Term,
+    mode: MatchResultMode,
+    context: &mut ProcessContext,
+) -> Result<Vec<Term>, Term> {
+    let mut results = Vec::new();
+    for object in table.tab2list() {
+        let Some(bindings) = ets_pattern_match(pattern, object, context)? else {
+            continue;
+        };
+        match mode {
+            MatchResultMode::Bindings => results.push(alloc_bindings_list(&bindings, context)?),
+            MatchResultMode::Object => results.push(object),
+        }
+    }
+    Ok(results)
+}
+
+fn collect_match_page(
+    table: &Arc<dyn EtsTable>,
+    pattern: Term,
+    start_position: usize,
+    limit: usize,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let page = collect_match_paged_results(table, pattern, start_position, limit, context)?;
+    finish_paged_results(
+        page,
+        MatchContinuationKind::Match,
+        table.metadata().id,
+        pattern,
+        limit,
+        context,
+    )
+}
+
+fn collect_match_paged_results(
+    table: &Arc<dyn EtsTable>,
+    pattern: Term,
+    start_position: usize,
+    limit: usize,
+    context: &mut ProcessContext,
+) -> Result<PagedResults, Term> {
+    let snapshot = table.tab2list();
+    let mut results = Vec::new();
+    for (position, object) in snapshot.into_iter().enumerate().skip(start_position) {
+        let Some(bindings) = ets_pattern_match(pattern, object, context)? else {
+            continue;
+        };
+        if results.len() == limit {
+            return Ok(PagedResults {
+                results,
+                next_position: Some(position),
+            });
+        }
+        results.push(alloc_bindings_list(&bindings, context)?);
+    }
+    Ok(PagedResults {
+        results,
+        next_position: None,
+    })
+}
+
+fn collect_select_results(
+    table: &Arc<dyn EtsTable>,
+    spec: Term,
+    start_position: usize,
+    limit: Option<usize>,
+    context: &mut ProcessContext,
+) -> Result<PagedResults, Term> {
+    let compiled = {
+        let atom_table = context.atom_table().ok_or_else(badarg)?;
+        CompiledMatchSpec::compile(spec, atom_table).map_err(|_| badarg())?
+    };
+    let snapshot = table.tab2list();
+    let mut results = Vec::new();
+    for (position, object) in snapshot.into_iter().enumerate().skip(start_position) {
+        if limit.is_some_and(|limit| results.len() == limit) {
+            return Ok(PagedResults {
+                results,
+                next_position: Some(position),
+            });
+        }
+        if let Some(result) = compiled
+            .eval_with_context(object, context)
+            .map_err(|_| badarg())?
+        {
+            results.push(result);
+        }
+    }
+    Ok(PagedResults {
+        results,
+        next_position: None,
+    })
+}
+
+fn collect_select_page(
+    table: &Arc<dyn EtsTable>,
+    spec: Term,
+    start_position: usize,
+    limit: usize,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let page = collect_select_results(table, spec, start_position, Some(limit), context)?;
+    finish_paged_results(
+        page,
+        MatchContinuationKind::Select,
+        table.metadata().id,
+        spec,
+        limit,
+        context,
+    )
+}
+
+fn finish_paged_results(
+    page: PagedResults,
+    kind: MatchContinuationKind,
+    table_id: EtsTableId,
+    pattern_or_spec: Term,
+    limit: usize,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    if page.results.is_empty() && page.next_position.is_none() {
+        return end_of_table_atom(context);
+    }
+    let results = context.alloc_list(&page.results)?;
+    let continuation = match page.next_position {
+        Some(next_position) => alloc_match_continuation(
+            kind,
+            table_id,
+            next_position,
+            limit,
+            pattern_or_spec,
+            context,
+        )?,
+        None => end_of_table_atom(context)?,
+    };
+    context.alloc_tuple(&[results, continuation])
+}
+
+fn alloc_match_continuation(
+    kind: MatchContinuationKind,
+    table_id: EtsTableId,
+    position: usize,
+    limit: usize,
+    pattern_or_spec: Term,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let tag = continuation_tag(kind, context)?;
+    context.alloc_tuple(&[
+        tag,
+        small_int_from_u64(table_id)?,
+        small_int_from_usize(position)?,
+        small_int_from_usize(limit)?,
+        pattern_or_spec,
+    ])
+}
+
+fn continuation_tag(kind: MatchContinuationKind, context: &ProcessContext) -> Result<Term, Term> {
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let name = match kind {
+        MatchContinuationKind::Match => "$ets_match_continuation",
+        MatchContinuationKind::Select => "$ets_select_continuation",
+    };
+    Ok(Term::atom(atom_table.intern(name)))
+}
+
+fn alloc_bindings_list(
+    bindings: &BTreeMap<usize, Term>,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let values = bindings.values().copied().collect::<Vec<_>>();
+    context.alloc_list(&values)
+}
+
+fn parse_positive_limit(limit: Term) -> Result<usize, Term> {
+    limit
+        .as_small_int()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(badarg)
+}
+
+#[derive(Copy, Clone)]
 enum MissingTable {
     Badarg,
 }
@@ -516,6 +865,98 @@ fn resolve_readable_table(tab: Term, context: &ProcessContext) -> Result<Arc<dyn
         .check_access(caller, AccessOp::Read)
         .map_err(|_| badarg())?;
     Ok(table)
+}
+
+fn ets_pattern_match(
+    pattern: Term,
+    object: Term,
+    context: &ProcessContext,
+) -> Result<Option<BTreeMap<usize, Term>>, Term> {
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let mut bindings = BTreeMap::new();
+    if match_pattern_term(pattern, object, atom_table, &mut bindings)? {
+        Ok(Some(bindings))
+    } else {
+        Ok(None)
+    }
+}
+
+fn match_pattern_term(
+    pattern: Term,
+    value: Term,
+    atom_table: &AtomTable,
+    bindings: &mut BTreeMap<usize, Term>,
+) -> Result<bool, Term> {
+    if ets_is_dont_care(pattern, atom_table) {
+        return Ok(true);
+    }
+    if let Some(index) = ets_match_variable_index(pattern, atom_table) {
+        return Ok(match bindings.get(&index).copied() {
+            Some(bound) => compare::exact_eq(bound, value),
+            None => {
+                bindings.insert(index, value);
+                true
+            }
+        });
+    }
+    if let Some(pattern_tuple) = Tuple::new(pattern) {
+        let Some(value_tuple) = Tuple::new(value) else {
+            return Ok(false);
+        };
+        if pattern_tuple.arity() != value_tuple.arity() {
+            return Ok(false);
+        }
+        for index in 0..pattern_tuple.arity() {
+            let pattern_element = pattern_tuple.get(index).ok_or_else(badarg)?;
+            let value_element = value_tuple.get(index).ok_or_else(badarg)?;
+            if !match_pattern_term(pattern_element, value_element, atom_table, bindings)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    if pattern.is_list() || pattern.is_nil() {
+        return match_list_pattern(pattern, value, atom_table, bindings);
+    }
+    Ok(compare::exact_eq(pattern, value))
+}
+
+fn match_list_pattern(
+    pattern: Term,
+    value: Term,
+    atom_table: &AtomTable,
+    bindings: &mut BTreeMap<usize, Term>,
+) -> Result<bool, Term> {
+    let mut pattern_tail = pattern;
+    let mut value_tail = value;
+    while !pattern_tail.is_nil() {
+        let pattern_cons = Cons::new(pattern_tail).ok_or_else(badarg)?;
+        let Some(value_cons) = Cons::new(value_tail) else {
+            return Ok(false);
+        };
+        if !match_pattern_term(pattern_cons.head(), value_cons.head(), atom_table, bindings)? {
+            return Ok(false);
+        }
+        pattern_tail = pattern_cons.tail();
+        value_tail = value_cons.tail();
+    }
+    Ok(value_tail.is_nil())
+}
+
+fn ets_is_dont_care(term: Term, atom_table: &AtomTable) -> bool {
+    term.as_atom()
+        .and_then(|atom| atom_table.resolve(atom))
+        .is_some_and(|name| name == "_")
+}
+
+fn ets_match_variable_index(term: Term, atom_table: &AtomTable) -> Option<usize> {
+    let name = term.as_atom().and_then(|atom| atom_table.resolve(atom))?;
+    let digits = name.strip_prefix('$')?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let index = digits.parse::<usize>().ok()?;
+    (index > 0).then_some(index)
 }
 
 #[derive(Copy, Clone)]
@@ -686,8 +1127,9 @@ mod tests {
 
     use super::{
         bif_delete_1, bif_delete_2, bif_first, bif_foldl, bif_info_2, bif_insert, bif_last,
-        bif_lookup, bif_member, bif_new, bif_next, bif_prev, bif_tab2list, register_ets_bifs,
-        resume_ets_foldl,
+        bif_lookup, bif_match_1, bif_match_2, bif_match_3, bif_match_delete, bif_match_object,
+        bif_member, bif_new, bif_next, bif_prev, bif_select_1, bif_select_2, bif_select_3,
+        bif_tab2list, register_ets_bifs, resume_ets_foldl,
     };
     use crate::atom::{Atom, AtomTable};
     use crate::ets::EtsRegistry;
@@ -732,6 +1174,19 @@ mod tests {
             tail = cons.tail();
         }
         values
+    }
+
+    fn tuple_values(term: Term) -> Vec<Term> {
+        let tuple = Tuple::new(term).expect("tuple");
+        (0..tuple.arity())
+            .map(|index| tuple.get(index).expect("tuple element"))
+            .collect()
+    }
+
+    fn page_tuple(term: Term) -> (Term, Term) {
+        let values = tuple_values(term);
+        assert_eq!(values.len(), 2);
+        (values[0], values[1])
     }
 
     fn new_table(
@@ -1283,6 +1738,204 @@ mod tests {
     }
 
     #[test]
+    fn match_returns_bound_variable_lists_and_match_object_returns_tuples() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let ordered_set = atom_table.intern("ordered_set");
+        let wildcard = atom_table.intern("_");
+        let variable = atom_table.intern("$1");
+        let a = atom_table.intern("a");
+        let b = atom_table.intern("b");
+        let c = atom_table.intern("c");
+        let mut process = Process::new(1, 1024);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("match_tab"),
+            &[ordered_set, public],
+        );
+        let first = tuple(&mut context, &[Term::atom(a), Term::small_int(1)]);
+        let second = tuple(&mut context, &[Term::atom(b), Term::small_int(2)]);
+        let third = tuple(&mut context, &[Term::atom(c), Term::small_int(3)]);
+        let objects = context
+            .alloc_list(&[first, second, third])
+            .expect("objects");
+        let pattern = tuple(&mut context, &[Term::atom(wildcard), Term::atom(variable)]);
+
+        assert_eq!(
+            bif_insert(&[tab, objects], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        let result = bif_match_2(&[tab, pattern], &mut context).expect("match/2");
+        let bound_lists = list_terms(result)
+            .into_iter()
+            .map(list_terms)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bound_lists,
+            vec![
+                vec![Term::small_int(1)],
+                vec![Term::small_int(2)],
+                vec![Term::small_int(3)],
+            ]
+        );
+
+        let matched_objects =
+            bif_match_object(&[tab, pattern], &mut context).expect("match_object/2");
+        assert_eq!(list_terms(matched_objects), vec![first, second, third]);
+    }
+
+    #[test]
+    fn select_runs_match_spec_with_guard() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let ordered_set = atom_table.intern("ordered_set");
+        let gt = atom_table.intern(">");
+        let first_var = atom_table.intern("$1");
+        let second_var = atom_table.intern("$2");
+        let a = atom_table.intern("a");
+        let b = atom_table.intern("b");
+        let c = atom_table.intern("c");
+        let mut process = Process::new(1, 2048);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("select_tab"),
+            &[ordered_set, public],
+        );
+        for (key, value) in [(1, a), (2, b), (3, c)] {
+            let row = tuple(&mut context, &[Term::small_int(key), Term::atom(value)]);
+            assert_eq!(
+                bif_insert(&[tab, row], &mut context),
+                Ok(Term::atom(Atom::TRUE))
+            );
+        }
+        let head = tuple(
+            &mut context,
+            &[Term::atom(first_var), Term::atom(second_var)],
+        );
+        let guard = tuple(
+            &mut context,
+            &[Term::atom(gt), Term::atom(first_var), Term::small_int(1)],
+        );
+        let guards = context.alloc_list(&[guard]).expect("guards");
+        let body = context.alloc_list(&[Term::atom(second_var)]).expect("body");
+        let clause = tuple(&mut context, &[head, guards, body]);
+        let spec = context.alloc_list(&[clause]).expect("spec");
+
+        let result = bif_select_2(&[tab, spec], &mut context).expect("select/2");
+        assert_eq!(list_terms(result), vec![Term::atom(b), Term::atom(c)]);
+    }
+
+    #[test]
+    fn match_and_select_pagination_consumes_all_rows() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let ordered_set = atom_table.intern("ordered_set");
+        let wildcard = atom_table.intern("_");
+        let first_var = atom_table.intern("$1");
+        let second_var = atom_table.intern("$2");
+        let end_of_table = atom_table.intern("$end_of_table");
+        let mut process = Process::new(1, 20000);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("page_tab"),
+            &[ordered_set, public],
+        );
+        for key in 1..=100 {
+            let row = tuple(
+                &mut context,
+                &[Term::small_int(key), Term::small_int(key * 10)],
+            );
+            assert_eq!(
+                bif_insert(&[tab, row], &mut context),
+                Ok(Term::atom(Atom::TRUE))
+            );
+        }
+
+        let match_pattern = tuple(
+            &mut context,
+            &[Term::atom(wildcard), Term::atom(second_var)],
+        );
+        let mut match_count = 0;
+        let mut match_page =
+            bif_match_3(&[tab, match_pattern, Term::small_int(10)], &mut context).expect("match/3");
+        loop {
+            let (results, continuation) = page_tuple(match_page);
+            match_count += list_terms(results).len();
+            if continuation == Term::atom(end_of_table) {
+                break;
+            }
+            match_page = bif_match_1(&[continuation], &mut context).expect("match/1");
+        }
+        assert_eq!(match_count, 100);
+
+        let head = tuple(
+            &mut context,
+            &[Term::atom(first_var), Term::atom(second_var)],
+        );
+        let guards = context.alloc_list(&[]).expect("empty guards");
+        let body = context.alloc_list(&[Term::atom(second_var)]).expect("body");
+        let clause = tuple(&mut context, &[head, guards, body]);
+        let spec = context.alloc_list(&[clause]).expect("spec");
+        let mut select_count = 0;
+        let mut select_page =
+            bif_select_3(&[tab, spec, Term::small_int(10)], &mut context).expect("select/3");
+        loop {
+            let (results, continuation) = page_tuple(select_page);
+            select_count += list_terms(results).len();
+            if continuation == Term::atom(end_of_table) {
+                break;
+            }
+            select_page = bif_select_1(&[continuation], &mut context).expect("select/1");
+        }
+        assert_eq!(select_count, 100);
+    }
+
+    #[test]
+    fn match_delete_removes_only_matching_bag_objects() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let public = atom_table.intern("public");
+        let duplicate_bag = atom_table.intern("duplicate_bag");
+        let wildcard = atom_table.intern("_");
+        let ok = atom_table.intern("ok");
+        let mut process = Process::new(1, 1024);
+        let mut context = context(&mut process, Arc::clone(&atom_table), registry);
+        let tab = new_table(
+            &mut context,
+            &atom_table,
+            atom_table.intern("match_delete_tab"),
+            &[duplicate_bag, public],
+        );
+        let first = tuple(&mut context, &[Term::atom(ok), Term::small_int(1)]);
+        let second = tuple(&mut context, &[Term::atom(ok), Term::small_int(2)]);
+        let duplicate = tuple(&mut context, &[Term::atom(ok), Term::small_int(1)]);
+        let objects = context
+            .alloc_list(&[first, second, duplicate])
+            .expect("objects");
+        let pattern = tuple(&mut context, &[Term::atom(wildcard), Term::small_int(1)]);
+
+        assert_eq!(
+            bif_insert(&[tab, objects], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(
+            bif_match_delete(&[tab, pattern], &mut context),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        let remaining = bif_lookup(&[tab, Term::atom(ok)], &mut context).expect("lookup");
+        assert_eq!(list_terms(remaining), vec![second]);
+    }
+
+    #[test]
     fn delete_key_and_member_round_trip() {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let registry = Arc::new(EtsRegistry::new());
@@ -1407,6 +2060,14 @@ mod tests {
             ("lookup", 2),
             ("tab2list", 1),
             ("foldl", 3),
+            ("match", 1),
+            ("match", 2),
+            ("match", 3),
+            ("match_object", 2),
+            ("match_delete", 2),
+            ("select", 1),
+            ("select", 2),
+            ("select", 3),
             ("delete", 1),
             ("delete", 2),
             ("member", 2),
