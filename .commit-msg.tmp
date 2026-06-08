@@ -1,1 +1,1 @@
-feat(ets): add match and select query BIFs
+fix(ets): harden match variable binding allocation

@@ -3,7 +3,7 @@
 //! These BIFs expose the core ETS table lifecycle and lookup operations through
 //! the normal native-function registry under the `ets` module.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::atom::{Atom, AtomTable};
 use crate::ets::{
@@ -814,15 +814,10 @@ fn continuation_tag(kind: MatchContinuationKind, context: &ProcessContext) -> Re
 }
 
 fn alloc_bindings_list(
-    bindings: &[Option<Term>],
+    bindings: &BTreeMap<usize, Term>,
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
-    let values = bindings
-        .iter()
-        .skip(1)
-        .copied()
-        .flatten()
-        .collect::<Vec<_>>();
+    let values = bindings.values().copied().collect::<Vec<_>>();
     context.alloc_list(&values)
 }
 
@@ -876,11 +871,9 @@ fn ets_pattern_match(
     pattern: Term,
     object: Term,
     context: &ProcessContext,
-) -> Result<Option<Vec<Option<Term>>>, Term> {
+) -> Result<Option<BTreeMap<usize, Term>>, Term> {
     let atom_table = context.atom_table().ok_or_else(badarg)?;
-    let mut max_variable = 0;
-    scan_pattern_variables(pattern, atom_table, &mut max_variable)?;
-    let mut bindings = vec![None; max_variable.saturating_add(1)];
+    let mut bindings = BTreeMap::new();
     if match_pattern_term(pattern, object, atom_table, &mut bindings)? {
         Ok(Some(bindings))
     } else {
@@ -888,51 +881,20 @@ fn ets_pattern_match(
     }
 }
 
-fn scan_pattern_variables(
-    pattern: Term,
-    atom_table: &AtomTable,
-    max_variable: &mut usize,
-) -> Result<(), Term> {
-    if let Some(index) = ets_match_variable_index(pattern, atom_table) {
-        *max_variable = (*max_variable).max(index);
-        return Ok(());
-    }
-    if let Some(tuple) = Tuple::new(pattern) {
-        for index in 0..tuple.arity() {
-            scan_pattern_variables(
-                tuple.get(index).ok_or_else(badarg)?,
-                atom_table,
-                max_variable,
-            )?;
-        }
-    } else if pattern.is_list() || pattern.is_nil() {
-        let mut tail = pattern;
-        while !tail.is_nil() {
-            let cons = Cons::new(tail).ok_or_else(badarg)?;
-            scan_pattern_variables(cons.head(), atom_table, max_variable)?;
-            tail = cons.tail();
-        }
-    }
-    Ok(())
-}
-
 fn match_pattern_term(
     pattern: Term,
     value: Term,
     atom_table: &AtomTable,
-    bindings: &mut [Option<Term>],
+    bindings: &mut BTreeMap<usize, Term>,
 ) -> Result<bool, Term> {
     if ets_is_dont_care(pattern, atom_table) {
         return Ok(true);
     }
     if let Some(index) = ets_match_variable_index(pattern, atom_table) {
-        let Some(slot) = bindings.get_mut(index) else {
-            return Ok(false);
-        };
-        return Ok(match *slot {
+        return Ok(match bindings.get(&index).copied() {
             Some(bound) => compare::exact_eq(bound, value),
             None => {
-                *slot = Some(value);
+                bindings.insert(index, value);
                 true
             }
         });
@@ -963,7 +925,7 @@ fn match_list_pattern(
     pattern: Term,
     value: Term,
     atom_table: &AtomTable,
-    bindings: &mut [Option<Term>],
+    bindings: &mut BTreeMap<usize, Term>,
 ) -> Result<bool, Term> {
     let mut pattern_tail = pattern;
     let mut value_tail = value;
