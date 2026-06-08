@@ -19,9 +19,12 @@ type Gate2Bif = (&'static str, u8, Capability, NativeFn);
 const GATE2_BIFS: &[Gate2Bif] = &[
     ("self", 0, Capability::Pure, bif_self),
     ("spawn", 3, Capability::Pure, bif_spawn),
+    ("spawn", 4, Capability::Pure, bif_spawn_4),
     ("spawn_link", 3, Capability::Pure, bif_spawn_link),
+    ("spawn_link", 4, Capability::Pure, bif_spawn_link_4),
     ("spawn_monitor", 1, Capability::Pure, bif_spawn_monitor_1),
     ("spawn_monitor", 3, Capability::Pure, bif_spawn_monitor_3),
+    ("spawn_monitor", 4, Capability::Pure, bif_spawn_monitor_4),
     ("spawn_opt", 2, Capability::Pure, bif_spawn_opt_2),
     ("spawn_opt", 4, Capability::Pure, bif_spawn_opt_4),
     ("link", 1, Capability::Pure, bif_link),
@@ -62,9 +65,19 @@ pub fn bif_spawn(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
     spawn_impl(args, context, false)
 }
 
+/// erlang:spawn/4 — creates a process on a target node.
+pub fn bif_spawn_4(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    remote_spawn_impl(args, context, RemoteSpawnKind::Plain)
+}
+
 /// erlang:spawn_link/3 — creates a new linked process.
 pub fn bif_spawn_link(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     spawn_impl(args, context, true)
+}
+
+/// erlang:spawn_link/4 — creates a linked process on a target node.
+pub fn bif_spawn_link_4(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    remote_spawn_impl(args, context, RemoteSpawnKind::Link)
 }
 
 /// erlang:spawn_monitor/1 — creates and monitors a process from a zero-arity fun.
@@ -75,6 +88,11 @@ pub fn bif_spawn_monitor_1(args: &[Term], context: &mut ProcessContext) -> Resul
 /// erlang:spawn_monitor/3 — creates and monitors a new process atomically.
 pub fn bif_spawn_monitor_3(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     spawn_monitor_mfa_impl(args, context)
+}
+
+/// erlang:spawn_monitor/4 — creates and monitors a process on a target node.
+pub fn bif_spawn_monitor_4(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    remote_spawn_impl(args, context, RemoteSpawnKind::Monitor)
 }
 
 /// erlang:spawn_opt/2 — creates a process from a zero-arity fun with options.
@@ -264,6 +282,49 @@ fn spawn_impl(args: &[Term], context: &mut ProcessContext, link: bool) -> Result
         .spawn(caller_pid, module, function, spawn_args, link_to)
         .map_err(|_| badarg())?;
     Term::try_pid(new_pid).ok_or_else(badarg)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RemoteSpawnKind {
+    Plain,
+    Link,
+    Monitor,
+}
+
+fn remote_spawn_impl(
+    args: &[Term],
+    context: &mut ProcessContext,
+    kind: RemoteSpawnKind,
+) -> Result<Term, Term> {
+    let [node_term, module_term, function_term, args_term] = args else {
+        return Err(badarg());
+    };
+    let node = node_term.as_atom().ok_or_else(badarg)?;
+    let module = module_term.as_atom().ok_or_else(badarg)?;
+    let function = function_term.as_atom().ok_or_else(badarg)?;
+    let spawn_args = list_to_vec(*args_term)?;
+    let caller_pid = context.pid().ok_or_else(badarg)?;
+    let mut options = SpawnOptions::default();
+    match kind {
+        RemoteSpawnKind::Plain => {}
+        RemoteSpawnKind::Link => options.link = true,
+        RemoteSpawnKind::Monitor => options.monitor = true,
+    }
+    let facility = context.remote_spawn_facility().ok_or_else(badarg)?;
+    let result = facility
+        .remote_spawn(caller_pid, node, module, function, spawn_args, options)
+        .map_err(|_| badarg())?;
+    if result.node != node {
+        return Err(badarg());
+    }
+    let pid_term = context.alloc_external_pid(node, result.pid_number, result.serial)?;
+    if kind == RemoteSpawnKind::Monitor {
+        let reference = result.monitor_reference.ok_or_else(badarg)?;
+        let reference_term = context.alloc_external_reference(node, reference)?;
+        context.alloc_tuple(&[pid_term, reference_term])
+    } else {
+        Ok(pid_term)
+    }
 }
 
 fn spawn_monitor_mfa_impl(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {

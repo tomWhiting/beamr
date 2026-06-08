@@ -51,7 +51,8 @@ pub use capability::{
 pub use code_management_bifs::CodeManagementFacility;
 pub use context::{
     ExceptionClass, FileIoCompletion, FileIoContinuation, FileIoFacility, NativeContinuation,
-    ProcessContext, SuspendRequest, TcpIoFacility, TrampolineRequest,
+    ProcessContext, RemoteSpawnError, RemoteSpawnFacility, RemoteSpawnResult, SuspendRequest,
+    TcpIoFacility, TrampolineRequest,
 };
 pub use ets_bifs::EtsFacility;
 pub use group_leader::GroupLeaderFacility;

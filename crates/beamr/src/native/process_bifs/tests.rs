@@ -7,10 +7,14 @@ use crate::native::spawn::{
 use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
-use crate::native::{BifRegistryImpl, ExceptionClass, ProcessContext};
+use crate::native::{
+    BifRegistryImpl, ExceptionClass, ProcessContext, RemoteSpawnError, RemoteSpawnFacility,
+    RemoteSpawnResult,
+};
 use crate::process::{ExitReason, Priority, Process};
 use crate::term::Term;
 use crate::term::boxed::{Reference, Tuple, write_closure, write_cons, write_tuple};
+use crate::term::pid_ref::PidRef;
 use std::sync::{Arc, Mutex};
 
 fn badarg() -> Term {
@@ -666,9 +670,12 @@ fn register_gate2_bifs_registers_all() {
     for (name, arity) in [
         ("self", 0),
         ("spawn", 3),
+        ("spawn", 4),
         ("spawn_link", 3),
+        ("spawn_link", 4),
         ("spawn_monitor", 1),
         ("spawn_monitor", 3),
+        ("spawn_monitor", 4),
         ("spawn_opt", 2),
         ("spawn_opt", 4),
         ("link", 1),
@@ -854,6 +861,152 @@ fn exit_badarg_unknown_reason_atom() {
     assert_eq!(
         bif_exit(&[Term::pid(2), Term::atom(Atom::OK)], &mut ctx),
         Err(badarg())
+    );
+}
+
+// ---- Remote spawn BIFs ----
+
+#[test]
+fn remote_spawn_returns_external_pid_for_requested_node() {
+    let (facility, mut ctx, node, module, function) = remote_spawn_ctx(77, None);
+
+    let result = bif_spawn_4(
+        &[
+            Term::atom(node),
+            Term::atom(module),
+            Term::atom(function),
+            Term::NIL,
+        ],
+        &mut ctx,
+    )
+    .expect("remote spawn succeeds");
+
+    let pid = PidRef::new(result).expect("external pid");
+    assert!(!pid.is_local());
+    assert_eq!(pid.node(), Some(node));
+    assert_eq!(pid.pid_number(), 77);
+    let records = facility.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, 10);
+    assert_eq!(records[0].1, node);
+    assert_eq!(records[0].2, module);
+    assert_eq!(records[0].3, function);
+    assert!(!records[0].5.link);
+    assert!(!records[0].5.monitor);
+}
+
+#[test]
+fn remote_spawn_link_sends_link_option() {
+    let (facility, mut ctx, node, module, function) = remote_spawn_ctx(78, None);
+
+    let result = bif_spawn_link_4(
+        &[
+            Term::atom(node),
+            Term::atom(module),
+            Term::atom(function),
+            Term::NIL,
+        ],
+        &mut ctx,
+    )
+    .expect("remote spawn_link succeeds");
+
+    assert_eq!(PidRef::new(result).and_then(|pid| pid.node()), Some(node));
+    let records = facility.records();
+    assert!(records[0].5.link);
+    assert!(!records[0].5.monitor);
+}
+
+#[test]
+fn remote_spawn_monitor_returns_external_pid_and_reference() {
+    let (facility, mut ctx, node, module, function) = remote_spawn_ctx(79, Some(900));
+
+    let result = bif_spawn_monitor_4(
+        &[
+            Term::atom(node),
+            Term::atom(module),
+            Term::atom(function),
+            Term::NIL,
+        ],
+        &mut ctx,
+    )
+    .expect("remote spawn_monitor succeeds");
+
+    let tuple = Tuple::new(result).expect("spawn_monitor tuple");
+    assert_eq!(tuple.arity(), 2);
+    let pid = PidRef::new(tuple.get(0).expect("pid element")).expect("external pid");
+    assert_eq!(pid.node(), Some(node));
+    assert_eq!(pid.pid_number(), 79);
+    assert!(
+        crate::term::reference_ref::ReferenceRef::new(tuple.get(1).expect("ref element"))
+            .and_then(|reference| reference.node())
+            .is_some()
+    );
+    let records = facility.records();
+    assert!(records[0].5.monitor);
+    assert!(!records[0].5.link);
+}
+
+#[test]
+fn remote_spawn_arities_are_registered() {
+    let registry = BifRegistryImpl::new();
+    let atoms = AtomTable::with_common_atoms();
+    register_gate2_bifs(&registry, &atoms).expect("register gate2 bifs");
+    let erlang = atoms.intern("erlang");
+    assert!(registry.lookup(erlang, atoms.intern("spawn"), 4).is_some());
+    assert!(
+        registry
+            .lookup(erlang, atoms.intern("spawn_link"), 4)
+            .is_some()
+    );
+    assert!(
+        registry
+            .lookup(erlang, atoms.intern("spawn_monitor"), 4)
+            .is_some()
+    );
+}
+
+#[test]
+fn remote_spawn_badarg_without_facility() {
+    let atoms = Arc::new(AtomTable::with_common_atoms());
+    let node = atoms.intern("remote@host");
+    let module = atoms.intern("sample");
+    let function = atoms.intern("run");
+    let mut process = Process::new(10, 128);
+    let mut ctx = ProcessContext::new();
+    ctx.attach_process(&mut process, 0);
+    ctx.set_pid(Some(10));
+    ctx.set_atom_table(Some(atoms));
+
+    assert_eq!(
+        bif_spawn_4(
+            &[
+                Term::atom(node),
+                Term::atom(module),
+                Term::atom(function),
+                Term::NIL,
+            ],
+            &mut ctx,
+        ),
+        Err(badarg()),
+    );
+}
+
+#[test]
+fn remote_spawn_rejects_reply_for_unrequested_node() {
+    let (facility, mut ctx, node, module, function) = remote_spawn_ctx(80, None);
+    facility.set_reply_node(Atom::OK);
+
+    assert_eq!(
+        bif_spawn_4(
+            &[
+                Term::atom(node),
+                Term::atom(module),
+                Term::atom(function),
+                Term::NIL,
+            ],
+            &mut ctx,
+        ),
+        Err(badarg()),
     );
 }
 
@@ -1267,4 +1420,94 @@ impl SupervisionFacility for MockSupervisionFacility {
         );
         Ok(())
     }
+}
+
+// ---- Mock remote spawn facility ----
+
+type RemoteSpawnRecord = (u64, crate::atom::Atom, crate::atom::Atom, crate::atom::Atom, Vec<Term>, SpawnOptions);
+
+struct MockRemoteSpawnFacility {
+    pid_number: u64,
+    serial: u64,
+    monitor_reference: Option<u64>,
+    reply_node: Mutex<Option<crate::atom::Atom>>,
+    records: Mutex<Vec<RemoteSpawnRecord>>,
+}
+
+impl MockRemoteSpawnFacility {
+    fn new(pid_number: u64, monitor_reference: Option<u64>) -> Self {
+        Self {
+            pid_number,
+            serial: 0,
+            monitor_reference,
+            reply_node: Mutex::new(None),
+            records: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn records(&self) -> Vec<RemoteSpawnRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn set_reply_node(&self, node: crate::atom::Atom) {
+        *self
+            .reply_node
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(node);
+    }
+}
+
+impl RemoteSpawnFacility for MockRemoteSpawnFacility {
+    fn remote_spawn(
+        &self,
+        caller_pid: u64,
+        node: crate::atom::Atom,
+        module: crate::atom::Atom,
+        function: crate::atom::Atom,
+        args: Vec<Term>,
+        options: SpawnOptions,
+    ) -> Result<RemoteSpawnResult, RemoteSpawnError> {
+        self.records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((caller_pid, node, module, function, args, options));
+        let reply_node = self
+            .reply_node
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or(node);
+        Ok(RemoteSpawnResult {
+            node: reply_node,
+            pid_number: self.pid_number,
+            serial: self.serial,
+            monitor_reference: self.monitor_reference,
+        })
+    }
+}
+
+fn remote_spawn_ctx(
+    pid_number: u64,
+    monitor_reference: Option<u64>,
+) -> (
+    Arc<MockRemoteSpawnFacility>,
+    ProcessContext<'static>,
+    crate::atom::Atom,
+    crate::atom::Atom,
+    crate::atom::Atom,
+) {
+    let atoms = Arc::new(AtomTable::with_common_atoms());
+    let node = atoms.intern("remote@host");
+    let module = atoms.intern("sample");
+    let function = atoms.intern("run");
+    let facility = Arc::new(MockRemoteSpawnFacility::new(pid_number, monitor_reference));
+    let process = Box::leak(Box::new(Process::new(10, 128)));
+    let mut ctx = ProcessContext::new();
+    ctx.attach_process(process, 0);
+    ctx.set_pid(Some(10));
+    ctx.set_atom_table(Some(atoms));
+    ctx.set_remote_spawn_facility(Some(facility.clone()));
+    (facility, ctx, node, module, function)
 }

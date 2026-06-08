@@ -429,6 +429,7 @@ pub(super) fn build_native_services(
         ets_facility: Some(ets_facility),
         timers: Some(Arc::clone(&shared.timers)),
         spawn_facility: Some(spawn),
+        remote_spawn_facility: None,
         link_facility: Some(link),
         group_leader_facility: Some(group_leader),
         supervision_facility: Some(supervision),

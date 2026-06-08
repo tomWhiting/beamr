@@ -429,6 +429,7 @@ fn submit_dirty_call(
     context.set_net_kernel(services.net_kernel);
     context.set_distribution_send_facility(services.distribution_send);
     context.set_spawn_facility(services.spawn_facility);
+    context.set_remote_spawn_facility(services.remote_spawn_facility);
     context.set_link_facility(services.link_facility);
     context.set_group_leader_facility(services.group_leader_facility);
     context.set_supervision_facility(services.supervision_facility);
