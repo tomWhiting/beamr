@@ -23,7 +23,8 @@ pub use match_spec::{CompiledMatchSpec, MatchSpec, MatchSpecError};
 pub use ordered_set::EtsOrderedSet;
 pub use set::EtsSet;
 pub use table::{
-    AccessOp, EtsError, EtsTable, EtsTableId, EtsTableMetadata, EtsTableType, Protection,
+    AccessOp, EtsError, EtsHeir, EtsOwner, EtsTable, EtsTableId, EtsTableMetadata, EtsTableType,
+    Protection,
 };
 pub use term_key::TermKey;
 
@@ -155,12 +156,29 @@ impl EtsRegistry {
         let owned_ids: Vec<EtsTableId> = self
             .tables
             .iter()
-            .filter(|entry| entry.value().metadata().owner == owner_pid)
+            .filter(|entry| entry.value().metadata().owner.get() == owner_pid)
             .map(|entry| *entry.key())
             .collect();
         for id in owned_ids {
             self.delete_table(id);
         }
+    }
+
+    #[must_use]
+    pub fn table_ids_owned_by(&self, owner_pid: u64) -> Vec<EtsTableId> {
+        self.tables
+            .iter()
+            .filter(|entry| entry.value().metadata().owner.get() == owner_pid)
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    pub fn transfer_table_owner(&self, table_id: EtsTableId, new_owner: u64) -> bool {
+        let Some(table) = self.lookup_table(table_id) else {
+            return false;
+        };
+        table.transfer_owner(new_owner);
+        true
     }
 
     #[must_use]

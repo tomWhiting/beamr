@@ -104,6 +104,7 @@ pub(in crate::scheduler) fn take_runnable_process(
                 pending_exit_messages: Vec::new(),
                 pending_down_messages: Vec::new(),
                 pending_io_messages: Vec::new(),
+                pending_ets_transfer_messages: Vec::new(),
             };
             *slot = ProcessSlot::Executing(metadata);
             Some(process)
@@ -158,6 +159,21 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
                 );
             }
             for message in metadata.pending_io_messages.drain(..) {
+                process.mailbox_mut().push_owned(message);
+            }
+            let transfer_atom = shared.atom_table.intern("ETS-TRANSFER");
+            for message in metadata.pending_ets_transfer_messages.drain(..) {
+                let Some(message) =
+                    crate::scheduler::supervision_integration::build_ets_transfer_message(
+                        &mut process,
+                        transfer_atom,
+                        message.table_id,
+                        message.from_pid,
+                        message.data.root(),
+                    )
+                else {
+                    continue;
+                };
                 process.mailbox_mut().push_owned(message);
             }
         }
@@ -449,7 +465,7 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     reason: ExitReason,
 ) {
     shared.exit_tombstones.insert(pid, reason);
-    let _deleted_tables = shared.delete_tables_owned_by(pid);
+    let _deleted_tables = shared.transfer_or_delete_tables_owned_by(pid);
     supervision_integration::propagate_exit(shared, pid, reason);
     close_owned_fd_resources_on_exit(shared, pid);
     let _removed = shared.process_table.remove(pid);

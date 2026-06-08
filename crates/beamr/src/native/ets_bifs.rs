@@ -7,8 +7,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::atom::{Atom, AtomTable};
 use crate::ets::{
-    AccessOp, CompiledMatchSpec, EtsError, EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata,
-    EtsTableType, Protection, TermKey,
+    AccessOp, CompiledMatchSpec, EtsError, EtsHeir, EtsRegistry, EtsTable, EtsTableId,
+    EtsTableMetadata, EtsTableType, Protection, TermKey, copy_term_to_ets,
 };
 use crate::native::stdlib_stubs::maps_bifs::ContinuationStep;
 use crate::native::{
@@ -30,6 +30,38 @@ pub trait EtsFacility: Send + Sync {
     fn lookup_table_by_name(&self, name: Atom) -> Option<EtsTableId>;
     /// Delete a table by numeric id.
     fn delete_table(&self, id: EtsTableId) -> bool;
+    /// Transfer table ownership and deliver the ETS-TRANSFER message.
+    fn give_away_table(
+        &self,
+        table_id: EtsTableId,
+        new_owner: u64,
+        from_pid: u64,
+        gift_data: Term,
+        atom_table: &AtomTable,
+    ) -> Result<(), EtsError>;
+}
+
+fn parse_heir_option(tuple: Tuple, none: Atom, options: &mut NewOptions) -> Result<(), Term> {
+    match tuple.arity() {
+        2 => {
+            if tuple.get(1) != Some(Term::atom(none)) {
+                return Err(badarg());
+            }
+            options.heir = None;
+            Ok(())
+        }
+        3 => {
+            let heir_pid = tuple.get(1).and_then(Term::as_pid).ok_or_else(badarg)?;
+            let heir_data = tuple.get(2).ok_or_else(badarg)?;
+            let data = copy_term_to_ets(heir_data).map_err(ets_error_to_badarg)?;
+            options.heir = Some(EtsHeir {
+                pid: heir_pid,
+                data,
+            });
+            Ok(())
+        }
+        _ => Err(badarg()),
+    }
 }
 
 impl EtsFacility for EtsRegistry {
@@ -52,6 +84,21 @@ impl EtsFacility for EtsRegistry {
     fn delete_table(&self, id: EtsTableId) -> bool {
         self.delete_table(id)
     }
+
+    fn give_away_table(
+        &self,
+        table_id: EtsTableId,
+        new_owner: u64,
+        _from_pid: u64,
+        _gift_data: Term,
+        _atom_table: &AtomTable,
+    ) -> Result<(), EtsError> {
+        if self.transfer_table_owner(table_id, new_owner) {
+            Ok(())
+        } else {
+            Err(EtsError::Badarg)
+        }
+    }
 }
 
 type EtsBif = (&'static str, u8, NativeFn);
@@ -72,6 +119,7 @@ const ETS_BIFS: &[EtsBif] = &[
     ("select", 3, bif_select_3),
     ("delete", 1, bif_delete_1),
     ("delete", 2, bif_delete_2),
+    ("give_away", 3, bif_give_away),
     ("member", 2, bif_member),
     ("first", 1, bif_first),
     ("next", 2, bif_next),
@@ -91,7 +139,6 @@ const INFO_ITEMS: &[&str] = &[
     "memory",
 ];
 
-#[derive(Copy, Clone)]
 struct NewOptions {
     table_type: EtsTableType,
     protection: Protection,
@@ -99,6 +146,7 @@ struct NewOptions {
     keypos: usize,
     read_concurrency: bool,
     write_concurrency: bool,
+    heir: Option<EtsHeir>,
 }
 
 /// Native continuation state for ets:foldl/3.
@@ -145,10 +193,11 @@ pub fn bif_new(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term
         id: 0,
         table_type: options.table_type,
         protection: options.protection,
-        owner,
+        owner: crate::ets::EtsOwner::new(owner),
         keypos: options.keypos,
         read_concurrency: options.read_concurrency,
         write_concurrency: options.write_concurrency,
+        heir: options.heir,
     };
     let table_id = facility
         .create_table(metadata)
@@ -180,6 +229,31 @@ pub fn bif_insert(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
         table.insert(tuple).map_err(ets_error_to_badarg)?;
     }
 
+    Ok(Term::atom(Atom::TRUE))
+}
+
+/// ets:give_away/3 — transfer a table to another process.
+pub fn bif_give_away(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [tab, pid_term, gift_data] = args else {
+        return Err(badarg());
+    };
+    let table = resolve_existing_table(*tab, context, MissingTable::Badarg)?;
+    let caller = context.pid().ok_or_else(badarg)?;
+    if table.metadata().owner.get() != caller {
+        return Err(badarg());
+    }
+    let recipient = pid_term.as_pid().ok_or_else(badarg)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let facility = context.ets_facility().ok_or_else(badarg)?;
+    facility
+        .give_away_table(
+            table.metadata().id,
+            recipient,
+            caller,
+            *gift_data,
+            atom_table,
+        )
+        .map_err(ets_error_to_badarg)?;
     Ok(Term::atom(Atom::TRUE))
 }
 
@@ -405,7 +479,7 @@ pub fn bif_delete_1(args: &[Term], context: &mut ProcessContext) -> Result<Term,
     };
     let table = resolve_existing_table(*tab, context, MissingTable::Badarg)?;
     let caller = context.pid().ok_or_else(badarg)?;
-    if table.metadata().owner != caller {
+    if table.metadata().owner.get() != caller {
         return Err(badarg());
     }
 
@@ -496,6 +570,7 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
         keypos: 1,
         read_concurrency: false,
         write_concurrency: false,
+        heir: None,
     };
     let set = atom_table.intern("set");
     let ordered_set = atom_table.intern("ordered_set");
@@ -508,6 +583,8 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
     let keypos = atom_table.intern("keypos");
     let read_concurrency = atom_table.intern("read_concurrency");
     let write_concurrency = atom_table.intern("write_concurrency");
+    let heir = atom_table.intern("heir");
+    let none = atom_table.intern("none");
 
     let mut tail = options_term;
     while !tail.is_nil() {
@@ -534,10 +611,15 @@ fn parse_new_options(options_term: Term, atom_table: &AtomTable) -> Result<NewOp
                 return Err(badarg());
             }
         } else if let Some(tuple) = Tuple::new(option) {
+            let option_name = tuple.get(0).ok_or_else(badarg)?;
+            if option_name == Term::atom(heir) {
+                parse_heir_option(tuple, none, &mut options)?;
+                tail = cons.tail();
+                continue;
+            }
             if tuple.arity() != 2 {
                 return Err(badarg());
             }
-            let option_name = tuple.get(0).ok_or_else(badarg)?;
             let option_value = tuple.get(1).ok_or_else(badarg)?;
             if option_name == Term::atom(keypos) {
                 let keypos_value = option_value
@@ -1053,7 +1135,7 @@ fn info_value(
         "size" => small_int_from_usize(table.tab2list().len()),
         "keypos" => small_int_from_usize(metadata.keypos),
         "protection" => Ok(Term::atom(protection_atom(metadata.protection, atom_table))),
-        "owner" => Term::try_pid(metadata.owner).ok_or_else(badarg),
+        "owner" => Term::try_pid(metadata.owner.get()).ok_or_else(badarg),
         "memory" => small_int_from_usize(approximate_memory_words(table)),
         _ => Err(badarg()),
     }
@@ -1126,10 +1208,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        bif_delete_1, bif_delete_2, bif_first, bif_foldl, bif_info_2, bif_insert, bif_last,
-        bif_lookup, bif_match_1, bif_match_2, bif_match_3, bif_match_delete, bif_match_object,
-        bif_member, bif_new, bif_next, bif_prev, bif_select_1, bif_select_2, bif_select_3,
-        bif_tab2list, register_ets_bifs, resume_ets_foldl,
+        bif_delete_1, bif_delete_2, bif_first, bif_foldl, bif_give_away, bif_info_2, bif_insert,
+        bif_last, bif_lookup, bif_match_1, bif_match_2, bif_match_3, bif_match_delete,
+        bif_match_object, bif_member, bif_new, bif_next, bif_prev, bif_select_1, bif_select_2,
+        bif_select_3, bif_tab2list, register_ets_bifs, resume_ets_foldl,
     };
     use crate::atom::{Atom, AtomTable};
     use crate::ets::EtsRegistry;
@@ -1163,6 +1245,16 @@ mod tests {
 
     fn tuple_option(context: &mut ProcessContext, name: Atom, value: Term) -> Term {
         tuple(context, &[Term::atom(name), value])
+    }
+
+    fn tuple3(context: &mut ProcessContext, elements: &[Term; 3]) -> Term {
+        tuple(context, elements)
+    }
+
+    fn table_id(tab: Term) -> u64 {
+        tab.as_small_int()
+            .and_then(|value| u64::try_from(value).ok())
+            .expect("numeric table id")
     }
 
     fn list_terms(list: Term) -> Vec<Term> {
@@ -1234,6 +1326,51 @@ mod tests {
     }
 
     #[test]
+    fn give_away_transfers_owner_in_registry_facility_and_enforces_owner_only() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let private = atom_table.intern("private");
+        let set = atom_table.intern("set");
+        let mut owner_process = Process::new(1, 512);
+        let mut owner_context = context(
+            &mut owner_process,
+            Arc::clone(&atom_table),
+            Arc::clone(&registry),
+        );
+        let tab = new_table(
+            &mut owner_context,
+            &atom_table,
+            atom_table.intern("give_away_tab"),
+            &[set, private],
+        );
+
+        assert_eq!(
+            bif_give_away(
+                &[tab, Term::pid(2), Term::atom(Atom::OK)],
+                &mut owner_context
+            ),
+            Ok(Term::atom(Atom::TRUE))
+        );
+        assert_eq!(created_table(&registry, tab).metadata().owner.get(), 2);
+        let row = tuple(
+            &mut owner_context,
+            &[Term::atom(Atom::OK), Term::small_int(1)],
+        );
+        assert_eq!(
+            bif_insert(&[tab, row], &mut owner_context),
+            Err(Term::atom(Atom::BADARG))
+        );
+
+        let mut non_owner_process = Process::new(3, 256);
+        let mut non_owner_context =
+            context(&mut non_owner_process, Arc::clone(&atom_table), registry);
+        assert_eq!(
+            bif_give_away(&[tab, Term::pid(4), Term::NIL], &mut non_owner_context),
+            Err(Term::atom(Atom::BADARG))
+        );
+    }
+
+    #[test]
     fn ets_new_unnamed_table_returns_numeric_id() {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let registry = Arc::new(EtsRegistry::new());
@@ -1261,6 +1398,34 @@ mod tests {
 
         assert!(!table.metadata().read_concurrency);
         assert!(!table.metadata().write_concurrency);
+    }
+
+    #[test]
+    fn ets_new_parses_heir_pid_data_and_explicit_none() {
+        let atom_table = Arc::new(AtomTable::with_common_atoms());
+        let registry = Arc::new(EtsRegistry::new());
+        let table_name = atom_table.intern("heir_tab");
+        let none_table_name = atom_table.intern("heir_none_tab");
+        let heir = atom_table.intern("heir");
+        let none = atom_table.intern("none");
+        let payload = atom_table.intern("payload");
+        let mut process = Process::new(1, 256);
+        let mut context = context(&mut process, Arc::clone(&atom_table), Arc::clone(&registry));
+        let data = tuple(&mut context, &[Term::atom(payload), Term::small_int(42)]);
+        let heir_option = tuple3(&mut context, &[Term::atom(heir), Term::pid(99), data]);
+        let options = context.alloc_list(&[heir_option]).expect("option list");
+
+        let tab = bif_new(&[Term::atom(table_name), options], &mut context).expect("new table");
+        let table = created_table(&registry, tab);
+        let metadata_heir = table.metadata().heir.as_ref().expect("heir stored");
+        assert_eq!(metadata_heir.pid, 99);
+        assert_ne!(metadata_heir.data.root(), data);
+
+        let none_option = tuple_option(&mut context, heir, Term::atom(none));
+        let none_options = context.alloc_list(&[none_option]).expect("option list");
+        let none_tab =
+            bif_new(&[Term::atom(none_table_name), none_options], &mut context).expect("new table");
+        assert!(created_table(&registry, none_tab).metadata().heir.is_none());
     }
 
     #[test]
@@ -2070,6 +2235,7 @@ mod tests {
             ("select", 3),
             ("delete", 1),
             ("delete", 2),
+            ("give_away", 3),
             ("member", 2),
             ("first", 1),
             ("next", 2),

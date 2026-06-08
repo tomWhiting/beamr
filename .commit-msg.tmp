@@ -1,1 +1,7 @@
+<<<<<<< HEAD
 B-106
+||||||| a90ecd6
+fix(ets): harden match variable binding allocation
+=======
+fix(beamr): queue ETS transfer messages for executing heirs
+>>>>>>> workflow/onatopp-dev-norn/c84661ea
