@@ -207,11 +207,19 @@ pub fn embedded_archive() -> Result<EmbeddedArchive<'static>, EmbedError> {
     EmbeddedArchive::parse(EMBEDDED_ARCHIVE_BYTES)
 }
 
+impl EmbeddedArchive<'static> {
+    /// Return all module names from a statically borrowed archive.
+    #[must_use]
+    pub fn static_module_names(&self) -> Vec<&'static str> {
+        self.entries.iter().map(|entry| entry.name).collect()
+    }
+}
+
 /// Return all statically embedded module names without loading them.
 #[must_use]
 pub fn embedded_module_names() -> Vec<&'static str> {
     embedded_archive()
-        .map(|archive| archive.module_names())
+        .map(|archive| archive.static_module_names())
         .unwrap_or_default()
 }
 
