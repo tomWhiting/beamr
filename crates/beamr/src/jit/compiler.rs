@@ -679,9 +679,8 @@ fn checked_small_int_payload(
     fail: cranelift_codegen::ir::Block,
 ) -> Value {
     let tag = builder.ins().band_imm(value, SMALL_INT_TAG_MASK);
-    let tagged = builder.ins().icmp_imm(IntCC::Equal, tag, 0);
-    let not_tagged = builder.ins().bnot(tagged);
-    branch_to_fail_if(builder, not_tagged, fail);
+    let not_small_int = builder.ins().icmp_imm(IntCC::NotEqual, tag, 0);
+    branch_to_fail_if(builder, not_small_int, fail);
     builder.ins().sshr_imm(value, SMALL_INT_SHIFT)
 }
 
@@ -882,7 +881,7 @@ mod tests {
         let native = compiler
             .compile(
                 &[
-                    Instruction::Label { label: 9 },
+                    Instruction::Label { label: 1 },
                     Instruction::Bif {
                         op: BifOp::Bif2,
                         operands: vec![
@@ -893,6 +892,8 @@ mod tests {
                             Operand::X(0),
                         ],
                     },
+                    Instruction::Label { label: 9 },
+                    Instruction::Return,
                 ],
                 Atom::MODULE,
                 Atom::OK,
