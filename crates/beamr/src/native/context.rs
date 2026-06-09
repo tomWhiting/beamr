@@ -1140,6 +1140,13 @@ impl<'process> ProcessContext<'process> {
 
     fn alloc_words(&mut self, words: usize) -> Result<&mut [u64], Term> {
         self.ensure_heap_space(words)?;
+        self.alloc_words_prereserved(words)
+    }
+
+    /// Allocate heap words WITHOUT triggering GC. Caller must have already
+    /// called `ensure_heap_space` for the total allocation budget. Panics
+    /// (via alloc_slice error) if insufficient space remains.
+    fn alloc_words_prereserved(&mut self, words: usize) -> Result<&mut [u64], Term> {
         let Some(process) = self.process.as_deref_mut() else {
             return Err(Term::atom(crate::atom::Atom::BADARG));
         };
@@ -1223,6 +1230,12 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Allocate list cells for `elements`, ending in `tail`.
+    ///
+    /// SAFETY NOTE: `ensure_heap_space` at the start may trigger GC which
+    /// moves heap objects. If `elements` contains boxed Terms (heap pointers),
+    /// they become stale after GC. Callers with boxed Terms MUST save them to
+    /// x-registers before calling this method and re-read after GC. For
+    /// immediate-only Terms (atoms, small ints, pids), this is safe as-is.
     pub fn alloc_list_with_tail(
         &mut self,
         elements: &[Term],
@@ -1230,11 +1243,18 @@ impl<'process> ProcessContext<'process> {
     ) -> Result<Term, Term> {
         self.ensure_heap_space(elements.len() * 2)?;
         for element in elements.iter().rev().copied() {
-            let heap = self.alloc_words(2)?;
+            let heap = self.alloc_words_prereserved(2)?;
             tail = write_cons(heap, element, tail)
                 .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
         }
         Ok(tail)
+    }
+
+    /// Allocate a cons cell using pre-reserved heap space (no GC trigger).
+    /// Caller must have called `ensure_heap_space` for the total budget.
+    pub fn alloc_cons_prereserved(&mut self, head: Term, tail: Term) -> Result<Term, Term> {
+        let heap = self.alloc_words_prereserved(2)?;
+        write_cons(heap, head, tail).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
     /// Allocate a flatmap on the calling process heap.

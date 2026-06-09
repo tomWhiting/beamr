@@ -314,9 +314,10 @@ pub(super) fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
 }
 
 pub(super) fn list_from_vec(elements: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    context.ensure_heap_space(elements.len() * 2)?;
     let mut tail = Term::NIL;
     for element in elements.iter().rev() {
-        tail = context.alloc_cons(*element, tail)?;
+        tail = context.alloc_cons_prereserved(*element, tail)?;
     }
     Ok(tail)
 }
