@@ -6,7 +6,7 @@ use crate::loader::Instruction;
 use crate::loader::decode::{BifOp, ComparisonOp, Operand, TypeTestOp};
 use crate::process::Process;
 use crate::term::Term;
-use crate::term::boxed::{Cons, Tuple, write_tuple};
+use crate::term::boxed::{Cons, Tuple, write_cons, write_tuple};
 
 type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> u64;
 
@@ -313,6 +313,40 @@ fn compiled_get_list_destructures_constructed_cons() {
 }
 
 #[test]
+fn compiled_get_list_read_is_pure_and_emits_no_safepoint() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::GetList {
+                    source: Operand::X(1),
+                    head: Operand::X(2),
+                    tail: Operand::X(3),
+                },
+                Instruction::Move {
+                    source: Operand::X(3),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+
+    assert!(native.stack_maps().is_empty());
+    let mut cons_words = [0; 2];
+    let cons = write_cons(&mut cons_words, Term::small_int(23), Term::NIL).unwrap();
+    let mut registers = vec![0, cons.raw(), 0, 0];
+    let returned = call_native(&native, &mut registers);
+
+    assert_eq!(returned, Term::NIL.raw());
+    assert_eq!(registers[2], Term::small_int(23).raw());
+    assert_eq!(registers[3], Term::NIL.raw());
+}
+
+#[test]
 fn compiled_get_hd_and_get_tl_read_cons_fields() {
     let compiler = JitCompiler::new(JitSettings).unwrap();
     let native = compiler
@@ -350,6 +384,43 @@ fn compiled_get_hd_and_get_tl_read_cons_fields() {
 
     assert_eq!(returned, Term::NIL.raw());
     assert_eq!(registers[2], Term::small_int(17).raw());
+    assert_eq!(registers[3], Term::NIL.raw());
+}
+
+#[test]
+fn compiled_get_hd_and_get_tl_reads_are_pure_and_emit_no_safepoint() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::GetHd {
+                    source: Operand::X(1),
+                    destination: Operand::X(2),
+                },
+                Instruction::GetTl {
+                    source: Operand::X(1),
+                    destination: Operand::X(3),
+                },
+                Instruction::Move {
+                    source: Operand::X(2),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+
+    assert!(native.stack_maps().is_empty());
+    let mut cons_words = [0; 2];
+    let cons = write_cons(&mut cons_words, Term::small_int(29), Term::NIL).unwrap();
+    let mut registers = vec![0, cons.raw(), 0, 0];
+    let returned = call_native(&native, &mut registers);
+
+    assert_eq!(returned, Term::small_int(29).raw());
+    assert_eq!(registers[2], Term::small_int(29).raw());
     assert_eq!(registers[3], Term::NIL.raw());
 }
 
