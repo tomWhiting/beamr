@@ -8,6 +8,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 mod dispatch;
+mod dispatch_call;
+mod dispatch_core;
+mod dispatch_data;
+mod dispatch_helpers;
 mod ir_helpers;
 mod ir_typed;
 
