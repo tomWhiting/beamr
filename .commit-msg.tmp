@@ -1,1 +1,1 @@
-fix(beamr): root BsMatch allocations without dangling GC sources
+review(beamr): harden binary allocation root extraction

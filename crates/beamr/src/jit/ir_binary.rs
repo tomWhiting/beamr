@@ -169,7 +169,7 @@ pub(crate) fn binary_allocation_roots(
         }
         BinaryOp::BsInitWritable => match operands {
             [_, destination] => Ok(vec![destination.clone()]),
-            _ => Ok(Vec::new()),
+            _ => Err(invalid_operands("bs_init_writable")),
         },
         BinaryOp::BsCreateBin => match operands {
             [destination, _, segments @ ..] => {
@@ -177,12 +177,12 @@ pub(crate) fn binary_allocation_roots(
                 roots.extend(segment_roots(segments));
                 Ok(roots)
             }
-            _ => Ok(Vec::new()),
+            _ => Err(invalid_operands("bs_create_bin")),
         },
         BinaryOp::BsGetTail => match operands {
             [_fail, context, _live, destination] => Ok(vec![context.clone(), destination.clone()]),
             [_fail, context, destination] => Ok(vec![context.clone(), destination.clone()]),
-            _ => Ok(Vec::new()),
+            _ => Err(invalid_operands("bs_get_tail")),
         },
         BinaryOp::BsMatch => bs_match_allocation_roots(operands),
         _ => Ok(Vec::new()),
@@ -275,6 +275,16 @@ mod tests {
         .expect("bs_match roots")
     }
 
+    fn bs_match_roots_from_rest_commands(commands: Vec<Operand>) -> Vec<Operand> {
+        let mut operands = vec![Operand::Label(1), Operand::X(0)];
+        operands.extend(commands);
+        binary_allocation_roots(BinaryOp::BsMatch, &operands).expect("bs_match roots")
+    }
+
+    fn binary_roots(op: BinaryOp, operands: &[Operand]) -> Vec<Operand> {
+        binary_allocation_roots(op, operands).expect("binary roots")
+    }
+
     fn get_binary_command(destination: Operand) -> Operand {
         Operand::List(vec![
             Operand::Unsigned(4),
@@ -341,6 +351,16 @@ mod tests {
     }
 
     #[test]
+    fn bs_match_rest_command_layout_roots_allocating_destinations() {
+        let roots = bs_match_roots_from_rest_commands(vec![
+            get_binary_command(Operand::X(1)),
+            get_tail_command(Operand::X(2)),
+        ]);
+
+        assert_eq!(roots, vec![Operand::X(0), Operand::X(1), Operand::X(2)]);
+    }
+
+    #[test]
     fn bs_match_non_allocating_commands_add_no_roots() {
         let roots = bs_match_roots(vec![
             get_integer_command(Operand::X(1)),
@@ -348,5 +368,37 @@ mod tests {
         ]);
 
         assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn allocating_binary_ops_do_not_silently_return_empty_roots_for_malformed_operands() {
+        assert!(binary_allocation_roots(BinaryOp::BsInitWritable, &[]).is_err());
+        assert!(binary_allocation_roots(BinaryOp::BsCreateBin, &[]).is_err());
+        assert!(binary_allocation_roots(BinaryOp::BsGetTail, &[]).is_err());
+    }
+
+    #[test]
+    fn well_formed_allocating_binary_ops_return_non_empty_roots() {
+        assert_eq!(
+            binary_roots(
+                BinaryOp::BsInitWritable,
+                &[Operand::Unsigned(8), Operand::X(1)]
+            ),
+            vec![Operand::X(1)]
+        );
+        assert_eq!(
+            binary_roots(
+                BinaryOp::BsCreateBin,
+                &[Operand::X(1), Operand::Unsigned(0)]
+            ),
+            vec![Operand::X(1)]
+        );
+        assert_eq!(
+            binary_roots(
+                BinaryOp::BsGetTail,
+                &[Operand::Label(1), Operand::X(0), Operand::X(1)]
+            ),
+            vec![Operand::X(0), Operand::X(1)]
+        );
     }
 }
