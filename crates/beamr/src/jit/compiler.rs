@@ -19,6 +19,22 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Module-level metadata needed by closure-aware JIT lowering.
+#[derive(Clone, Copy)]
+pub struct ModuleCompileMetadata<'a> {
+    /// Decoded lambda table for make_fun closure metadata.
+    pub lambdas: &'a [LambdaEntry],
+    /// Registry/module generation written into created closures.
+    pub generation: u64,
+}
+
+impl<'a> ModuleCompileMetadata<'a> {
+    const EMPTY: Self = Self {
+        lambdas: &[],
+        generation: 0,
+    };
+}
 use std::sync::{Arc, Mutex};
 
 use super::ir_allocation::{
@@ -380,18 +396,9 @@ impl JitCompiler {
         module: Atom,
         function: Atom,
         arity: u8,
-        lambdas: &[LambdaEntry],
-        generation: u64,
+        metadata: ModuleCompileMetadata<'_>,
     ) -> Result<NativeCode, JitError> {
-        self.compile_with_module_metadata(
-            instructions,
-            module,
-            function,
-            arity,
-            None,
-            lambdas,
-            generation,
-        )
+        self.compile_with_module_metadata(instructions, module, function, arity, None, metadata)
     }
 
     /// Compiles typed code with module-level closure metadata available to `make_fun` lowering.
@@ -402,8 +409,7 @@ impl JitCompiler {
         function: Atom,
         arity: u8,
         signature: FunctionSignature,
-        lambdas: &[LambdaEntry],
-        generation: u64,
+        metadata: ModuleCompileMetadata<'_>,
     ) -> Result<NativeCode, JitError> {
         self.compile_with_module_metadata(
             instructions,
@@ -411,8 +417,7 @@ impl JitCompiler {
             function,
             arity,
             Some(signature),
-            lambdas,
-            generation,
+            metadata,
         )
     }
 
@@ -430,8 +435,7 @@ impl JitCompiler {
             function,
             arity,
             typed_signature,
-            &[],
-            0,
+            ModuleCompileMetadata::EMPTY,
         )
     }
 
@@ -442,8 +446,7 @@ impl JitCompiler {
         function: Atom,
         arity: u8,
         typed_signature: Option<FunctionSignature>,
-        lambdas: &[LambdaEntry],
-        generation: u64,
+        metadata: ModuleCompileMetadata<'_>,
     ) -> Result<NativeCode, JitError> {
         let plan = TranslationPlan::new(instructions)?;
 
@@ -838,7 +841,7 @@ impl JitCompiler {
                     }
                     Instruction::MakeFun { operands } => {
                         let lambda_index = make_fun_lambda_index(operands)?;
-                        let lambda = lambdas.get(lambda_index).ok_or_else(|| {
+                        let lambda = metadata.lambdas.get(lambda_index).ok_or_else(|| {
                             JitError::UnsupportedOperand {
                                 operand: format!("make_fun lambda index {lambda_index}"),
                             }
@@ -874,7 +877,7 @@ impl JitCompiler {
                                     }
                                 })?,
                                 arity: lambda.arity,
-                                generation,
+                                generation: metadata.generation,
                                 unique_id: lambda.unique_id,
                             },
                             &free_vars,
