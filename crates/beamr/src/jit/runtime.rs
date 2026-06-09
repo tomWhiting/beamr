@@ -6,11 +6,14 @@ use crate::interpreter::opcodes::closures::resolve_closure_target;
 use crate::interpreter::{ExecutionResult, run_with_registry};
 use crate::jit::NativeCode;
 use crate::module::ResolvedImportTarget;
-use crate::process::{CodePosition, Exception, ExitReason, JitRuntimeContext, JitStatus, Process};
+use crate::process::{
+    CodePosition, Exception, ExitReason, JitRuntimeContext, JitStatus, Process, ProcessStatus,
+};
 use crate::term::Term;
 use crate::term::binary::packed_word_count;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{BoxedHeader, BoxedTag, Closure, ProcBin};
+use crate::term::pid_ref::PidRef;
 use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 use crate::term::sub_binary::{SUB_BINARY_WORDS, write_sub_binary};
 
@@ -75,6 +78,129 @@ pub(crate) extern "C" fn jit_charge_reduction(process: *mut Process) -> u64 {
     };
     process.decrement_reductions(1);
     u64::from(process.reductions_exhausted())
+}
+
+const RECEIVE_STATUS_MESSAGE: u8 = 0;
+const RECEIVE_STATUS_EMPTY: u8 = 1;
+const WAIT_STATUS_NEW_MESSAGE: u8 = 0;
+const WAIT_STATUS_TIMEOUT: u8 = 1;
+const WAIT_STATUS_WAITING: u8 = 2;
+
+/// Sends `message` to a local PID when this JIT invocation can deliver it.
+///
+/// The current raw JIT ABI exposes only the caller process, so scheduler-wide
+/// process-table delivery is not available here. Self-send is delivered into the
+/// caller mailbox; other local PIDs and remote PIDs are silently dropped to keep
+/// the BEAM `!` return-value contract without attempting unsupported
+/// distribution from compiled code.
+pub(crate) extern "C" fn jit_send_message(
+    process: *mut Process,
+    dest_pid: u64,
+    message: u64,
+) -> u64 {
+    let Some(process) = process_from_abi(process) else {
+        return message;
+    };
+    let message_term = Term::from_raw(message);
+    if let Some(PidRef::Local(pid)) = PidRef::new(Term::from_raw(dest_pid))
+        && pid == process.pid()
+    {
+        process.mailbox_mut().push_owned(message_term);
+        if process.status() == ProcessStatus::Waiting {
+            let _ = process.transition_to(ProcessStatus::Running);
+        }
+    }
+    message
+}
+
+/// Peeks at the current selective-receive save pointer.
+///
+/// Returns `(status, message)` where status 0 carries a valid raw message term
+/// and status 1 means the mailbox scan is exhausted. A two-result ABI avoids
+/// colliding with valid raw terms such as small integer zero.
+pub(crate) extern "C" fn jit_receive_peek(process: *mut Process) -> JitReturn {
+    let Some(process) = process_from_abi(process) else {
+        return receive_return(RECEIVE_STATUS_EMPTY, 0);
+    };
+    match process.mailbox_mut().current_message() {
+        Some(message) => receive_return(RECEIVE_STATUS_MESSAGE, message.raw()),
+        None => receive_return(RECEIVE_STATUS_EMPTY, 0),
+    }
+}
+
+const fn receive_return(status: u8, value: u64) -> JitReturn {
+    JitReturn {
+        status,
+        _padding: [0; 7],
+        value,
+    }
+}
+
+/// Advances selective receive scanning past the current message.
+pub(crate) extern "C" fn jit_receive_next(process: *mut Process) {
+    let Some(process) = process_from_abi(process) else {
+        return;
+    };
+    process.mailbox_mut().advance_save_pointer();
+}
+
+/// Removes the current matched message and clears receive timeout state.
+pub(crate) extern "C" fn jit_receive_accept(process: *mut Process) {
+    let Some(process) = process_from_abi(process) else {
+        return;
+    };
+    let _ = process.mailbox_mut().remove_current_message();
+    process.set_receive_timeout(None);
+    process.set_receive_timer_ref(None);
+}
+
+/// Prepares a process to wait for a new mailbox message.
+pub(crate) extern "C" fn jit_receive_wait(process: *mut Process) -> u8 {
+    let Some(process) = process_from_abi(process) else {
+        return WAIT_STATUS_WAITING;
+    };
+    if process.mailbox_mut().current_message().is_some() {
+        return WAIT_STATUS_NEW_MESSAGE;
+    }
+    transition_process_to_waiting(process);
+    process.set_jit_status(Some(JitStatus::Yield));
+    WAIT_STATUS_WAITING
+}
+
+/// Prepares a process to wait with a timeout.
+pub(crate) extern "C" fn jit_receive_wait_timeout(process: *mut Process, timeout: u64) -> u8 {
+    let Some(process) = process_from_abi(process) else {
+        return WAIT_STATUS_WAITING;
+    };
+    if process.mailbox_mut().current_message().is_some() {
+        return WAIT_STATUS_NEW_MESSAGE;
+    }
+    let milliseconds = Term::from_raw(timeout)
+        .as_small_int()
+        .and_then(|value| u64::try_from(value).ok());
+    if milliseconds == Some(0) {
+        return WAIT_STATUS_TIMEOUT;
+    }
+    transition_process_to_waiting(process);
+    process.set_jit_status(Some(JitStatus::Yield));
+    WAIT_STATUS_WAITING
+}
+
+/// Resets selective receive state after a timeout clause starts executing.
+pub(crate) extern "C" fn jit_receive_timeout(process: *mut Process) {
+    let Some(process) = process_from_abi(process) else {
+        return;
+    };
+    process.mailbox_mut().reset_save_pointer();
+    process.set_receive_timeout(None);
+    process.set_receive_timer_ref(None);
+}
+
+fn transition_process_to_waiting(process: &mut Process) {
+    if process.status() == ProcessStatus::New {
+        let _ = process.transition_to(ProcessStatus::Running);
+    }
+    let _ = process.transition_to(ProcessStatus::Waiting);
 }
 
 const BUILDER_META_WORDS: usize = 3;

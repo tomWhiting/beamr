@@ -14,6 +14,7 @@ pub(crate) mod ir_common;
 pub(crate) mod ir_control;
 pub(crate) mod ir_exceptions;
 pub(crate) mod ir_guards;
+pub(crate) mod ir_message;
 pub mod profiler;
 pub(crate) mod runtime;
 pub mod safepoint;

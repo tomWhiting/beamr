@@ -1752,6 +1752,92 @@ fn compiled_external_call_returns_deopt_sentinel_without_runtime_context() {
 }
 
 #[test]
+fn compiles_message_send_and_selective_receive_opcodes() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+
+    compiler
+        .compile(
+            &[
+                Instruction::Send,
+                Instruction::Label { label: 1 },
+                Instruction::LoopRec {
+                    fail: Operand::Label(2),
+                    destination: Operand::X(0),
+                },
+                Instruction::RemoveMessage,
+                Instruction::Return,
+                Instruction::LoopRecEnd {
+                    fail: Operand::Label(1),
+                },
+                Instruction::Label { label: 2 },
+                Instruction::Wait {
+                    fail: Operand::Label(1),
+                },
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            2,
+        )
+        .unwrap();
+}
+
+#[test]
+fn compiles_wait_timeout_and_timeout_opcodes() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+
+    compiler
+        .compile(
+            &[
+                Instruction::Label { label: 1 },
+                Instruction::LoopRec {
+                    fail: Operand::Label(2),
+                    destination: Operand::X(0),
+                },
+                Instruction::LoopRecEnd {
+                    fail: Operand::Label(1),
+                },
+                Instruction::Label { label: 2 },
+                Instruction::WaitTimeout {
+                    fail: Operand::Label(3),
+                    timeout: Operand::Unsigned(0),
+                },
+                Instruction::Label { label: 3 },
+                Instruction::Timeout,
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+}
+
+#[test]
+fn recv_marker_opcodes_compile_to_deopt() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::RecvMarkerUse {
+                    marker: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            1,
+        )
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    let mut registers = vec![Term::NIL.raw()];
+
+    let returned = call_native_status(&native, &mut registers, &mut process);
+
+    assert_eq!(returned.status, JIT_STATUS_DEOPT);
+    assert_eq!(returned.value, JIT_DEOPT_SENTINEL as u64);
+}
+
+#[test]
 fn reports_unsupported_opcode() {
     let compiler = JitCompiler::new(JitSettings).unwrap();
     let error = compiler

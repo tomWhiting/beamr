@@ -67,12 +67,19 @@ use super::ir_guards::{
     SelectPair, immediate_raw_term, immediate_usize, lower_is_tagged_tuple, lower_select_val,
     lower_test_arity, lower_type_test, parse_select_pairs,
 };
+use super::ir_message::{
+    MessageHelpers, MessageLoweringContext, translate_loop_rec, translate_loop_rec_end,
+    translate_remove_message, translate_send, translate_timeout, translate_wait,
+    translate_wait_timeout,
+};
 use super::runtime::{
     JIT_YIELD_SENTINEL, jit_alloc_closure, jit_alloc_cons, jit_alloc_tuple, jit_bs_finish,
     jit_bs_get_binary, jit_bs_get_integer, jit_bs_get_utf8, jit_bs_get_utf16, jit_bs_get_utf32,
     jit_bs_init, jit_bs_put_binary, jit_bs_put_integer, jit_bs_put_utf8, jit_bs_put_utf16,
     jit_bs_put_utf32, jit_bs_start_match, jit_bs_test_tail, jit_bs_test_unit, jit_call_closure,
-    jit_call_interpreted, jit_charge_reduction,
+    jit_call_interpreted, jit_charge_reduction, jit_receive_accept, jit_receive_next,
+    jit_receive_peek, jit_receive_timeout, jit_receive_wait, jit_receive_wait_timeout,
+    jit_send_message,
 };
 use super::safepoint::SafepointBuilder;
 use super::types::NativeCode;
@@ -355,6 +362,19 @@ impl JitCompiler {
         builder.symbol("beamr_jit_bs_put_utf16", jit_bs_put_utf16 as *const u8);
         builder.symbol("beamr_jit_bs_put_utf32", jit_bs_put_utf32 as *const u8);
         builder.symbol("beamr_jit_bs_finish", jit_bs_finish as *const u8);
+        builder.symbol("beamr_jit_send_message", jit_send_message as *const u8);
+        builder.symbol("beamr_jit_receive_peek", jit_receive_peek as *const u8);
+        builder.symbol("beamr_jit_receive_next", jit_receive_next as *const u8);
+        builder.symbol("beamr_jit_receive_accept", jit_receive_accept as *const u8);
+        builder.symbol("beamr_jit_receive_wait", jit_receive_wait as *const u8);
+        builder.symbol(
+            "beamr_jit_receive_wait_timeout",
+            jit_receive_wait_timeout as *const u8,
+        );
+        builder.symbol(
+            "beamr_jit_receive_timeout",
+            jit_receive_timeout as *const u8,
+        );
         builder.symbol(
             "beamr_jit_exception_class",
             jit_exception_class as *const u8,
@@ -604,6 +624,7 @@ impl JitCompiler {
         let exception_add_frame_helper = declare_add_frame_helper(&mut jit_module, &mut ctx.func)?;
 
         let binary_helpers = declare_binary_helpers(&mut jit_module, &mut ctx.func)?;
+        let message_helpers = declare_message_helpers(&mut jit_module, &mut ctx.func)?;
         let allocation_helpers = AllocationHelpers {
             tuple: tuple_helper,
             cons: cons_helper,
@@ -813,6 +834,136 @@ impl JitCompiler {
                     Instruction::Jump { target } => {
                         let target = blocks.label_block(label_operand(target)?)?;
                         builder.ins().jump(target, &[]);
+                        terminated = true;
+                    }
+                    Instruction::Send => {
+                        safepoints.record_allocation_site(index, [Operand::X(0), Operand::X(1)])?;
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        translate_send(
+                            &mut builder,
+                            MessageLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                yield_block: blocks.yield_block,
+                            },
+                            message_helpers,
+                            &Operand::X(0),
+                            &Operand::X(1),
+                            &Operand::X(0),
+                        )?;
+                        typed_state.clear_operand(&Operand::X(0));
+                        terminated = false;
+                    }
+                    Instruction::LoopRec { fail, destination } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let fail = blocks.label_block(label_operand(fail)?)?;
+                        translate_loop_rec(
+                            &mut builder,
+                            MessageLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                yield_block: blocks.yield_block,
+                            },
+                            message_helpers,
+                            fail,
+                            destination,
+                        )?;
+                        typed_state.clear_operand(destination);
+                        terminated = false;
+                    }
+                    Instruction::LoopRecEnd { fail } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let loop_label = blocks.label_block(label_operand(fail)?)?;
+                        translate_loop_rec_end(
+                            &mut builder,
+                            MessageLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                yield_block: blocks.yield_block,
+                            },
+                            message_helpers,
+                            loop_label,
+                        );
+                        terminated = true;
+                    }
+                    Instruction::RemoveMessage => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        translate_remove_message(
+                            &mut builder,
+                            MessageLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                yield_block: blocks.yield_block,
+                            },
+                            message_helpers,
+                        );
+                        terminated = false;
+                    }
+                    Instruction::Wait { fail } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let loop_label = blocks.label_block(label_operand(fail)?)?;
+                        translate_wait(
+                            &mut builder,
+                            MessageLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                yield_block: blocks.yield_block,
+                            },
+                            message_helpers,
+                            charge_helper,
+                            loop_label,
+                        );
+                        terminated = true;
+                    }
+                    Instruction::WaitTimeout { fail, timeout } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let timeout_label = blocks.label_block(label_operand(fail)?)?;
+                        let loop_label = instructions[..index]
+                            .iter()
+                            .rposition(|candidate| matches!(candidate, Instruction::LoopRec { .. }))
+                            .map_or(blocks.block_for_instruction(index), |loop_index| {
+                                blocks.block_for_instruction(loop_index)
+                            });
+                        translate_wait_timeout(
+                            &mut builder,
+                            MessageLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                yield_block: blocks.yield_block,
+                            },
+                            message_helpers,
+                            charge_helper,
+                            timeout,
+                            timeout_label,
+                            loop_label,
+                        )?;
+                        terminated = true;
+                    }
+                    Instruction::Timeout => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        translate_timeout(
+                            &mut builder,
+                            MessageLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                yield_block: blocks.yield_block,
+                            },
+                            message_helpers,
+                        );
+                        terminated = false;
+                    }
+                    Instruction::RecvMarkerReserve { .. }
+                    | Instruction::RecvMarkerBind { .. }
+                    | Instruction::RecvMarkerClear { .. }
+                    | Instruction::RecvMarkerUse { .. } => {
+                        return_status_raw(&mut builder, JIT_STATUS_DEOPT, JIT_DEOPT_SENTINEL);
                         terminated = true;
                     }
                     Instruction::CallExt { arity: _, import }
@@ -1601,6 +1752,55 @@ fn clear_binary_outputs(_state: &mut TypedRegisterState, _op: BinaryOp, _operand
     // typed-register metadata has already been conservatively cleared.
 }
 
+fn declare_message_helpers(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+) -> Result<MessageHelpers, JitError> {
+    Ok(MessageHelpers {
+        send: declare_helper(
+            module,
+            func,
+            "beamr_jit_send_message",
+            &[types::I64, types::I64, types::I64],
+            types::I64,
+        )?,
+        receive_peek: declare_multi_return_helper(
+            module,
+            func,
+            "beamr_jit_receive_peek",
+            &[types::I64],
+            &[types::I8, types::I64],
+        )?,
+        receive_next: declare_void_helper(module, func, "beamr_jit_receive_next", &[types::I64])?,
+        receive_accept: declare_void_helper(
+            module,
+            func,
+            "beamr_jit_receive_accept",
+            &[types::I64],
+        )?,
+        receive_wait: declare_helper(
+            module,
+            func,
+            "beamr_jit_receive_wait",
+            &[types::I64],
+            types::I8,
+        )?,
+        receive_wait_timeout: declare_helper(
+            module,
+            func,
+            "beamr_jit_receive_wait_timeout",
+            &[types::I64, types::I64],
+            types::I8,
+        )?,
+        receive_timeout: declare_void_helper(
+            module,
+            func,
+            "beamr_jit_receive_timeout",
+            &[types::I64],
+        )?,
+    })
+}
+
 fn declare_binary_helpers(
     module: &mut JITModule,
     func: &mut cranelift_codegen::ir::Function,
@@ -1721,11 +1921,32 @@ fn declare_helper(
     params: &[cranelift_codegen::ir::Type],
     return_type: cranelift_codegen::ir::Type,
 ) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
+    declare_multi_return_helper(module, func, name, params, &[return_type])
+}
+
+fn declare_void_helper(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+    name: &str,
+    params: &[cranelift_codegen::ir::Type],
+) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
+    declare_multi_return_helper(module, func, name, params, &[])
+}
+
+fn declare_multi_return_helper(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+    name: &str,
+    params: &[cranelift_codegen::ir::Type],
+    return_types: &[cranelift_codegen::ir::Type],
+) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
     let mut signature = module.make_signature();
     for param in params {
         signature.params.push(AbiParam::new(*param));
     }
-    signature.returns.push(AbiParam::new(return_type));
+    for return_type in return_types {
+        signature.returns.push(AbiParam::new(*return_type));
+    }
     let helper = module
         .declare_function(name, Linkage::Import, &signature)
         .map_err(|error| JitError::CraneliftError(error.to_string()))?;
@@ -1750,12 +1971,7 @@ fn declare_void_unary_helper(
     module: &mut JITModule,
     func: &mut cranelift_codegen::ir::Function,
 ) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
-    let mut signature = module.make_signature();
-    signature.params.push(AbiParam::new(types::I64));
-    let helper = module
-        .declare_function("beamr_jit_clear_exception", Linkage::Import, &signature)
-        .map_err(|error| JitError::CraneliftError(error.to_string()))?;
-    Ok(module.declare_func_in_func(helper, func))
+    declare_void_helper(module, func, "beamr_jit_clear_exception", &[types::I64])
 }
 
 fn declare_add_frame_helper(
