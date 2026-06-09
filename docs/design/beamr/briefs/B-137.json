@@ -2,65 +2,117 @@
   "id": "B-137",
   "cluster": "beamr",
   "title": "JIT exception handling and stack unwinding",
-  "depends_on": [
-    "B-135"
-  ],
+  "depends_on": ["B-131", "B-135"],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "Compiled code must support try/catch exception handling. When an exception occurs in compiled code, the stack must be unwound to the nearest catch handler, with correct exception class, reason, and stacktrace.",
-  "task": "Implement exception handling in JIT-compiled code using Cranelift's trap and landing pad mechanisms.",
+  "checklist": ["C204"],
+  "stories": ["S34", "S42"],
+  "purpose": "Compiled code must support try/catch exception handling. When an exception occurs in compiled code, the stack must be unwound to the nearest catch handler, with correct exception class, reason, and stacktrace. Mixed call stacks (compiled frames interleaved with interpreted frames) must unwind correctly. Per D5 (mixed-mode execution), the system handles mixed call stacks gracefully — an exception raised in an interpreted callee must be catchable by a compiled caller's try/catch.",
+  "task": "Implement exception handling in JIT-compiled code in crates/beamr/src/jit/ir_exceptions.rs. try blocks set up a catch handler using Cranelift's landing pad mechanism. Exceptions propagate using a return-code convention — compiled functions return a status indicating normal completion or exception, and callers check this status. This is simpler and more portable than native unwinding (setjmp/longjmp or DWARF-based). Mixed-stack unwinding uses the same return-code propagation through jit_call_interpreted.",
   "requirements": [
     {
       "id": "R1",
-      "title": "Try/catch in compiled code",
-      "spec": "Translate try/try_end/try_case to Cranelift IR with exception handling.",
+      "title": "Try block entry — catch handler setup",
+      "spec": "THE SYSTEM SHALL translate the try opcode into Cranelift IR that records a catch handler label for the current try scope. WHEN try is encountered, THE SYSTEM SHALL push a TryCatchFrame onto a per-function try stack, containing the catch label and the Y-register index for the exception class/reason/trace. THE SYSTEM SHALL translate try_end into IR that pops the current TryCatchFrame (try block completed normally).",
       "acceptance": [
-        "try block entry sets up a catch handler",
-        "Exception in try block unwinds to the handler",
-        "try_case receives class, reason, stacktrace in registers",
-        "Test: compiled try/catch catches an error and returns the reason"
+        "translate_try(builder, catch_label, y_register) pushes a TryCatchFrame and emits a label for the try body",
+        "translate_try_end(builder) pops the current TryCatchFrame",
+        "TryCatchFrame stores: catch_block (Cranelift Block), class_register, reason_register, trace_register",
+        "Nested try blocks are supported — try stack is LIFO",
+        "Test: function with try/try_end compiles successfully with correct frame push/pop"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "create": ["crates/beamr/src/jit/ir_exceptions.rs"],
+        "modify": ["crates/beamr/src/jit/mod.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C204"],
+      "stories": ["S34"]
     },
     {
       "id": "R2",
-      "title": "Stack unwinding from compiled to interpreted code",
-      "spec": "Exceptions raised in interpreted code called from compiled code must unwind through the compiled frames.",
+      "title": "Exception dispatch in compiled code — try_case",
+      "spec": "THE SYSTEM SHALL translate try_case into Cranelift IR that reads the exception class, reason, and stacktrace from the designated Y-registers and makes them available for pattern matching in the catch clause body. WHEN an exception is caught, THE SYSTEM SHALL clear the try/catch state for the current scope. THE SYSTEM SHALL NOT modify the exception stacktrace — it must be passed through unchanged.",
       "acceptance": [
-        "Mixed stack: compiled \u2192 interpreted \u2192 exception correctly unwinds",
-        "Compiled frame catch handlers are found during unwinding",
-        "Stacktrace includes both compiled and interpreted frames",
-        "Test: compiled function calls interpreted function that throws \u2014 caught in compiled catch"
+        "translate_try_case(builder, class_reg, reason_reg, trace_reg) reads exception values from Y-registers",
+        "Exception class, reason, and trace are available as SSA values for subsequent compiled code",
+        "The try/catch state is cleared after try_case executes",
+        "Test: compiled try/catch catches {error, badarg, Trace} — class, reason, trace all correct"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "modify": ["crates/beamr/src/jit/ir_exceptions.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C204"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R3",
+      "title": "Exception propagation via return-code convention",
+      "spec": "THE SYSTEM SHALL use a return-code convention for exception propagation in compiled code. Compiled functions return a pair (status: u8, value: u64) where status 0 indicates normal return and status 1 indicates exception. This changes the Cranelift function signature from single u64 return to multi-value (u8, u64) return — superseding B-131 R6's single-value return convention. translate_return (ir_control.rs) MUST emit (0, value) for normal return. translate_call (ir_control.rs) MUST add status checking at every call site. The Cranelift function declaration in compiler.rs MUST declare the multi-value return type. WHEN a compiled function calls another compiled function and the callee returns status 1, THE SYSTEM SHALL check the current try stack: if a catch handler exists, branch to the catch label; if no catch handler exists, add the current MFA to the stacktrace and propagate the exception by returning status 1 to the caller.",
+      "acceptance": [
+        "Compiled function return type is (u8, u64) — status + value",
+        "Status 0: normal return, value is the return term",
+        "Status 1: exception, value encodes the exception reason (class/reason/trace are in process exception state)",
+        "translate_return in ir_control.rs emits (0, x0) instead of bare x0 (supersedes B-131 R6 return convention)",
+        "translate_call in ir_control.rs checks callee status byte after every call instruction",
+        "Cranelift function declaration in compiler.rs specifies multi-value return type [I8, I64]",
+        "No-catch propagation path adds current MFA to the exception stacktrace before returning status 1",
+        "Call-site IR checks callee status and branches to catch or propagates",
+        "Test: compiled function A calls compiled B which throws — A's try/catch catches the exception",
+        "Test: compiled function A (no try/catch) calls compiled B which throws — exception propagates to A's caller with A's MFA in stacktrace"
       ],
-      "stories": []
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_exceptions.rs", "crates/beamr/src/jit/ir_control.rs", "crates/beamr/src/jit/compiler.rs"]
+      },
+      "checklist": ["C204"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R4",
+      "title": "Mixed-stack exception propagation",
+      "spec": "WHEN an exception is raised in interpreted code called from compiled code (via jit_call_interpreted), THE SYSTEM SHALL propagate the exception back to the compiled caller using the return-code convention. jit_call_interpreted SHALL return (status=1, exception_reason) when the interpreted callee throws — this supersedes B-135 R2's u64 return type with the (u8, u64) return-code convention from R3. WHEN an exception is raised in compiled code called from the interpreter (via dispatch cache hit), THE SYSTEM SHALL set the process exception state and return ExceptionStatus to the interpreter's exception handling.",
+      "acceptance": [
+        "jit_call_interpreted returns status 1 when the interpreted callee throws",
+        "The compiled caller checks the return status and dispatches to its catch handler or propagates",
+        "Compiled code called from interpreter sets process.exception on throw and returns ExceptionStatus",
+        "The interpreter's existing exception handling picks up the exception",
+        "Test: compiled A calls interpreted B which throws — A catches the exception correctly",
+        "Test: interpreted A calls compiled B which throws — A catches the exception correctly"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/runtime.rs", "crates/beamr/src/jit/ir_exceptions.rs"]
+      },
+      "checklist": ["C204"],
+      "stories": ["S42"]
+    },
+    {
+      "id": "R5",
+      "title": "Stacktrace construction for compiled frames",
+      "spec": "WHEN building an exception stacktrace, THE SYSTEM SHALL include compiled function frames with their module, function, and arity. THE SYSTEM SHALL record the source MFA in each compiled function's entry metadata so it can be added to stacktraces. THE SYSTEM SHALL NOT include source line numbers for compiled frames — compiled frames report the MFA only.",
+      "acceptance": [
+        "CompiledFrameInfo stores: module (Atom), function (Atom), arity (u8)",
+        "Exception stacktrace includes compiled frames as {Module, Function, Arity, []} (empty location info)",
+        "Stacktrace ordering is correct: innermost frame first, outermost last",
+        "Mixed stacks interleave compiled and interpreted frames in correct order",
+        "Test: A (compiled) -> B (interpreted) -> throw — stacktrace shows [B, A] with correct MFAs"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_exceptions.rs"]
+      },
+      "checklist": ["C204"],
+      "stories": ["S42"]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement stack traces with source line numbers for compiled code \u2014 opaque frames only",
-    "SHALL NOT implement raise/reraise optimization \u2014 basic unwinding only"
+    "SHALL NOT implement source line numbers for compiled frames — MFA only (line info requires debug info mapping not yet available)",
+    "SHALL NOT implement raise/reraise optimisation — basic unwinding only",
+    "SHALL NOT implement native unwinding (setjmp/longjmp or DWARF) — return-code convention only",
+    "SHALL NOT implement after clauses (receive exception handling) — that is the message send/receive JIT IR brief"
   ],
   "verification": [
     "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
     "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "ir_exceptions.rs is under 500 lines of production code",
+    "Exception propagation uses return-code convention only — no setjmp/longjmp or DWARF unwinding",
+    "Mixed-stack exception tests pass: compiled->interpreted->throw and interpreted->compiled->throw"
   ]
 }

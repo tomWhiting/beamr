@@ -1,65 +1,113 @@
 {
   "id": "B-132",
   "cluster": "beamr",
-  "title": "JIT IR translation \u2014 type tests and guards",
-  "depends_on": [
-    "B-131"
-  ],
+  "title": "JIT IR translation — type tests and guards",
+  "depends_on": ["B-131"],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "Guard tests (is_integer, is_atom, is_tuple, test_arity, is_tagged_tuple) are in the hot path of every pattern match. JIT-compiling these avoids the dispatch overhead of the interpreter loop for each guard.",
-  "task": "Translate type test and guard opcodes to Cranelift IR.",
+  "checklist": ["C196"],
+  "stories": ["S34"],
+  "purpose": "Guard tests (is_integer, is_atom, is_tuple, test_arity, is_tagged_tuple, select_val) are in the hot path of every pattern match. JIT-compiling these to native tag-bit checks avoids the interpreter dispatch overhead for each guard. Per D3 (tiered execution), guards that the JIT cannot handle (gc_bif, float guards) deoptimise to the interpreter.",
+  "task": "Implement IR translation for type test opcodes and guard BIFs in ir_guards.rs. Type tests compile to bitwise AND on tag bits + compare + conditional branch. Structural guards (test_arity, is_tagged_tuple) compile to heap reads of the boxed header. select_val compiles to a jump table for dense value ranges or a linear scan for sparse ranges. All guard translations use the shared helpers from B-131's ir_common.rs.",
   "requirements": [
     {
       "id": "R1",
-      "title": "Type test IR",
-      "spec": "Translate is_integer, is_atom, is_tuple, is_list, is_binary, is_float, is_pid to native tag checks.",
+      "title": "Immediate type test IR — tag-bit checks",
+      "spec": "THE SYSTEM SHALL translate is_integer, is_atom, is_pid, and is_nil opcodes into Cranelift IR that extracts the low TAG_BITS of the Term value, compares against the expected tag constant, and branches to the fail label on mismatch. THE SYSTEM SHALL use the tag constants from crate::term (SMALL_INT_TAG, ATOM_TAG, PID_TAG, NIL_TAG). THE SYSTEM SHALL NOT dereference any heap pointer for immediate type tests.",
       "acceptance": [
-        "Type tests compile to bitwise AND on the Term tag bits + compare",
-        "Branch to fail label on type mismatch",
-        "Test: compiled is_integer correctly distinguishes integers from atoms"
+        "translate_is_integer(builder, value, fail_label) emits: (value AND TAG_MASK) != SMALL_INT_TAG -> jump fail",
+        "translate_is_atom(builder, value, fail_label) emits: (value AND TAG_MASK) != ATOM_TAG -> jump fail",
+        "translate_is_pid(builder, value, fail_label) emits: (value AND TAG_MASK) != PID_TAG -> jump fail",
+        "translate_is_nil(builder, value, fail_label) emits: value != NIL_TERM -> jump fail",
+        "Test: is_integer on Term::small_int(5) falls through; on Term::atom(Atom::OK) branches to fail",
+        "Test: is_atom on Term::atom(Atom::OK) falls through; on Term::small_int(5) branches to fail"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "create": ["crates/beamr/src/jit/ir_guards.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C196"],
+      "stories": ["S34"]
     },
     {
       "id": "R2",
-      "title": "Guard BIF IR",
-      "spec": "Translate test_arity, is_tagged_tuple, and select_val to IR.",
+      "title": "Boxed type test IR — is_tuple, is_list, is_binary, is_float",
+      "spec": "THE SYSTEM SHALL translate is_tuple, is_list, is_binary, and is_float opcodes into Cranelift IR that first checks the primary tag (BOXED_TAG or LIST_TAG), then for boxed types reads the BoxedHeader tag from the heap to confirm the specific boxed type. IF the primary tag does not match, THE SYSTEM SHALL branch to the fail label. THE SYSTEM SHALL NOT follow more than one level of heap indirection per type test.",
       "acceptance": [
-        "test_arity compiles to tuple header read + arity compare",
-        "is_tagged_tuple compiles to tuple check + arity check + element 0 compare",
-        "select_val compiles to a jump table or binary search",
-        "Test: compiled pattern match on {ok, Value} works correctly"
+        "translate_is_tuple(builder, value, fail_label) emits: check BOXED_TAG, load header, check BoxedTag::Tuple, branch fail on mismatch",
+        "translate_is_list(builder, value, fail_label) emits: check LIST_TAG, branch fail on mismatch (cons cell is the list tag)",
+        "translate_is_binary(builder, value, fail_label) emits: check BOXED_TAG, load header, check BoxedTag::Binary or BoxedTag::SubBinary",
+        "translate_is_float(builder, value, fail_label) emits: check BOXED_TAG, load header, check BoxedTag::Float",
+        "Test: is_tuple on a 2-tuple falls through; on an atom branches to fail",
+        "Test: is_list on a cons cell falls through; on NIL falls through (NIL is empty list); on a tuple branches to fail"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "modify": ["crates/beamr/src/jit/ir_guards.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C196"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R3",
+      "title": "Structural guard IR — test_arity and is_tagged_tuple",
+      "spec": "THE SYSTEM SHALL translate test_arity into IR that confirms the value is a tuple (per R2), then reads the arity from the BoxedHeader and compares against the expected arity. THE SYSTEM SHALL translate is_tagged_tuple into IR that checks: (1) tuple, (2) correct arity, (3) first element equals the expected tag atom. IF any check fails, THE SYSTEM SHALL branch to the fail label.",
+      "acceptance": [
+        "translate_test_arity(builder, value, expected_arity, fail_label) emits tuple check + header arity extract + icmp",
+        "translate_is_tagged_tuple(builder, value, expected_arity, expected_tag, fail_label) emits tuple check + arity check + element[0] load + icmp",
+        "Arity is extracted from BoxedHeader using the same bit layout as crate::term::boxed::BoxedHeader",
+        "Test: test_arity on {ok, 42} with arity 2 falls through; with arity 3 branches to fail",
+        "Test: is_tagged_tuple on {ok, 42} with tag ok falls through; with tag error branches to fail"
       ],
-      "stories": []
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_guards.rs"]
+      },
+      "checklist": ["C196"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R4",
+      "title": "Select dispatch IR — select_val jump table",
+      "spec": "THE SYSTEM SHALL translate select_val into a jump table when the value set is dense (consecutive integers or a small number of atoms), or a linear scan with conditional branches when the set is sparse. WHEN no case matches, THE SYSTEM SHALL branch to the fail label. THE SYSTEM SHALL NOT use hash-based dispatch — jump tables and linear scans are sufficient for typical BEAM select_val sizes (2-10 cases).",
+      "acceptance": [
+        "translate_select_val(builder, value, cases, fail_label) emits either br_table (dense) or chain of icmp+brif (sparse)",
+        "Dense detection: if all values are consecutive small integers, use br_table",
+        "Sparse fallback: emit one icmp+brif per case value, final jump to fail",
+        "Test: select_val with cases [1->L1, 2->L2, 3->L3] uses br_table",
+        "Test: select_val with cases [ok->L1, error->L2] uses linear scan",
+        "Test: select_val with no match branches to fail label"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_guards.rs"]
+      },
+      "checklist": ["C196"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R5",
+      "title": "Guard deoptimisation — gc_bif and float guards",
+      "spec": "WHEN the JIT compiler encounters a gc_bif1, gc_bif2, gc_bif3, or float-specific guard opcode, THE SYSTEM SHALL emit a deoptimisation exit to the interpreter using emit_deopt_exit from ir_common.rs. THE SYSTEM SHALL NOT attempt to translate GC-triggering guards — those require safepoints (B-134). THE SYSTEM SHALL NOT attempt to translate float guards — float unboxing is deferred.",
+      "acceptance": [
+        "gc_bif1/gc_bif2/gc_bif3 opcodes emit deopt exit with the current instruction index",
+        "Float-specific opcodes (fconv, fadd, fsub, fmul, fdiv) emit deopt exit",
+        "Test: function with gc_bif guard compiles successfully but deoptimises when the guard is reached",
+        "The deopt exit preserves the instruction pointer so the interpreter resumes at the correct position"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_guards.rs"]
+      },
+      "checklist": ["C196"],
+      "stories": ["S34"]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement gc_bif guard translation \u2014 those need GC safepoints",
-    "SHALL NOT implement float guard translation \u2014 use interpreter fallback"
+    "SHALL NOT translate gc_bif guard opcodes to native code — deoptimise to interpreter (GC safepoints are B-134)",
+    "SHALL NOT translate float-specific opcodes — deoptimise to interpreter",
+    "SHALL NOT implement hash-based dispatch for select_val — jump tables and linear scan only",
+    "SHALL NOT follow more than one level of heap indirection per type test"
   ],
   "verification": [
     "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
     "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "ir_guards.rs is under 500 lines of production code",
+    "Tag constants used in IR match the values in crate::term (grep TAG_BITS, TAG_MASK)"
   ]
 }

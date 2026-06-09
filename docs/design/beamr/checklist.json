@@ -186,7 +186,7 @@
         },
         {
           "id": "C180",
-          "text": "Zlib literal decompression is capped upfront via take(limit) — never inflate-then-check",
+          "text": "Zlib literal decompression is capped upfront via take(limit) \u2014 never inflate-then-check",
           "done": false
         },
         {
@@ -286,7 +286,7 @@
         },
         {
           "id": "C177",
-          "text": "Atom term comparison uses name-based (Unicode code-point) ordering, not intern index ordering — ordering is stable across runs regardless of atom interning order",
+          "text": "Atom term comparison uses name-based (Unicode code-point) ordering, not intern index ordering \u2014 ordering is stable across runs regardless of atom interning order",
           "done": false
         }
       ]
@@ -976,12 +976,12 @@
       "items": [
         {
           "id": "C187",
-          "text": "Non-immediate literals are stored in a per-module constant pool (owned Vec of allocations) freed when the Module is purged — not leaked per materialisation",
+          "text": "Non-immediate literals are stored in a per-module constant pool (owned Vec of allocations) freed when the Module is purged \u2014 not leaked per materialisation",
           "done": false
         },
         {
           "id": "C188",
-          "text": "BIF and NIF boxed results are allocated on the calling process's heap via ProcessContext heap allocation — not via Box::leak",
+          "text": "BIF and NIF boxed results are allocated on the calling process's heap via ProcessContext heap allocation \u2014 not via Box::leak",
           "done": false
         },
         {
@@ -1035,83 +1035,113 @@
       "name": "JIT Compilation",
       "items": [
         {
-          "id": "C177",
-          "text": "Cranelift dependency is behind a cargo feature flag (beamr/jit); non-JIT builds compile without Cranelift crates",
-          "done": false
-        },
-        {
-          "id": "C178",
-          "text": "JitCompiler translates a BEAM function's instruction sequence into Cranelift IR and produces executable native code",
-          "done": false
-        },
-        {
-          "id": "C179",
-          "text": "Hot function profiler counts calls per (module, function, arity) and triggers compilation after a configurable threshold",
-          "done": false
-        },
-        {
-          "id": "C180",
-          "text": "Arithmetic, comparison, and data movement opcodes translate to Cranelift IR with overflow-to-deoptimisation paths",
-          "done": false
-        },
-        {
-          "id": "C181",
-          "text": "Control flow opcodes (call, return, label, branch) translate to Cranelift IR blocks with correct edge connectivity",
-          "done": false
-        },
-        {
-          "id": "C182",
-          "text": "Type test opcodes translate to tag-bit checks in Cranelift IR; guard BIFs translate to conditional branches",
-          "done": false
-        },
-        {
-          "id": "C183",
-          "text": "JitCache stores compiled functions keyed by (module, function, arity, generation) and evicts on hot code reload",
-          "done": false
-        },
-        {
-          "id": "C184",
-          "text": "GC safepoints are emitted at every heap allocation site in compiled code; each safepoint records live root locations",
-          "done": false
-        },
-        {
-          "id": "C185",
-          "text": "Runtime helpers (jit_alloc_tuple, jit_alloc_cons) are callable from compiled code and cooperate with per-process GC",
-          "done": false
-        },
-        {
-          "id": "C186",
-          "text": "The interpreter checks the JIT cache before dispatching each function call; cache hits jump to native code",
-          "done": false
-        },
-        {
-          "id": "C187",
-          "text": "Compiled code can call back into the interpreter for un-compiled callees via jit_call_interpreted",
-          "done": false
-        },
-        {
-          "id": "C188",
-          "text": "Compiled code decrements the reduction counter and yields to the scheduler at the same points as the interpreter",
-          "done": false
-        },
-        {
-          "id": "C189",
-          "text": "Tuple and list construction/access opcodes translate to Cranelift IR using the runtime allocation helpers",
-          "done": false
-        },
-        {
-          "id": "C190",
-          "text": "Exception handling opcodes (try/try_end/try_case) translate to Cranelift landing pads with mixed-stack unwinding",
-          "done": false
-        },
-        {
           "id": "C191",
-          "text": "Criterion benchmarks compare JIT-compiled vs interpreted execution for fibonacci, list processing, and pattern matching",
+          "text": "Cranelift dependency (cranelift-codegen, cranelift-frontend, cranelift-module, cranelift-jit) is declared as a required dependency; all builds include JIT compilation support",
           "done": false
         },
         {
           "id": "C192",
+          "text": "JitCompiler translates a BEAM function's instruction sequence into Cranelift IR and produces executable native code",
+          "done": false
+        },
+        {
+          "id": "C193",
+          "text": "Hot function profiler counts calls per (module, function, arity) and triggers compilation after a configurable threshold",
+          "done": false
+        },
+        {
+          "id": "C194",
+          "text": "Arithmetic, comparison, and data movement opcodes translate to Cranelift IR with overflow-to-deoptimisation paths",
+          "done": false
+        },
+        {
+          "id": "C195",
+          "text": "Control flow opcodes (call, return, label, branch) translate to Cranelift IR blocks with correct edge connectivity",
+          "done": false
+        },
+        {
+          "id": "C196",
+          "text": "Type test opcodes translate to tag-bit checks in Cranelift IR; guard BIFs translate to conditional branches",
+          "done": false
+        },
+        {
+          "id": "C197",
+          "text": "JitCache stores compiled functions keyed by (module, function, arity, generation) and evicts on hot code reload",
+          "done": false
+        },
+        {
+          "id": "C198",
+          "text": "GC safepoints are emitted at every heap allocation site in compiled code; each safepoint records live root locations",
+          "done": false
+        },
+        {
+          "id": "C199",
+          "text": "Runtime helpers (jit_alloc_tuple, jit_alloc_cons) are callable from compiled code and cooperate with per-process GC",
+          "done": false
+        },
+        {
+          "id": "C200",
+          "text": "The interpreter checks the JIT cache before dispatching each function call; cache hits jump to native code",
+          "done": false
+        },
+        {
+          "id": "C201",
+          "text": "Compiled code can call back into the interpreter for un-compiled callees via jit_call_interpreted",
+          "done": false
+        },
+        {
+          "id": "C202",
+          "text": "Compiled code decrements the reduction counter and yields to the scheduler at the same points as the interpreter",
+          "done": false
+        },
+        {
+          "id": "C203",
+          "text": "Tuple and list construction/access opcodes translate to Cranelift IR using the runtime allocation helpers",
+          "done": false
+        },
+        {
+          "id": "C204",
+          "text": "Exception handling opcodes (try/try_end/try_case) translate to Cranelift landing pads with mixed-stack unwinding",
+          "done": false
+        },
+        {
+          "id": "C205",
+          "text": "Criterion benchmarks compare JIT-compiled vs interpreted execution for fibonacci, list processing, and pattern matching",
+          "done": false
+        },
+        {
+          "id": "C206",
           "text": "Compilation threshold is configurable via SchedulerConfig and can be adjusted at runtime",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "JIT IR Extensions",
+      "items": [
+        {
+          "id": "C217",
+          "text": "Binary matching and construction opcodes translate to Cranelift IR with runtime helper calls for heap-allocated binary segments",
+          "done": false
+        },
+        {
+          "id": "C218",
+          "text": "Closure opcodes (make_fun2, apply) translate to Cranelift IR with free variable capture and closure dispatch",
+          "done": false
+        },
+        {
+          "id": "C219",
+          "text": "Float arithmetic opcodes translate to Cranelift IR with f64 unboxing and boxing via safepoint-protected allocation",
+          "done": false
+        },
+        {
+          "id": "C220",
+          "text": "Message send and selective receive opcodes translate to Cranelift IR with process mailbox interaction via runtime helpers",
+          "done": false
+        },
+        {
+          "id": "C221",
+          "text": "Map construction, update, and pattern matching opcodes translate to Cranelift IR via runtime helper calls",
           "done": false
         }
       ]
@@ -1120,22 +1150,22 @@
       "name": "AOT Compilation",
       "items": [
         {
-          "id": "C193",
+          "id": "C207",
           "text": "AOT compiler reads .beam files at build time and produces native code using the same Cranelift pipeline as JIT",
           "done": false
         },
         {
-          "id": "C194",
+          "id": "C208",
           "text": "Gleam type sidecar (.gleam_types) is consumed by the AOT pipeline to eliminate tag checks for statically-typed operations",
           "done": false
         },
         {
-          "id": "C195",
+          "id": "C209",
           "text": "AOT-compiled functions are loaded into the JIT cache at startup with generation 0, skipping interpretation and profiling",
           "done": false
         },
         {
-          "id": "C196",
+          "id": "C210",
           "text": "AOT compilation without type sidecar produces the same code as JIT (tag checks preserved)",
           "done": false
         }
@@ -1145,17 +1175,17 @@
       "name": "Single-Binary Packaging",
       "items": [
         {
-          "id": "C197",
+          "id": "C211",
           "text": "The loader checks an embedded .beam archive before the filesystem when resolving module loads",
           "done": false
         },
         {
-          "id": "C198",
+          "id": "C212",
           "text": "A build-time tool embeds .beam files (and optionally AOT native code) into the beamr binary as a static asset",
           "done": false
         },
         {
-          "id": "C199",
+          "id": "C213",
           "text": "Embedded modules are discoverable via the same module_info/code_info paths as filesystem-loaded modules",
           "done": false
         }
@@ -1165,17 +1195,17 @@
       "name": "Differential Testing",
       "items": [
         {
-          "id": "C200",
+          "id": "C214",
           "text": "A test runner executes each test function through both interpreter and JIT/AOT paths and compares the results",
           "done": false
         },
         {
-          "id": "C201",
+          "id": "C215",
           "text": "Any divergence between interpreted and compiled execution is reported as a test failure with the diverging inputs and outputs",
           "done": false
         },
         {
-          "id": "C202",
+          "id": "C216",
           "text": "Property-based tests generate random BEAM programs and verify interpreter/compiler equivalence",
           "done": false
         }

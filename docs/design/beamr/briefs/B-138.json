@@ -2,68 +2,130 @@
   "id": "B-138",
   "cluster": "beamr",
   "title": "JIT performance benchmarks and adaptive compilation tuning",
-  "depends_on": [
-    "B-135",
-    "B-136",
-    "B-137"
-  ],
+  "depends_on": ["B-135", "B-136", "B-137"],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "Validate that JIT compilation provides measurable speedup over interpretation and tune the compilation threshold. This brief adds benchmarks comparing interpreted vs compiled execution for representative workloads.",
-  "task": "Create benchmarks, measure speedup, and tune the compilation threshold based on results.",
+  "checklist": ["C205", "C206"],
+  "stories": ["S34", "S35", "S37"],
+  "purpose": "Validate that JIT compilation provides measurable speedup over interpretation and tune the compilation threshold. Criterion benchmarks compare JIT-compiled vs interpreted execution for representative Gleam workload patterns: recursive compute (fibonacci), collection processing (map/filter/fold), and pattern matching (multi-clause case expressions). The results inform the default compilation threshold and provide a regression tracking baseline. Per the design goal: hot BEAM functions compile to native code with no observable behaviour change versus interpretation.",
+  "task": "Create Criterion benchmarks in crates/beamr/benches/jit_comparison.rs that measure interpreted vs compiled execution for three representative workloads. Implement adaptive threshold tuning in the JitProfiler that adjusts the compilation threshold based on observed compilation latency and speedup. The default threshold (1000 calls per B-130 R5) may be adjusted based on benchmark data.",
   "requirements": [
     {
       "id": "R1",
-      "title": "Benchmark suite",
-      "spec": "Create benchmarks comparing interpreted and JIT-compiled execution for representative functions.",
+      "title": "Criterion benchmark — fibonacci recursive compute",
+      "spec": "THE SYSTEM SHALL provide a Criterion benchmark that computes fibonacci(30) in both interpreted and JIT-compiled mode and measures the execution time. THE SYSTEM SHALL run the JIT-compiled version by pre-compiling the fibonacci function (bypassing the profiler threshold) before benchmarking. THE SYSTEM SHALL report the speedup factor (interpreted_time / compiled_time) in the console output via a Criterion custom measurement or post-benchmark summary.",
       "acceptance": [
-        "Benchmark: fibonacci(30) \u2014 interpreted vs compiled",
-        "Benchmark: list processing (map, filter, fold over 10K elements)",
-        "Benchmark: pattern matching intensive (case with 20 clauses)",
-        "Benchmarks run with criterion crate for statistical rigor",
-        "Results document speedup factor for each workload"
+        "bench_fibonacci_interpreted: runs fibonacci(30) via the interpreter",
+        "bench_fibonacci_compiled: pre-compiles fibonacci, then runs via native code",
+        "Both benchmarks produce the same result (correctness check before timing)",
+        "Criterion statistical output shows mean, median, and standard deviation",
+        "Test: both benchmarks produce fibonacci(30) = 832040"
       ],
       "files": {
-        "create": [
-          "crates/beamr/benches/jit_comparison.rs"
-        ]
+        "create": ["crates/beamr/benches/jit_comparison.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C205"],
+      "stories": ["S37"]
     },
     {
       "id": "R2",
-      "title": "Adaptive compilation threshold",
-      "spec": "Tune the compilation threshold based on benchmark results.",
+      "title": "Criterion benchmark — list processing (map/filter/fold)",
+      "spec": "THE SYSTEM SHALL provide a Criterion benchmark that applies map, filter, and fold over a 10,000-element list in both interpreted and JIT-compiled mode. THE SYSTEM SHALL construct the BEAM bytecode for a function that maps (x -> x * 2), filters (x > 5000), and folds (sum) the list.",
       "acceptance": [
-        "Default threshold adjusted based on benchmark data",
-        "Threshold is configurable at runtime via VM config",
-        "Functions below threshold execute faster interpreted (compilation overhead > benefit)",
-        "Test: verify threshold prevents compilation of rarely-called functions"
+        "bench_list_processing_interpreted: map/filter/fold over 10K list via interpreter",
+        "bench_list_processing_compiled: same operation via pre-compiled native code",
+        "Both benchmarks produce the same result",
+        "Benchmark constructs the test list and BEAM bytecode in the setup phase (not timed)",
+        "Test: both benchmarks produce the same final sum"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/profiler.rs"
-        ]
+        "modify": ["crates/beamr/benches/jit_comparison.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C205"],
+      "stories": ["S37"]
+    },
+    {
+      "id": "R3",
+      "title": "Criterion benchmark — pattern matching intensive",
+      "spec": "THE SYSTEM SHALL provide a Criterion benchmark that executes a function with a 20-clause case expression, dispatching to each clause in round-robin across 10,000 iterations. This benchmarks select_val jump tables vs interpreter switch dispatch.",
+      "acceptance": [
+        "bench_pattern_match_interpreted: 20-clause case * 10K iterations via interpreter",
+        "bench_pattern_match_compiled: same via pre-compiled native code (select_val becomes jump table)",
+        "Both benchmarks produce the same result",
+        "The 20 clauses cover: 10 integer matches, 5 atom matches, 5 tuple tag matches",
+        "Test: both benchmarks produce the same dispatch count per clause"
       ],
-      "stories": []
+      "files": {
+        "modify": ["crates/beamr/benches/jit_comparison.rs"]
+      },
+      "checklist": ["C205"],
+      "stories": ["S37"]
+    },
+    {
+      "id": "R4",
+      "title": "Compilation latency benchmark",
+      "spec": "THE SYSTEM SHALL provide a Criterion benchmark that measures the time to JIT-compile each of the three workload functions (fibonacci, list processing, pattern match). This establishes the compilation cost that the threshold amortises. THE SYSTEM SHALL report the compilation time as a standalone metric, not included in the execution benchmarks.",
+      "acceptance": [
+        "bench_compile_fibonacci: measures JitCompiler::compile time for the fibonacci function",
+        "bench_compile_list_processing: measures compile time for the list processing function",
+        "bench_compile_pattern_match: measures compile time for the 20-clause function",
+        "Compilation benchmarks are in a separate Criterion group from execution benchmarks",
+        "Test: each compilation benchmark completes without error"
+      ],
+      "files": {
+        "modify": ["crates/beamr/benches/jit_comparison.rs"]
+      },
+      "checklist": ["C205"],
+      "stories": ["S37"]
+    },
+    {
+      "id": "R5",
+      "title": "Adaptive threshold tuning",
+      "spec": "THE SYSTEM SHALL provide JitProfiler::tune_threshold(compilation_time_us: u64, speedup_factor: f64) that adjusts the compilation threshold based on observed compilation cost and speedup. WHEN compilation is fast and speedup is high, THE SYSTEM SHALL lower the threshold (compile sooner). WHEN compilation is slow and speedup is low, THE SYSTEM SHALL raise the threshold (compile less eagerly). THE SYSTEM SHALL clamp the threshold between a minimum of 100 and a maximum of 10,000 calls.",
+      "acceptance": [
+        "JitProfiler::tune_threshold(compilation_time_us, speedup_factor) adjusts the internal threshold",
+        "Threshold decreases when speedup_factor > 2.0 and compilation_time_us < 10_000",
+        "Threshold increases when speedup_factor < 1.5 or compilation_time_us > 100_000",
+        "Threshold is clamped to [100, 10_000]",
+        "JitProfiler::current_threshold() returns the current threshold value",
+        "Test: tune_threshold with fast compile + high speedup -> threshold decreases",
+        "Test: tune_threshold with slow compile + low speedup -> threshold increases",
+        "Test: threshold never goes below 100 or above 10_000"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/profiler.rs"]
+      },
+      "checklist": ["C206"],
+      "stories": ["S35"]
+    },
+    {
+      "id": "R6",
+      "title": "Default threshold validation",
+      "spec": "THE SYSTEM SHALL set the default compilation threshold to 1000 (per B-130 R5). THE SYSTEM SHALL document in a comment on the default constant that the value was chosen to amortise Cranelift compilation cost for functions called in tight loops, and that tune_threshold may adjust it at runtime. IF benchmark results show that a different default is more appropriate, THE SYSTEM SHALL update the default and note the rationale.",
+      "acceptance": [
+        "DEFAULT_JIT_THRESHOLD constant is 1000",
+        "SchedulerConfig::default() uses DEFAULT_JIT_THRESHOLD when jit_threshold is None",
+        "The constant is referenced by both SchedulerConfig and JitProfiler",
+        "Test: SchedulerConfig::default() creates a profiler with threshold 1000"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/profiler.rs"]
+      },
+      "checklist": ["C206"],
+      "stories": ["S35"]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement profile-guided optimization (PGO) \u2014 simple call counting only",
-    "SHALL NOT implement tiered compilation (multiple optimization levels) \u2014 single tier"
+    "SHALL NOT implement profile-guided optimisation (PGO) — simple call counting with adaptive threshold only",
+    "SHALL NOT implement tiered compilation (multiple optimisation levels) — single Cranelift tier",
+    "SHALL NOT implement continuous re-tuning in production — tune_threshold is called after benchmark analysis, not on every compilation",
+    "SHALL NOT include compilation time in execution benchmarks — compilation is pre-warmed"
   ],
   "verification": [
     "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
     "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "cargo bench -p beamr runs all JIT comparison benchmarks to completion",
+    "jit_comparison.rs is under 500 lines",
+    "Each benchmark pair (interpreted vs compiled) produces identical results"
   ]
 }

@@ -176,7 +176,7 @@
         { "id": "S40", "text": "As a compiler developer, I want GC to work correctly during compiled code execution so that safepoints and stack maps keep root tracking accurate." },
         { "id": "S41", "text": "As a compiler developer, I want hot code loading to invalidate compiled code so that reloaded modules always execute fresh code." },
         { "id": "S42", "text": "As a compiler developer, I want compiled and interpreted functions to coexist in the same call stack so that partial compilation doesn't break the execution model." },
-        { "id": "S43", "text": "As a compiler developer, I want the Cranelift dependency to be feature-gated so that interpreter-only builds don't pay the dependency cost." }
+        { "id": "S43", "text": "As a compiler developer, I want Cranelift always included in every build so that the JIT compiler is available without feature-flag configuration overhead." }
       ]
     }
   ]

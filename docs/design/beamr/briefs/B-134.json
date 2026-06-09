@@ -1,67 +1,138 @@
 {
   "id": "B-134",
   "cluster": "beamr",
-  "title": "JIT GC safepoints and heap allocation",
-  "depends_on": [
-    "B-131"
-  ],
+  "title": "JIT GC safepoints and heap allocation helpers",
+  "depends_on": ["B-130", "B-131"],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "JIT-compiled code that allocates on the heap (put_tuple, put_list, put_map) must coordinate with the garbage collector. GC safepoints are locations in compiled code where GC can safely interrupt execution, and the stack/register map is known.",
-  "task": "Implement GC safepoint emission in compiled code and heap allocation primitives callable from JIT code.",
+  "checklist": ["C198", "C199"],
+  "stories": ["S34", "S40"],
+  "purpose": "JIT-compiled code that allocates on the heap must cooperate with the per-process garbage collector. GC safepoints are locations in compiled code where the collector can safely pause execution, enumerate all live GC roots, and potentially relocate heap objects. Without safepoints, GC cannot collect during compiled execution — the process heap grows unbounded. Per D4 in the JIT/AOT design doc: safepoints at every allocation site, function call site, and yield point, with stack maps recording which registers and stack slots hold live Term values.",
+  "task": "Implement GC safepoint emission in crates/beamr/src/jit/safepoint.rs and runtime allocation helpers in crates/beamr/src/jit/runtime.rs. Safepoint metadata is collected during IR construction and emitted as StackMapEntry values (from B-130 types.rs). Runtime helpers are extern 'C' functions callable from compiled code that allocate on the process heap and trigger GC when necessary. This brief does NOT wire safepoints into the interpreter dispatch loop (B-135) or into specific opcode translations (B-136 uses the helpers).",
   "requirements": [
     {
       "id": "R1",
-      "title": "GC safepoint emission",
-      "spec": "Emit safepoint metadata at allocation sites in compiled code.",
+      "title": "SafepointEmitter for Cranelift IR construction",
+      "spec": "THE SYSTEM SHALL provide a SafepointEmitter that tracks live root locations during IR construction. WHEN a safepoint is needed (allocation site, call site, yield point), THE SYSTEM SHALL call SafepointEmitter::emit_safepoint(builder, instruction_offset) which records the current set of live roots as a StackMapEntry. THE SYSTEM SHALL track roots in two categories: Register(u16) for values in Cranelift SSA variables, and StackSlot(i32) for values spilled to the stack frame.",
       "acceptance": [
-        "Each heap allocation site in compiled code has a safepoint descriptor",
-        "Safepoint records which registers hold live Term values (the root set)",
-        "GC can interrupt at safepoints and relocate heap objects",
-        "Test: compiled function with allocation survives GC"
+        "SafepointEmitter::new() creates an emitter with no tracked roots",
+        "SafepointEmitter::track_root(location: RootLocation) adds a live root",
+        "SafepointEmitter::untrack_root(location: RootLocation) removes a live root",
+        "SafepointEmitter::emit_safepoint(offset: u32) -> StackMapEntry snapshots the current live roots",
+        "StackMapEntry::live_roots contains exactly the roots tracked at emission time",
+        "Test: track 3 roots, untrack 1, emit safepoint -> entry has 2 live roots",
+        "Test: emit two safepoints with different live root sets -> each entry captures its own snapshot"
       ],
       "files": {
-        "create": [
-          "crates/beamr/src/jit/safepoint.rs"
-        ]
+        "create": ["crates/beamr/src/jit/safepoint.rs"],
+        "modify": ["crates/beamr/src/jit/mod.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C198"],
+      "stories": ["S40"]
     },
     {
       "id": "R2",
-      "title": "Heap allocation from compiled code",
-      "spec": "Compiled code calls into runtime helpers for heap allocation.",
+      "title": "Safepoint emission at allocation sites",
+      "spec": "WHEN the IR translator encounters a heap-allocating operation (put_tuple2, put_list, allocate, test_heap), THE SYSTEM SHALL emit a GC safepoint immediately before the allocation call. THE SYSTEM SHALL ensure the stack map at that point includes all Term values that are live across the allocation — any Term that will be used after the allocation must be in the root set. THE SYSTEM SHALL NOT emit redundant safepoints for consecutive allocations within the same basic block if the root set has not changed.",
       "acceptance": [
-        "Runtime helper: jit_alloc_tuple(process, arity) -> *mut u64",
-        "Runtime helper: jit_alloc_cons(process) -> *mut u64",
-        "Helpers trigger GC if heap is full, then retry allocation",
-        "Compiled code calls these via Cranelift's call instruction",
-        "Test: compiled put_tuple allocates correctly on the heap"
+        "emit_allocation_safepoint(builder, emitter, offset) emits a safepoint entry with all live Term roots",
+        "The safepoint is emitted BEFORE the allocation call (so GC can run before allocating)",
+        "Consecutive allocations with identical root sets share a single safepoint entry",
+        "Consecutive allocations with different root sets emit separate safepoint entries",
+        "Test: IR with two consecutive put_list (same live set) -> 1 safepoint entry",
+        "Test: IR with put_list, move, put_tuple (different live set) -> 2 safepoint entries"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "modify": ["crates/beamr/src/jit/safepoint.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C198"],
+      "stories": ["S40"]
+    },
+    {
+      "id": "R3",
+      "title": "Safepoint emission at call and yield sites",
+      "spec": "WHEN the IR translator encounters a function call instruction (call, call_ext, call_only, call_last) or a yield point (reduction counter check), THE SYSTEM SHALL emit a GC safepoint. The callee may trigger GC (allocations in the callee, or the callee yields triggering GC). THE SYSTEM SHALL include in the root set all caller-saved Term values that are live after the call returns.",
+      "acceptance": [
+        "emit_call_safepoint(builder, emitter, offset) emits a safepoint with caller-live Term roots",
+        "emit_yield_safepoint(builder, emitter, offset) emits a safepoint at yield points",
+        "The safepoint root set does NOT include values that are dead after the call (not used post-call)",
+        "Test: call with 2 live-after values and 1 dead-after value -> safepoint has 2 roots"
       ],
-      "stories": []
+      "files": {
+        "modify": ["crates/beamr/src/jit/safepoint.rs"]
+      },
+      "checklist": ["C198"],
+      "stories": ["S40"]
+    },
+    {
+      "id": "R4",
+      "title": "Runtime helper — jit_alloc_tuple",
+      "spec": "THE SYSTEM SHALL provide an extern 'C' fn jit_alloc_tuple(process: *mut Process, arity: u32) -> u64 runtime helper that allocates a tuple of the given arity on the process heap and returns the tagged Term value. IF the process heap does not have enough space, THE SYSTEM SHALL trigger per-process GC (using the safepoint root set from the caller's stack map), then retry the allocation. THE SYSTEM SHALL NOT call jit_alloc_tuple with arity 0 — zero-arity tuples are not valid in BEAM.",
+      "acceptance": [
+        "jit_alloc_tuple(process, arity) allocates arity+1 words (header + elements) on the process heap",
+        "The returned u64 is a tagged Term::boxed pointer to the tuple header",
+        "The tuple header contains the correct arity in the BoxedHeader format",
+        "If heap space is insufficient: GC runs, heap grows, allocation succeeds",
+        "Test: allocate tuple of arity 3 -> returned Term is a valid boxed tuple with arity 3",
+        "Test: allocate when heap is nearly full -> GC triggers, allocation succeeds"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/runtime.rs"],
+        "modify": ["crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C199"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R5",
+      "title": "Runtime helper — jit_alloc_cons",
+      "spec": "THE SYSTEM SHALL provide an extern 'C' fn jit_alloc_cons(process: *mut Process, head: u64, tail: u64) -> u64 runtime helper that allocates a cons cell on the process heap with the given head and tail, and returns the tagged list Term. IF the process heap does not have enough space, THE SYSTEM SHALL trigger per-process GC, then retry the allocation.",
+      "acceptance": [
+        "jit_alloc_cons(process, head, tail) allocates 2 words (head + tail) on the process heap",
+        "The returned u64 is a tagged Term::list pointer to the cons cell",
+        "The cons cell head and tail match the input values",
+        "If heap space is insufficient: GC runs, heap grows, allocation succeeds",
+        "Test: allocate cons cell [1 | []] -> returned Term is a valid list",
+        "Test: allocate chain of 3 cons cells -> valid 3-element list"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/runtime.rs"]
+      },
+      "checklist": ["C199"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R6",
+      "title": "Runtime helper function pointers for Cranelift call instructions",
+      "spec": "THE SYSTEM SHALL expose jit_alloc_tuple and jit_alloc_cons as function pointers that Cranelift can reference in emitted call instructions. THE SYSTEM SHALL provide a RuntimeHelpers struct that holds the function pointer addresses, resolvable by JitCompiler during IR construction. THE SYSTEM SHALL use Cranelift's import_function mechanism to reference the helpers by their known addresses.",
+      "acceptance": [
+        "RuntimeHelpers::new() returns a struct with jit_alloc_tuple_ptr and jit_alloc_cons_ptr fields",
+        "Each pointer is the address of the corresponding extern 'C' function",
+        "JitCompiler can declare these as imported functions in the Cranelift module",
+        "Cranelift emits direct call instructions to these addresses",
+        "Test: RuntimeHelpers::new().jit_alloc_tuple_ptr is non-null",
+        "Test: RuntimeHelpers function pointers are stable across multiple RuntimeHelpers::new() calls"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/runtime.rs"]
+      },
+      "checklist": ["C199"],
+      "stories": ["S34"]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement on-stack replacement (OSR) \u2014 compiled code runs from function entry",
-    "SHALL NOT implement escape analysis \u2014 all boxed terms go to the heap"
+    "SHALL NOT implement on-stack replacement (OSR) — compiled code runs from function entry only",
+    "SHALL NOT implement escape analysis — all boxed terms go to the process heap",
+    "SHALL NOT implement stack walking for safepoints at this stage — safepoints record root locations, actual GC root enumeration during collection is the GC's responsibility",
+    "SHALL NOT implement tuple/list element writes in this brief — that is B-136's ir_terms.rs using these allocation helpers",
+    "SHALL NOT implement moving GC cooperation — the existing per-process GC handles relocation; this brief ensures roots are visible"
   ],
   "verification": [
     "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
     "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "safepoint.rs is under 500 lines of production code",
+    "runtime.rs is under 500 lines of production code",
+    "All runtime helpers are extern 'C' (FFI-safe for Cranelift calls)",
+    "No unsafe code in safepoint.rs — all unsafe is confined to runtime.rs where raw process pointers are dereferenced"
   ]
 }

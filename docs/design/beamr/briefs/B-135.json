@@ -1,87 +1,137 @@
 {
   "id": "B-135",
   "cluster": "beamr",
-  "title": "JIT dispatch integration \u2014 interpreter to native transitions",
-  "depends_on": [
-    "B-133",
-    "B-134"
-  ],
+  "title": "JIT dispatch integration — interpreter to native transitions",
+  "depends_on": ["B-130", "B-133", "B-134"],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "The interpreter must detect when a function has compiled native code and dispatch to it instead of interpreting bytecode. Conversely, compiled code must be able to call back into the interpreter for functions that haven't been compiled yet.",
-  "task": "Implement the interpreter-to-native and native-to-interpreter transition mechanisms.",
+  "checklist": ["C200", "C201", "C202"],
+  "stories": ["S34", "S42"],
+  "purpose": "The interpreter must detect when a function has compiled native code and dispatch to it. Compiled code must call back into the interpreter for un-compiled callees. Compiled code must also decrement the reduction counter and yield to the scheduler at the same points as the interpreter. Per D5 (mixed-mode execution): compiled and interpreted functions coexist in the same process, and the system must handle mixed call stacks gracefully. Per the design constraint: reduction counting MUST work identically in compiled code.",
+  "task": "Implement mixed-mode dispatch in crates/beamr/src/jit/dispatch.rs and the jit_call_interpreted runtime helper in crates/beamr/src/jit/runtime.rs. The interpreter's call dispatch path checks the JitCache for a native code entry before falling back to bytecode interpretation. Compiled code calls jit_call_interpreted for un-compiled callees. Compiled code also decrements the reduction counter at function entry and backward branches, yielding when exhausted. This brief wires together B-130 (compiler), B-133 (cache), and B-134 (safepoints/runtime) into the interpreter dispatch loop.",
   "requirements": [
     {
       "id": "R1",
-      "title": "Interpreter dispatch to native code",
-      "spec": "When the interpreter encounters a call to a JIT-compiled function, dispatch to the native code instead of interpreting.",
+      "title": "Interpreter call dispatch with JIT cache check",
+      "spec": "WHEN the interpreter dispatches a function call (call, call_ext, call_only, call_last), THE SYSTEM SHALL first check the JitCache for a compiled entry matching (module, function, arity, current_generation). WHEN a cache hit occurs, THE SYSTEM SHALL transfer control to the native code function pointer instead of interpreting the bytecode. WHEN a cache miss occurs, THE SYSTEM SHALL fall through to normal bytecode interpretation. THE SYSTEM SHALL NOT add measurable overhead to the cache-miss path beyond a single DashMap lookup.",
       "acceptance": [
-        "Call dispatch checks JitCache before interpreting",
-        "If native code exists, call the function pointer directly",
-        "Process state (registers, stack) is consistent between interpreter and native code",
-        "Test: interpret function A which calls JIT-compiled function B \u2014 correct result"
+        "dispatch_call(process, module, function, arity) checks JitCache::lookup before interpreting",
+        "Cache hit: calls the NativeCode function pointer via extern 'C' convention",
+        "Cache miss: falls through to bytecode interpretation (existing behaviour unchanged)",
+        "The current module generation is obtained from the module registry (not hardcoded)",
+        "Test: interpret function A which calls cached function B — B executes via native code, returns correct result",
+        "Test: interpret function A which calls uncached function B — B executes via interpreter"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/interpreter/opcodes/core.rs"
-        ]
+        "create": ["crates/beamr/src/jit/dispatch.rs"],
+        "modify": ["crates/beamr/src/jit/mod.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C200"],
+      "stories": ["S42"]
     },
     {
       "id": "R2",
-      "title": "Native to interpreter fallback",
-      "spec": "Compiled code calls back to the interpreter for functions not yet compiled.",
+      "title": "Native to interpreter fallback via jit_call_interpreted",
+      "spec": "THE SYSTEM SHALL provide an extern 'C' fn jit_call_interpreted(process: *mut Process, module: u64, function: u64, arity: u8, args: *const u64) -> u64 runtime helper that compiled code calls when invoking an un-compiled function. The helper transfers control to the interpreter, executes the function, and returns the result as a raw Term u64. THE SYSTEM SHALL correctly handle the case where the interpreted callee itself calls compiled code (re-entrant dispatch).",
       "acceptance": [
-        "Runtime helper: jit_call_interpreted(process, module, function, arity, args)",
-        "Compiled code uses this for cross-module calls to non-compiled functions",
-        "Return value is passed back to compiled code correctly",
-        "Test: JIT-compiled function calls interpreted function \u2014 correct result"
+        "jit_call_interpreted(process, module, function, arity, args) invokes the interpreter for the given MFA",
+        "The interpreter executes the function to completion and returns the result term",
+        "Arguments are passed via the args pointer (array of u64 term values)",
+        "Re-entrant case: interpreted callee calls compiled code via cache hit — works correctly",
+        "Test: compiled function calls jit_call_interpreted for an uncached function — correct result returned",
+        "Test: compiled A calls interpreted B which calls compiled C (re-entrant) — correct result"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "modify": ["crates/beamr/src/jit/runtime.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C201"],
+      "stories": ["S42"]
     },
     {
       "id": "R3",
-      "title": "Reduction counting in compiled code",
-      "spec": "Compiled code must decrement the reduction counter and yield when exhausted.",
+      "title": "Process state marshalling between interpreter and native code",
+      "spec": "WHEN transitioning from interpreter to native code (cache hit dispatch), THE SYSTEM SHALL marshal the process state: X-registers (arguments), the current reduction counter, and the process heap pointer. WHEN returning from native code to the interpreter, THE SYSTEM SHALL unmarshal the result into the appropriate X-register and update the reduction counter. THE SYSTEM SHALL NOT copy the process heap — both modes share the same heap via the Process pointer.",
       "acceptance": [
-        "Each function entry in compiled code decrements the reduction counter",
-        "When counter reaches 0, compiled code returns to the scheduler via a yield point",
-        "Process state is saved correctly at yield",
-        "Test: compiled tight loop yields after reduction budget exhausted"
+        "marshal_to_native(process) -> NativeCallFrame packages X-registers and reduction counter",
+        "unmarshal_from_native(process, result: u64, reductions_used: u32) updates process state",
+        "Arguments are passed in X-registers (x0..x(arity-1)) matching BEAM calling convention",
+        "Return value is placed in x0 matching BEAM return convention",
+        "Reduction counter reflects reductions consumed during native execution",
+        "Test: function with 3 args — all 3 visible in native code via marshalled registers"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "modify": ["crates/beamr/src/jit/dispatch.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C200"],
+      "stories": ["S42"]
+    },
+    {
+      "id": "R4",
+      "title": "Reduction counting in compiled code",
+      "spec": "THE SYSTEM SHALL emit reduction counter decrements at function entry and at backward branch targets in compiled code. WHEN the reduction counter reaches zero, THE SYSTEM SHALL yield execution by returning to the scheduler with a Yield status. THE SYSTEM SHALL save the instruction pointer (for resume) and all live registers at the yield point. THE SYSTEM SHALL decrement the counter by the same amount as the interpreter would for equivalent bytecode.",
+      "acceptance": [
+        "emit_reduction_check(builder, emitter) emits: decrement counter, branch-if-zero to yield exit",
+        "Function entry always has a reduction check",
+        "Backward branches (loops) have a reduction check at the branch target",
+        "Forward branches do NOT have a reduction check (non-looping)",
+        "Yield exit saves the resume point and returns YieldStatus to the scheduler",
+        "Test: compiled tight loop yields after reduction budget exhausted",
+        "Test: compiled function consuming N reductions reports same count as interpreted equivalent"
       ],
-      "stories": []
+      "files": {
+        "modify": ["crates/beamr/src/jit/dispatch.rs"]
+      },
+      "checklist": ["C202"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R5",
+      "title": "Deoptimisation exit from compiled to interpreted code",
+      "spec": "WHEN compiled code encounters an uncommon path that requires interpreter fallback (unsupported opcode reached at runtime, guard failure in optimised path), THE SYSTEM SHALL emit a deoptimisation exit that saves all process state and transfers control to the interpreter at the equivalent bytecode position. THE SYSTEM SHALL preserve heap, stack, registers, and reduction counter identically to interpreter state at that bytecode position. Per design constraint: any state inconsistency after deopt is a correctness bug.",
+      "acceptance": [
+        "handle_deopt_exit(builder, instruction_index) emits code that: saves registers to X-slots, writes current IP, returns DeoptStatus (distinct from B-131 ir_common.rs emit_deopt_exit which jumps TO this handler)",
+        "The interpreter resumes at instruction_index in the bytecode",
+        "All X-register values match what the interpreter would have at that point",
+        "Reduction counter reflects reductions consumed up to the deopt point",
+        "Test: compiled function with deopt at instruction 5 — interpreter resumes and completes correctly",
+        "Test: deopt preserves heap state (values allocated before deopt are valid after)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/dispatch.rs"]
+      },
+      "checklist": ["C200"],
+      "stories": ["S42"]
+    },
+    {
+      "id": "R6",
+      "title": "JitCache integration with profiler record_call",
+      "spec": "WHEN the interpreter dispatches a function call and the JitCache does not contain a compiled entry, THE SYSTEM SHALL call JitProfiler::record_call for that function. WHEN record_call returns CompileNow, THE SYSTEM SHALL submit a compilation job to the dirty CPU pool (per B-130 R6). THE SYSTEM SHALL NOT call record_call for functions that already have a cache entry (cache hit path skips profiling).",
+      "acceptance": [
+        "Cache miss path: record_call(module, function, arity) is invoked",
+        "Cache hit path: record_call is NOT invoked (no wasted atomic increment)",
+        "CompileNow result from record_call triggers submit_jit_compilation",
+        "Continue result from record_call proceeds to normal interpretation",
+        "Test: call uncached function threshold times — CompileNow triggers, compilation job submitted",
+        "Test: call cached function — no record_call invocation"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/dispatch.rs"]
+      },
+      "checklist": ["C200"],
+      "stories": ["S34"]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement inline caching for call targets \u2014 simple cache lookup only",
-    "SHALL NOT optimize cross-module calls \u2014 each is a full dispatch"
+    "SHALL NOT implement inline caching for call targets — simple JitCache lookup on every dispatch",
+    "SHALL NOT optimise cross-module calls — each is a full cache lookup + dispatch",
+    "SHALL NOT implement on-stack replacement (OSR) — compiled code runs from function entry; deopt returns to the interpreter at function granularity",
+    "SHALL NOT implement tail call optimisation in compiled code — standard call frames only"
   ],
   "verification": [
     "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
     "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "dispatch.rs is under 500 lines of production code",
+    "Cache miss dispatch path adds no more than one DashMap lookup over current interpreter dispatch",
+    "Mixed call stacks (interpreted -> compiled -> interpreted) produce correct results"
   ]
 }

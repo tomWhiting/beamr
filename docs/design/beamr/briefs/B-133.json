@@ -1,66 +1,133 @@
 {
   "id": "B-133",
   "cluster": "beamr",
-  "title": "JIT code cache and invalidation",
-  "depends_on": [
-    "B-131"
-  ],
+  "title": "JIT code cache and generation-based invalidation",
+  "depends_on": ["B-130"],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "Compiled native code must be cached and invalidated when modules are hot-reloaded. The code cache maps (module, function, arity, generation) to compiled code. Hot code loading (B-041-B-045) increments the generation, invalidating cached code for the old version.",
-  "task": "Implement the JIT code cache with generation-aware invalidation.",
+  "checklist": ["C197"],
+  "stories": ["S34", "S41"],
+  "purpose": "Compiled native code must be stored and invalidated when modules are hot-reloaded. The JIT cache maps (module, function, arity, generation) to compiled NativeCode. Hot code loading (B-041–B-045) uses a two-generation scheme (current/old). purge_module removes the old generation; force_purge_module removes both. The cache must respect these semantics. Per D6 in the JIT/AOT design doc: in-flight calls to old code complete normally; new calls use the current generation.",
+  "task": "Implement JitCache in crates/beamr/src/jit/cache.rs. The cache stores Arc<NativeCode> values keyed by (Atom, Atom, u8, u32) representing (module, function, arity, generation). Provide lookup, insertion, per-module eviction (by generation), and force-eviction (both generations). The cache is thread-safe — concurrent lookups from scheduler threads must not block. This brief delivers the cache data structure and its invalidation API only. Wiring the cache into the interpreter dispatch loop is B-135.",
   "requirements": [
     {
       "id": "R1",
-      "title": "Code cache",
-      "spec": "Cache compiled code keyed by (module, function, arity, generation).",
+      "title": "JitCache data structure",
+      "spec": "THE SYSTEM SHALL provide a JitCache struct backed by DashMap<CacheKey, Arc<NativeCode>> where CacheKey is (Atom, Atom, u8, u32) representing (module, function, arity, generation). THE SYSTEM SHALL implement Send + Sync for JitCache. THE SYSTEM SHALL NOT use a Mutex or RwLock for the top-level cache — DashMap provides concurrent shard-level locking.",
       "acceptance": [
-        "JitCache::lookup(module, function, arity, generation) -> Option<NativeCode>",
-        "JitCache::insert(key, code) stores compiled code",
-        "Cache is thread-safe (DashMap or equivalent)",
-        "Test: insert and lookup round-trip"
+        "JitCache::new() creates an empty cache",
+        "CacheKey is a tuple struct CacheKey(Atom, Atom, u8, u32) implementing Hash + Eq",
+        "JitCache is Send + Sync (static assertion via fn assert_send_sync<T: Send + Sync>() {})",
+        "Internal storage is DashMap<CacheKey, Arc<NativeCode>>",
+        "Test: JitCache::new() followed by len() returns 0"
       ],
       "files": {
-        "create": [
-          "crates/beamr/src/jit/cache.rs"
-        ]
+        "create": ["crates/beamr/src/jit/cache.rs"],
+        "modify": ["crates/beamr/src/jit/mod.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C197"],
+      "stories": ["S34"]
     },
     {
       "id": "R2",
-      "title": "Generation-based invalidation",
-      "spec": "Invalidate cached code when a module is reloaded.",
+      "title": "Cache insertion",
+      "spec": "THE SYSTEM SHALL provide JitCache::insert(module, function, arity, generation, code) that stores an Arc<NativeCode> under the given key. WHEN a key already exists, THE SYSTEM SHALL replace the old entry. THE SYSTEM SHALL NOT block other cache operations during insertion beyond the DashMap shard lock.",
       "acceptance": [
-        "hot_load_module triggers cache eviction for the old generation",
-        "New calls to the function compile fresh against the new bytecode",
-        "Old compiled code is deallocated when no longer referenced",
-        "Test: compile function, reload module, verify old code evicted"
+        "JitCache::insert(module: Atom, function: Atom, arity: u8, generation: u32, code: Arc<NativeCode>) stores the entry",
+        "Duplicate insert overwrites the previous entry",
+        "JitCache::len() increments after insert of a new key",
+        "Test: insert two entries with different keys, len() == 2",
+        "Test: insert same key twice, len() == 1, lookup returns the second value"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/cache.rs"
-        ]
+        "modify": ["crates/beamr/src/jit/cache.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C197"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R3",
+      "title": "Cache lookup",
+      "spec": "THE SYSTEM SHALL provide JitCache::lookup(module, function, arity, generation) that returns Option<Arc<NativeCode>>. WHEN the key exists, THE SYSTEM SHALL return Some(code) with an Arc clone (no move). WHEN the key does not exist, THE SYSTEM SHALL return None. THE SYSTEM SHALL NOT return compiled code for a different generation than requested.",
+      "acceptance": [
+        "JitCache::lookup(module: Atom, function: Atom, arity: u8, generation: u32) -> Option<Arc<NativeCode>>",
+        "Lookup for an existing key returns Some with the correct NativeCode",
+        "Lookup for a non-existent key returns None",
+        "Lookup for existing (module, function, arity) but wrong generation returns None",
+        "Test: insert at generation 1, lookup generation 1 -> Some, lookup generation 2 -> None",
+        "Test: lookup on empty cache returns None"
       ],
-      "stories": []
+      "files": {
+        "modify": ["crates/beamr/src/jit/cache.rs"]
+      },
+      "checklist": ["C197"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R4",
+      "title": "Generation-based eviction on purge_module",
+      "spec": "THE SYSTEM SHALL provide JitCache::purge_generation(module, generation) that removes all entries matching the given module and generation. WHEN entries for other generations of the same module exist, THE SYSTEM SHALL leave them intact. THE SYSTEM SHALL minimise blocking via DashMap shard-level locking during eviction. In-flight callers holding an Arc<NativeCode> from before the eviction SHALL continue to execute — the Arc reference keeps the code alive until dropped.",
+      "acceptance": [
+        "JitCache::purge_generation(module: Atom, generation: u32) removes all entries for that module+generation",
+        "Entries for the same module at a different generation are untouched",
+        "Entries for other modules are untouched",
+        "After purge, lookup for the evicted generation returns None",
+        "Arc<NativeCode> cloned before purge remains valid after purge (Arc::strong_count >= 1)",
+        "Test: insert foo/bar/1 at gen 0 and gen 1, purge gen 0, lookup gen 0 -> None, lookup gen 1 -> Some",
+        "Test: insert foo/bar/1 and baz/qux/2 at gen 0, purge foo gen 0, baz/qux/2 still present"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/cache.rs"]
+      },
+      "checklist": ["C197"],
+      "stories": ["S41"]
+    },
+    {
+      "id": "R5",
+      "title": "Force-purge eviction for both generations",
+      "spec": "THE SYSTEM SHALL provide JitCache::force_purge_module(module) that removes all entries for the given module across all generations. This corresponds to force_purge_module in the hot code loading system. THE SYSTEM SHALL use DashMap::retain for in-place eviction, avoiding allocation of a separate key collection.",
+      "acceptance": [
+        "JitCache::force_purge_module(module: Atom) removes all entries where key.0 == module",
+        "Entries for other modules are untouched",
+        "Test: insert foo/bar/1 at gen 0 and gen 1, force_purge foo, both lookups return None",
+        "Test: force_purge on a module with no cached entries is a no-op (no panic)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/cache.rs"]
+      },
+      "checklist": ["C197"],
+      "stories": ["S41"]
+    },
+    {
+      "id": "R6",
+      "title": "Cache statistics for profiler integration",
+      "spec": "THE SYSTEM SHALL provide JitCache::len() returning the number of cached entries, JitCache::contains(module, function, arity, generation) returning bool, and JitCache::cached_functions_for_module(module) returning a Vec of (function, arity, generation) tuples for the given module. These support the profiler (B-130 R4) in avoiding re-compilation of already-cached functions.",
+      "acceptance": [
+        "JitCache::len() -> usize returns the total number of cached entries",
+        "JitCache::contains(module, function, arity, generation) -> bool returns true if the key exists",
+        "JitCache::cached_functions_for_module(module) -> Vec<(Atom, u8, u32)> lists all cached entries for that module",
+        "Test: insert 3 entries for module foo, 1 for module bar, cached_functions_for_module(foo) returns 3 entries",
+        "Test: contains returns false after purge_generation removes the entry"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/cache.rs"]
+      },
+      "checklist": ["C197"],
+      "stories": ["S34"]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement code cache size limits \u2014 unbounded for now",
-    "SHALL NOT implement speculative deoptimization \u2014 simple cache invalidation only"
+    "SHALL NOT implement cache size limits or eviction policies — the cache is unbounded",
+    "SHALL NOT implement speculative deoptimisation — simple eviction only",
+    "SHALL NOT wire the cache into the interpreter dispatch loop — dispatch integration is B-135",
+    "SHALL NOT implement inline caching or polymorphic dispatch caches",
+    "SHALL NOT deallocate native code synchronously during eviction — Arc reference counting handles deallocation when the last reference drops"
   ],
   "verification": [
     "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
     "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "cache.rs is under 500 lines of production code",
+    "JitCache is Send + Sync (compile-time assertion in tests)",
+    "All cache operations use DashMap — no Mutex or RwLock on the top-level structure"
   ]
 }

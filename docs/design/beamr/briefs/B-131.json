@@ -1,88 +1,133 @@
 {
   "id": "B-131",
   "cluster": "beamr",
-  "title": "JIT IR translation \u2014 arithmetic, comparison, and control flow",
-  "depends_on": [
-    "B-130"
-  ],
+  "title": "JIT IR translation — arithmetic, comparison, and control flow",
+  "depends_on": ["B-130"],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "Translate the core BEAM opcodes (move, call, return, arithmetic, comparison, branching) into Cranelift IR. These are the most frequently executed instructions and the highest-value JIT targets.",
-  "task": "Implement IR translation for ~20 core opcodes covering data movement, function calls, arithmetic, and control flow.",
+  "checklist": ["C194", "C195"],
+  "stories": ["S34", "S42"],
+  "purpose": "Translate the core BEAM opcodes — data movement, arithmetic, comparison, and control flow — into Cranelift IR. These are the most frequently executed instructions and the highest-value JIT targets. Per D3 (tiered execution) and D5 (mixed-mode), unsupported opcodes trigger deoptimisation back to the interpreter rather than failing compilation.",
+  "task": "Implement IR translation functions in two new files (ir_arithmetic.rs for data movement/arithmetic/comparison, ir_control.rs for call/return/branch/label). Each translator function takes a BEAM instruction and a Cranelift FunctionBuilder and emits the corresponding IR. The register file is modelled as a memory region (base pointer + offset). Arithmetic on tagged small integers extracts the payload, performs the native operation with overflow check, and re-tags the result. Overflow and unsupported opcodes emit deoptimisation exits to the interpreter. Scope-forward: ir_common.rs for shared helpers (register access, tag/untag, deopt exit builder) used by both files and future IR translation briefs (B-132, B-136).",
   "requirements": [
     {
       "id": "R1",
-      "title": "Data movement IR",
-      "spec": "Translate move, swap, and register access to Cranelift IR.",
+      "title": "Shared IR helpers — register access, tagging, deopt exits",
+      "spec": "THE SYSTEM SHALL provide helper functions for Cranelift IR emission that are shared across all opcode translators: register_load (emit IR to load a Term from x-register or y-register by index), register_store (emit IR to store a Term), untag_small_int (extract i64 payload from tagged Term), tag_small_int (re-tag i64 as Term), and emit_deopt_exit (emit a branch to an interpreter re-entry point). THE SYSTEM SHALL NOT expose Cranelift types in these helpers' public signatures — they take and return beamr types.",
       "acceptance": [
-        "move generates load/store IR for x/y registers",
-        "swap generates load-load-store-store pattern",
-        "Register file modeled as a memory region in IR",
-        "Test: compiled move produces correct register values"
+        "register_load(builder, reg_index, reg_kind) emits a Cranelift load from the register file memory region",
+        "register_store(builder, reg_index, reg_kind, value) emits a Cranelift store to the register file",
+        "untag_small_int(builder, tagged_value) emits a right-shift by TAG_BITS, returning an i64 IR value",
+        "tag_small_int(builder, raw_value) emits a left-shift by TAG_BITS OR'd with SMALL_INT_TAG",
+        "emit_deopt_exit(builder, instruction_index) emits a jump to an interpreter re-entry block with the current instruction pointer",
+        "Test: round-trip tag_small_int(untag_small_int(term)) == term for any small int"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "create": ["crates/beamr/src/jit/ir_common.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C194"],
+      "stories": ["S42"]
     },
     {
       "id": "R2",
-      "title": "Arithmetic and comparison IR",
-      "spec": "Translate add, subtract, multiply, div, rem, and comparison opcodes.",
+      "title": "Data movement IR — move and swap",
+      "spec": "WHEN the JIT compiler encounters a move instruction, THE SYSTEM SHALL emit Cranelift IR to load the source register and store to the destination register. WHEN the compiler encounters a swap instruction, THE SYSTEM SHALL emit IR to load both registers, then store each value to the other's location. THE SYSTEM SHALL NOT modify the register file memory layout — it matches the interpreter's x-register and y-register arrays.",
       "acceptance": [
-        "SmallInt arithmetic compiles to native integer ops with overflow checks",
-        "Comparison opcodes compile to conditional branches",
-        "Overflow falls back to interpreter (deoptimize)",
-        "Test: compiled add(2,3) returns 5"
+        "translate_move(builder, source, dest) emits load+store IR for x/y registers",
+        "translate_swap(builder, reg_a, reg_b) emits load-load-store-store pattern (no temporary allocation)",
+        "move from literal (atom, small_int) emits an immediate constant load instead of a register load",
+        "Test: compiled move(x0, x1) with x0=42 produces x1=42",
+        "Test: compiled swap(x0, x1) with x0=1, x1=2 produces x0=2, x1=1"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "create": ["crates/beamr/src/jit/ir_arithmetic.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C194"],
+      "stories": ["S34"]
     },
     {
       "id": "R3",
-      "title": "Control flow IR",
-      "spec": "Translate call, return, label, and branching opcodes.",
+      "title": "Arithmetic IR — add, subtract, multiply, div, rem with overflow deopt",
+      "spec": "THE SYSTEM SHALL translate arithmetic opcodes into Cranelift IR that: (1) untags both operands as small integers, (2) performs the native i64 operation with overflow detection, (3) re-tags the result. IF either operand is not a tagged small integer, THE SYSTEM SHALL emit a deoptimisation exit to the interpreter. IF the native operation overflows, THE SYSTEM SHALL emit a deoptimisation exit. THE SYSTEM SHALL NOT implement bignum arithmetic — overflow deoptimises to the interpreter which handles bignums.",
       "acceptance": [
-        "Labels translate to Cranelift blocks",
-        "Intra-module calls translate to direct jumps",
-        "Return translates to function return",
-        "Conditional branches (is_eq, is_ne, etc.) translate to branch instructions",
-        "Test: compiled function with branches executes correctly"
+        "translate_add(builder, lhs, rhs, dest) emits untag->iadd_checked->retag->store or deopt on overflow",
+        "translate_subtract(builder, lhs, rhs, dest) emits untag->isub_checked->retag->store or deopt",
+        "translate_multiply(builder, lhs, rhs, dest) emits untag->imul_checked->retag->store or deopt",
+        "translate_div(builder, lhs, rhs, dest) emits untag->sdiv->retag->store; division by zero deoptimises",
+        "translate_rem(builder, lhs, rhs, dest) emits untag->srem->retag->store; zero divisor deoptimises",
+        "Tag check on each operand emits conditional branch: if not small_int_tag then deopt exit",
+        "Test: compiled add(Term::small_int(2), Term::small_int(3)) returns Term::small_int(5)",
+        "Test: compiled add(SMALL_INT_MAX, 1) triggers deopt (overflow)"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "modify": ["crates/beamr/src/jit/ir_arithmetic.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C194"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R4",
+      "title": "Comparison IR — relational and equality opcodes",
+      "spec": "THE SYSTEM SHALL translate comparison opcodes (is_lt, is_ge, is_eq, is_ne, is_eq_exact, is_ne_exact) into Cranelift IR that compares untagged small integer values and branches to the success or failure label. IF either operand is not a small integer, THE SYSTEM SHALL emit a deoptimisation exit (full BEAM term ordering requires the atom table, which is not available in compiled code). THE SYSTEM SHALL NOT implement the full BEAM term ordering in compiled code.",
+      "acceptance": [
+        "translate_is_lt(builder, lhs, rhs, fail_label) emits icmp + conditional branch",
+        "translate_is_ge(builder, lhs, rhs, fail_label) emits icmp + conditional branch",
+        "translate_is_eq_exact(builder, lhs, rhs, fail_label) emits icmp_eq on raw tagged values (no untag needed for exact equality)",
+        "Non-small-int operands trigger deopt before comparison",
+        "Test: compiled is_lt(3, 5) falls through; is_lt(5, 3) branches to fail label"
       ],
-      "stories": []
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_arithmetic.rs"]
+      },
+      "checklist": ["C194"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R5",
+      "title": "Control flow IR — labels, branches, and jumps",
+      "spec": "THE SYSTEM SHALL translate label instructions to Cranelift block headers. WHEN the compiler encounters a jump instruction, THE SYSTEM SHALL emit a Cranelift jump to the corresponding block. WHEN the compiler encounters a conditional branch (e.g. from a test opcode), THE SYSTEM SHALL emit a Cranelift brif with correct true/false targets. THE SYSTEM SHALL NOT create unreachable blocks — labels not targeted by any branch are still emitted but may be optimised away by Cranelift.",
+      "acceptance": [
+        "translate_label(builder, label_id) starts a new Cranelift block keyed by label_id",
+        "translate_jump(builder, target_label) emits a Cranelift jump to the target block",
+        "A two-pass approach: first pass collects all labels into a HashMap<LabelId, Block>; second pass emits IR",
+        "Test: function with if/else branches executes the correct path based on input"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/ir_control.rs"]
+      },
+      "checklist": ["C195"],
+      "stories": ["S42"]
+    },
+    {
+      "id": "R6",
+      "title": "Control flow IR — call, return, and inter-function dispatch",
+      "spec": "WHEN the compiler encounters a call instruction to a function in the same module, THE SYSTEM SHALL emit a direct Cranelift call if the callee is also compiled, or a call to jit_call_interpreted if not (per D5 mixed-mode). WHEN the compiler encounters a return instruction, THE SYSTEM SHALL emit a Cranelift return with the value in x(0). THE SYSTEM SHALL NOT implement tail call optimisation in this brief — all calls use standard call frames.",
+      "acceptance": [
+        "translate_call(builder, target_mfa) emits either direct call or jit_call_interpreted helper call",
+        "translate_return(builder) emits Cranelift return with x(0) loaded as the return value",
+        "Call arguments are loaded from x-registers and passed as Cranelift function parameters",
+        "Return value is stored to x(0) after callee returns",
+        "Test: compiled function calling another compiled function returns the correct result",
+        "Test: compiled function calling an un-compiled function falls back to jit_call_interpreted"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_control.rs"]
+      },
+      "checklist": ["C195"],
+      "stories": ["S42"]
     }
   ],
   "boundaries": [
-    "SHALL NOT translate heap-allocating opcodes (put_tuple, put_list) \u2014 those need GC integration (B-134)",
-    "SHALL fall back to interpreter for unsupported opcodes (mixed mode)",
-    "SHALL NOT implement tail call optimization in IR \u2014 basic calls first"
+    "SHALL NOT translate heap-allocating opcodes (put_tuple, put_list) — those need GC safepoints (B-134, B-136)",
+    "SHALL NOT implement the full BEAM term ordering in compiled code — non-small-int comparisons deoptimise",
+    "SHALL NOT implement tail call optimisation — standard call frames only in this brief",
+    "SHALL NOT implement bignum arithmetic — overflow deoptimises to the interpreter",
+    "SHALL NOT access the atom table from compiled code — atom operations deoptimise"
   ],
   "verification": [
     "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
     "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "Each ir_*.rs file is under 500 lines of production code",
+    "No Cranelift types appear in function signatures outside the jit/ module"
   ]
 }
