@@ -7,7 +7,7 @@ use beamr::atom::{Atom, AtomTable};
 use beamr::error::{ExecError, LoadError};
 use beamr::io::StdoutSink;
 use beamr::loader::{
-    UnresolvedImportReport, embedded_module_bytes, load_module, load_module_with_origin,
+    UnresolvedImportReport, embedded_module_bytes, load_module_with_origin,
 };
 use beamr::module::{ModuleOrigin, ModuleRegistry};
 use beamr::native::{
