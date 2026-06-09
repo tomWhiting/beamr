@@ -160,12 +160,14 @@ impl JitCompiler {
                         lower_arithmetic_bif(
                             &mut builder,
                             register_file,
-                            arithmetic,
-                            bif.left,
-                            bif.right,
-                            bif.destination,
-                            fail,
-                            next,
+                            ArithmeticLowering {
+                                op: arithmetic,
+                                left: bif.left,
+                                right: bif.right,
+                                destination: bif.destination,
+                                fail,
+                                success: next,
+                            },
                         )?;
                         terminated = true;
                     }
@@ -598,32 +600,36 @@ impl ArithmeticOp {
     }
 }
 
+struct ArithmeticLowering<'a> {
+    op: ArithmeticOp,
+    left: &'a Operand,
+    right: &'a Operand,
+    destination: &'a Operand,
+    fail: cranelift_codegen::ir::Block,
+    success: cranelift_codegen::ir::Block,
+}
+
 fn lower_arithmetic_bif(
     builder: &mut FunctionBuilder<'_>,
     register_file: Value,
-    op: ArithmeticOp,
-    left: &Operand,
-    right: &Operand,
-    destination: &Operand,
-    fail: cranelift_codegen::ir::Block,
-    success: cranelift_codegen::ir::Block,
+    lowering: ArithmeticLowering<'_>,
 ) -> Result<(), JitError> {
-    let left = read_operand_term(builder, register_file, left)?;
-    let right = read_operand_term(builder, register_file, right)?;
-    let left_payload = checked_small_int_payload(builder, left, fail);
-    let right_payload = checked_small_int_payload(builder, right, fail);
+    let left = read_operand_term(builder, register_file, lowering.left)?;
+    let right = read_operand_term(builder, register_file, lowering.right)?;
+    let left_payload = checked_small_int_payload(builder, left, lowering.fail);
+    let right_payload = checked_small_int_payload(builder, right, lowering.fail);
 
-    let result = match op {
+    let result = match lowering.op {
         ArithmeticOp::Add => {
             let value = builder.ins().iadd(left_payload, right_payload);
             let overflow = signed_add_overflow(builder, left_payload, right_payload, value);
-            branch_to_fail_if(builder, overflow, fail);
+            branch_to_fail_if(builder, overflow, lowering.fail);
             value
         }
         ArithmeticOp::Subtract => {
             let value = builder.ins().isub(left_payload, right_payload);
             let overflow = signed_sub_overflow(builder, left_payload, right_payload, value);
-            branch_to_fail_if(builder, overflow, fail);
+            branch_to_fail_if(builder, overflow, lowering.fail);
             value
         }
         ArithmeticOp::Multiply => {
@@ -637,13 +643,13 @@ fn lower_arithmetic_bif(
                     .ins()
                     .icmp_imm(IntCC::SignedGreaterThan, value, Term::SMALL_INT_MAX);
             let out_of_range = builder.ins().bor(min_check, max_check);
-            branch_to_fail_if(builder, out_of_range, fail);
+            branch_to_fail_if(builder, out_of_range, lowering.fail);
             value
         }
         ArithmeticOp::Div | ArithmeticOp::Rem => {
             let zero = builder.ins().icmp_imm(IntCC::Equal, right_payload, 0);
-            branch_to_fail_if(builder, zero, fail);
-            if matches!(op, ArithmeticOp::Div) {
+            branch_to_fail_if(builder, zero, lowering.fail);
+            if matches!(lowering.op, ArithmeticOp::Div) {
                 builder.ins().sdiv(left_payload, right_payload)
             } else {
                 builder.ins().srem(left_payload, right_payload)
@@ -658,10 +664,10 @@ fn lower_arithmetic_bif(
         .ins()
         .icmp_imm(IntCC::SignedGreaterThan, result, Term::SMALL_INT_MAX);
     let out_of_range = builder.ins().bor(min_check, max_check);
-    branch_to_fail_if(builder, out_of_range, fail);
+    branch_to_fail_if(builder, out_of_range, lowering.fail);
     let tagged = builder.ins().ishl_imm(result, SMALL_INT_SHIFT);
-    write_operand_term(builder, register_file, destination, tagged)?;
-    builder.ins().jump(success, &[]);
+    write_operand_term(builder, register_file, lowering.destination, tagged)?;
+    builder.ins().jump(lowering.success, &[]);
     Ok(())
 }
 
