@@ -6,7 +6,7 @@ use crate::atom::Atom;
 use crate::error::LoadError;
 use crate::interpreter::{self, ExecutionResult};
 use crate::loader::{self, Instruction};
-use crate::module::{Module, ModuleRegistry, PurgeError};
+use crate::module::{Module, ModuleOrigin, ModuleRegistry, PurgeError};
 use crate::namespace::NamespaceId;
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::{CodePosition, ExitReason, Process};
@@ -38,12 +38,29 @@ pub(super) fn hot_load_module_in_shared(
     registry: &Arc<ModuleRegistry>,
     bytes: &[u8],
 ) -> Result<HotLoadResult, LoadError> {
-    let (staged, _report) = loader::prepare_module_with_policy(
+    hot_load_module_in_shared_with_origin(
+        shared,
+        namespace,
+        registry,
+        bytes,
+        ModuleOrigin::Preloaded,
+    )
+}
+
+pub(super) fn hot_load_module_in_shared_with_origin(
+    shared: &Arc<SharedState>,
+    namespace: NamespaceId,
+    registry: &Arc<ModuleRegistry>,
+    bytes: &[u8],
+    origin: ModuleOrigin,
+) -> Result<HotLoadResult, LoadError> {
+    let (staged, _report) = loader::prepare_module_with_origin_and_policy(
         bytes,
         &shared.atom_table,
         registry,
         shared.bif_registry.as_ref(),
         shared.capability_policy.as_ref(),
+        origin,
     )?;
     let module_name = staged.name;
     if registry.lookup_old(module_name).is_some() {

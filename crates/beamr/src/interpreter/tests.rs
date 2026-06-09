@@ -4,7 +4,7 @@ use crate::error::ExecError;
 use crate::loader::decode::BinaryOp;
 use crate::loader::decode::compact::Operand;
 use crate::loader::{Instruction, Literal};
-use crate::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
+use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use crate::native::{Capability, ExceptionClass, NativeEntry, ProcessContext};
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::scheduler::dirty::DirtySchedulerKind;
@@ -26,6 +26,7 @@ fn module(name: Atom, code: Vec<Instruction>) -> Module {
     Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use beamr::atom::AtomTable;
 use beamr::loader::Instruction;
 use beamr::loader::decode::compact::Operand;
-use beamr::module::{Module, ModuleRegistry};
+use beamr::module::{Module, ModuleOrigin, ModuleRegistry};
 use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::supervision::{LinkSet, MonitorSet};
@@ -30,6 +30,7 @@ fn test_module(name: beamr::atom::Atom, code: Vec<Instruction>) -> Module {
     Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,

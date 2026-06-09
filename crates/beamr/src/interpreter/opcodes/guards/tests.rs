@@ -1,6 +1,6 @@
 use super::*;
 use crate::loader::Instruction;
-use crate::module::ResolvedImport;
+use crate::module::{ModuleOrigin, ResolvedImport};
 use crate::native::{Capability, NativeEntry};
 use crate::term::boxed::{write_closure, write_float, write_tuple};
 use std::collections::HashMap;
@@ -17,6 +17,7 @@ fn module(code: Vec<Instruction>) -> Module {
     Module {
         name: Atom::OK,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,

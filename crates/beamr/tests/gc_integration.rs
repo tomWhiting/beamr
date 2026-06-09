@@ -7,7 +7,7 @@ use beamr::{
     interpreter::{ExecutionResult, run},
     loader::Instruction,
     loader::decode::compact::Operand,
-    module::Module,
+    module::{Module, ModuleOrigin},
     process::{ExitReason, Process},
     term::{Term, boxed::Cons},
 };
@@ -27,6 +27,7 @@ fn module(code: Vec<Instruction>) -> Module {
     Module {
         name: Atom::OK,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,

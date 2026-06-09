@@ -9,7 +9,7 @@ use beamr::interpreter::{ExecutionResult, run};
 use beamr::loader::Instruction;
 use beamr::loader::decode::TypeTestOp;
 use beamr::loader::decode::compact::Operand;
-use beamr::module::Module;
+use beamr::module::{Module, ModuleOrigin};
 use beamr::native::BifRegistryImpl;
 use beamr::native::bifs::register_gate1_bifs;
 use beamr::process::{ExitReason, Process};
@@ -32,6 +32,7 @@ fn module(name: beamr::atom::Atom, code: Vec<Instruction>) -> Module {
     Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,
@@ -437,6 +438,7 @@ fn load_proof_module(atoms: &AtomTable, bifs: &BifRegistryImpl) -> Module {
     Module {
         name: parsed.name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports,
         label_index,
         code: parsed.instructions,

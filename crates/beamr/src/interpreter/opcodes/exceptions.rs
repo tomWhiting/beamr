@@ -346,6 +346,7 @@ mod tests {
     use super::*;
     use crate::interpreter::opcodes::dispatch;
     use crate::loader::{Instruction, LineInfo};
+    use crate::module::ModuleOrigin;
     use crate::term::boxed::{Cons, Tuple};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -362,6 +363,7 @@ mod tests {
         Module {
             name: Atom::OK,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index,
             code,

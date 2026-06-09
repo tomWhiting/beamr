@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::atom::Atom;
-use crate::module::Module;
+use crate::module::{Module, ModuleOrigin};
 use crate::term::Term;
 
 /// Default maximum call-stack depth in frames.
@@ -316,6 +316,7 @@ mod tests {
         Module {
             name,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index: HashMap::from([(1, 0)]),
             code: vec![Instruction::Label { label: 1 }],

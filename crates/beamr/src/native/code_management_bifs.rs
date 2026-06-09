@@ -5,7 +5,7 @@
 
 use crate::atom::{Atom, AtomTable};
 use crate::error::LoadError;
-use crate::module::PurgeError;
+use crate::module::{ModuleOrigin, PurgeError};
 use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
@@ -29,6 +29,12 @@ pub trait CodeManagementFacility: Send + Sync {
 
     /// Return true when `pid` is running or pinned to old code for `module`.
     fn check_process_code(&self, pid: u64, module: Atom) -> bool;
+
+    /// Return origin metadata for a current loaded module.
+    fn module_origin(&self, module: Atom) -> Option<ModuleOrigin>;
+
+    /// Return all currently loaded module names and origins.
+    fn all_loaded_modules(&self) -> Vec<(Atom, ModuleOrigin)>;
 }
 
 type CodeBif = (&'static str, u8, Capability, NativeFn);
@@ -56,6 +62,9 @@ pub fn register_code_management_bifs(
         let function = atom_table.intern(function_name);
         registry.register(erlang, function, arity, native_function, capability)?;
     }
+    let code = atom_table.intern("code");
+    let all_loaded_name = atom_table.intern("all_loaded");
+    registry.register(code, all_loaded_name, 0, all_loaded, Capability::Pure)?;
     Ok(())
 }
 
@@ -115,6 +124,30 @@ pub fn check_process_code(args: &[Term], context: &mut ProcessContext) -> Result
     let module = module_term.as_atom().ok_or_else(badarg)?;
     let facility = context.code_management_facility().ok_or_else(badarg)?;
     Ok(bool_term(facility.check_process_code(pid, module)))
+}
+
+/// code:all_loaded/0 returns currently loaded modules with their source metadata.
+pub fn all_loaded(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    if !args.is_empty() {
+        return Err(badarg());
+    }
+    let facility = context.code_management_facility().ok_or_else(badarg)?;
+    let loaded = facility.all_loaded_modules();
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let loaded_terms: Vec<(Term, Term)> = loaded
+        .into_iter()
+        .map(|(module, origin)| {
+            let source = atom_table.intern(origin.source_atom_name());
+            (Term::atom(module), Term::atom(source))
+        })
+        .collect();
+
+    let mut list = Term::NIL;
+    for (module, source) in loaded_terms.into_iter().rev() {
+        let tuple = context.alloc_tuple(&[module, source])?;
+        list = context.alloc_cons(tuple, list)?;
+    }
+    Ok(list)
 }
 
 fn bool_term(value: bool) -> Term {

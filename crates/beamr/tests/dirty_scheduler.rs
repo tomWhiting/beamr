@@ -6,7 +6,7 @@ use std::time::Duration;
 use beamr::atom::Atom;
 use beamr::loader::Instruction;
 use beamr::loader::decode::compact::Operand;
-use beamr::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
+use beamr::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use beamr::native::{Capability, NativeEntry, ProcessContext};
 use beamr::process::ExitReason;
 use beamr::scheduler::dirty::DirtySchedulerKind;
@@ -29,6 +29,7 @@ fn module(name: Atom, code: Vec<Instruction>) -> Module {
     Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,

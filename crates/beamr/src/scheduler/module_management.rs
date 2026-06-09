@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::atom::Atom;
 use crate::error::LoadError;
-use crate::module::{Module, PurgeError};
+use crate::module::{Module, ModuleOrigin, PurgeError};
 use crate::namespace::NamespaceId;
 use crate::native::CodeManagementFacility;
 
@@ -34,6 +34,14 @@ impl Scheduler {
         self.hot_load_module_in(NamespaceId::DEFAULT, bytes)
     }
 
+    /// Load a module from the embedded archive by module name when present.
+    pub fn load_embedded_module(
+        &self,
+        module_name: &str,
+    ) -> Result<Option<HotLoadResult>, LoadError> {
+        self.load_embedded_module_in(NamespaceId::DEFAULT, module_name)
+    }
+
     /// Load a BEAM module into a specific namespace.
     pub fn load_module_in(
         &self,
@@ -51,6 +59,26 @@ impl Scheduler {
     ) -> Result<HotLoadResult, LoadError> {
         let registry = namespace_registry_for_load(&self.shared, namespace)?;
         hot_load_module_in_shared(&self.shared, namespace, &registry, bytes)
+    }
+
+    /// Load a module from the embedded archive into a specific namespace by module name when present.
+    pub fn load_embedded_module_in(
+        &self,
+        namespace: NamespaceId,
+        module_name: &str,
+    ) -> Result<Option<HotLoadResult>, LoadError> {
+        let Some(bytes) = crate::loader::embedded_module_bytes(module_name) else {
+            return Ok(None);
+        };
+        let registry = namespace_registry_for_load(&self.shared, namespace)?;
+        hot_load_module_in_shared_with_origin(
+            &self.shared,
+            namespace,
+            &registry,
+            &bytes,
+            ModuleOrigin::Embedded,
+        )
+        .map(Some)
     }
 
     /// Safely purge retained old code when no process still references it.
@@ -140,11 +168,19 @@ impl CodeManagementFacility for SchedulerCodeManagementFacility {
         };
         process_references_old_code(&self.shared, pid, &old)
     }
+
+    fn module_origin(&self, module: Atom) -> Option<ModuleOrigin> {
+        self.shared.module_registry.origin(module)
+    }
+
+    fn all_loaded_modules(&self) -> Vec<(Atom, ModuleOrigin)> {
+        self.shared.module_registry.all_loaded()
+    }
 }
 
 mod helpers;
 use helpers::{
-    force_purge_module_in_shared, hot_load_module_in_shared, hot_load_module_shared,
-    namespace_registry_for_load, process_references_old_code, purge_module_in_shared,
-    purge_module_shared,
+    force_purge_module_in_shared, hot_load_module_in_shared, hot_load_module_in_shared_with_origin,
+    hot_load_module_shared, namespace_registry_for_load, process_references_old_code,
+    purge_module_in_shared, purge_module_shared,
 };

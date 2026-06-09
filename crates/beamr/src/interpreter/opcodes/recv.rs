@@ -88,7 +88,7 @@ mod tests {
     use crate::interpreter::opcodes::dispatch;
     use crate::loader::Instruction;
     use crate::loader::decode::Operand;
-    use crate::module::Module;
+    use crate::module::{Module, ModuleOrigin};
     use crate::process::Process;
     use crate::term::Term;
 
@@ -96,6 +96,7 @@ mod tests {
         Module {
             name: Atom::OK,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index: [(7, 0)].into_iter().collect(),
             code: vec![Instruction::Label { label: 7 }],

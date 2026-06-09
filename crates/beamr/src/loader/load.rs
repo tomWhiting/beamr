@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::atom::{Atom, AtomTable};
 use crate::constant_pool::materialise_literals;
 use crate::error::LoadError;
-use crate::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
+use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use crate::native::{
     AllCapabilitiesPolicy, BifRegistry, Capability, CapabilityPolicy, NativeEntry, denial_stub,
 };
@@ -377,6 +377,20 @@ pub fn load_module(
     Ok((module, report))
 }
 
+/// Parses, resolves, validates, registers, and returns a BEAM module with origin metadata.
+pub fn load_module_with_origin(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &impl BifRegistry,
+    origin: ModuleOrigin,
+) -> Result<(Arc<Module>, UnresolvedImportReport), LoadError> {
+    let (module, report) =
+        prepare_module_with_origin(bytes, atom_table, module_registry, bif_registry, origin)?;
+    let module = module_registry.insert(module);
+    Ok((module, report))
+}
+
 /// Parses, resolves with an explicit capability policy, validates, registers, and returns a BEAM module.
 pub fn load_module_with_policy(
     bytes: &[u8],
@@ -391,6 +405,27 @@ pub fn load_module_with_policy(
         module_registry,
         bif_registry,
         capability_policy,
+    )?;
+    let module = module_registry.insert(module);
+    Ok((module, report))
+}
+
+/// Parses, resolves with an explicit capability policy, validates, registers, and returns a BEAM module with origin metadata.
+pub fn load_module_with_origin_and_policy(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &impl BifRegistry,
+    capability_policy: &dyn CapabilityPolicy,
+    origin: ModuleOrigin,
+) -> Result<(Arc<Module>, UnresolvedImportReport), LoadError> {
+    let (module, report) = prepare_module_with_origin_and_policy(
+        bytes,
+        atom_table,
+        module_registry,
+        bif_registry,
+        capability_policy,
+        origin,
     )?;
     let module = module_registry.insert(module);
     Ok((module, report))
@@ -416,6 +451,24 @@ pub fn prepare_module(
     )
 }
 
+/// Parses, resolves, and validates a BEAM module with origin metadata without registering it.
+pub fn prepare_module_with_origin(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &impl BifRegistry,
+    origin: ModuleOrigin,
+) -> Result<(Module, UnresolvedImportReport), LoadError> {
+    prepare_module_with_origin_and_policy(
+        bytes,
+        atom_table,
+        module_registry,
+        bif_registry,
+        &AllCapabilitiesPolicy,
+        origin,
+    )
+}
+
 /// Parses, resolves with an explicit capability policy, and validates a BEAM module without registering it.
 pub fn prepare_module_with_policy(
     bytes: &[u8],
@@ -423,6 +476,25 @@ pub fn prepare_module_with_policy(
     module_registry: &ModuleRegistry,
     bif_registry: &impl BifRegistry,
     capability_policy: &dyn CapabilityPolicy,
+) -> Result<(Module, UnresolvedImportReport), LoadError> {
+    prepare_module_with_origin_and_policy(
+        bytes,
+        atom_table,
+        module_registry,
+        bif_registry,
+        capability_policy,
+        ModuleOrigin::Preloaded,
+    )
+}
+
+/// Parses, resolves with an explicit capability policy, validates, and records origin without registering.
+pub fn prepare_module_with_origin_and_policy(
+    bytes: &[u8],
+    atom_table: &AtomTable,
+    module_registry: &ModuleRegistry,
+    bif_registry: &impl BifRegistry,
+    capability_policy: &dyn CapabilityPolicy,
+    origin: ModuleOrigin,
 ) -> Result<(Module, UnresolvedImportReport), LoadError> {
     let parsed = load_beam_chunks(bytes, atom_table)?;
     let (resolved_by_index, report) =
@@ -432,6 +504,7 @@ pub fn prepare_module_with_policy(
         parsed,
         resolved_by_index.into_iter().flatten().collect(),
         atom_table,
+        origin,
     )?;
     Ok((module, report))
 }
@@ -540,6 +613,7 @@ fn module_from_parsed(
     parsed: ParsedModule,
     resolved_imports: Vec<ResolvedImport>,
     atom_table: &AtomTable,
+    origin: ModuleOrigin,
 ) -> Result<Module, LoadError> {
     let exports = parsed
         .exports
@@ -582,6 +656,7 @@ fn module_from_parsed(
     Ok(Module {
         name: parsed.name,
         generation: 0,
+        origin,
         exports,
         label_index,
         code: parsed.instructions,
@@ -703,7 +778,7 @@ mod tests {
     use crate::loader::decode::Operand;
     use crate::loader::load_beam_chunks;
     use crate::loader::{ExportEntry, Instruction, LineInfo};
-    use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
+    use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImportTarget};
     use crate::native::{
         AllCapabilitiesPolicy, BifRegistry, Capability, LeastAuthorityPolicy, NativeEntry,
         ProcessContext,
@@ -803,7 +878,8 @@ mod tests {
             ..empty_parsed(module_atom)
         };
 
-        let module = super::module_from_parsed(parsed, Vec::new(), &atoms).expect("module builds");
+        let module = super::module_from_parsed(parsed, Vec::new(), &atoms, ModuleOrigin::Preloaded)
+            .expect("module builds");
 
         assert_eq!(
             module.function_table,
@@ -874,6 +950,7 @@ mod tests {
         let mut target = Module {
             name: callee,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: std::collections::HashMap::new(),
             label_index: std::collections::HashMap::new(),
             code: Vec::new(),
@@ -1036,6 +1113,7 @@ mod tests {
         registry.insert(Module {
             name: callee,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: std::collections::HashMap::new(),
             label_index: std::collections::HashMap::new(),
             code: Vec::new(),
