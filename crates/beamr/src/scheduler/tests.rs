@@ -57,7 +57,10 @@ fn default_distribution_config_resolves_nothing() {
 
     let scheduler = Scheduler::new(SchedulerConfig::default(), Arc::new(ModuleRegistry::new()))
         .expect("scheduler should start");
-    assert_eq!(scheduler.jit_profiler().threshold(), 1000);
+    assert_eq!(
+        scheduler.jit_profiler().current_threshold(),
+        crate::jit::DEFAULT_JIT_THRESHOLD
+    );
 
     assert_eq!(
         block_on_ready(
@@ -83,7 +86,7 @@ fn scheduler_uses_explicit_jit_threshold() {
     )
     .expect("scheduler should start");
 
-    assert_eq!(scheduler.jit_profiler().threshold(), 500);
+    assert_eq!(scheduler.jit_profiler().current_threshold(), 500);
     scheduler.shutdown();
 }
 

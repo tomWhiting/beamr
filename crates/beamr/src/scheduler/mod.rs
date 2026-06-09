@@ -25,7 +25,7 @@ use crate::io::{
     CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoSink,
     IoWakeTarget, NullSink, PendingIoRegistry, RingConfig, StandardIoServer, create_ring,
 };
-use crate::jit::{JitCache, JitProfiler};
+use crate::jit::{DEFAULT_JIT_THRESHOLD, JitCache, JitProfiler};
 use crate::module::ModuleRegistry;
 use crate::namespace::NamespaceId;
 use crate::native::{
@@ -302,7 +302,9 @@ impl Scheduler {
                 .unwrap_or(dirty::DEFAULT_DIRTY_IO_THREADS),
             dirty_queue_depth,
         );
-        let jit_profiler = Arc::new(JitProfiler::new(config.jit_threshold.unwrap_or(1000)));
+        let jit_profiler = Arc::new(JitProfiler::new(
+            config.jit_threshold.unwrap_or(DEFAULT_JIT_THRESHOLD),
+        ));
         let jit_cache = Arc::new(JitCache::new());
         let io_runtime = config.io.map(|ring_config| {
             let ring: Arc<dyn CompletionRing> = Arc::from(create_ring(ring_config));
