@@ -1,6 +1,5 @@
 //! Dirty-CPU JIT compilation job wiring.
 
-use crate::atom::Atom;
 use crate::loader::Instruction;
 use crate::scheduler::dirty::{DirtyPool, DirtySubmitError, DirtyTask};
 use std::sync::Arc;
@@ -11,10 +10,7 @@ use super::profiler::JitProfiler;
 
 /// Owned request to compile one BEAM function on a dirty CPU worker.
 pub struct CompilationJob {
-    module: Atom,
-    function: Atom,
-    arity: u8,
-    generation: u64,
+    key: JitCacheKey,
     instructions: Vec<Instruction>,
     compiler: Arc<JitCompiler>,
     profiler: Arc<JitProfiler>,
@@ -25,20 +21,14 @@ impl CompilationJob {
     /// Creates a compilation job for an MFA and its current instruction slice.
     #[must_use]
     pub fn new(
-        module: Atom,
-        function: Atom,
-        arity: u8,
-        generation: u64,
+        key: JitCacheKey,
         instructions: Vec<Instruction>,
         compiler: Arc<JitCompiler>,
         profiler: Arc<JitProfiler>,
         cache: Arc<JitCache>,
     ) -> Self {
         Self {
-            module,
-            function,
-            arity,
-            generation,
+            key,
             instructions,
             compiler,
             profiler,
@@ -47,17 +37,16 @@ impl CompilationJob {
     }
 
     fn run(self) {
-        match self
-            .compiler
-            .compile(&self.instructions, self.module, self.function, self.arity)
-        {
+        match self.compiler.compile(
+            &self.instructions,
+            self.key.module,
+            self.key.function,
+            self.key.arity,
+        ) {
             Ok(native_code) => {
-                self.cache.insert(
-                    JitCacheKey::new(self.module, self.function, self.arity, self.generation),
-                    native_code,
-                );
+                self.cache.insert(self.key, native_code);
                 self.profiler
-                    .mark_compiled(self.module, self.function, self.arity);
+                    .mark_compiled(self.key.module, self.key.function, self.key.arity);
             }
             Err(
                 JitError::UnsupportedOpcode { .. }
@@ -65,11 +54,11 @@ impl CompilationJob {
                 | JitError::UnknownLabel { .. },
             ) => {
                 self.profiler
-                    .mark_unsupported(self.module, self.function, self.arity);
+                    .mark_unsupported(self.key.module, self.key.function, self.key.arity);
             }
             Err(JitError::CraneliftError(_) | JitError::EmptyFunction) => {
                 self.profiler
-                    .reset_counter(self.module, self.function, self.arity);
+                    .reset_counter(self.key.module, self.key.function, self.key.arity);
             }
         }
     }
@@ -119,10 +108,7 @@ mod tests {
         );
 
         let job = CompilationJob::new(
-            Atom::MODULE,
-            Atom::OK,
-            0,
-            1,
+            crate::jit::cache::JitCacheKey::new(Atom::MODULE, Atom::OK, 0, 1),
             vec![Instruction::Return],
             compiler,
             Arc::clone(&profiler),
@@ -152,10 +138,7 @@ mod tests {
         );
 
         let job = CompilationJob::new(
-            Atom::MODULE,
-            Atom::ERROR,
-            0,
-            1,
+            crate::jit::cache::JitCacheKey::new(Atom::MODULE, Atom::ERROR, 0, 1),
             vec![Instruction::Generic {
                 opcode: 255,
                 name: "unknown",
