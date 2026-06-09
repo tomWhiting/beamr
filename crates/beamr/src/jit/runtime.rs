@@ -4,7 +4,7 @@ use crate::atom::Atom;
 use crate::gc;
 use crate::interpreter::{ExecutionResult, run_with_registry};
 use crate::module::ResolvedImportTarget;
-use crate::process::{CodePosition, JitStatus, Process};
+use crate::process::{CodePosition, ExitReason, JitStatus, Process};
 use crate::term::Term;
 
 use super::ir_common::JIT_DEOPT_SENTINEL;
@@ -134,8 +134,14 @@ pub(crate) extern "C" fn jit_call_interpreted(
         module: target_module_atom,
         instruction_pointer,
     }));
+    process.decrement_reductions(1);
+    if process.reductions_exhausted() {
+        process.set_jit_status(Some(JitStatus::Yield));
+        return JIT_YIELD_SENTINEL as u64;
+    }
 
     match run_with_registry(process, current_module, registry) {
+        Ok(ExecutionResult::Exited(ExitReason::Normal)) => process.x_reg(0).raw(),
         Ok(ExecutionResult::Exited(_))
         | Ok(ExecutionResult::Waiting)
         | Ok(ExecutionResult::DirtyCall { .. }) => JIT_DEOPT_SENTINEL as u64,

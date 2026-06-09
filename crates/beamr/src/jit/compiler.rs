@@ -371,6 +371,14 @@ impl JitCompiler {
                             ],
                         );
                         let returned = builder.inst_results(returned)[0];
+                        let continuation = builder.create_block();
+                        branch_to_sentinel_blocks(
+                            &mut builder,
+                            returned,
+                            blocks.deopt,
+                            blocks.yield_block,
+                            continuation,
+                        );
                         write_operand_term(
                             &mut builder,
                             register_file,
@@ -382,6 +390,12 @@ impl JitCompiler {
                     }
                     Instruction::Call { label, .. } | Instruction::CallOnly { label, .. } => {
                         let target = blocks.label_block(label_operand(label)?)?;
+                        charge_reduction_or_yield(
+                            &mut builder,
+                            charge_helper,
+                            process,
+                            blocks.yield_block,
+                        );
                         builder.ins().jump(target, &[]);
                         terminated = true;
                     }
@@ -489,6 +503,42 @@ fn branch_to_yield_if_exhausted(
     builder
         .ins()
         .brif(should_yield, yield_block, &[], continuation, &[]);
+    builder.switch_to_block(continuation);
+}
+
+fn charge_reduction_or_yield(
+    builder: &mut FunctionBuilder<'_>,
+    charge_helper: cranelift_codegen::ir::FuncRef,
+    process: cranelift_codegen::ir::Value,
+    yield_block: cranelift_codegen::ir::Block,
+) {
+    let exhausted = builder.ins().call(charge_helper, &[process]);
+    let exhausted = builder.inst_results(exhausted)[0];
+    let continuation = builder.create_block();
+    branch_to_yield_if_exhausted(builder, exhausted, yield_block, continuation);
+}
+
+fn branch_to_sentinel_blocks(
+    builder: &mut FunctionBuilder<'_>,
+    returned: cranelift_codegen::ir::Value,
+    deopt_block: cranelift_codegen::ir::Block,
+    yield_block: cranelift_codegen::ir::Block,
+    continuation: cranelift_codegen::ir::Block,
+) {
+    let is_deopt = builder
+        .ins()
+        .icmp_imm(IntCC::Equal, returned, JIT_DEOPT_SENTINEL);
+    let check_yield = builder.create_block();
+    builder
+        .ins()
+        .brif(is_deopt, deopt_block, &[], check_yield, &[]);
+    builder.switch_to_block(check_yield);
+    let is_yield = builder
+        .ins()
+        .icmp_imm(IntCC::Equal, returned, JIT_YIELD_SENTINEL);
+    builder
+        .ins()
+        .brif(is_yield, yield_block, &[], continuation, &[]);
     builder.switch_to_block(continuation);
 }
 

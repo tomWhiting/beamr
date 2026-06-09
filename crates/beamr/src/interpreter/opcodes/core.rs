@@ -620,7 +620,7 @@ fn dispatch_local_jit(
     module: &Module,
     target_ip: usize,
     arity: u8,
-    save_return: bool,
+    _save_return: bool,
     jit_cache: Option<&JitCache>,
     registry: Option<&ModuleRegistry>,
 ) -> Result<Option<InstructionOutcome>, ExecError> {
@@ -636,7 +636,11 @@ fn dispatch_local_jit(
     let Some(native) = cache.lookup(module.name, function, arity, module.generation()) else {
         return Ok(None);
     };
-    invoke_jit(process, module, native, save_return, registry)
+    process.set_code_position(Some(CodePosition {
+        module: module.name,
+        instruction_pointer: target_ip,
+    }));
+    invoke_jit(process, module, native, registry)
 }
 
 fn dispatch_external_jit(
@@ -645,7 +649,7 @@ fn dispatch_external_jit(
     target_ip: usize,
     function: Atom,
     arity: u8,
-    save_return: bool,
+    _save_return: bool,
     ctx: &ExtCallContext<'_>,
 ) -> Result<Option<InstructionOutcome>, ExecError> {
     let Some(cache) = ctx.jit_cache else {
@@ -663,14 +667,13 @@ fn dispatch_external_jit(
         module: target_module.name,
         instruction_pointer: target_ip,
     }));
-    invoke_jit(process, target_module, native, save_return, ctx.registry)
+    invoke_jit(process, target_module, native, ctx.registry)
 }
 
 fn invoke_jit(
     process: &mut Process,
     module: &Module,
     native: crate::jit::NativeCode,
-    save_return: bool,
     registry: Option<&ModuleRegistry>,
 ) -> Result<Option<InstructionOutcome>, ExecError> {
     let Some(registry) = registry else {
@@ -682,7 +685,7 @@ fn invoke_jit(
         registry as *const ModuleRegistry,
     )));
     process.set_jit_status(None);
-    let outcome = call_native(process, native, save_return);
+    let outcome = call_native(process, native);
     process.set_jit_runtime_context(previous_context);
     outcome
 }
@@ -690,7 +693,6 @@ fn invoke_jit(
 fn call_native(
     process: &mut Process,
     native: crate::jit::NativeCode,
-    save_return: bool,
 ) -> Result<Option<InstructionOutcome>, ExecError> {
     let register_file = process.x_regs_mut().as_mut_ptr().cast::<u64>();
     // SAFETY: `NativeCode` is produced by `JitCompiler` with the raw ABI
@@ -710,11 +712,7 @@ fn call_native(
         return Ok(None);
     }
     process.set_x_reg(0, Term::from_raw(raw));
-    if save_return {
-        Ok(Some(InstructionOutcome::Continue))
-    } else {
-        return_(process).map(Some)
-    }
+    return_(process).map(Some)
 }
 
 fn push_y_frame(

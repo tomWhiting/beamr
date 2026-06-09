@@ -1,12 +1,14 @@
 use super::{JitCompiler, JitError, JitSettings};
 use crate::atom::Atom;
 use crate::jit::RootLocation;
-use crate::jit::ir_common::X_REGISTER_COUNT;
+use crate::jit::ir_common::{JIT_DEOPT_SENTINEL, X_REGISTER_COUNT};
 use crate::loader::Instruction;
 use crate::loader::decode::{BifOp, ComparisonOp, Operand, TypeTestOp};
-use crate::process::Process;
+use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
+use crate::process::{JitRuntimeContext, Process};
 use crate::term::Term;
 use crate::term::boxed::{Cons, Tuple, write_tuple};
+use std::collections::HashMap;
 
 type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> u64;
 
@@ -35,6 +37,33 @@ fn raw_jit_fn(native: &crate::jit::types::NativeCode) -> RawJitFn {
     // SAFETY: `NativeCode::call_ptr` is produced by `JitCompiler::compile`
     // with the test ABI `extern "C" fn(*mut u64, *mut Process) -> u64`.
     unsafe { std::mem::transmute(native.call_ptr()) }
+}
+
+fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
+    let label_index = code
+        .iter()
+        .enumerate()
+        .filter_map(|(ip, instruction)| match instruction {
+            Instruction::Label { label } => Some((*label, ip)),
+            _ => None,
+        })
+        .collect();
+    Module {
+        name,
+        generation: 0,
+        origin: ModuleOrigin::Preloaded,
+        exports: HashMap::new(),
+        label_index,
+        code,
+        literals: Vec::new(),
+        constant_pool: Default::default(),
+        resolved_imports: Vec::new(),
+        lambdas: Vec::new(),
+        string_table: Vec::new(),
+        function_table: Vec::new(),
+        line_table: Vec::new(),
+        line_info: Vec::new(),
+    }
 }
 
 #[test]
@@ -346,7 +375,6 @@ fn compiled_allocation_with_tiny_heap_survives_gc() {
     assert_eq!(outer.get(1), Some(Term::small_int(8)));
 }
 
-
 #[test]
 fn compiled_is_integer_distinguishes_integer_from_atom() {
     let compiler = JitCompiler::new(JitSettings).unwrap();
@@ -558,6 +586,109 @@ fn compiled_zero_arity_is_tagged_tuple_takes_fail_label() {
         call_native(&native, &mut registers),
         Term::small_int(0).raw()
     );
+}
+
+#[test]
+fn compiled_external_call_falls_back_to_interpreter_and_returns_value() {
+    let caller_atom = Atom::MODULE;
+    let target_atom = Atom::ERROR;
+    let function_atom = Atom::OK;
+    let mut caller = test_module(
+        caller_atom,
+        vec![Instruction::CallExtOnly {
+            arity: Operand::Unsigned(1),
+            import: Operand::Unsigned(0),
+        }],
+    );
+    caller.resolved_imports.push(ResolvedImport {
+        module: target_atom,
+        function: function_atom,
+        arity: 1,
+        target: ResolvedImportTarget::Code {
+            module: target_atom,
+            label: 1,
+        },
+    });
+    let mut target = test_module(
+        target_atom,
+        vec![
+            Instruction::Label { label: 1 },
+            Instruction::Move {
+                source: Operand::X(0),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    target.exports.insert((function_atom, 1), 1);
+    let registry = ModuleRegistry::new();
+    let caller = registry.insert(caller);
+    let _target = registry.insert(target);
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(&caller.code, caller_atom, function_atom, 1)
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    process.set_jit_runtime_context(Some(JitRuntimeContext::new(
+        caller.as_ref() as *const Module,
+        &registry as *const ModuleRegistry,
+    )));
+    let mut registers = vec![Term::small_int(17).raw()];
+
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, Term::small_int(17).raw());
+    assert_eq!(registers[0], Term::small_int(17).raw());
+}
+
+#[test]
+fn compiled_local_call_charges_reduction_and_yields_when_exhausted() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Label { label: 1 },
+                Instruction::CallOnly {
+                    arity: Operand::Unsigned(0),
+                    label: Operand::Label(1),
+                },
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    process.reset_reductions(3);
+    let mut registers = vec![0];
+
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, super::JIT_YIELD_SENTINEL as u64);
+    assert_eq!(process.reduction_counter(), 0);
+}
+
+#[test]
+fn compiled_external_call_returns_deopt_sentinel_without_runtime_context() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[Instruction::CallExtOnly {
+                arity: Operand::Unsigned(0),
+                import: Operand::Unsigned(0),
+            }],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    let mut registers = vec![0];
+
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, JIT_DEOPT_SENTINEL as u64);
+    assert_eq!(registers[0], 0);
 }
 
 #[test]

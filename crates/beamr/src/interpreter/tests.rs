@@ -1,6 +1,7 @@
-use super::{ExecutionResult, run, run_with_registry};
+use super::{ExecutionResult, NativeServices, run, run_with_native_services, run_with_registry};
 use crate::atom::{Atom, AtomTable};
 use crate::error::ExecError;
+use crate::jit::{JitCache, JitCacheKey, JitCompiler, JitSettings};
 use crate::loader::decode::BinaryOp;
 use crate::loader::decode::compact::Operand;
 use crate::loader::{Instruction, Literal};
@@ -47,6 +48,34 @@ fn heap_binary(process: &mut Process, bytes: &[u8]) -> Term {
     // SAFETY: test helper immediately initialises the fresh heap allocation.
     let heap = unsafe { std::slice::from_raw_parts_mut(ptr, words) };
     write_binary(heap, bytes).expect("test binary fits")
+}
+
+fn native_services_with_jit_cache(jit_cache: Arc<JitCache>) -> NativeServices {
+    NativeServices {
+        atom_table: None,
+        local_node: None,
+        net_kernel: None,
+        distribution_send: None,
+        timers: None,
+        spawn_facility: None,
+        remote_spawn_facility: None,
+        link_facility: None,
+        distribution_control_facility: None,
+        global_name_facility: None,
+        group_leader_facility: None,
+        supervision_facility: None,
+        process_info_facility: None,
+        io_sink: None,
+        code_management_facility: None,
+        system_info_facility: None,
+        ets_facility: None,
+        pg_facility: None,
+        io_facility: None,
+        io_message_facility: None,
+        file_io_facility: None,
+        tcp_io_facility: None,
+        jit_cache: Some(jit_cache),
+    }
 }
 
 #[test]
@@ -218,6 +247,58 @@ fn external_return_restores_caller_version_and_qualified_self_call_upgrades() {
         Ok(ExecutionResult::Exited(ExitReason::Normal))
     );
     assert_eq!(process.x_reg(0), Term::small_int(2));
+}
+
+#[test]
+fn interpreter_local_call_dispatches_to_jit_cached_target() {
+    let mut target_module = module(
+        Atom::OK,
+        vec![
+            Instruction::Call {
+                arity: Operand::Unsigned(0),
+                label: Operand::Label(2),
+            },
+            Instruction::Return,
+            Instruction::Label { label: 2 },
+            Instruction::Move {
+                source: Operand::Integer(99),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    target_module.function_table.push((2, Atom::ERROR, 0));
+    let registry = ModuleRegistry::new();
+    let module = registry.insert(target_module);
+    let compiler = JitCompiler::new(JitSettings).expect("host JIT compiler should initialize");
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Move {
+                    source: Operand::Integer(42),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            module.name,
+            Atom::ERROR,
+            0,
+        )
+        .expect("target function should compile");
+    let jit_cache = Arc::new(JitCache::new());
+    jit_cache.insert(
+        JitCacheKey::new(module.name, Atom::ERROR, 0, module.generation()),
+        native,
+    );
+    let services = native_services_with_jit_cache(jit_cache);
+    let mut process = Process::new(1, 32);
+    process.set_current_module(Arc::clone(&module));
+
+    assert_eq!(
+        run_with_native_services(&mut process, &module, &registry, &services),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    assert_eq!(process.x_reg(0), Term::small_int(42));
 }
 
 #[test]
