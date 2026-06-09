@@ -10,8 +10,8 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 use std::error::Error;
 use std::fmt;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use super::types::NativeCode;
 
@@ -48,7 +48,7 @@ pub struct JitSettings;
 
 /// Compiler that owns Cranelift JIT code memory for emitted functions.
 pub struct JitCompiler {
-    module: Mutex<JITModule>,
+    module: Arc<Mutex<JITModule>>,
     next_function_id: AtomicU64,
 }
 
@@ -69,7 +69,7 @@ impl JitCompiler {
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
         let builder = JITBuilder::with_isa(isa, default_libcall_names());
         Ok(Self {
-            module: Mutex::new(JITModule::new(builder)),
+            module: Arc::new(Mutex::new(JITModule::new(builder))),
             next_function_id: AtomicU64::new(0),
         })
     }
@@ -87,7 +87,7 @@ impl JitCompiler {
         let unique_id = self.next_function_id.fetch_add(1, Ordering::Relaxed);
         let name = format!("beamr_jit_{module:?}_{function:?}_{arity}_{unique_id}");
 
-        let mut jit_module = lock_or_recover(&self.module);
+        let mut jit_module = lock_or_recover(self.module.as_ref());
         let mut ctx = jit_module.make_context();
         let mut signature = jit_module.make_signature();
         signature.returns.push(cranelift_codegen::ir::AbiParam::new(
@@ -117,7 +117,12 @@ impl JitCompiler {
             .finalize_definitions()
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
         let call_ptr = jit_module.get_finalized_function(func_id);
-        Ok(NativeCode::new(call_ptr, Vec::new()))
+        drop(jit_module);
+        Ok(NativeCode::new(
+            call_ptr,
+            Vec::new(),
+            Arc::clone(&self.module),
+        ))
     }
 }
 

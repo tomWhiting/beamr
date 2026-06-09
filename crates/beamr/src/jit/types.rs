@@ -1,5 +1,9 @@
 //! Public Beamr-owned JIT value types.
 
+use cranelift_jit::JITModule;
+use std::fmt;
+use std::sync::{Arc, Mutex};
+
 /// A GC root location described by a future stack map entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RootLocation {
@@ -19,18 +23,24 @@ pub struct StackMapEntry {
 }
 
 /// Immutable native code emitted by the JIT compiler.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NativeCode {
     call_addr: usize,
     stack_maps: Vec<StackMapEntry>,
+    _module_owner: Arc<Mutex<JITModule>>,
 }
 
 impl NativeCode {
     /// Creates a native-code handle from compiler-owned code memory.
-    pub(crate) fn new(call_ptr: *const u8, stack_maps: Vec<StackMapEntry>) -> Self {
+    pub(crate) fn new(
+        call_ptr: *const u8,
+        stack_maps: Vec<StackMapEntry>,
+        module_owner: Arc<Mutex<JITModule>>,
+    ) -> Self {
         Self {
             call_addr: call_ptr as usize,
             stack_maps,
+            _module_owner: module_owner,
         }
     }
 
@@ -44,5 +54,15 @@ impl NativeCode {
     #[must_use]
     pub fn stack_maps(&self) -> &[StackMapEntry] {
         &self.stack_maps
+    }
+}
+
+impl fmt::Debug for NativeCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeCode")
+            .field("call_ptr", &self.call_ptr())
+            .field("stack_maps", &self.stack_maps)
+            .finish_non_exhaustive()
     }
 }
