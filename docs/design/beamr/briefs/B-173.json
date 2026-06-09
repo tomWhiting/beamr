@@ -1,0 +1,129 @@
+{
+  "id": "B-173",
+  "cluster": "beamr",
+  "title": "Bignum arithmetic — promote i64 overflow to heap-allocated BigInt",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C191"],
+  "stories": ["S34"],
+  "purpose": "beamr arithmetic BIFs use i64::checked_* and raise badarith on overflow. BEAM supports arbitrary-precision integers. Gleam programs that compute factorial(20), large timestamps, or cryptographic values crash. The BigInt heap type already exists (BoxedTag::BigInt, write_bigint, BigInt accessor) from ETF/constant-pool support, but arithmetic never promotes to it. This brief wires overflow into BigInt allocation and extends comparison, hashing, and ETF encode/decode to handle mixed small-int/bigint operands.",
+  "task": "Extend the arithmetic BIFs (+, -, *, div, rem, band, bor, bxor, bsl, bsr, bnot) to detect i64 overflow and promote the result to a heap-allocated BigInt. Extend comparison (erlang:'<'/2, erlang:'=:='/2, etc.) to handle BigInt operands. Extend term hashing and ETF encode/decode to support BigInt round-trips. Use a multi-limb unsigned magnitude + sign representation (already the BigInt heap layout). No external crate dependency — implement multi-limb add/sub/mul/divmod directly.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Arithmetic overflow promotes to BigInt",
+      "spec": "When i64::checked_add/sub/mul/div returns None (overflow), compute the correct result using multi-limb arithmetic and allocate a BigInt on the process heap via alloc_bigint. The BIF returns the BigInt term instead of raising badarith. Small results that fit in i64 after bignum computation are demoted back to small_int.",
+      "acceptance": [
+        "factorial(20) returns 2432902008176640000 as a small_int (fits i64)",
+        "factorial(21) returns the correct value as a BigInt term",
+        "factorial(100) returns the correct 158-digit value",
+        "addition of i64::MAX + 1 returns a BigInt",
+        "subtraction of i64::MIN - 1 returns a BigInt",
+        "multiplication overflow promotes correctly",
+        "small result after bignum operation demotes to small_int"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/bifs.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R2",
+      "title": "Multi-limb arithmetic primitives",
+      "spec": "Implement add, subtract, multiply, and divmod for multi-limb unsigned integers with sign handling. Each limb is u64. Use schoolbook algorithms (no need for Karatsuba at this stage). Place in a new crates/beamr/src/term/bigint_math.rs module.",
+      "acceptance": [
+        "multi-limb add with carry propagation produces correct results",
+        "multi-limb subtract with borrow produces correct results",
+        "multi-limb multiply (schoolbook) produces correct results for up to 64 limbs",
+        "divmod produces correct quotient and remainder",
+        "sign handling: negative * negative = positive, etc.",
+        "zero normalization: leading zero limbs are stripped"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/term/bigint_math.rs"],
+        "modify": ["crates/beamr/src/term/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R3",
+      "title": "Comparison and ordering for BigInt",
+      "spec": "Extend term comparison (compare::partial_cmp, compare::partial_eq) to handle BigInt vs BigInt and BigInt vs small_int comparisons. BigInt ordering follows numeric value, matching BEAM semantics where integers of any size are ordered by value.",
+      "acceptance": [
+        "BigInt == BigInt with same value returns true",
+        "BigInt < BigInt with smaller value returns true",
+        "BigInt > small_int when BigInt value exceeds i64 range",
+        "small_int == BigInt when values are equal (after demotion check)",
+        "ordering is consistent with Erlang term ordering"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/compare.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R4",
+      "title": "Term hashing for BigInt",
+      "spec": "Extend term hashing to include BigInt values. BigInt hashing must be consistent with small_int hashing for values that fit in i64 (so a BigInt demoted to small_int hashes the same). Use the limb representation for values outside i64 range.",
+      "acceptance": [
+        "hash(BigInt(42)) == hash(small_int(42))",
+        "hash(BigInt(i64::MAX + 1)) is deterministic and non-zero",
+        "distinct BigInt values produce distinct hashes (spot check)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/hash.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "ETF encode/decode for BigInt",
+      "spec": "Extend ETF encoder to emit SMALL_BIG_EXT or LARGE_BIG_EXT for BigInt terms. Extend ETF decoder to read these tags and allocate BigInt on the target heap. Round-trip: encode(BigInt) |> decode == original BigInt.",
+      "acceptance": [
+        "BigInt encodes to SMALL_BIG_EXT for values with <= 255 bytes",
+        "BigInt encodes to LARGE_BIG_EXT for larger values",
+        "decode(encode(factorial(100))) == factorial(100)",
+        "SMALL_BIG_EXT from external BEAM source decodes correctly",
+        "negative BigInt encode/decode round-trips"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/etf/encode.rs",
+          "crates/beamr/src/etf/decode.rs"
+        ]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Bitwise operations for BigInt",
+      "spec": "Extend band, bor, bxor, bsl, bsr, bnot BIFs to handle BigInt operands. Mixed small_int/BigInt operands promote the small_int to BigInt for the operation.",
+      "acceptance": [
+        "band of two BigInt values produces correct result",
+        "bsl of small_int by large shift produces BigInt",
+        "bsr of BigInt back to small range demotes to small_int",
+        "bnot of BigInt produces correct two's complement result"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "Implement multi-limb arithmetic directly — no external bignum crate",
+    "Schoolbook algorithms are sufficient — Karatsuba/FFT optimization deferred",
+    "BigInt GC integration uses existing boxed-term tracing — no new GC infrastructure",
+    "JIT compilation of BigInt arithmetic deferred — interpreter path only",
+    "OUT OF SCOPE: Rational numbers or arbitrary-precision floats",
+    "OUT OF SCOPE: Performance parity with GMP — correctness first",
+    "OUT OF SCOPE: Crypto-specific constant-time arithmetic"
+  ],
+  "verification": "cargo test -p beamr --lib -- bigint; factorial(100) produces the correct 158-digit result; ETF round-trip for large integers matches BEAM output; no badarith for overflow in arithmetic BIFs"
+}
