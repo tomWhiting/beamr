@@ -41,6 +41,10 @@ proptest = "1.11.0"
 name = "jit_comparison"
 harness = false
 
+[[bench]]
+name = "jit_comparison_extended"
+harness = false
+
 [features]
 differential = []
 json = ["dep:base64", "dep:serde_json"]

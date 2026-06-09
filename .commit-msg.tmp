@@ -1,1 +1,1 @@
-Harden JIT float IR translation validation and test coverage
+refactor(beamr): split JIT control validation and benchmarks

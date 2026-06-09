@@ -12,6 +12,7 @@ pub(crate) mod ir_binary_lowering;
 pub(crate) mod ir_closure;
 pub(crate) mod ir_common;
 pub(crate) mod ir_control;
+pub(crate) mod ir_control_validation;
 pub(crate) mod ir_exceptions;
 pub(crate) mod ir_float;
 pub(crate) mod ir_guards;

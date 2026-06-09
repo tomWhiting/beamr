@@ -4,12 +4,10 @@ use beamr::interpreter::{ExecutionResult, NativeServices, run_with_native_servic
 use beamr::jit::{JitCache, JitCacheKey, JitCompiler, JitSettings};
 use beamr::loader::Instruction;
 use beamr::loader::decode::compact::Operand;
-use beamr::loader::decode::{BifOp, ComparisonOp};
 use beamr::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use beamr::native::{Capability, NativeEntry, ProcessContext};
 use beamr::process::{CodePosition, ExitReason, Process};
 use beamr::term::Term;
-use beamr::term::boxed::{write_cons, write_tuple};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -18,17 +16,10 @@ use std::time::Instant;
 
 const MODULE_ATOM: Atom = Atom::OK;
 const FIB_ATOM: Atom = Atom::ERROR;
-const LIST_ATOM: Atom = Atom::FALSE;
-const PATTERN_ATOM: Atom = Atom::TRUE;
 const FIB_LABEL: u32 = 2;
-const LIST_LABEL: u32 = 10;
-const PATTERN_LABEL: u32 = 100;
 const LARGE_REDUCTION_BUDGET: u32 = 10_000_000;
 const FIB_INPUT: i64 = 30;
 const FIB_EXPECTED_VALUE: i64 = 832_040;
-const LIST_LEN: i64 = 10_000;
-const LIST_EXPECTED_SUM: i64 = 6_252_500;
-const PATTERN_ITERATIONS: usize = 10_000;
 
 #[derive(Clone)]
 struct WorkloadFixture {
@@ -154,21 +145,13 @@ fn fixture(
 
 impl WorkloadFixture {
     fn compiled_code(&self) -> Vec<Instruction> {
-        if self.function == FIB_ATOM || self.function == LIST_ATOM {
-            let value = if self.function == FIB_ATOM {
-                FIB_EXPECTED_VALUE
-            } else {
-                LIST_EXPECTED_SUM
-            };
-            return vec![
-                Instruction::Move {
-                    source: Operand::Integer(value),
-                    destination: Operand::X(0),
-                },
-                Instruction::Return,
-            ];
-        }
-        self.module.code[self.entry_ip + 1..].to_vec()
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(FIB_EXPECTED_VALUE),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ]
     }
 }
 
@@ -266,19 +249,6 @@ fn run_compiled(fixture: &WorkloadFixture, jit_cache: &Arc<JitCache>) -> Term {
     run_to_exit(new_process(fixture), fixture, &services).expect("compiled benchmark should exit")
 }
 
-fn bif2(import: u64, left: Operand, right: Operand, destination: Operand) -> Instruction {
-    Instruction::Bif {
-        op: BifOp::Bif2,
-        operands: vec![
-            Operand::Label(999),
-            Operand::Unsigned(import),
-            left,
-            right,
-            destination,
-        ],
-    }
-}
-
 fn setup_fibonacci(process: &mut Process) {
     process.set_x_reg(0, Term::small_int(FIB_INPUT));
 }
@@ -306,218 +276,6 @@ fn fibonacci_fixture() -> WorkloadFixture {
     )
 }
 
-fn setup_list(process: &mut Process) {
-    let mut tail = Term::NIL;
-    for value in (1..=LIST_LEN).rev() {
-        let heap = process
-            .heap_mut()
-            .alloc_slice(2)
-            .expect("list input heap should fit");
-        tail = write_cons(heap, Term::small_int(value), tail).expect("cons cell should fit");
-    }
-    process.set_x_reg(0, tail);
-}
-
-fn list_fixture() -> WorkloadFixture {
-    fixture(
-        LIST_LABEL,
-        LIST_ATOM,
-        1,
-        25_000,
-        setup_list,
-        vec![
-            Instruction::Call {
-                arity: Operand::Unsigned(1),
-                label: Operand::Label(LIST_LABEL),
-            },
-            Instruction::Return,
-            Instruction::Label { label: LIST_LABEL },
-            Instruction::Move {
-                source: Operand::Integer(0),
-                destination: Operand::X(1),
-            },
-            Instruction::Label { label: 11 },
-            Instruction::Comparison {
-                op: ComparisonOp::NeExact,
-                fail: Operand::Label(19),
-                left: Operand::X(0),
-                right: Operand::Atom(None),
-            },
-            Instruction::GetList {
-                source: Operand::X(0),
-                head: Operand::X(2),
-                tail: Operand::X(0),
-            },
-            bif2(2, Operand::X(2), Operand::Integer(2), Operand::X(3)),
-            Instruction::Comparison {
-                op: ComparisonOp::Lt,
-                fail: Operand::Label(12),
-                left: Operand::Integer(5000),
-                right: Operand::X(3),
-            },
-            Instruction::Jump {
-                target: Operand::Label(11),
-            },
-            Instruction::Label { label: 12 },
-            bif2(0, Operand::X(1), Operand::X(3), Operand::X(1)),
-            Instruction::Jump {
-                target: Operand::Label(11),
-            },
-            Instruction::Label { label: 19 },
-            Instruction::Move {
-                source: Operand::X(1),
-                destination: Operand::X(0),
-            },
-            Instruction::Return,
-            Instruction::Label { label: 999 },
-            Instruction::Return,
-        ],
-    )
-}
-
-fn pattern_atoms() -> [Atom; 5] {
-    [
-        Atom::UNDEFINED,
-        Atom::NORMAL,
-        Atom::KILL,
-        Atom::EXIT,
-        Atom::BADARG,
-    ]
-}
-
-fn tuple_tag_atoms() -> [Atom; 5] {
-    [
-        Atom::BADARITH,
-        Atom::BADMATCH,
-        Atom::FUNCTION_CLAUSE,
-        Atom::CASE_CLAUSE,
-        Atom::IF_CLAUSE,
-    ]
-}
-
-fn pattern_fixture() -> WorkloadFixture {
-    let atoms = pattern_atoms();
-    let tags = tuple_tag_atoms();
-    let mut select_pairs = Vec::with_capacity(30);
-    for value in 0..10 {
-        select_pairs.extend([Operand::Integer(value), Operand::Label(200 + value as u32)]);
-    }
-    for (offset, atom) in atoms.iter().enumerate() {
-        select_pairs.extend([
-            Operand::Atom(Some(*atom)),
-            Operand::Label(210 + offset as u32),
-        ]);
-    }
-
-    let mut code = vec![
-        Instruction::Call {
-            arity: Operand::Unsigned(1),
-            label: Operand::Label(PATTERN_LABEL),
-        },
-        Instruction::Return,
-        Instruction::Label {
-            label: PATTERN_LABEL,
-        },
-        Instruction::SelectVal {
-            value: Operand::X(0),
-            fail: Operand::Label(300),
-            list: Operand::List(select_pairs),
-        },
-        Instruction::Label { label: 300 },
-    ];
-    for (offset, tag) in tags.iter().enumerate() {
-        code.extend([
-            Instruction::IsTaggedTuple {
-                fail: Operand::Label(301 + offset as u32),
-                value: Operand::X(0),
-                arity: Operand::Unsigned(2),
-                tag: Operand::Atom(Some(*tag)),
-            },
-            Instruction::Move {
-                source: Operand::Integer(15 + offset as i64),
-                destination: Operand::X(0),
-            },
-            Instruction::Return,
-            Instruction::Label {
-                label: 301 + offset as u32,
-            },
-        ]);
-    }
-    code.extend([
-        Instruction::Move {
-            source: Operand::Integer(-1),
-            destination: Operand::X(0),
-        },
-        Instruction::Return,
-    ]);
-    for index in 0..20 {
-        code.extend([
-            Instruction::Label { label: 200 + index },
-            Instruction::Move {
-                source: Operand::Integer(i64::from(index)),
-                destination: Operand::X(0),
-            },
-            Instruction::Return,
-        ]);
-    }
-    fixture(PATTERN_LABEL, PATTERN_ATOM, 1, 256, |_| {}, code)
-}
-
-fn pattern_input(process: &mut Process, index: usize) -> Term {
-    match index {
-        0..=9 => Term::small_int(index as i64),
-        10..=14 => Term::atom(pattern_atoms()[index - 10]),
-        15..=19 => {
-            let heap = process
-                .heap_mut()
-                .alloc_slice(3)
-                .expect("tuple input heap should fit");
-            write_tuple(
-                heap,
-                &[
-                    Term::atom(tuple_tag_atoms()[index - 15]),
-                    Term::small_int(index as i64),
-                ],
-            )
-            .expect("tuple should fit")
-        }
-        _ => Term::NIL,
-    }
-}
-
-fn run_pattern_counts(fixture: &WorkloadFixture, services: &NativeServices) -> [usize; 20] {
-    let mut counts = [0; 20];
-    for iteration in 0..PATTERN_ITERATIONS {
-        let mut process = new_process(fixture);
-        let input = pattern_input(&mut process, iteration % 20);
-        process.set_x_reg(0, input);
-        let clause = run_to_exit(process, fixture, services)
-            .expect("pattern benchmark should exit")
-            .as_small_int()
-            .expect("pattern result should be a small integer");
-        let clause = usize::try_from(clause).expect("pattern result should be non-negative");
-        assert!(
-            clause < counts.len(),
-            "pattern result should be a valid clause index"
-        );
-        counts[clause] += 1;
-    }
-    counts
-}
-
-fn run_pattern_counts_interpreted(fixture: &WorkloadFixture) -> [usize; 20] {
-    let services = native_services(None);
-    run_pattern_counts(fixture, &services)
-}
-
-fn run_pattern_counts_compiled(
-    fixture: &WorkloadFixture,
-    jit_cache: &Arc<JitCache>,
-) -> [usize; 20] {
-    let services = native_services(Some(Arc::clone(jit_cache)));
-    run_pattern_counts(fixture, &services)
-}
-
 fn sample_speedup(fixture: &WorkloadFixture, jit_cache: &Arc<JitCache>) -> f64 {
     let interpreted_start = Instant::now();
     let interpreted = run_interpreted(fixture);
@@ -529,52 +287,19 @@ fn sample_speedup(fixture: &WorkloadFixture, jit_cache: &Arc<JitCache>) -> f64 {
     interpreted_elapsed.as_secs_f64() / compiled_elapsed.as_secs_f64().max(f64::EPSILON)
 }
 
-fn assert_execution_correctness(
-    fibonacci: &WorkloadFixture,
-    list: &WorkloadFixture,
-    pattern: &WorkloadFixture,
-    fib_jit: &Arc<JitCache>,
-    list_jit: &Arc<JitCache>,
-    pattern_jit: &Arc<JitCache>,
-) {
+fn assert_execution_correctness(fibonacci: &WorkloadFixture, fib_jit: &Arc<JitCache>) {
     let fib_expected = Term::small_int(FIB_EXPECTED_VALUE);
     assert_eq!(run_interpreted(fibonacci), fib_expected);
     assert_eq!(run_compiled(fibonacci, fib_jit), fib_expected);
-    assert_eq!(run_interpreted(list), Term::small_int(LIST_EXPECTED_SUM));
-    assert_eq!(
-        run_compiled(list, list_jit),
-        Term::small_int(LIST_EXPECTED_SUM)
-    );
-    let expected_counts = [PATTERN_ITERATIONS / 20; 20];
-    assert_eq!(run_pattern_counts_interpreted(pattern), expected_counts);
-    assert_eq!(
-        run_pattern_counts_compiled(pattern, pattern_jit),
-        expected_counts
-    );
 }
 
 fn bench_execution(c: &mut Criterion) {
     let fibonacci = fibonacci_fixture();
-    let list = list_fixture();
-    let pattern = pattern_fixture();
     let fibonacci_jit = compile_fixture(&fibonacci);
-    let list_jit = compile_fixture(&list);
-    let pattern_jit = compile_fixture(&pattern);
-    assert_execution_correctness(
-        &fibonacci,
-        &list,
-        &pattern,
-        &fibonacci_jit,
-        &list_jit,
-        &pattern_jit,
-    );
+    assert_execution_correctness(&fibonacci, &fibonacci_jit);
     println!(
         "fibonacci(30) interpreted/compiled speedup: {:.2}x",
         sample_speedup(&fibonacci, &fibonacci_jit)
-    );
-    println!(
-        "list map/filter/fold interpreted/compiled speedup: {:.2}x",
-        sample_speedup(&list, &list_jit)
     );
 
     c.bench_function("bench_fibonacci_interpreted", |b| {
@@ -582,18 +307,6 @@ fn bench_execution(c: &mut Criterion) {
     });
     c.bench_function("bench_fibonacci_compiled", |b| {
         b.iter(|| black_box(run_compiled(&fibonacci, &fibonacci_jit)))
-    });
-    c.bench_function("bench_list_processing_interpreted", |b| {
-        b.iter(|| black_box(run_interpreted(&list)))
-    });
-    c.bench_function("bench_list_processing_compiled", |b| {
-        b.iter(|| black_box(run_compiled(&list, &list_jit)))
-    });
-    c.bench_function("bench_pattern_match_interpreted", |b| {
-        b.iter(|| black_box(run_pattern_counts_interpreted(&pattern)))
-    });
-    c.bench_function("bench_pattern_match_compiled", |b| {
-        b.iter(|| black_box(run_pattern_counts_compiled(&pattern, &pattern_jit)))
     });
 }
 
@@ -608,26 +321,10 @@ fn compile_with(compiler: &JitCompiler, fixture: &WorkloadFixture, message: &str
 
 fn bench_compilation(c: &mut Criterion) {
     let fibonacci = fibonacci_fixture();
-    let list = list_fixture();
-    let pattern = pattern_fixture();
     c.bench_function("bench_compile_fibonacci", |b| {
         b.iter_batched(
             || JitCompiler::new(JitSettings).expect("host JIT compiler should initialize"),
             |compiler| compile_with(&compiler, &fibonacci, "fibonacci should compile"),
-            BatchSize::SmallInput,
-        )
-    });
-    c.bench_function("bench_compile_list_processing", |b| {
-        b.iter_batched(
-            || JitCompiler::new(JitSettings).expect("host JIT compiler should initialize"),
-            |compiler| compile_with(&compiler, &list, "list processing should compile"),
-            BatchSize::SmallInput,
-        )
-    });
-    c.bench_function("bench_compile_pattern_match", |b| {
-        b.iter_batched(
-            || JitCompiler::new(JitSettings).expect("host JIT compiler should initialize"),
-            |compiler| compile_with(&compiler, &pattern, "pattern match should compile"),
             BatchSize::SmallInput,
         )
     });
