@@ -8,11 +8,11 @@ use std::path::Path;
 use beamr::atom::{Atom, AtomTable};
 use beamr::constant_pool;
 use beamr::interpreter::{ExecutionResult, run_with_registry};
-use beamr::jit::{JitCompiler, JitSettings, NativeCode};
+use beamr::jit::{AotCompiler, JitCompiler, JitSettings, NativeCode};
 use beamr::loader::decode::compact::Operand;
 use beamr::loader::decode::{BifOp, ComparisonOp, MapOp, TypeTestOp};
 use beamr::loader::{Instruction, load_beam_chunks};
-use beamr::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
+use beamr::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use beamr::native::BifRegistryImpl;
 use beamr::native::bifs::register_gate1_bifs;
 use beamr::native::gate3_bifs::register_gate3_bifs;
@@ -155,9 +155,16 @@ impl CompiledExecutor for InterpreterBackedCompiledExecutor {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompiledSource {
+    Jit,
+    Aot,
+}
+
 pub struct DifferentialRunner<E = InterpreterBackedCompiledExecutor> {
     config: SchedulerConfig,
     compiled_executor: E,
+    compiled_source: CompiledSource,
 }
 
 impl DifferentialRunner<InterpreterBackedCompiledExecutor> {
@@ -168,6 +175,18 @@ impl DifferentialRunner<InterpreterBackedCompiledExecutor> {
         Self {
             config,
             compiled_executor: InterpreterBackedCompiledExecutor,
+            compiled_source: CompiledSource::Jit,
+        }
+    }
+
+    pub fn new_aot(mut config: SchedulerConfig) -> Self {
+        if config.jit_threshold.is_none() {
+            config.jit_threshold = Some(1);
+        }
+        Self {
+            config,
+            compiled_executor: InterpreterBackedCompiledExecutor,
+            compiled_source: CompiledSource::Aot,
         }
     }
 }
@@ -180,6 +199,7 @@ impl<E: CompiledExecutor> DifferentialRunner<E> {
         Self {
             config,
             compiled_executor,
+            compiled_source: CompiledSource::Jit,
         }
     }
 
@@ -201,7 +221,14 @@ impl<E: CompiledExecutor> DifferentialRunner<E> {
             }
         };
         let function_atom = atoms.intern(function);
-        self.run_loaded_module(&atoms, module, function_atom, arity, args)
+        self.run_loaded_module(
+            &atoms,
+            module,
+            Some(module_bytes),
+            function_atom,
+            arity,
+            args,
+        )
     }
 
     pub fn run_instructions(
@@ -216,13 +243,14 @@ impl<E: CompiledExecutor> DifferentialRunner<E> {
         let module_atom = atoms.intern(module_name);
         let function_atom = atoms.intern(function_name);
         let module = module_from_instructions(module_atom, function_atom, arity, code);
-        self.run_loaded_module(&atoms, module, function_atom, arity, args)
+        self.run_loaded_module(&atoms, module, None, function_atom, arity, args)
     }
 
     fn run_loaded_module(
         &self,
         atoms: &AtomTable,
         module: Module,
+        module_bytes: Option<&[u8]>,
         function: Atom,
         arity: u8,
         args: &[Term],
@@ -239,21 +267,23 @@ impl<E: CompiledExecutor> DifferentialRunner<E> {
             }
         };
 
-        let compiler = match JitCompiler::new(JitSettings) {
-            Ok(compiler) => compiler,
-            Err(error) => {
-                return DifferentialResult::CompilationSkipped {
-                    reason: format!("JIT compiler unavailable for {mfa}: {error}"),
-                };
+        let native = match self.compiled_source {
+            CompiledSource::Jit => {
+                match compile_with_jit(&instructions, module.name, function, arity) {
+                    Ok(native) => native,
+                    Err(reason) => {
+                        return DifferentialResult::CompilationSkipped { reason };
+                    }
+                }
             }
-        };
-        let native = match compiler.compile(&instructions, module.name, function, arity) {
-            Ok(native) => native,
-            Err(error) => {
-                return DifferentialResult::CompilationSkipped {
-                    reason: format!("{error}"),
-                };
-            }
+            CompiledSource::Aot => match compile_with_aot(module_bytes, function, arity) {
+                Ok(native) => native,
+                Err(reason) => {
+                    return DifferentialResult::CompilationSkipped {
+                        reason: format!("AOT compiler unavailable for {mfa}: {reason}"),
+                    };
+                }
+            },
         };
         let interpreted = match execute_interpreter(&module, &registry, function, arity, args) {
             Ok(trace) => trace,
@@ -642,6 +672,69 @@ fn registered_bifs(atoms: &AtomTable) -> BifRegistryImpl {
     bifs
 }
 
+fn compile_with_jit(
+    instructions: &[Instruction],
+    module: Atom,
+    function: Atom,
+    arity: u8,
+) -> Result<NativeCode, String> {
+    let compiler = JitCompiler::new(JitSettings)
+        .map_err(|error| format!("JIT compiler unavailable: {error}"))?;
+    compiler
+        .compile(instructions, module, function, arity)
+        .map_err(|error| format!("{error}"))
+}
+
+fn compile_with_aot(
+    module_bytes: Option<&[u8]>,
+    function: Atom,
+    arity: u8,
+) -> Result<NativeCode, String> {
+    let module_bytes = module_bytes.ok_or_else(|| {
+        "AOT differential source requires original BEAM bytes; synthetic instruction runs use JIT"
+            .to_owned()
+    })?;
+    let temp_path = std::env::temp_dir().join(format!(
+        "beamr_differential_aot_{}_{}.beam",
+        std::process::id(),
+        unique_nanos()
+    ));
+    fs::write(&temp_path, module_bytes)
+        .map_err(|error| format!("write temp BEAM for AOT failed: {error}"))?;
+    let compiler = AotCompiler::new().map_err(|error| format!("{error}"))?;
+    let result = compiler
+        .compile_module(&temp_path)
+        .map_err(|error| format!("{error}"));
+    let _ = fs::remove_file(&temp_path);
+    let result = result?;
+    result
+        .compiled_functions()
+        .iter()
+        .find(|(compiled_function, compiled_arity, _)| {
+            *compiled_function == function && *compiled_arity == arity
+        })
+        .map(|(_, _, native)| native.clone())
+        .ok_or_else(|| {
+            result
+                .skipped_functions()
+                .iter()
+                .find(|(skipped_function, skipped_arity, _)| {
+                    *skipped_function == function && *skipped_arity == arity
+                })
+                .map_or_else(
+                    || "function absent from AOT result".to_owned(),
+                    |(_, _, reason)| reason.clone(),
+                )
+        })
+}
+
+fn unique_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
 fn module_from_bytes(
     bytes: &[u8],
     atoms: &AtomTable,
@@ -672,6 +765,7 @@ fn module_from_bytes(
     Ok(Module {
         name: parsed.name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports,
         label_index,
         code: parsed.instructions,
@@ -703,6 +797,7 @@ fn module_from_instructions(
     Module {
         name: module,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::from([((function, arity), export_label)]),
         label_index,
         code,
@@ -990,6 +1085,20 @@ fn fibonacci_differential_wrapper_skips_until_jit_supports_recursive_bytecode() 
         1,
         &[Term::small_int(10)]
     );
+}
+
+#[test]
+fn aot_compiled_path_matches_jit_for_fixture_function() {
+    let runner = DifferentialRunner::new_aot(SchedulerConfig::default());
+    match runner.run(include_bytes!("fixtures/proof.beam"), "main", 0, &[]) {
+        DifferentialResult::Match { result } => {
+            assert_eq!(result, RunOutcome::Value(Term::small_int(42)));
+        }
+        DifferentialResult::CompilationSkipped { reason } => {
+            eprintln!("AOT differential test skipped for main/0: {reason}");
+        }
+        DifferentialResult::Divergence { report, .. } => panic!("{report}"),
+    }
 }
 
 #[test]

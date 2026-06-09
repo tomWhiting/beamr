@@ -1,1 +1,1 @@
-harden(jit): cache successful generation-aware compilation
+feat(beamr): add AOT compilation and native bundle CLI

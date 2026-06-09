@@ -6,9 +6,8 @@ use std::{env, fmt};
 use beamr::atom::{Atom, AtomTable};
 use beamr::error::{ExecError, LoadError};
 use beamr::io::StdoutSink;
-use beamr::loader::{
-    UnresolvedImportReport, embedded_module_bytes, load_module_with_origin,
-};
+use beamr::jit::{AotCompiler, AotError, NativeCodeBundle};
+use beamr::loader::{UnresolvedImportReport, embedded_module_bytes, load_module_with_origin};
 use beamr::module::{ModuleOrigin, ModuleRegistry};
 use beamr::native::{
     BifRegistryImpl, NativeRegistrationError,
@@ -25,7 +24,7 @@ use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::term::{Tag, Term};
 
-const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr imports <file.beam>\n  beamr --help|-h\n  beamr --version|-V";
+const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr imports <file.beam>\n  beamr compile <dir> [--verbose]\n  beamr --help|-h\n  beamr --version|-V";
 
 fn main() -> ExitCode {
     let outcome = run_cli(env::args().skip(1));
@@ -52,6 +51,10 @@ enum Command {
     Imports {
         path: PathBuf,
     },
+    Compile {
+        dir: PathBuf,
+        verbose: bool,
+    },
     Help,
     Version,
 }
@@ -74,6 +77,7 @@ enum CliError {
         source: std::io::Error,
     },
     Load(LoadError),
+    Aot(AotError),
     Exec(ExecError),
     NativeRegistration(NativeRegistrationError),
     UnresolvedImports(String),
@@ -103,6 +107,7 @@ where
             env!("CARGO_PKG_VERSION")
         ))),
         Command::Imports { path } => run_imports(&path),
+        Command::Compile { dir, verbose } => run_compile(&dir, verbose),
         Command::Run {
             path,
             entry,
@@ -152,6 +157,13 @@ where
                     return Ok(Command::Version);
                 }
                 "--entry" if index == 1 => continue,
+                "--verbose"
+                    if filtered_args
+                        .first()
+                        .is_some_and(|command| command == "compile") =>
+                {
+                    continue;
+                }
                 "--help" | "-h" | "--version" | "-V" => {
                     return Err(CliError::Usage(format!(
                         "flag '{arg}' cannot be combined with other arguments\n{USAGE}"
@@ -167,6 +179,9 @@ where
         [command] if command == "imports" => Err(CliError::Usage(format!(
             "imports requires a .beam file\n{USAGE}"
         ))),
+        [command] if command == "compile" => Err(CliError::Usage(format!(
+            "compile requires a directory\n{USAGE}"
+        ))),
         [file] => {
             validate_beam_path(file)?;
             Ok(Command::Run {
@@ -180,6 +195,22 @@ where
             validate_beam_path(file)?;
             Ok(Command::Imports {
                 path: PathBuf::from(file),
+            })
+        }
+        [command, dir] if command == "compile" => Ok(Command::Compile {
+            dir: PathBuf::from(dir),
+            verbose: false,
+        }),
+        [command, dir, flag] if command == "compile" && flag == "--verbose" => {
+            Ok(Command::Compile {
+                dir: PathBuf::from(dir),
+                verbose: true,
+            })
+        }
+        [command, flag, dir] if command == "compile" && flag == "--verbose" => {
+            Ok(Command::Compile {
+                dir: PathBuf::from(dir),
+                verbose: true,
             })
         }
         [file, entry] => {
@@ -249,6 +280,74 @@ fn run_imports(path: &Path) -> Result<CliSuccess, CliError> {
         &report,
         &atom_table,
     )))
+}
+
+fn run_compile(dir: &Path, verbose: bool) -> Result<CliSuccess, CliError> {
+    let started = std::time::Instant::now();
+    let compiler = AotCompiler::new().map_err(CliError::Aot)?;
+    let entries = std::fs::read_dir(dir).map_err(|source| CliError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let mut beam_files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| CliError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "beam") {
+            beam_files.push(path);
+        }
+    }
+    beam_files.sort();
+
+    let atom_table = AtomTable::with_common_atoms();
+    let mut total_compiled = 0usize;
+    let mut total_skipped = 0usize;
+    let mut output = String::new();
+
+    for beam_path in beam_files {
+        let result = compiler.compile_module(&beam_path).map_err(CliError::Aot)?;
+        let native_path = beam_path.with_extension("beamr_native");
+        let bundle = NativeCodeBundle::serialize(&result);
+        std::fs::write(&native_path, bundle).map_err(|source| CliError::Io {
+            path: native_path,
+            source,
+        })?;
+
+        if verbose {
+            let module = format_atom(result.module(), &atom_table);
+            for (function, arity, _) in result.compiled_functions() {
+                output.push_str(&format!(
+                    "{}:{}/{} compiled\n",
+                    module,
+                    format_atom(*function, &atom_table),
+                    arity
+                ));
+            }
+            for (function, arity, reason) in result.skipped_functions() {
+                output.push_str(&format!(
+                    "{}:{}/{} skipped ({})\n",
+                    module,
+                    format_atom(*function, &atom_table),
+                    arity,
+                    reason
+                ));
+            }
+        }
+
+        total_compiled += result.compiled_functions().len();
+        total_skipped += result.skipped_functions().len();
+    }
+
+    output.push_str(&format!(
+        "Compiled {} functions ({} skipped) in {:.1}s\n",
+        total_compiled,
+        total_skipped,
+        started.elapsed().as_secs_f64()
+    ));
+    Ok(CliSuccess::Stdout(output))
 }
 
 fn run_module(
@@ -490,7 +589,7 @@ fn format_atom(atom: Atom, atom_table: &AtomTable) -> String {
 impl CliError {
     const fn exit_code(&self) -> u8 {
         match self {
-            Self::Load(_) | Self::Io { .. } => 2,
+            Self::Load(_) | Self::Aot(_) | Self::Io { .. } => 2,
             Self::Usage(_)
             | Self::UnknownFlag(_)
             | Self::InvalidBeamPath(_)
@@ -524,6 +623,7 @@ impl fmt::Display for CliError {
                 write!(formatter, "cannot read '{}': {source}", path.display())
             }
             Self::Load(error) => write!(formatter, "load: {error}"),
+            Self::Aot(error) => write!(formatter, "aot: {error}"),
             Self::Exec(error) => write!(formatter, "exec: {error}"),
             Self::NativeRegistration(error) => write!(formatter, "native registration: {error}"),
             Self::UnresolvedImports(report) => {
@@ -623,6 +723,24 @@ mod tests {
             parse_args(["imports", "hello.beam"]).expect("imports parses"),
             Command::Imports {
                 path: "hello.beam".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_compile_command_with_verbose() {
+        assert_eq!(
+            parse_args(["compile", "/tmp/beams", "--verbose"]).expect("compile verbose parses"),
+            Command::Compile {
+                dir: "/tmp/beams".into(),
+                verbose: true,
+            }
+        );
+        assert_eq!(
+            parse_args(["compile", "/tmp/beams"]).expect("compile parses"),
+            Command::Compile {
+                dir: "/tmp/beams".into(),
+                verbose: false,
             }
         );
     }

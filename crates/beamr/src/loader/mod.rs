@@ -10,6 +10,7 @@ pub mod load;
 pub mod parser;
 pub mod validate;
 
+pub use crate::jit::aot::load_companion_into_cache;
 pub use decode::{
     ExportEntry, ImportEntry, Instruction, LambdaEntry, LineInfo, Literal, decode_instructions,
 };
