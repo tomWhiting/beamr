@@ -62,7 +62,8 @@ impl JitCompiler {
         flag_builder
             .set("is_pic", "false")
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
-        let isa_builder = cranelift_native::builder().map_err(JitError::CraneliftError)?;
+        let isa_builder = cranelift_native::builder()
+            .map_err(|error| JitError::CraneliftError(error.to_owned()))?;
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;

@@ -1,1 +1,1 @@
-feat(beamr): add always-on Cranelift JIT scaffold
+fix(beamr): map Cranelift native builder errors into JitError
