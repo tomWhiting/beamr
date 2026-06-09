@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 camino = "1.2.1"
+ecow.workspace = true
 gleam-core = { git = "https://github.com/gleam-lang/gleam", package = "gleam-core", rev = "afc1b7d956b433e638d52dbd06470f53a0b26f6a" }
 
 [[bin]]

@@ -1,1 +1,1 @@
-feat: add Gleam type sidecar tool and reader
+fix: pin ecow for gleam-core compatibility

@@ -9,3 +9,6 @@ authors = [
     "Tom Whiting <tom@ablative.com.au>",
     "Josh Bearup <Joshuabearup1@gmail.com>",
 ]
+
+[workspace.dependencies]
+ecow = "=0.2.6"
