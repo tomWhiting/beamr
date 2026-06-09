@@ -1,0 +1,111 @@
+{
+  "id": "B-171",
+  "cluster": "beamr",
+  "title": "Correctness fixes — EtsKey equality, timeout FD leak, EXPORT_EXT closure atom",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C33", "C125", "C150"],
+  "stories": ["S18", "S22"],
+  "purpose": "Three correctness bugs identified during Phase 4 review: (1) EtsKey::eq uses raw u64 pointer comparison instead of structural term equality — two boxed terms with identical content but different heap addresses compare as unequal, breaking ETS lookups for tuple/list keys. (2) B-106 timeout-then-accept race leaks file descriptors when a TCP accept timeout fires after the connection is accepted but before the FD resource is registered. (3) B-086 EXPORT_EXT closure decoding produces the wrong function atom when the external term format encodes a fun M:F/A reference.",
+  "task": "Fix EtsKey::eq to use compare::partial_eq for structural equality. Fix the TCP accept timeout race to close the accepted FD if the timeout has already fired. Fix EXPORT_EXT decoding to correctly resolve the closure function atom.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "EtsKey structural equality",
+      "spec": "WHEN two EtsKey values are compared for equality, THE SYSTEM SHALL use structural term comparison (compare::partial_eq) instead of raw u64 comparison. THE SYSTEM SHALL also update EtsKey::hash to use structural term hashing so that equal keys produce equal hashes. THE SYSTEM SHALL NOT change the Hash implementation to be inconsistent with PartialEq — if eq uses structural comparison, hash must use structural hashing.",
+      "acceptance": [
+        "EtsKey({1,2}) == EtsKey({1,2}) even when heap addresses differ",
+        "EtsKey(42) == EtsKey(42) for small integers (unchanged — already equal by raw value)",
+        "EtsKey hash is consistent with eq: equal keys produce equal hashes",
+        "ETS insert + lookup with tuple key works across GC (different heap addresses)",
+        "Test: insert {key, val} then lookup after GC still finds the entry"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/term/hash.rs"]
+      },
+      "checklist": ["C33"],
+      "stories": ["S18"]
+    },
+    {
+      "id": "R2",
+      "title": "TCP accept timeout FD leak fix",
+      "spec": "WHEN a TCP accept operation completes successfully but the receive timeout has already fired, THE SYSTEM SHALL close the accepted file descriptor before discarding the completion result. THE SYSTEM SHALL NOT leave the FD open when the timeout handler has already transitioned the process state. IF the timeout fires between accept completion and FD registration, THE SYSTEM SHALL detect the stale accept and close the FD.",
+      "acceptance": [
+        "Accept-then-timeout sequence does not leak FDs (lsof or /proc/self/fd count stable)",
+        "Normal accept (no timeout) still returns {ok, Socket} correctly",
+        "Timeout-before-accept still returns {error, timeout} correctly",
+        "Test: rapid accept/timeout interleaving does not accumulate open FDs"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/tcp_bifs.rs"]
+      },
+      "checklist": ["C125"],
+      "stories": ["S22"]
+    },
+    {
+      "id": "R3",
+      "title": "EXPORT_EXT closure function atom fix",
+      "spec": "WHEN the ETF decoder encounters an EXPORT_EXT tag (113), THE SYSTEM SHALL decode the Module, Function, and Arity terms and construct a closure reference with the correct function atom. THE SYSTEM SHALL NOT use the module atom where the function atom is expected. IF the decoded function is not an atom, THE SYSTEM SHALL return a decode error.",
+      "acceptance": [
+        "EXPORT_EXT for erlang:self/0 decodes with function atom = self, not erlang",
+        "Round-trip encode/decode of EXPORT_EXT preserves module, function, and arity",
+        "Test: decode EXPORT_EXT bytes and verify function atom field is correct"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/etf/decode.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S22"]
+    },
+    {
+      "id": "R4",
+      "title": "SHALL NOT constraints",
+      "spec": "THE SYSTEM SHALL NOT introduce new equality semantics that break existing ETS tests. THE SYSTEM SHALL NOT close FDs that are still referenced by active socket resources. THE SYSTEM SHALL NOT change the EXPORT_EXT wire format or encoding — only the decode path is affected.",
+      "acceptance": [
+        "All existing ETS tests pass after EtsKey change",
+        "All existing TCP tests pass after FD leak fix",
+        "All existing ETF encode/decode tests pass after EXPORT_EXT fix",
+        "No new test failures introduced"
+      ],
+      "files": {
+        "modify": []
+      },
+      "checklist": ["C33", "C125", "C150"],
+      "stories": ["S18", "S22"]
+    },
+    {
+      "id": "R5",
+      "title": "Regression tests for all three fixes",
+      "spec": "THE SYSTEM SHALL include focused regression tests for each fix. THE SYSTEM SHALL test EtsKey equality with boxed terms at different heap addresses. THE SYSTEM SHALL test the accept/timeout race window. THE SYSTEM SHALL test EXPORT_EXT round-trip with multi-component MFAs.",
+      "acceptance": [
+        "New test: ets_key_structural_equality_for_boxed_terms",
+        "New test: tcp_accept_timeout_does_not_leak_fd",
+        "New test: export_ext_decodes_correct_function_atom"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/term/hash.rs",
+          "crates/beamr/src/native/tcp_bifs_tests.rs",
+          "crates/beamr/src/etf/decode.rs"
+        ]
+      },
+      "checklist": ["C33", "C125", "C150"],
+      "stories": ["S18"]
+    }
+  ],
+  "boundaries": {
+    "in_scope": [
+      "EtsKey structural equality and consistent hashing",
+      "TCP accept/timeout FD leak race fix",
+      "EXPORT_EXT closure function atom decode fix",
+      "Regression tests for all three"
+    ],
+    "out_of_scope": [
+      "ETS performance optimization",
+      "TCP connection pooling or backpressure",
+      "ETF distribution protocol changes",
+      "Other known ETS or TCP bugs not listed here"
+    ]
+  },
+  "verification": "cargo test --package beamr --lib && cargo test --package beamr --test '*'"
+}

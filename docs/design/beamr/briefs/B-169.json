@@ -1,0 +1,138 @@
+{
+  "id": "B-169",
+  "cluster": "beamr",
+  "title": "Higher-order BIF trampoline — wire closure-calling stubs",
+  "depends_on": ["B-028"],
+  "blocked_by": [],
+  "checklist": ["C150", "C151"],
+  "stories": ["S4", "S9"],
+  "purpose": "Six registered BIF stubs return identity/badarg because they accept BEAM closures as arguments but the BIF calling convention cannot re-enter the interpreter to invoke them. The trampoline mechanism (TrampolineRequest + NativeContinuation + handle_native_continuation) already exists and is production-tested for maps:fold/3, maps:filter/2, lists:map/2, lists:filter/2. These stubs need to be wired into the same pattern. maps:map/2 applies a function to every value in a map. gleam@option:map/2 applies a function to the Some payload. gleam@result:map_error/2 and gleam@result:then/2 transform Result tuples. gleam@otp@intensity_tracker:new/2 and add_event/1 are fixed-shape stubs that need real tuple construction but do not need closures. The JIT path (compiled code -> jit_call_interpreted -> interpreter -> BIF -> trampoline -> interpreter -> continuation) must work without modification because the trampoline is handled inside the interpreter run_loop, which jit_call_interpreted already calls.",
+  "task": "Replace the 6 identity/badarg stubs with real implementations using the existing trampoline infrastructure. Add NativeContinuation variants for maps:map and gleam result/option higher-order functions. Verify the JIT -> trampoline path works end-to-end with a test that compiles a function calling maps:map/2 with a closure argument.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "maps:map/2 trampoline implementation",
+      "spec": "WHEN maps:map/2 is called with a function and a map, THE SYSTEM SHALL extract map entries, call context.set_continuation_trampoline() with the function, first key-value pair, and a MapsHofState::Map continuation, and return Term::NIL to signal pending trampoline. WHEN the continuation resumes with the closure result, THE SYSTEM SHALL store the transformed value and advance to the next entry. WHEN all entries are processed, THE SYSTEM SHALL construct a new map from the transformed entries. THE SYSTEM SHALL NOT modify the original map.",
+      "acceptance": [
+        "maps:map/2 with identity function returns map with same entries",
+        "maps:map/2 with fn(K, V) -> V+1 on #{a => 1, b => 2} returns #{a => 2, b => 3}",
+        "maps:map/2 on empty map returns empty map",
+        "MapsHofState::Map variant exists in NativeContinuation::Maps",
+        "resume_maps_continuation handles Map state progression",
+        "Original map is not mutated"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/stdlib_stubs/collection_bifs.rs",
+          "crates/beamr/src/native/stdlib_stubs/maps_bifs.rs",
+          "crates/beamr/src/interpreter/opcodes/trampoline.rs"
+        ]
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R2",
+      "title": "gleam@option:map/2 trampoline implementation",
+      "spec": "WHEN gleam@option:map/2 is called with an option tuple and a function, THE SYSTEM SHALL inspect the option tag. IF the option is {some, Value}, THE SYSTEM SHALL call context.set_continuation_trampoline() with the function, [Value] args, and a GleamOption::Map continuation. WHEN the continuation resumes, THE SYSTEM SHALL wrap the result in {some, Result}. IF the option is none, THE SYSTEM SHALL return none without invoking the function.",
+      "acceptance": [
+        "option:map({some, 1}, fn(x) -> x+1) returns {some, 2}",
+        "option:map(none, fn(x) -> x+1) returns none without calling the function",
+        "NativeContinuation has a GleamOption variant with Map state",
+        "handle_native_continuation dispatches GleamOption correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/gleam_stubs.rs",
+          "crates/beamr/src/native/context.rs",
+          "crates/beamr/src/interpreter/opcodes/trampoline.rs"
+        ]
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R3",
+      "title": "gleam@result:map_error/2 and then/2 trampoline implementations",
+      "spec": "WHEN gleam@result:map_error/2 is called with {error, Reason} and a function, THE SYSTEM SHALL trampoline to invoke the function with [Reason] and wrap the result in {error, Result}. IF called with {ok, Value}, THE SYSTEM SHALL return {ok, Value} without invoking the function. WHEN gleam@result:then/2 is called with {ok, Value} and a function, THE SYSTEM SHALL trampoline to invoke the function with [Value] and return the closure result directly. IF called with {error, Reason}, THE SYSTEM SHALL return {error, Reason} without invoking the function. THE SYSTEM SHALL use the existing GleamResultTry NativeContinuation variant or add new GleamResult variants as needed.",
+      "acceptance": [
+        "result:map_error({error, oops}, fn(r) -> {mapped, r}) returns {error, {mapped, oops}}",
+        "result:map_error({ok, 42}, fn(_) -> crash) returns {ok, 42} without calling function",
+        "result:then({ok, 1}, fn(x) -> {ok, x+1}) returns {ok, 2}",
+        "result:then({error, e}, fn(_) -> crash) returns {error, e} without calling function",
+        "Continuation handles GleamResult state correctly"
+      ],
+      "files": {
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/gleam_stubs.rs",
+          "crates/beamr/src/native/context.rs",
+          "crates/beamr/src/interpreter/opcodes/trampoline.rs"
+        ]
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R4",
+      "title": "gleam@otp@intensity_tracker real implementations",
+      "spec": "WHEN intensity_tracker:new/2 is called with limit and period, THE SYSTEM SHALL construct a tracker tuple {0, limit, period, []} where element 0 is the event count, element 3 is the event timestamp list. WHEN intensity_tracker:add_event/1 is called with a tracker, THE SYSTEM SHALL increment the count and return {ok, updated_tracker} if count < limit, or {error, updated_tracker} if count >= limit. THE SYSTEM SHALL NOT require trampoline support — these functions do not accept closure arguments.",
+      "acceptance": [
+        "intensity_tracker:new(5, 1000) returns {0, 5, 1000, []}",
+        "intensity_tracker:add_event(tracker) with count < limit returns {ok, updated}",
+        "intensity_tracker:add_event(tracker) with count >= limit returns {error, updated}",
+        "No trampoline request is set — these are pure data transforms"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/otp_stubs/gleam_stubs.rs"]
+      },
+      "checklist": ["C151"],
+      "stories": ["S9"]
+    },
+    {
+      "id": "R5",
+      "title": "JIT-to-trampoline end-to-end verification",
+      "spec": "WHEN JIT-compiled code calls an external function that is a BIF with trampoline support (e.g. maps:map/2), THE SYSTEM SHALL correctly execute the trampoline chain through jit_call_interpreted -> run_with_registry -> BIF -> trampoline -> interpreter -> continuation -> return. THE SYSTEM SHALL return the correct result to the compiled caller. THE SYSTEM SHALL NOT require any changes to the JIT dispatch or runtime helpers — the existing jit_call_interpreted path through run_with_registry already handles trampolines.",
+      "acceptance": [
+        "Differential test: maps:map(fun(K,V) -> V+1 end, #{a => 1}) through interpreter and JIT produce identical results",
+        "Integration test: compiled function calling maps:map/2 returns correct transformed map",
+        "No modifications to jit/runtime.rs or jit/compiler.rs needed"
+      ],
+      "files": {
+        "modify": ["crates/beamr/tests/differential.rs"]
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    },
+    {
+      "id": "R6",
+      "title": "Trampoline SHALL NOT constraints",
+      "spec": "THE SYSTEM SHALL NOT add new NativeContinuation variants without corresponding resume handlers in handle_native_continuation. THE SYSTEM SHALL NOT return Term::NIL from a BIF without first setting a trampoline request — Term::NIL is the sentinel that triggers trampoline dispatch. THE SYSTEM SHALL NOT allocate heap terms inside continuation resume handlers without ensuring the process heap has space (use context.alloc_tuple or equivalent). THE SYSTEM SHALL NOT modify ProcessContext.trampoline field directly — use set_continuation_trampoline() or set_trampoline().",
+      "acceptance": [
+        "Every NativeContinuation variant has a match arm in handle_native_continuation",
+        "No BIF returns Term::NIL without prior set_continuation_trampoline call",
+        "All tuple allocations in resume handlers use context.alloc_tuple or process heap alloc with GC check",
+        "All trampoline field access goes through accessor methods"
+      ],
+      "files": {
+        "modify": []
+      },
+      "checklist": ["C150"],
+      "stories": ["S4"]
+    }
+  ],
+  "boundaries": {
+    "in_scope": [
+      "Wire 4 closure-calling stubs into existing trampoline mechanism",
+      "Fix 2 intensity_tracker stubs with real tuple construction",
+      "Add NativeContinuation variants for option/result higher-order patterns",
+      "Verify JIT -> trampoline path with differential test"
+    ],
+    "out_of_scope": [
+      "Bytecode stdlib approach (compile Gleam stdlib to .beam and embed)",
+      "New trampoline infrastructure changes",
+      "JIT-native closure invocation (compiled code calling closures directly without interpreter)",
+      "Cross-module BIF calls from embedded .beam modules"
+    ]
+  },
+  "verification": "cargo test --package beamr --lib && cargo test --package beamr --test differential"
+}
