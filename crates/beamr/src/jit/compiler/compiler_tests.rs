@@ -906,7 +906,7 @@ fn compiled_try_catches_interpreted_exception_and_exposes_payload() {
         caller.as_ref() as *const Module,
         &registry as *const ModuleRegistry,
     )));
-    let mut registers = vec![0; X_REGISTER_COUNT + 3];
+    let mut registers = vec![0; X_REGISTER_COUNT as usize + 3];
 
     let returned = call_native_status(&native, &mut registers, &mut process);
 

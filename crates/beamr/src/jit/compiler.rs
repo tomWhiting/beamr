@@ -471,6 +471,7 @@ impl JitCompiler {
                     Instruction::Try { destination, label } => {
                         let catch_block = blocks.label_block(label_operand(label)?)?;
                         let _frame = exceptions.translate_try(catch_block, destination)?;
+                        terminated = false;
                     }
                     Instruction::TryEnd { source } => {
                         let _ = super::ir_common::register_operand(source)?;

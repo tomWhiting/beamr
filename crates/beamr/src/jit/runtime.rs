@@ -130,6 +130,8 @@ pub(crate) extern "C" fn jit_call_interpreted(
     let Ok(instruction_pointer) = target_module.export_ip(target_function, target_arity) else {
         return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
+    let saved_module = process.current_module().cloned();
+    let saved_position = process.code_position();
     process.set_current_module(target_module);
     process.set_code_position(Some(CodePosition {
         module: target_module_atom,
@@ -141,7 +143,12 @@ pub(crate) extern "C" fn jit_call_interpreted(
         return JitReturn::yield_(JIT_YIELD_SENTINEL as u64);
     }
 
-    match run_with_registry(process, current_module, registry) {
+    let result = run_with_registry(process, current_module, registry);
+    if let Some(module) = saved_module {
+        process.set_current_module(module);
+    }
+    process.set_code_position(saved_position);
+    match result {
         Ok(ExecutionResult::Exited(ExitReason::Normal)) => {
             JitReturn::normal(process.x_reg(0).raw())
         }
