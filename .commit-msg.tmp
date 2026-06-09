@@ -1,1 +1,1 @@
-feat(beamr): implement OTP stdlib host stubs
+test(beamr): harden OTP stdlib stub acceptance coverage
