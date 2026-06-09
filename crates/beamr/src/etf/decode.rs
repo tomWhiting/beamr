@@ -511,10 +511,10 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
     use crate::atom::Atom;
-    use crate::etf::encode::{EncodeOptions, encode_term_with_options};
+    use crate::etf::encode::{EncodeOptions, encode_term, encode_term_with_options};
     use crate::process::Process;
     use crate::term::binary::Binary;
-    use crate::term::boxed::{Tuple, write_tuple};
+    use crate::term::boxed::{Tuple, write_closure, write_tuple};
 
     fn context(process: &mut Process) -> ProcessContext<'_> {
         let mut context = ProcessContext::new();
@@ -624,6 +624,64 @@ mod tests {
         assert_eq!(tuple.get(0), Some(Term::atom(atoms.intern("erlang"))));
         assert_eq!(tuple.get(1), Some(Term::atom(atoms.intern("self"))));
         assert_eq!(tuple.get(2), Some(Term::small_int(0)));
+    }
+
+    #[test]
+    fn export_ext_decode_preserves_multi_component_mfa_from_encoder() {
+        let atoms = AtomTable::with_common_atoms();
+        let module = atoms.intern("multi_component_module");
+        let function = atoms.intern("multi_component_function");
+        let arity = 3;
+        let mut closure_heap = [0_u64; 7];
+        let closure = write_closure(
+            &mut closure_heap,
+            module,
+            u64::from(function.index()),
+            arity,
+            1,
+            0,
+            &[],
+        )
+        .expect("closure fits");
+        let bytes = encode_term(closure, &atoms).expect("encode export closure");
+        assert_eq!(bytes.get(1), Some(&tags::EXPORT_EXT));
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode export");
+
+        let tuple = Tuple::new(decoded).expect("export tuple");
+        assert_eq!(tuple.get(0), Some(Term::atom(module)));
+        assert_eq!(tuple.get(1), Some(Term::atom(function)));
+        assert_eq!(tuple.get(2), Some(Term::small_int(i64::from(arity))));
+    }
+
+    #[test]
+    fn export_ext_rejects_non_atom_function_term() {
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+        let bytes = [
+            tags::VERSION,
+            tags::EXPORT_EXT,
+            tags::SMALL_ATOM_UTF8_EXT,
+            6,
+            b'e',
+            b'r',
+            b'l',
+            b'a',
+            b'n',
+            b'g',
+            tags::SMALL_INTEGER_EXT,
+            42,
+            tags::SMALL_INTEGER_EXT,
+            0,
+        ];
+
+        assert_eq!(
+            decode_term(&bytes, &mut ctx, &atoms),
+            Err(DecodeError::InvalidExportFunction)
+        );
     }
 
     #[test]

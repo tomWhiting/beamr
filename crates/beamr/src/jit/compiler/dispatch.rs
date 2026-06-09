@@ -269,6 +269,7 @@ impl JitCompiler {
                         builder.ins().jump(block, &[]);
                     }
                     builder.switch_to_block(block);
+                    terminated = false;
                 }
 
                 // Try each lowering pass in order.

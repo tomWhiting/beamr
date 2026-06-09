@@ -1,1 +1,1 @@
-fix(beamr): correct ETS key equality and stale accept handling
+test(beamr): harden EXPORT_EXT regressions for B-171
