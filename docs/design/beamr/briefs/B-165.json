@@ -1,0 +1,105 @@
+{
+  "id": "B-165",
+  "cluster": "beamr",
+  "title": "Fix BsMatch GC root tracking and heap-before-alloc dangle risks",
+  "depends_on": ["B-160"],
+  "blocked_by": [],
+  "checklist": ["C217"],
+  "stories": ["S40"],
+  "purpose": "binary_allocation_roots returns empty Vec for BsMatch — match context not rooted during nested get_binary/get_tail allocations that trigger GC. Also jit_bs_finish reads builder bytes into a local slice then allocates (GC may relocate source). Same pattern in map_update. These are latent use-after-free bugs that manifest under GC pressure during binary operations.",
+  "task": "Fix GC root tracking for BsMatch opcode in ir_binary.rs so that binary_allocation_roots returns the match context and all nested destination operands. Fix jit_bs_finish and map_update in runtime.rs to copy source data to stack-local storage before any allocation that could trigger GC. Add test coverage that validates safepoint root sets for binary opcodes.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "BsMatch binary_allocation_roots must include match context and nested destinations",
+      "spec": "WHEN the JIT compiler emits a GC safepoint for a BsMatch opcode, THE SYSTEM SHALL include the match_context operand and all nested destination operands in the root set returned by binary_allocation_roots. THE SYSTEM SHALL NOT return an empty Vec from binary_allocation_roots for BsMatch when the opcode contains allocating sub-operations (get_binary, get_tail).",
+      "acceptance": [
+        "binary_allocation_roots(BsMatch { match_context, commands }) returns a Vec containing match_context",
+        "binary_allocation_roots(BsMatch { .. }) returns all destination operands from nested get_binary and get_tail commands",
+        "Returned Vec is non-empty when BsMatch contains allocating sub-operations",
+        "Test: BsMatch with get_binary sub-op includes match_context in safepoint root set",
+        "Test: BsMatch with get_tail sub-op includes both match_context and destination in root set"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_binary.rs"]
+      },
+      "checklist": ["C217"],
+      "stories": ["S40"]
+    },
+    {
+      "id": "R2",
+      "title": "Fix jit_bs_finish dangle — copy bytes before allocation",
+      "spec": "WHEN jit_bs_finish completes binary construction, THE SYSTEM SHALL copy the builder's accumulated bytes into a stack-local Vec before calling allocate_binary. THE SYSTEM SHALL NOT hold a reference to builder bytes across any heap allocation call, because GC may relocate the builder's backing storage.",
+      "acceptance": [
+        "jit_bs_finish copies builder.bytes() into a local Vec<u8> before allocate_binary",
+        "No slice or reference to builder storage is live across the allocate_binary call",
+        "Test: jit_bs_finish produces correct binary when allocation triggers GC (simulated via small heap)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/runtime.rs"]
+      },
+      "checklist": ["C217"],
+      "stories": ["S40"]
+    },
+    {
+      "id": "R3",
+      "title": "Fix map_update dangle — copy entries before allocation",
+      "spec": "WHEN map_update constructs a new map from existing entries, THE SYSTEM SHALL copy map key-value entries into stack-local storage before calling write_map_entries or any other function that allocates on the process heap. THE SYSTEM SHALL NOT hold references to source map entries across any heap allocation call.",
+      "acceptance": [
+        "map_update copies source entries into local storage before any heap allocation",
+        "No reference to source map backing storage is live across a heap allocation call",
+        "Test: map_update produces correct map when allocation triggers GC (simulated via small heap)"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/runtime.rs"]
+      },
+      "checklist": ["C217"],
+      "stories": ["S40"]
+    },
+    {
+      "id": "R4",
+      "title": "Test coverage for BsMatch safepoint root correctness",
+      "spec": "THE SYSTEM SHALL include integration tests that verify BsMatch safepoint root sets contain the match context. THE SYSTEM SHALL test that a BsMatch with multiple allocating sub-operations (e.g., get_binary followed by get_tail) roots all intermediate and final operands.",
+      "acceptance": [
+        "Test: BsMatch safepoint root set includes match_context for a single get_binary sub-op",
+        "Test: BsMatch safepoint root set includes match_context and both destinations for get_binary + get_tail",
+        "Test: non-allocating BsMatch sub-ops (get_integer, get_float with fixed size) do not add spurious roots"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_binary.rs"]
+      },
+      "checklist": ["C217"],
+      "stories": ["S40"]
+    },
+    {
+      "id": "R5",
+      "title": "SHALL NOT return empty roots for allocating binary opcodes",
+      "spec": "THE SYSTEM SHALL NOT return an empty Vec from binary_allocation_roots for any binary opcode that performs heap allocation (BsMatch with get_binary/get_tail, BsPutBinary, BsPutString). WHEN binary_allocation_roots is called for a non-allocating binary opcode, THE SYSTEM SHALL return an empty Vec.",
+      "acceptance": [
+        "binary_allocation_roots returns non-empty Vec for BsMatch containing get_binary",
+        "binary_allocation_roots returns non-empty Vec for BsMatch containing get_tail",
+        "binary_allocation_roots returns empty Vec for BsMatch containing only get_integer with fixed size",
+        "No allocating binary opcode path returns an empty root set"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_binary.rs"]
+      },
+      "checklist": ["C217"],
+      "stories": ["S40"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the extern \"C\" signatures of any runtime helper functions",
+    "SHALL NOT modify GC safepoint emission logic — only the root sets fed to existing safepoint infrastructure",
+    "SHALL NOT fix dangle patterns in code paths outside jit_bs_finish and map_update (other patterns are out of scope)",
+    "SHALL NOT change binary matching semantics — only root tracking and allocation ordering"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
+    "cargo clippy --workspace -- -D warnings passes",
+    "binary_allocation_roots returns non-empty Vec for BsMatch with allocating sub-ops",
+    "jit_bs_finish does not hold builder slice across allocation",
+    "map_update does not hold source references across allocation"
+  ]
+}

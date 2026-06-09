@@ -1,0 +1,115 @@
+{
+  "id": "B-167",
+  "cluster": "beamr",
+  "title": "Split runtime.rs (1415 lines) into domain sub-modules",
+  "depends_on": ["B-165"],
+  "blocked_by": [],
+  "checklist": ["C191"],
+  "stories": ["S20"],
+  "purpose": "runtime.rs is 1415 lines — nearly three times the 500-line limit. The file contains binary matching/construction helpers, closure helpers, message helpers, and map helpers all interleaved with core allocation primitives. Splitting by domain improves navigability, isolates change surfaces, and aligns with the project's file size constraints.",
+  "task": "Split crates/beamr/src/jit/runtime.rs into domain-specific files: runtime_binary.rs, runtime_closure.rs, runtime_message.rs, and runtime_map.rs. The remaining runtime.rs core retains shared allocation and process primitives. All extern \"C\" function signatures must remain unchanged. Update mod.rs to expose the new modules.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Extract binary runtime helpers into runtime_binary.rs",
+      "spec": "THE SYSTEM SHALL extract binary matching and construction runtime helpers (JitMatchContext, JitBinaryBuilder, jit_bs_start_match, jit_bs_get_integer, jit_bs_get_binary, jit_bs_get_tail, jit_bs_get_float, jit_bs_test_tail, jit_bs_skip, jit_bs_init, jit_bs_put_integer, jit_bs_put_binary, jit_bs_put_float, jit_bs_put_string, jit_bs_finish, and segment decode/encode functions) into crates/beamr/src/jit/runtime_binary.rs. THE SYSTEM SHALL NOT change any extern \"C\" function signature.",
+      "acceptance": [
+        "runtime_binary.rs contains JitMatchContext and JitBinaryBuilder structs",
+        "runtime_binary.rs contains all jit_bs_* functions",
+        "All extern \"C\" function signatures are identical to pre-extraction versions",
+        "Test: cargo test -p beamr binary-related tests pass"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/runtime_binary.rs"],
+        "modify": ["crates/beamr/src/jit/runtime.rs", "crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R2",
+      "title": "Extract closure runtime helpers into runtime_closure.rs",
+      "spec": "THE SYSTEM SHALL extract closure runtime helpers (jit_alloc_closure, jit_call_closure, call_native_closure, call_interpreted_closure, runtime_module_registry, runtime_cache) into crates/beamr/src/jit/runtime_closure.rs. THE SYSTEM SHALL NOT change any extern \"C\" function signature.",
+      "acceptance": [
+        "runtime_closure.rs contains jit_alloc_closure, jit_call_closure",
+        "runtime_closure.rs contains call_native_closure, call_interpreted_closure",
+        "runtime_closure.rs contains runtime_module_registry and runtime_cache accessors",
+        "All extern \"C\" function signatures are identical to pre-extraction versions",
+        "Test: cargo test -p beamr closure-related tests pass"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/runtime_closure.rs"],
+        "modify": ["crates/beamr/src/jit/runtime.rs", "crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R3",
+      "title": "Extract message runtime helpers into runtime_message.rs",
+      "spec": "THE SYSTEM SHALL extract message runtime helpers (jit_send_message, jit_receive_next, jit_receive_mark, jit_receive_wait, jit_receive_done, transition_process_to_waiting, and related message queue functions) into crates/beamr/src/jit/runtime_message.rs. THE SYSTEM SHALL NOT change any extern \"C\" function signature.",
+      "acceptance": [
+        "runtime_message.rs contains jit_send_message and all jit_receive_* functions",
+        "runtime_message.rs contains transition_process_to_waiting",
+        "All extern \"C\" function signatures are identical to pre-extraction versions",
+        "Test: cargo test -p beamr message-related tests pass"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/runtime_message.rs"],
+        "modify": ["crates/beamr/src/jit/runtime.rs", "crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R4",
+      "title": "Extract map runtime helpers into runtime_map.rs",
+      "spec": "THE SYSTEM SHALL extract map runtime helpers (jit_map_new, jit_map_update, jit_map_get, jit_map_has_key, map_update, write_map_entries) into crates/beamr/src/jit/runtime_map.rs. THE SYSTEM SHALL NOT change any extern \"C\" function signature.",
+      "acceptance": [
+        "runtime_map.rs contains jit_map_new, jit_map_update, jit_map_get, jit_map_has_key",
+        "runtime_map.rs contains map_update and write_map_entries",
+        "All extern \"C\" function signatures are identical to pre-extraction versions",
+        "Test: cargo test -p beamr map-related tests pass"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/runtime_map.rs"],
+        "modify": ["crates/beamr/src/jit/runtime.rs", "crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R5",
+      "title": "Runtime core under 500 lines, no extern signature changes",
+      "spec": "WHEN the split is complete, runtime.rs (retaining alloc_tuple, alloc_cons, charge_reduction, jit_call_interpreted, jit_box_float, process_from_abi, alloc_words, and shared utilities) SHALL be under 500 lines. Each extracted file SHALL be under 500 lines. THE SYSTEM SHALL NOT change any extern \"C\" function signature across any file.",
+      "acceptance": [
+        "wc -l runtime.rs < 500",
+        "wc -l runtime_binary.rs < 500",
+        "wc -l runtime_closure.rs < 500",
+        "wc -l runtime_message.rs < 500",
+        "wc -l runtime_map.rs < 500",
+        "grep -c 'extern \"C\"' across all runtime files matches the pre-split total",
+        "No extern \"C\" function has a changed signature"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/runtime.rs", "crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change any extern \"C\" function signature — JIT-compiled code calls these by address",
+    "SHALL NOT change function behavior, only file location",
+    "SHALL NOT move shared utilities (process_from_abi, alloc_words) out of runtime.rs — these are used by all domain modules",
+    "SHALL NOT create circular dependencies between runtime sub-modules"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
+    "cargo clippy --workspace -- -D warnings passes",
+    "runtime.rs is under 500 lines",
+    "Each extracted runtime_*.rs file is under 500 lines",
+    "All extern \"C\" function signatures are unchanged"
+  ]
+}

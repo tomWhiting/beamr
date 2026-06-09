@@ -1,0 +1,109 @@
+{
+  "id": "B-166",
+  "cluster": "beamr",
+  "title": "Split compiler.rs (2364 lines) into sub-modules",
+  "depends_on": ["B-165"],
+  "blocked_by": [],
+  "checklist": ["C191"],
+  "stories": ["S20"],
+  "purpose": "compiler.rs is 2364 lines — well over the 500-line limit. The file contains typed AOT lowering, helper declaration boilerplate, and opcode dispatch all in one module. Splitting by responsibility improves navigability, reduces merge conflicts, and aligns with the project's file size constraints.",
+  "task": "Split crates/beamr/src/jit/compiler.rs into sub-modules under crates/beamr/src/jit/compiler/. Extract typed AOT lowering into ir_typed.rs, helper declarations into ir_helpers.rs, and if needed extract non-typed dispatch arms into dispatch.rs. The remaining compiler.rs core must be under 500 lines. All public API is re-exported through the compiler module.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Extract typed AOT lowering into compiler/ir_typed.rs",
+      "spec": "THE SYSTEM SHALL extract typed AOT lowering functions (lower_typed_int_arithmetic, lower_typed_type_test, lower_typed_test_arity, typed_guard_decision, TypedRegisterState, supported_type, float_fail_block, and related typed dispatch logic) into crates/beamr/src/jit/compiler/ir_typed.rs. THE SYSTEM SHALL NOT change the function signatures or behavior of any extracted function.",
+      "acceptance": [
+        "compiler/ir_typed.rs contains lower_typed_int_arithmetic, lower_typed_type_test, lower_typed_test_arity",
+        "compiler/ir_typed.rs contains typed_guard_decision, TypedRegisterState, supported_type, float_fail_block",
+        "All extracted functions have identical signatures to their pre-extraction versions",
+        "Test: cargo test -p beamr passes with typed AOT lowering in new location"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/compiler/ir_typed.rs"],
+        "modify": ["crates/beamr/src/jit/compiler.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R2",
+      "title": "Extract helper declarations into compiler/ir_helpers.rs",
+      "spec": "THE SYSTEM SHALL extract helper declaration functions (declare_binary_helpers, declare_message_helpers, declare_closure_helpers, declare_add_frame_helper, declare_unary_helper, declare_void_unary_helper, and related declaration boilerplate) into crates/beamr/src/jit/compiler/ir_helpers.rs. THE SYSTEM SHALL NOT change the function signatures or behavior of any extracted function.",
+      "acceptance": [
+        "compiler/ir_helpers.rs contains declare_binary_helpers, declare_message_helpers, declare_closure_helpers",
+        "compiler/ir_helpers.rs contains declare_add_frame_helper, declare_unary_helper, declare_void_unary_helper",
+        "All extracted functions have identical signatures to their pre-extraction versions",
+        "Test: cargo test -p beamr passes with helper declarations in new location"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/compiler/ir_helpers.rs"],
+        "modify": ["crates/beamr/src/jit/compiler.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R3",
+      "title": "Extract non-typed compile dispatch if needed for 500-line target",
+      "spec": "IF compiler.rs remains over 500 lines after R1 and R2 extractions, THE SYSTEM SHALL extract non-typed compile dispatch arms (the match instruction arms for binary, closure, message, float, and map opcodes) into crates/beamr/src/jit/compiler/dispatch.rs. THE SYSTEM SHALL NOT change match arm behavior or ordering.",
+      "acceptance": [
+        "IF dispatch.rs is created, it contains the match arms for binary, closure, message, float, and map opcodes",
+        "compiler.rs is under 500 lines after all extractions",
+        "Test: cargo test -p beamr passes with dispatch logic in new location"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/compiler/dispatch.rs"],
+        "modify": ["crates/beamr/src/jit/compiler.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R4",
+      "title": "All files under 500-line limit",
+      "spec": "WHEN the split is complete, compiler.rs (the remaining core) SHALL be under 500 lines. Each extracted file (ir_typed.rs, ir_helpers.rs, dispatch.rs if created) SHALL be under 500 lines. THE SYSTEM SHALL NOT introduce any file over 500 lines as part of this refactor.",
+      "acceptance": [
+        "wc -l compiler.rs < 500",
+        "wc -l compiler/ir_typed.rs < 500",
+        "wc -l compiler/ir_helpers.rs < 500",
+        "IF compiler/dispatch.rs exists THEN wc -l compiler/dispatch.rs < 500"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/compiler.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R5",
+      "title": "SHALL NOT change public API — re-export via compiler module",
+      "spec": "THE SYSTEM SHALL re-export all previously-public items from the compiler module so that no downstream use site needs to change import paths. THE SYSTEM SHALL NOT change any public type signature, function signature, or trait implementation. THE SYSTEM SHALL NOT change the compiler module's public surface as observed by other crates or modules.",
+      "acceptance": [
+        "All items that were pub in compiler.rs remain accessible via their original paths",
+        "No other file in the codebase needs import path changes",
+        "cargo check --workspace passes without modification to any file outside the compiler module",
+        "Test: cargo test --workspace passes"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/compiler.rs", "crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change any public API — all changes are internal module restructuring",
+    "SHALL NOT change function behavior, only file location",
+    "SHALL NOT rename any function or type as part of the split",
+    "SHALL NOT modify compiler_tests.rs beyond updating use/mod paths if needed"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
+    "cargo clippy --workspace -- -D warnings passes",
+    "compiler.rs is under 500 lines",
+    "Each extracted sub-module is under 500 lines",
+    "No import path changes required outside the compiler module"
+  ]
+}

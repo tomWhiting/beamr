@@ -1,0 +1,111 @@
+{
+  "id": "B-168",
+  "cluster": "beamr",
+  "title": "Split ir_control.rs (507 lines) and jit_comparison.rs (638 lines)",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C191"],
+  "stories": ["S20", "S37"],
+  "purpose": "ir_control.rs at 507 lines and jit_comparison.rs at 638 lines are both over the 500-line limit. ir_control.rs contains TranslationPlan core logic mixed with opcode-specific validation helpers that can be factored out. jit_comparison.rs benchmarks can be split between core/fibonacci and extended scenarios (list processing, pattern matching, comparison).",
+  "task": "Extract validation helpers from ir_control.rs into ir_control_validation.rs. Split jit_comparison.rs benchmarks into core scaffold + fibonacci and an extended file for remaining benchmark groups. Both original files must end up under 500 lines. Benchmark group names and criterion macro structure must remain unchanged for CI baseline compatibility.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Extract TranslationPlan validation helpers into ir_control_validation.rs",
+      "spec": "THE SYSTEM SHALL extract TranslationPlan validation helpers (validate_import_operand, validate_supported_type_test, validate_supported_float_op, and any other opcode-specific validation functions that can be factored out) from ir_control.rs into crates/beamr/src/jit/ir_control_validation.rs. TranslationPlan::new and BlockMap SHALL remain in ir_control.rs. THE SYSTEM SHALL NOT change any validation function signature or behavior.",
+      "acceptance": [
+        "ir_control_validation.rs contains validate_import_operand, validate_supported_type_test, validate_supported_float_op",
+        "TranslationPlan::new and BlockMap remain in ir_control.rs",
+        "All extracted functions have identical signatures to pre-extraction versions",
+        "Test: cargo test -p beamr ir_control-related tests pass"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/ir_control_validation.rs"],
+        "modify": ["crates/beamr/src/jit/ir_control.rs", "crates/beamr/src/jit/mod.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R2",
+      "title": "ir_control.rs under 500 lines after extraction",
+      "spec": "WHEN validation helpers are extracted, ir_control.rs SHALL be under 500 lines. ir_control_validation.rs SHALL be under 500 lines. THE SYSTEM SHALL NOT introduce any file over 500 lines as part of this refactor.",
+      "acceptance": [
+        "wc -l ir_control.rs < 500",
+        "wc -l ir_control_validation.rs < 500"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/jit/ir_control.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20"]
+    },
+    {
+      "id": "R3",
+      "title": "Split jit_comparison.rs benchmarks into core and extended files",
+      "spec": "THE SYSTEM SHALL split jit_comparison.rs into two files: jit_comparison.rs (core scaffold + fibonacci benchmarks) and jit_comparison_extended.rs (list processing, pattern matching, and comparison benchmarks). Each file SHALL be under 500 lines. THE SYSTEM SHALL use criterion_group!/criterion_main! macros in each file to maintain benchmark discoverability.",
+      "acceptance": [
+        "jit_comparison.rs contains core benchmark scaffold and fibonacci benchmark group",
+        "jit_comparison_extended.rs contains list processing, pattern matching, and comparison benchmark groups",
+        "wc -l jit_comparison.rs < 500",
+        "wc -l jit_comparison_extended.rs < 500",
+        "Both files use criterion_group!/criterion_main! macros correctly"
+      ],
+      "files": {
+        "create": ["crates/beamr/benches/jit_comparison_extended.rs"],
+        "modify": ["crates/beamr/benches/jit_comparison.rs", "crates/beamr/Cargo.toml"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20", "S37"]
+    },
+    {
+      "id": "R4",
+      "title": "Benchmark groups remain discoverable via criterion macros",
+      "spec": "WHEN benchmarks are split across files, THE SYSTEM SHALL ensure each benchmark file is a separate [[bench]] target in Cargo.toml with harness = false. THE SYSTEM SHALL ensure criterion_group! and criterion_main! macros in each file correctly reference their respective benchmark functions. WHILE running cargo bench, THE SYSTEM SHALL produce the same benchmark groups as before the split.",
+      "acceptance": [
+        "Cargo.toml contains [[bench]] entries for both jit_comparison and jit_comparison_extended",
+        "Both bench targets have harness = false",
+        "cargo bench --bench jit_comparison runs fibonacci benchmarks",
+        "cargo bench --bench jit_comparison_extended runs list/pattern/comparison benchmarks"
+      ],
+      "files": {
+        "modify": ["crates/beamr/Cargo.toml"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20", "S37"]
+    },
+    {
+      "id": "R5",
+      "title": "SHALL NOT change benchmark names or group structure",
+      "spec": "THE SYSTEM SHALL NOT rename any benchmark function or criterion_group name. THE SYSTEM SHALL NOT change the benchmark group structure (which benchmarks belong to which group). THE SYSTEM SHALL NOT change benchmark parameters or measurement configuration. Existing CI comparison baselines must remain valid against the same benchmark names.",
+      "acceptance": [
+        "All benchmark function names are identical to pre-split versions",
+        "All criterion_group names are identical to pre-split versions",
+        "Benchmark measurement configuration (sample size, warm-up, etc.) is unchanged",
+        "CI baseline comparisons against previous benchmark runs remain valid"
+      ],
+      "files": {
+        "modify": ["crates/beamr/benches/jit_comparison.rs"]
+      },
+      "checklist": ["C191"],
+      "stories": ["S20", "S37"]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change benchmark names or group structure — CI baselines depend on stable names",
+    "SHALL NOT change validation logic behavior — only file location",
+    "SHALL NOT modify TranslationPlan::new or BlockMap as part of this split",
+    "SHALL NOT change any benchmark measurement parameters"
+  ],
+  "verification": [
+    "cargo check --workspace passes",
+    "cargo test -p beamr passes with all tests green",
+    "cargo clippy --workspace -- -D warnings passes",
+    "ir_control.rs is under 500 lines",
+    "ir_control_validation.rs is under 500 lines",
+    "jit_comparison.rs is under 500 lines",
+    "jit_comparison_extended.rs is under 500 lines",
+    "cargo bench --bench jit_comparison compiles and runs",
+    "cargo bench --bench jit_comparison_extended compiles and runs"
+  ]
+}
