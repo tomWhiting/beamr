@@ -183,7 +183,11 @@ pub fn build_stacktrace(process: &mut Process) -> Result<InstructionOutcome, Exe
             .map(|(_, function, arity)| (function, arity))
             .or_else(|| entry.module.function_at_ip(entry.ip))
             .unwrap_or((Atom::UNDEFINED, 0));
-        let info = stacktrace_info(process, entry.module.line_at_ip(entry.ip))?;
+        let info = if !entry.compiled {
+            stacktrace_info(process, entry.module.line_at_ip(entry.ip))?
+        } else {
+            entry.location_info
+        };
         let frame = four_tuple(
             process,
             Term::atom(entry.module.name),
@@ -246,6 +250,8 @@ fn capture_raw_stacktrace(process: &mut Process) {
             module,
             ip: position.instruction_pointer,
             mfa: process.current_mfa(),
+            location_info: Term::NIL,
+            compiled: false,
         });
     }
     raw_stacktrace.extend(
@@ -256,6 +262,8 @@ fn capture_raw_stacktrace(process: &mut Process) {
                 module: Arc::clone(frame.pinned_module()),
                 ip: frame.return_ip(),
                 mfa: None,
+                location_info: Term::NIL,
+                compiled: false,
             }),
     );
     process.set_raw_stacktrace(raw_stacktrace);

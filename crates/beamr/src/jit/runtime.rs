@@ -8,6 +8,7 @@ use crate::process::{CodePosition, ExitReason, JitStatus, Process};
 use crate::term::Term;
 
 use super::ir_common::JIT_DEOPT_SENTINEL;
+use super::ir_exceptions::JitReturn;
 
 pub(crate) const JIT_YIELD_SENTINEL: i64 = -2;
 
@@ -56,35 +57,35 @@ pub(crate) extern "C" fn jit_charge_reduction(process: *mut Process) -> u64 {
 ///
 /// `module`, `function`, and `arity` identify the import MFA and `args` points
 /// to the compiled register file containing the call arguments in x registers.
-/// The helper returns the raw x(0) word, or a JIT sentinel when fallback cannot
-/// complete synchronously.
+/// The helper returns `(status, value)`, where status `1` propagates an
+/// exception left in the process exception state.
 pub(crate) extern "C" fn jit_call_interpreted(
     process: *mut Process,
     module: u64,
     function: u64,
     arity: u64,
     args: *const u64,
-) -> u64 {
+) -> JitReturn {
     let Some(process) = process_from_abi(process) else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     let Some(context) = process.jit_runtime_context() else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     if context.module.is_null() || context.registry.is_null() {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     }
     let Ok(module_index) = u32::try_from(module) else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     let Ok(import_index) = usize::try_from(function) else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     let Ok(arity) = u8::try_from(arity) else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     if args.is_null() && arity != 0 {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     }
 
     let module_atom = Atom::new(module_index);
@@ -107,27 +108,27 @@ pub(crate) extern "C" fn jit_call_interpreted(
     // SAFETY: See `current_module`; the registry pointer has the same lifetime.
     let registry = unsafe { &*context.registry };
     if current_module.name != module_atom {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     }
     let Some(resolved) = current_module.resolved_imports.get(import_index) else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     if resolved.arity != arity {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     }
     let (target_module_atom, target_function, target_arity) = match resolved.target {
         ResolvedImportTarget::Code { .. } | ResolvedImportTarget::Deferred { .. } => {
             (resolved.module, resolved.function, resolved.arity)
         }
         ResolvedImportTarget::Unresolved { .. } | ResolvedImportTarget::Native(_) => {
-            return JIT_DEOPT_SENTINEL as u64;
+            return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
         }
     };
     let Some(target_module) = registry.lookup(target_module_atom) else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     let Ok(instruction_pointer) = target_module.export_ip(target_function, target_arity) else {
-        return JIT_DEOPT_SENTINEL as u64;
+        return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
     };
     process.set_current_module(target_module);
     process.set_code_position(Some(CodePosition {
@@ -137,23 +138,37 @@ pub(crate) extern "C" fn jit_call_interpreted(
     process.decrement_reductions(1);
     if process.reductions_exhausted() {
         process.set_jit_status(Some(JitStatus::Yield));
-        return JIT_YIELD_SENTINEL as u64;
+        return JitReturn::yield_(JIT_YIELD_SENTINEL as u64);
     }
 
     match run_with_registry(process, current_module, registry) {
-        Ok(ExecutionResult::Exited(ExitReason::Normal)) => process.x_reg(0).raw(),
+        Ok(ExecutionResult::Exited(ExitReason::Normal)) => {
+            JitReturn::normal(process.x_reg(0).raw())
+        }
+        Ok(ExecutionResult::Exited(_)) if process.current_exception().is_some() => {
+            let reason = process
+                .current_exception()
+                .map_or(Term::NIL.raw(), |exception| exception.reason.raw());
+            JitReturn::exception(reason)
+        }
         Ok(ExecutionResult::Exited(_))
         | Ok(ExecutionResult::Waiting)
-        | Ok(ExecutionResult::DirtyCall { .. }) => JIT_DEOPT_SENTINEL as u64,
+        | Ok(ExecutionResult::DirtyCall { .. }) => JitReturn::deopt(JIT_DEOPT_SENTINEL as u64),
         Ok(ExecutionResult::Yielded) => {
             process.set_jit_status(Some(JitStatus::Yield));
-            JIT_YIELD_SENTINEL as u64
+            JitReturn::yield_(JIT_YIELD_SENTINEL as u64)
         }
-        Err(_error) => JIT_DEOPT_SENTINEL as u64,
+        Err(_error) if process.current_exception().is_some() => {
+            let reason = process
+                .current_exception()
+                .map_or(Term::NIL.raw(), |exception| exception.reason.raw());
+            JitReturn::exception(reason)
+        }
+        Err(_error) => JitReturn::deopt(JIT_DEOPT_SENTINEL as u64),
     }
 }
 
-fn process_from_abi(process: *mut Process) -> Option<&'static mut Process> {
+pub(crate) fn process_from_abi(process: *mut Process) -> Option<&'static mut Process> {
     if process.is_null() {
         return None;
     }

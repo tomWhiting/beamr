@@ -9,6 +9,9 @@ use crate::interpreter::InstructionOutcome;
 use crate::interpreter::NativeServices;
 use crate::jit::JitCache;
 use crate::jit::ir_common::JIT_DEOPT_SENTINEL;
+use crate::jit::ir_exceptions::{
+    JIT_STATUS_DEOPT, JIT_STATUS_EXCEPTION, JIT_STATUS_YIELD, JitReturn,
+};
 use crate::jit::runtime::JIT_YIELD_SENTINEL;
 use crate::loader::decode::compact::Operand;
 use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
@@ -613,7 +616,7 @@ fn call_external_target(
     }
 }
 
-type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> u64;
+type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> JitReturn;
 
 fn dispatch_local_jit(
     process: &mut Process,
@@ -696,15 +699,24 @@ fn call_native(
 ) -> Result<Option<InstructionOutcome>, ExecError> {
     let register_file = process.x_regs_mut().as_mut_ptr().cast::<u64>();
     // SAFETY: `NativeCode` is produced by `JitCompiler` with the raw ABI
-    // `extern "C" fn(*mut u64, *mut Process) -> u64`. `NativeCode` clones keep
-    // the owning JIT module alive, and the register/process pointers are valid
-    // for the synchronous duration of this call.
+    // `extern "C" fn(*mut u64, *mut Process) -> JitReturn`. `NativeCode` clones
+    // keep the owning JIT module alive, and the register/process pointers are
+    // valid for the synchronous duration of this call.
     let raw_fn: RawJitFn = unsafe { std::mem::transmute(native.call_ptr()) };
-    let raw = raw_fn(register_file, process);
+    let returned = raw_fn(register_file, process);
     match process.take_jit_status() {
         Some(JitStatus::Yield) => return Ok(Some(InstructionOutcome::Yield)),
         None => {}
     }
+    match returned.status {
+        JIT_STATUS_EXCEPTION => {
+            return Ok(Some(InstructionOutcome::Exit(ExitReason::Error)));
+        }
+        JIT_STATUS_DEOPT => return Ok(None),
+        JIT_STATUS_YIELD => return Ok(Some(InstructionOutcome::Yield)),
+        _ => {}
+    }
+    let raw = returned.value;
     if raw == JIT_YIELD_SENTINEL as u64 {
         return Ok(Some(InstructionOutcome::Yield));
     }

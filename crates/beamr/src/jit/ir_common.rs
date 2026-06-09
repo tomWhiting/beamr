@@ -15,7 +15,7 @@ pub(crate) const JIT_DEOPT_SENTINEL: i64 = -1;
 pub(crate) const SMALL_INT_TAG_MASK: i64 = 0b111;
 pub(crate) const SMALL_INT_SHIFT: i64 = 3;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Register {
     X(u32),
     Y(u32),

@@ -9,6 +9,7 @@ pub(crate) mod ir_allocation;
 pub(crate) mod ir_arithmetic;
 pub(crate) mod ir_common;
 pub(crate) mod ir_control;
+pub(crate) mod ir_exceptions;
 pub(crate) mod ir_guards;
 pub mod profiler;
 pub(crate) mod runtime;

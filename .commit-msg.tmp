@@ -1,1 +1,1 @@
-test(beamr): harden JIT list accessor coverage
+feat(beamr): add JIT exception return-code unwinding

@@ -2,6 +2,7 @@ use super::{JitCompiler, JitError, JitSettings};
 use crate::atom::Atom;
 use crate::jit::RootLocation;
 use crate::jit::ir_common::{JIT_DEOPT_SENTINEL, X_REGISTER_COUNT};
+use crate::jit::ir_exceptions::{JIT_STATUS_DEOPT, JIT_STATUS_NORMAL, JIT_STATUS_YIELD, JitReturn};
 use crate::loader::Instruction;
 use crate::loader::decode::{BifOp, ComparisonOp, Operand, TypeTestOp};
 use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
@@ -10,7 +11,7 @@ use crate::term::Term;
 use crate::term::boxed::{Cons, Tuple, write_cons, write_tuple};
 use std::collections::HashMap;
 
-type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> u64;
+type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> JitReturn;
 
 fn call_native(native: &crate::jit::types::NativeCode, registers: &mut [u64]) -> u64 {
     let mut process = Process::new(0, 233);
@@ -22,7 +23,9 @@ fn call_native_with_process(
     registers: &mut [u64],
     process: &mut Process,
 ) -> u64 {
-    raw_jit_fn(native)(registers.as_mut_ptr(), process)
+    let returned = raw_jit_fn(native)(registers.as_mut_ptr(), process);
+    assert_eq!(returned.status, JIT_STATUS_NORMAL);
+    returned.value
 }
 
 fn call_native_with_process_x_regs(
@@ -30,12 +33,22 @@ fn call_native_with_process_x_regs(
     process: &mut Process,
 ) -> u64 {
     let registers = process.x_regs_mut().as_mut_ptr().cast::<u64>();
-    raw_jit_fn(native)(registers, process)
+    let returned = raw_jit_fn(native)(registers, process);
+    assert_eq!(returned.status, JIT_STATUS_NORMAL);
+    returned.value
+}
+
+fn call_native_status(
+    native: &crate::jit::types::NativeCode,
+    registers: &mut [u64],
+    process: &mut Process,
+) -> JitReturn {
+    raw_jit_fn(native)(registers.as_mut_ptr(), process)
 }
 
 fn raw_jit_fn(native: &crate::jit::types::NativeCode) -> RawJitFn {
     // SAFETY: `NativeCode::call_ptr` is produced by `JitCompiler::compile`
-    // with the test ABI `extern "C" fn(*mut u64, *mut Process) -> u64`.
+    // with the test ABI `extern "C" fn(*mut u64, *mut Process) -> JitReturn`.
     unsafe { std::mem::transmute(native.call_ptr()) }
 }
 
@@ -846,9 +859,10 @@ fn compiled_local_call_charges_reduction_and_yields_when_exhausted() {
     process.reset_reductions(3);
     let mut registers = vec![0];
 
-    let returned = call_native_with_process(&native, &mut registers, &mut process);
+    let returned = call_native_status(&native, &mut registers, &mut process);
 
-    assert_eq!(returned, super::JIT_YIELD_SENTINEL as u64);
+    assert_eq!(returned.status, JIT_STATUS_YIELD);
+    assert_eq!(returned.value, super::JIT_YIELD_SENTINEL as u64);
     assert_eq!(process.reduction_counter(), 0);
 }
 
@@ -869,9 +883,10 @@ fn compiled_external_call_returns_deopt_sentinel_without_runtime_context() {
     let mut process = Process::new(0, 233);
     let mut registers = vec![0];
 
-    let returned = call_native_with_process(&native, &mut registers, &mut process);
+    let returned = call_native_status(&native, &mut registers, &mut process);
 
-    assert_eq!(returned, JIT_DEOPT_SENTINEL as u64);
+    assert_eq!(returned.status, JIT_STATUS_DEOPT);
+    assert_eq!(returned.value, JIT_DEOPT_SENTINEL as u64);
     assert_eq!(registers[0], 0);
 }
 

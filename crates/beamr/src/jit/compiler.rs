@@ -28,6 +28,12 @@ use super::ir_common::{
     write_operand_term,
 };
 use super::ir_control::{BlockMap, TranslationPlan, opcode_name};
+use super::ir_exceptions::{
+    CompiledFrameInfo, ExceptionHelpers, ExceptionLoweringState, JIT_STATUS_DEOPT,
+    JIT_STATUS_NORMAL, JIT_STATUS_YIELD, dispatch_exception_status, jit_add_compiled_frame,
+    jit_clear_exception, jit_exception_class, jit_exception_reason, jit_exception_trace,
+    return_status, return_status_raw,
+};
 use super::ir_guards::{
     SelectPair, immediate_raw_term, immediate_usize, lower_is_tagged_tuple, lower_select_val,
     lower_test_arity, lower_type_test, parse_select_pairs,
@@ -109,6 +115,26 @@ impl JitCompiler {
             "beamr_jit_call_interpreted",
             jit_call_interpreted as *const u8,
         );
+        builder.symbol(
+            "beamr_jit_exception_class",
+            jit_exception_class as *const u8,
+        );
+        builder.symbol(
+            "beamr_jit_exception_reason",
+            jit_exception_reason as *const u8,
+        );
+        builder.symbol(
+            "beamr_jit_exception_trace",
+            jit_exception_trace as *const u8,
+        );
+        builder.symbol(
+            "beamr_jit_clear_exception",
+            jit_clear_exception as *const u8,
+        );
+        builder.symbol(
+            "beamr_jit_add_compiled_frame",
+            jit_add_compiled_frame as *const u8,
+        );
         Ok(Self {
             module: Arc::new(Mutex::new(JITModule::new(builder))),
             next_function_id: AtomicU64::new(0),
@@ -118,11 +144,11 @@ impl JitCompiler {
     /// Compiles a BEAM instruction slice into callable native code.
     ///
     /// The current raw JIT ABI is intentionally narrow for mixed-mode bring-up:
-    /// `extern "C" fn(*mut u64, *mut Process) -> u64`, where the first pointer
-    /// addresses a flat register file. X registers occupy words `0..1024`; Y
-    /// registers occupy words starting at `1024`. The function returns the raw
-    /// word in `x(0)`, `u64::MAX` to request interpreter fallback/deopt, or the
-    /// yield sentinel when the process reduction budget is exhausted.
+    /// `extern "C" fn(*mut u64, *mut Process) -> JitReturn`, where the first
+    /// pointer addresses a flat register file. X registers occupy words
+    /// `0..1024`; Y registers occupy words starting at `1024`. Status `0`
+    /// returns the raw term value normally; status `1` propagates an exception;
+    /// statuses `2` and `3` preserve deopt and yield signalling.
     pub fn compile(
         &self,
         instructions: &[Instruction],
@@ -140,6 +166,7 @@ impl JitCompiler {
         let mut signature = jit_module.make_signature();
         signature.params.push(AbiParam::new(types::I64));
         signature.params.push(AbiParam::new(types::I64));
+        signature.returns.push(AbiParam::new(types::I8));
         signature.returns.push(AbiParam::new(types::I64));
         ctx.func.signature = signature.clone();
 
@@ -190,6 +217,9 @@ impl JitCompiler {
             .push(AbiParam::new(types::I64));
         call_interpreted_signature
             .returns
+            .push(AbiParam::new(types::I8));
+        call_interpreted_signature
+            .returns
             .push(AbiParam::new(types::I64));
         let call_interpreted_helper = jit_module
             .declare_function(
@@ -201,12 +231,33 @@ impl JitCompiler {
         let call_interpreted_helper =
             jit_module.declare_func_in_func(call_interpreted_helper, &mut ctx.func);
 
+        let exception_class_helper =
+            declare_unary_helper(&mut jit_module, &mut ctx.func, "beamr_jit_exception_class")?;
+        let exception_reason_helper =
+            declare_unary_helper(&mut jit_module, &mut ctx.func, "beamr_jit_exception_reason")?;
+        let exception_trace_helper =
+            declare_unary_helper(&mut jit_module, &mut ctx.func, "beamr_jit_exception_trace")?;
+        let exception_clear_helper = declare_void_unary_helper(&mut jit_module, &mut ctx.func)?;
+        let exception_add_frame_helper = declare_add_frame_helper(&mut jit_module, &mut ctx.func)?;
+
         let allocation_helpers = AllocationHelpers {
             tuple: tuple_helper,
             cons: cons_helper,
         };
 
         let mut safepoints = SafepointBuilder::new();
+        let compiled_frame = CompiledFrameInfo {
+            module,
+            function,
+            arity,
+        };
+        let exception_helpers = ExceptionHelpers {
+            class: exception_class_helper,
+            reason: exception_reason_helper,
+            trace: exception_trace_helper,
+            clear: exception_clear_helper,
+            add_frame: exception_add_frame_helper,
+        };
 
         let mut builder_context = FunctionBuilderContext::new();
         {
@@ -227,6 +278,7 @@ impl JitCompiler {
             );
 
             let mut terminated = true;
+            let mut exceptions = ExceptionLoweringState::default();
             for (index, instruction) in instructions.iter().enumerate() {
                 let block = blocks.block_for_instruction(index);
                 if builder.current_block() != Some(block) {
@@ -371,22 +423,36 @@ impl JitCompiler {
                                 register_file,
                             ],
                         );
-                        let returned = builder.inst_results(returned)[0];
-                        let continuation = builder.create_block();
-                        branch_to_sentinel_blocks(
+                        let results = builder.inst_results(returned).to_vec();
+                        let status = results[0];
+                        let returned = results[1];
+                        let status_continuation = builder.create_block();
+                        branch_to_status_blocks(
                             &mut builder,
-                            returned,
+                            status,
                             blocks.deopt,
                             blocks.yield_block,
-                            continuation,
+                            status_continuation,
+                        );
+                        let normal_continuation = builder.create_block();
+                        dispatch_exception_status(
+                            &mut builder,
+                            exception_helpers,
+                            exceptions.current_frame(),
+                            compiled_frame,
+                            process,
+                            register_file,
+                            status,
+                            returned,
+                            normal_continuation,
                         );
                         write_operand_term(
                             &mut builder,
                             register_file,
-                            &crate::loader::decode::compact::Operand::X(0),
+                            &crate::loader::decode::Operand::X(0),
                             returned,
                         )?;
-                        builder.ins().return_(&[returned]);
+                        return_status(&mut builder, JIT_STATUS_NORMAL, returned);
                         terminated = true;
                     }
                     Instruction::Call { label, .. } | Instruction::CallOnly { label, .. } => {
@@ -400,9 +466,40 @@ impl JitCompiler {
                         builder.ins().jump(target, &[]);
                         terminated = true;
                     }
+                    Instruction::Try { destination, label } => {
+                        let catch_block = blocks.label_block(label_operand(label)?)?;
+                        let _frame = exceptions.translate_try(catch_block, destination)?;
+                    }
+                    Instruction::TryEnd { source } => {
+                        let _ = super::ir_common::register_operand(source)?;
+                        exceptions.translate_try_end()?;
+                        builder.ins().call(exception_clear_helper, &[process]);
+                    }
+                    Instruction::TryCase { source } => {
+                        let _ = super::ir_common::register_operand(source)?;
+                        let caught = exceptions.translate_try_case(&mut builder, register_file)?;
+                        write_operand_term(
+                            &mut builder,
+                            register_file,
+                            &crate::loader::decode::Operand::X(0),
+                            caught.class,
+                        )?;
+                        write_operand_term(
+                            &mut builder,
+                            register_file,
+                            &crate::loader::decode::Operand::X(1),
+                            caught.reason,
+                        )?;
+                        write_operand_term(
+                            &mut builder,
+                            register_file,
+                            &crate::loader::decode::Operand::X(2),
+                            caught.trace,
+                        )?;
+                    }
                     Instruction::Return => {
                         let value = read_register_term(&mut builder, register_file, Register::X(0));
-                        builder.ins().return_(&[value]);
+                        return_status(&mut builder, JIT_STATUS_NORMAL, value);
                         terminated = true;
                     }
                     Instruction::PutList {
@@ -492,15 +589,13 @@ impl JitCompiler {
             }
             builder.switch_to_block(exit);
             let value = read_register_term(&mut builder, register_file, Register::X(0));
-            builder.ins().return_(&[value]);
+            return_status(&mut builder, JIT_STATUS_NORMAL, value);
 
             builder.switch_to_block(blocks.deopt);
-            let sentinel = builder.ins().iconst(types::I64, JIT_DEOPT_SENTINEL);
-            builder.ins().return_(&[sentinel]);
+            return_status_raw(&mut builder, JIT_STATUS_DEOPT, JIT_DEOPT_SENTINEL);
 
             builder.switch_to_block(blocks.yield_block);
-            let sentinel = builder.ins().iconst(types::I64, JIT_YIELD_SENTINEL);
-            builder.ins().return_(&[sentinel]);
+            return_status_raw(&mut builder, JIT_STATUS_YIELD, JIT_YIELD_SENTINEL);
             builder.seal_all_blocks();
             builder.finalize();
         }
@@ -550,16 +645,16 @@ fn charge_reduction_or_yield(
     branch_to_yield_if_exhausted(builder, exhausted, yield_block, continuation);
 }
 
-fn branch_to_sentinel_blocks(
+fn branch_to_status_blocks(
     builder: &mut FunctionBuilder<'_>,
-    returned: cranelift_codegen::ir::Value,
+    status: cranelift_codegen::ir::Value,
     deopt_block: cranelift_codegen::ir::Block,
     yield_block: cranelift_codegen::ir::Block,
     continuation: cranelift_codegen::ir::Block,
 ) {
     let is_deopt = builder
         .ins()
-        .icmp_imm(IntCC::Equal, returned, JIT_DEOPT_SENTINEL);
+        .icmp_imm(IntCC::Equal, status, i64::from(JIT_STATUS_DEOPT));
     let check_yield = builder.create_block();
     builder
         .ins()
@@ -567,11 +662,52 @@ fn branch_to_sentinel_blocks(
     builder.switch_to_block(check_yield);
     let is_yield = builder
         .ins()
-        .icmp_imm(IntCC::Equal, returned, JIT_YIELD_SENTINEL);
+        .icmp_imm(IntCC::Equal, status, i64::from(JIT_STATUS_YIELD));
     builder
         .ins()
         .brif(is_yield, yield_block, &[], continuation, &[]);
     builder.switch_to_block(continuation);
+}
+
+fn declare_unary_helper(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+    name: &str,
+) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(types::I64));
+    signature.returns.push(AbiParam::new(types::I64));
+    let helper = module
+        .declare_function(name, Linkage::Import, &signature)
+        .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+    Ok(module.declare_func_in_func(helper, func))
+}
+
+fn declare_void_unary_helper(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(types::I64));
+    let helper = module
+        .declare_function("beamr_jit_clear_exception", Linkage::Import, &signature)
+        .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+    Ok(module.declare_func_in_func(helper, func))
+}
+
+fn declare_add_frame_helper(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I64));
+    let helper = module
+        .declare_function("beamr_jit_add_compiled_frame", Linkage::Import, &signature)
+        .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+    Ok(module.declare_func_in_func(helper, func))
 }
 
 fn import_index(import: &Operand) -> Result<usize, JitError> {

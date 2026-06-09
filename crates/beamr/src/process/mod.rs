@@ -124,6 +124,10 @@ pub struct RawStackEntry {
     pub ip: usize,
     /// Optional module/function/arity metadata from a preceding `func_info`.
     pub mfa: Option<(Atom, Atom, u8)>,
+    /// Precomputed source-location info for frames that do not map to an interpreted IP.
+    pub location_info: Term,
+    /// True when this entry represents a compiled frame rather than an interpreted IP.
+    pub compiled: bool,
 }
 
 /// Receive timeout state recorded while a process is waiting.

@@ -144,6 +144,15 @@ impl TranslationPlan {
                     validate_label_operand(target)?;
                     block_starts.insert(index + 1);
                 }
+                Instruction::Try { destination, label } => {
+                    validate_write_operand(destination)?;
+                    validate_label_operand(label)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::TryEnd { source } | Instruction::TryCase { source } => {
+                    validate_write_operand(source)?;
+                    block_starts.insert(index + 1);
+                }
                 Instruction::Call { label, .. } | Instruction::CallOnly { label, .. } => {
                     validate_label_operand(label)?;
                     block_starts.insert(index + 1);
@@ -182,6 +191,7 @@ impl TranslationPlan {
                     }
                 }
                 Instruction::Jump { target }
+                | Instruction::Try { label: target, .. }
                 | Instruction::Call { label: target, .. }
                 | Instruction::CallOnly { label: target, .. } => {
                     ensure_known_label(&labels, target)?
