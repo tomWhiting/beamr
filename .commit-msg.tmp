@@ -1,1 +1,1 @@
-test(beamr): add gated differential JIT equivalence harness
+harden(beamr): differential test harness review fixes

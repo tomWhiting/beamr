@@ -79,7 +79,7 @@ pub struct ExecutionTrace {
     pub side_effects: SideEffectTrace,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DifferentialResult {
     Match {
         result: Term,
@@ -96,7 +96,7 @@ pub enum DifferentialResult {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DivergenceReport {
     pub mfa: Mfa,
     pub args: Vec<String>,
@@ -486,8 +486,13 @@ struct NormalisedTrace {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum NormalisedTerm {
+    SmallInt(i64),
+    Atom(Atom),
     PidOrdinal(usize),
-    Raw(String),
+    Nil,
+    Tuple(Vec<NormalisedTerm>),
+    List(Vec<NormalisedTerm>, Box<NormalisedTerm>),
+    Other(String),
 }
 
 fn normalise_side_effect_trace(trace: &SideEffectTrace) -> NormalisedTrace {
@@ -532,7 +537,11 @@ fn normalise_term(
     pids: &mut HashMap<u64, usize>,
     next_pid: &mut usize,
 ) -> NormalisedTerm {
-    if let Some(pid) = term.as_pid() {
+    if let Some(value) = term.as_small_int() {
+        NormalisedTerm::SmallInt(value)
+    } else if let Some(atom) = term.as_atom() {
+        NormalisedTerm::Atom(atom)
+    } else if let Some(pid) = term.as_pid() {
         let ordinal = match pids.get(&pid).copied() {
             Some(ordinal) => ordinal,
             None => {
@@ -543,9 +552,32 @@ fn normalise_term(
             }
         };
         NormalisedTerm::PidOrdinal(ordinal)
+    } else if term.is_nil() {
+        NormalisedTerm::Nil
+    } else if let Some(tuple) = Tuple::new(term) {
+        let elements = (0..tuple.arity())
+            .filter_map(|index| tuple.get(index))
+            .map(|element| normalise_term(element, pids, next_pid))
+            .collect();
+        NormalisedTerm::Tuple(elements)
+    } else if term.is_list() {
+        normalise_list(term, pids, next_pid)
     } else {
-        NormalisedTerm::Raw(format_term(term))
+        NormalisedTerm::Other(format_term(term))
     }
+}
+
+fn normalise_list(
+    mut term: Term,
+    pids: &mut HashMap<u64, usize>,
+    next_pid: &mut usize,
+) -> NormalisedTerm {
+    let mut elements = Vec::new();
+    while let Some(cons) = Cons::new(term) {
+        elements.push(normalise_term(cons.head(), pids, next_pid));
+        term = cons.tail();
+    }
+    NormalisedTerm::List(elements, Box::new(normalise_term(term, pids, next_pid)))
 }
 
 fn execute_interpreter(
@@ -1011,6 +1043,28 @@ fn broken_compiled_executor_reports_divergence() {
 }
 
 #[test]
+fn list_processing_scenario_runs_differentially() {
+    differential_test!(
+        include_bytes!("fixtures/stdlib/lists.beam"),
+        "reverse",
+        1,
+        &[Term::NIL]
+    );
+}
+
+#[test]
+fn pattern_matching_scenario_runs_differentially() {
+    let mut process = Process::new(1, 128);
+    let input = tuple_in(&mut process, &[Term::atom(Atom::OK), Term::small_int(42)]);
+    differential_test!(
+        include_bytes!("fixtures/tagged_tuple_patterns.beam"),
+        "match",
+        1,
+        &[input]
+    );
+}
+
+#[test]
 fn unsupported_map_operation_is_logged_as_compilation_skipped() {
     let runner = DifferentialRunner::new(SchedulerConfig {
         jit_threshold: Some(1),
@@ -1174,6 +1228,39 @@ fn side_effect_traces_normalise_pid_values() {
         }],
         exceptions_raised: Vec::new(),
     };
+    assert_eq!(
+        compare_side_effects(&interpreted, &compiled),
+        CompareResult::Equal
+    );
+}
+
+#[test]
+fn side_effect_traces_compare_nested_heap_terms_structurally() {
+    let mut interpreted_process = Process::new(1, 128);
+    let mut compiled_process = Process::new(2, 128);
+    let interpreted_message = tuple_in(
+        &mut interpreted_process,
+        &[Term::atom(Atom::OK), Term::pid(10)],
+    );
+    let compiled_message = tuple_in(
+        &mut compiled_process,
+        &[Term::atom(Atom::OK), Term::pid(99)],
+    );
+    let interpreted = SideEffectTrace {
+        messages_sent: vec![MessageSend {
+            destination: Term::pid(10),
+            message: interpreted_message,
+        }],
+        ..SideEffectTrace::default()
+    };
+    let compiled = SideEffectTrace {
+        messages_sent: vec![MessageSend {
+            destination: Term::pid(99),
+            message: compiled_message,
+        }],
+        ..SideEffectTrace::default()
+    };
+
     assert_eq!(
         compare_side_effects(&interpreted, &compiled),
         CompareResult::Equal
