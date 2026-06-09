@@ -1,1 +1,1 @@
-fix(beamr): keep JIT code memory alive in NativeCode
+test(beamr): add gated differential JIT equivalence harness
