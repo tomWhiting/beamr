@@ -20,7 +20,14 @@ use crate::timer::TimerWheel;
 
 use super::trampoline;
 
-/// Combined context for external calls carrying timer, facility, and registry services.
+/// JIT dispatch services shared by local and external call handlers.
+#[derive(Copy, Clone)]
+pub struct JitDispatchContext<'a> {
+    pub jit_cache: Option<&'a JitCache>,
+    pub registry: Option<&'a ModuleRegistry>,
+}
+
+/// Combined context for external calls carrying timer, facility, registry, and JIT services.
 pub struct ExtCallContext<'a> {
     pub timers: Option<&'a Arc<Mutex<TimerWheel>>>,
     pub services: Option<&'a NativeServices>,
@@ -87,8 +94,7 @@ pub fn call(
     label: &Operand,
     return_ip: usize,
     save_return: bool,
-    jit_cache: Option<&JitCache>,
-    registry: Option<&ModuleRegistry>,
+    jit_ctx: JitDispatchContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
     let arity = operand_u8(arity, "call arity")?;
     let target = label_ip(module, operand_label(label)?)?;
@@ -105,8 +111,8 @@ pub fn call(
         target,
         arity,
         save_return,
-        jit_cache,
-        registry,
+        jit_ctx.jit_cache,
+        jit_ctx.registry,
     )? {
         return Ok(outcome);
     }

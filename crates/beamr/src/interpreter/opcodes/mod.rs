@@ -189,8 +189,10 @@ fn dispatch_common(
             label,
             next_ip,
             true,
-            ctx.jit_cache,
-            ctx.registry,
+            core::JitDispatchContext {
+                jit_cache: ctx.jit_cache,
+                registry: ctx.registry,
+            },
         ),
         Instruction::CallOnly { arity, label } => core::call(
             process,
@@ -199,8 +201,10 @@ fn dispatch_common(
             label,
             next_ip,
             false,
-            ctx.jit_cache,
-            ctx.registry,
+            core::JitDispatchContext {
+                jit_cache: ctx.jit_cache,
+                registry: ctx.registry,
+            },
         ),
         Instruction::CallExt { arity, import } => {
             let ext = core::ExtCallContext {

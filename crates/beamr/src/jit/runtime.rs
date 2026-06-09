@@ -3,7 +3,6 @@
 use crate::atom::Atom;
 use crate::gc;
 use crate::interpreter::{ExecutionResult, run_with_registry};
-use crate::loader::decode::compact::Operand;
 use crate::module::ResolvedImportTarget;
 use crate::process::{CodePosition, JitStatus, Process};
 use crate::term::Term;
@@ -171,23 +170,5 @@ fn alloc_words(process: &mut Process, words: usize) -> *mut u64 {
     match process.heap_mut().alloc(words) {
         Ok(ptr) => ptr,
         Err(_heap_full) => std::ptr::null_mut(),
-    }
-}
-
-pub(crate) fn resolved_import_mfa(
-    module: &crate::module::Module,
-    import: &Operand,
-) -> Option<(Atom, Atom, u8)> {
-    let import_index = match import {
-        Operand::Unsigned(value) => usize::try_from(*value).ok()?,
-        Operand::Integer(value) => usize::try_from(*value).ok()?,
-        _ => return None,
-    };
-    let resolved = module.resolved_imports.get(import_index)?;
-    match resolved.target {
-        ResolvedImportTarget::Unresolved { .. } | ResolvedImportTarget::Native(_) => None,
-        ResolvedImportTarget::Code { .. } | ResolvedImportTarget::Deferred { .. } => {
-            Some((resolved.module, resolved.function, resolved.arity))
-        }
     }
 }
