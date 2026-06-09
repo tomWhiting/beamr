@@ -2,7 +2,9 @@ use super::{JitCompiler, JitError, JitSettings};
 use crate::atom::Atom;
 use crate::jit::RootLocation;
 use crate::jit::ir_common::{JIT_DEOPT_SENTINEL, X_REGISTER_COUNT};
-use crate::jit::ir_exceptions::{JIT_STATUS_DEOPT, JIT_STATUS_NORMAL, JIT_STATUS_YIELD, JitReturn};
+use crate::jit::ir_exceptions::{
+    JIT_STATUS_DEOPT, JIT_STATUS_EXCEPTION, JIT_STATUS_NORMAL, JIT_STATUS_YIELD, JitReturn,
+};
 use crate::loader::Instruction;
 use crate::loader::decode::{BifOp, ComparisonOp, Operand, TypeTestOp};
 use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
@@ -836,6 +838,150 @@ fn compiled_external_call_falls_back_to_interpreter_and_returns_value() {
 
     assert_eq!(returned, Term::small_int(17).raw());
     assert_eq!(registers[0], Term::small_int(17).raw());
+}
+
+#[test]
+fn compiled_try_catches_interpreted_exception_and_exposes_payload() {
+    let caller_atom = Atom::MODULE;
+    let target_atom = Atom::ERROR;
+    let function_atom = Atom::OK;
+    let mut caller = test_module(
+        caller_atom,
+        vec![
+            Instruction::Try {
+                destination: Operand::Y(0),
+                label: Operand::Label(20),
+            },
+            Instruction::Move {
+                source: Operand::Atom(Some(Atom::ERROR)),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Atom(Some(Atom::BADARG)),
+                destination: Operand::X(1),
+            },
+            Instruction::Move {
+                source: Operand::Atom(None),
+                destination: Operand::X(2),
+            },
+            Instruction::CallExtOnly {
+                arity: Operand::Unsigned(3),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Label { label: 20 },
+            Instruction::TryCase {
+                source: Operand::Y(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    caller.resolved_imports.push(ResolvedImport {
+        module: target_atom,
+        function: function_atom,
+        arity: 3,
+        target: ResolvedImportTarget::Code {
+            module: target_atom,
+            label: 1,
+        },
+    });
+    let mut target = test_module(
+        target_atom,
+        vec![
+            Instruction::Label { label: 1 },
+            Instruction::RawRaise,
+            Instruction::Return,
+        ],
+    );
+    target.exports.insert((function_atom, 3), 1);
+    let registry = ModuleRegistry::new();
+    let caller = registry.insert(caller);
+    let _target = registry.insert(target);
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(&caller.code, caller_atom, function_atom, 0)
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    process.set_current_module(caller.clone());
+    process.set_jit_runtime_context(Some(JitRuntimeContext::new(
+        caller.as_ref() as *const Module,
+        &registry as *const ModuleRegistry,
+    )));
+    let mut registers = vec![0; X_REGISTER_COUNT + 3];
+
+    let returned = call_native_status(&native, &mut registers, &mut process);
+
+    assert_eq!(returned.status, JIT_STATUS_NORMAL);
+    assert_eq!(returned.value, Term::atom(Atom::ERROR).raw());
+    assert_eq!(registers[0], Term::atom(Atom::ERROR).raw());
+    assert_eq!(registers[1], Term::atom(Atom::BADARG).raw());
+    assert_eq!(registers[2], Term::NIL.raw());
+    assert_eq!(process.current_exception(), None);
+}
+
+#[test]
+fn compiled_external_exception_without_try_propagates_status_and_frame() {
+    let caller_atom = Atom::MODULE;
+    let target_atom = Atom::ERROR;
+    let function_atom = Atom::OK;
+    let mut caller = test_module(
+        caller_atom,
+        vec![Instruction::CallExtOnly {
+            arity: Operand::Unsigned(3),
+            import: Operand::Unsigned(0),
+        }],
+    );
+    caller.resolved_imports.push(ResolvedImport {
+        module: target_atom,
+        function: function_atom,
+        arity: 3,
+        target: ResolvedImportTarget::Code {
+            module: target_atom,
+            label: 1,
+        },
+    });
+    let mut target = test_module(
+        target_atom,
+        vec![
+            Instruction::Label { label: 1 },
+            Instruction::RawRaise,
+            Instruction::Return,
+        ],
+    );
+    target.exports.insert((function_atom, 3), 1);
+    let registry = ModuleRegistry::new();
+    let caller = registry.insert(caller);
+    let _target = registry.insert(target);
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(&caller.code, caller_atom, function_atom, 0)
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    process.set_current_module(caller.clone());
+    process.set_jit_runtime_context(Some(JitRuntimeContext::new(
+        caller.as_ref() as *const Module,
+        &registry as *const ModuleRegistry,
+    )));
+    let mut registers = vec![
+        Term::atom(Atom::ERROR).raw(),
+        Term::atom(Atom::BADARG).raw(),
+        Term::NIL.raw(),
+    ];
+
+    let returned = call_native_status(&native, &mut registers, &mut process);
+
+    assert_eq!(returned.status, JIT_STATUS_EXCEPTION);
+    assert_eq!(returned.value, Term::atom(Atom::BADARG).raw());
+    let exception = process
+        .current_exception()
+        .expect("exception state preserved");
+    assert_eq!(exception.class, Term::atom(Atom::ERROR));
+    assert_eq!(exception.reason, Term::atom(Atom::BADARG));
+    assert!(
+        process
+            .raw_stacktrace()
+            .iter()
+            .any(|entry| entry.mfa == Some((caller_atom, function_atom, 0)))
+    );
 }
 
 #[test]

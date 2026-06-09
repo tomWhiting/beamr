@@ -478,8 +478,8 @@ impl JitCompiler {
                         builder.ins().call(exception_clear_helper, &[process]);
                     }
                     Instruction::TryCase { source } => {
-                        let _ = super::ir_common::register_operand(source)?;
-                        let caught = exceptions.translate_try_case(&mut builder, register_file)?;
+                        let caught =
+                            exceptions.translate_try_case(&mut builder, register_file, source)?;
                         write_operand_term(
                             &mut builder,
                             register_file,

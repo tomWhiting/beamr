@@ -104,31 +104,12 @@ impl ExceptionLoweringState {
         catch_block: Block,
         destination: &crate::loader::decode::Operand,
     ) -> Result<TryCatchFrame, JitError> {
-        let class_register = register_operand(destination)?;
-        let (base, is_y) = match class_register {
-            Register::Y(index) => (index, true),
-            Register::X(index) => (index, false),
-        };
-        if !is_y {
-            return Err(JitError::UnsupportedOperand {
-                operand: "try destination must be a Y register".to_owned(),
-            });
-        }
-        let Some(reason_index) = base.checked_add(1) else {
-            return Err(JitError::UnsupportedOperand {
-                operand: format!("try Y register triplet out of range: {base}"),
-            });
-        };
-        let Some(trace_index) = base.checked_add(2) else {
-            return Err(JitError::UnsupportedOperand {
-                operand: format!("try Y register triplet out of range: {base}"),
-            });
-        };
+        let (class_register, reason_register, trace_register) = try_register_triplet(destination)?;
         let frame = TryCatchFrame {
             catch_block,
             class_register,
-            reason_register: Register::Y(reason_index),
-            trace_register: Register::Y(trace_index),
+            reason_register,
+            trace_register,
         };
         self.try_stack.push(frame);
         Ok(frame)
@@ -147,15 +128,52 @@ impl ExceptionLoweringState {
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         register_file: Value,
+        source: &crate::loader::decode::Operand,
     ) -> Result<CaughtExceptionValues, JitError> {
-        let frame = self
-            .try_stack
-            .pop()
-            .ok_or_else(|| JitError::UnsupportedOpcode {
-                opcode: "try_case without active try".to_owned(),
-            })?;
+        let frame = match self.try_stack.pop() {
+            Some(frame) => frame,
+            None => try_case_frame_from_source(source)?,
+        };
         Ok(read_caught_exception(builder, register_file, frame))
     }
+}
+
+fn try_case_frame_from_source(
+    source: &crate::loader::decode::Operand,
+) -> Result<TryCatchFrame, JitError> {
+    let (class_register, reason_register, trace_register) = try_register_triplet(source)?;
+    Ok(TryCatchFrame {
+        catch_block: Block::from_u32(0),
+        class_register,
+        reason_register,
+        trace_register,
+    })
+}
+
+fn try_register_triplet(
+    operand: &crate::loader::decode::Operand,
+) -> Result<(Register, Register, Register), JitError> {
+    let class_register = register_operand(operand)?;
+    let Register::Y(base) = class_register else {
+        return Err(JitError::UnsupportedOperand {
+            operand: "try destination must be a Y register".to_owned(),
+        });
+    };
+    let Some(reason_index) = base.checked_add(1) else {
+        return Err(JitError::UnsupportedOperand {
+            operand: format!("try Y register triplet out of range: {base}"),
+        });
+    };
+    let Some(trace_index) = base.checked_add(2) else {
+        return Err(JitError::UnsupportedOperand {
+            operand: format!("try Y register triplet out of range: {base}"),
+        });
+    };
+    Ok((
+        class_register,
+        Register::Y(reason_index),
+        Register::Y(trace_index),
+    ))
 }
 
 pub(crate) fn read_caught_exception(
