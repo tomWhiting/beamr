@@ -3,6 +3,9 @@
 pub mod cache;
 pub mod compile_job;
 pub mod compiler;
+pub(crate) mod ir_arithmetic;
+pub(crate) mod ir_common;
+pub(crate) mod ir_control;
 pub mod profiler;
 pub mod types;
 
