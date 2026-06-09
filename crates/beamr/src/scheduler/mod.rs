@@ -25,7 +25,7 @@ use crate::io::{
     CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoSink,
     IoWakeTarget, NullSink, PendingIoRegistry, RingConfig, StandardIoServer, create_ring,
 };
-use crate::jit::JitProfiler;
+use crate::jit::{JitCache, JitProfiler};
 use crate::module::ModuleRegistry;
 use crate::namespace::NamespaceId;
 use crate::native::{
@@ -78,6 +78,7 @@ pub(super) struct SharedState {
     pub(super) dirty_cpu: DirtyPool,
     pub(super) dirty_io: DirtyPool,
     jit_profiler: Arc<JitProfiler>,
+    jit_cache: Arc<JitCache>,
     next_pid: AtomicU64,
     wait_set: Mutex<WaitSet>,
     wake_condvar: Condvar,
@@ -302,6 +303,7 @@ impl Scheduler {
             dirty_queue_depth,
         );
         let jit_profiler = Arc::new(JitProfiler::new(config.jit_threshold.unwrap_or(1000)));
+        let jit_cache = Arc::new(JitCache::new());
         let io_runtime = config.io.map(|ring_config| {
             let ring: Arc<dyn CompletionRing> = Arc::from(create_ring(ring_config));
             let registry = Arc::new(PendingIoRegistry::default());
@@ -354,6 +356,7 @@ impl Scheduler {
             dirty_cpu,
             dirty_io,
             jit_profiler,
+            jit_cache,
             next_pid: AtomicU64::new(1),
             wait_set: Mutex::new(WaitSet::default()),
             wake_condvar: Condvar::new(),
@@ -533,6 +536,10 @@ impl Scheduler {
     #[must_use]
     pub fn jit_profiler(&self) -> &Arc<JitProfiler> {
         &self.shared.jit_profiler
+    }
+    #[must_use]
+    pub fn jit_cache(&self) -> &Arc<JitCache> {
+        &self.shared.jit_cache
     }
     #[must_use]
     pub fn hook(&self) -> &Hook {

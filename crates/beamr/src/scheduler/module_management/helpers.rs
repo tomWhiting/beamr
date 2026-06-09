@@ -49,7 +49,10 @@ pub(super) fn hot_load_module_in_shared(
     if registry.lookup_old(module_name).is_some() {
         return Err(LoadError::OldCodeStillRunning);
     }
-    let had_old_version = registry.lookup(module_name).is_some();
+    let previous_generation = registry
+        .lookup(module_name)
+        .map(|module| module.generation());
+    let had_old_version = previous_generation.is_some();
     let on_load_ip = find_on_load_ip(&staged);
     if let Some(ip) = on_load_ip {
         let outcome = run_on_load(shared, namespace, registry, &staged, ip);
@@ -64,6 +67,11 @@ pub(super) fn hot_load_module_in_shared(
         }
     }
     let committed = registry.insert(staged);
+    if let Some(generation) = previous_generation {
+        shared
+            .jit_cache
+            .invalidate_generation(module_name, generation);
+    }
     Ok(HotLoadResult {
         module_name,
         generation: committed.generation(),
@@ -135,7 +143,11 @@ pub(super) fn purge_module_in_shared(
             });
         }
     }
+    let old_generation = registry.lookup_old(name).map(|module| module.generation());
     registry.purge_old(name)?;
+    if let Some(generation) = old_generation {
+        shared.jit_cache.invalidate_generation(name, generation);
+    }
     Ok(PurgeResult {
         module_name: name,
         processes_killed: 0,
@@ -157,6 +169,7 @@ pub(super) fn force_purge_module_in_shared(
         cleanup_exited_process(shared, pid, ExitReason::Killed);
     }
     registry.force_remove_old(name)?;
+    shared.jit_cache.invalidate_module(name);
     Ok(PurgeResult {
         module_name: name,
         processes_killed,

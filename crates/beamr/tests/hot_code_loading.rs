@@ -7,6 +7,7 @@ use std::sync::Arc;
 use beamr::atom::AtomTable;
 use beamr::constant_pool::materialise_literals;
 use beamr::error::LoadError;
+use beamr::jit::{JitCacheKey, JitCompiler, JitSettings};
 use beamr::loader::{Instruction, Literal};
 use beamr::module::{Module, ModuleRegistry};
 use beamr::native::BifRegistryImpl;
@@ -119,6 +120,54 @@ fn hot_load_replacement_blocks_third_load_until_purge() {
         .force_purge_module(counter)
         .expect("force purge old");
     assert!(!scheduler.check_old_code(counter));
+    scheduler.shutdown();
+}
+
+#[test]
+fn hot_load_evicts_jit_cache_entries_for_old_generation() {
+    let atoms = Arc::new(AtomTable::with_common_atoms());
+    let counter = atoms.intern("counter");
+    let version = atoms.intern("version");
+    let (scheduler, _registry) = scheduler(Arc::clone(&atoms));
+    let compiler = JitCompiler::new(JitSettings).expect("jit compiler initializes");
+
+    scheduler
+        .hot_load_module(&fixture("counter_v1.beam"))
+        .expect("load v1");
+    let old_code = compiler
+        .compile(&[Instruction::Return], counter, version, 0)
+        .expect("compile v1 stand-in");
+    let old_ptr = old_code.call_ptr();
+    scheduler
+        .jit_cache()
+        .insert(JitCacheKey::new(counter, version, 0, 1), old_code);
+    assert!(
+        scheduler
+            .jit_cache()
+            .lookup(counter, version, 0, 1)
+            .is_some()
+    );
+
+    scheduler
+        .hot_load_module(&fixture("counter_v2.beam"))
+        .expect("load v2");
+
+    assert!(
+        scheduler
+            .jit_cache()
+            .lookup(counter, version, 0, 1)
+            .is_none()
+    );
+    assert!(
+        scheduler
+            .jit_cache()
+            .lookup(counter, version, 0, 2)
+            .is_none()
+    );
+    let fresh_code = compiler
+        .compile(&[Instruction::Return], counter, version, 0)
+        .expect("compile v2 stand-in");
+    assert_ne!(fresh_code.call_ptr(), old_ptr);
     scheduler.shutdown();
 }
 
