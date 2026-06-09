@@ -1,1 +1,1 @@
-Harden JIT float IR translation validation and test coverage
+fix(beamr): root BsMatch allocations and avoid GC-dangling sources

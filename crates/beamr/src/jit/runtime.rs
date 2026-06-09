@@ -298,16 +298,18 @@ fn map_update(
     let Some(updates) = map_pair_terms(pairs, pair_count) else {
         return 0;
     };
-    if exact
-        && updates
-            .iter()
-            .any(|(key, _value)| source_map.get(*key).is_none())
-    {
-        return 0;
-    }
     let Some(mut entries) = map_entries(source_map) else {
         return 0;
     };
+    if exact
+        && updates.iter().any(|(key, _value)| {
+            entries
+                .iter()
+                .all(|(existing_key, _value)| *existing_key != *key)
+        })
+    {
+        return 0;
+    }
     for (key, value) in updates {
         if let Some((_existing_key, existing_value)) = entries
             .iter_mut()
@@ -361,15 +363,15 @@ fn map_entries(map: Map) -> Option<Vec<(Term, Term)>> {
 
 fn write_map_entries(process: &mut Process, entries: &[(Term, Term)]) -> Option<Term> {
     let words = map_word_count(entries.len())?;
-    if gc::ensure_space(process, words, 256).is_err() {
-        return None;
-    }
-    let heap = process.heap_mut().alloc_slice(words).ok()?;
     let keys = entries.iter().map(|(key, _value)| *key).collect::<Vec<_>>();
     let values = entries
         .iter()
         .map(|(_key, value)| *value)
         .collect::<Vec<_>>();
+    if gc::ensure_space(process, words, 256).is_err() {
+        return None;
+    }
+    let heap = process.heap_mut().alloc_slice(words).ok()?;
     write_map(heap, &keys, &values)
 }
 
@@ -640,11 +642,11 @@ pub(crate) extern "C" fn jit_bs_finish(process: *mut Process, builder: u64) -> u
         return 0;
     }
     let byte_len = builder.write_position_bits() / u8::BITS as usize;
-    let Some(bytes) = builder.bytes(byte_len) else {
+    let Some(bytes) = builder.bytes(byte_len).map(<[u8]>::to_vec) else {
         set_badarg(process);
         return 0;
     };
-    let Some(binary) = allocate_binary(process, bytes) else {
+    let Some(binary) = allocate_binary(process, &bytes) else {
         return 0;
     };
     binary.raw()
