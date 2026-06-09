@@ -1,1 +1,1 @@
-fix(beamr): avoid const Ord::clamp in JIT threshold tuning
+fix(beamr): harden JIT comparison benchmarks
