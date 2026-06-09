@@ -33,7 +33,9 @@ impl TranslationPlan {
                     labels.insert(*label, index);
                     block_starts.insert(index);
                 }
-                Instruction::Return => {}
+                Instruction::Return => {
+                    block_starts.insert(index + 1);
+                }
                 Instruction::Move {
                     source,
                     destination,
