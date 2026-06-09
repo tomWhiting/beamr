@@ -1,11 +1,19 @@
 {
   "id": "B-169",
   "cluster": "beamr",
-  "title": "Higher-order BIF trampoline — wire closure-calling stubs",
-  "depends_on": ["B-028"],
+  "title": "Higher-order BIF trampoline \u2014 wire closure-calling stubs",
+  "depends_on": [
+    "B-028"
+  ],
   "blocked_by": [],
-  "checklist": ["C150", "C151"],
-  "stories": ["S4", "S9"],
+  "checklist": [
+    "C150",
+    "C151"
+  ],
+  "stories": [
+    "S4",
+    "S9"
+  ],
   "purpose": "Six registered BIF stubs return identity/badarg because they accept BEAM closures as arguments but the BIF calling convention cannot re-enter the interpreter to invoke them. The trampoline mechanism (TrampolineRequest + NativeContinuation + handle_native_continuation) already exists and is production-tested for maps:fold/3, maps:filter/2, lists:map/2, lists:filter/2. These stubs need to be wired into the same pattern. maps:map/2 applies a function to every value in a map. gleam@option:map/2 applies a function to the Some payload. gleam@result:map_error/2 and gleam@result:then/2 transform Result tuples. gleam@otp@intensity_tracker:new/2 and add_event/1 are fixed-shape stubs that need real tuple construction but do not need closures. The JIT path (compiled code -> jit_call_interpreted -> interpreter -> BIF -> trampoline -> interpreter -> continuation) must work without modification because the trampoline is handled inside the interpreter run_loop, which jit_call_interpreted already calls.",
   "task": "Replace the 6 identity/badarg stubs with real implementations using the existing trampoline infrastructure. Add NativeContinuation variants for maps:map and gleam result/option higher-order functions. Verify the JIT -> trampoline path works end-to-end with a test that compiles a function calling maps:map/2 with a closure argument.",
   "requirements": [
@@ -28,8 +36,12 @@
           "crates/beamr/src/interpreter/opcodes/trampoline.rs"
         ]
       },
-      "checklist": ["C150"],
-      "stories": ["S4"]
+      "checklist": [
+        "C150"
+      ],
+      "stories": [
+        "S4"
+      ]
     },
     {
       "id": "R2",
@@ -48,8 +60,12 @@
           "crates/beamr/src/interpreter/opcodes/trampoline.rs"
         ]
       },
-      "checklist": ["C150"],
-      "stories": ["S4"]
+      "checklist": [
+        "C150"
+      ],
+      "stories": [
+        "S4"
+      ]
     },
     {
       "id": "R3",
@@ -69,44 +85,60 @@
           "crates/beamr/src/interpreter/opcodes/trampoline.rs"
         ]
       },
-      "checklist": ["C150"],
-      "stories": ["S4"]
+      "checklist": [
+        "C150"
+      ],
+      "stories": [
+        "S4"
+      ]
     },
     {
       "id": "R4",
       "title": "gleam@otp@intensity_tracker real implementations",
-      "spec": "WHEN intensity_tracker:new/2 is called with limit and period, THE SYSTEM SHALL construct a tracker tuple {0, limit, period, []} where element 0 is the event count, element 3 is the event timestamp list. WHEN intensity_tracker:add_event/1 is called with a tracker, THE SYSTEM SHALL increment the count and return {ok, updated_tracker} if count < limit, or {error, updated_tracker} if count >= limit. THE SYSTEM SHALL NOT require trampoline support — these functions do not accept closure arguments.",
+      "spec": "WHEN intensity_tracker:new/2 is called with limit and period, THE SYSTEM SHALL construct a tracker tuple {0, limit, period, []} where element 0 is the event count, element 3 is the event timestamp list. WHEN intensity_tracker:add_event/1 is called with a tracker, THE SYSTEM SHALL increment the count and return {ok, updated_tracker} if count < limit, or {error, updated_tracker} if count >= limit. THE SYSTEM SHALL NOT require trampoline support \u2014 these functions do not accept closure arguments.",
       "acceptance": [
         "intensity_tracker:new(5, 1000) returns {0, 5, 1000, []}",
         "intensity_tracker:add_event(tracker) with count < limit returns {ok, updated}",
         "intensity_tracker:add_event(tracker) with count >= limit returns {error, updated}",
-        "No trampoline request is set — these are pure data transforms"
+        "No trampoline request is set \u2014 these are pure data transforms"
       ],
       "files": {
-        "modify": ["crates/beamr/src/native/otp_stubs/gleam_stubs.rs"]
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/gleam_stubs.rs"
+        ]
       },
-      "checklist": ["C151"],
-      "stories": ["S9"]
+      "checklist": [
+        "C151"
+      ],
+      "stories": [
+        "S9"
+      ]
     },
     {
       "id": "R5",
       "title": "JIT-to-trampoline end-to-end verification",
-      "spec": "WHEN JIT-compiled code calls an external function that is a BIF with trampoline support (e.g. maps:map/2), THE SYSTEM SHALL correctly execute the trampoline chain through jit_call_interpreted -> run_with_registry -> BIF -> trampoline -> interpreter -> continuation -> return. THE SYSTEM SHALL return the correct result to the compiled caller. THE SYSTEM SHALL NOT require any changes to the JIT dispatch or runtime helpers — the existing jit_call_interpreted path through run_with_registry already handles trampolines.",
+      "spec": "WHEN JIT-compiled code calls an external function that is a BIF with trampoline support (e.g. maps:map/2), THE SYSTEM SHALL correctly execute the trampoline chain through jit_call_interpreted -> run_with_registry -> BIF -> trampoline -> interpreter -> continuation -> return. THE SYSTEM SHALL return the correct result to the compiled caller. THE SYSTEM SHALL NOT require any changes to the JIT dispatch or runtime helpers \u2014 the existing jit_call_interpreted path through run_with_registry already handles trampolines.",
       "acceptance": [
         "Differential test: maps:map(fun(K,V) -> V+1 end, #{a => 1}) through interpreter and JIT produce identical results",
         "Integration test: compiled function calling maps:map/2 returns correct transformed map",
         "No modifications to jit/runtime.rs or jit/compiler.rs needed"
       ],
       "files": {
-        "modify": ["crates/beamr/tests/differential.rs"]
+        "modify": [
+          "crates/beamr/tests/differential.rs"
+        ]
       },
-      "checklist": ["C150"],
-      "stories": ["S4"]
+      "checklist": [
+        "C150"
+      ],
+      "stories": [
+        "S4"
+      ]
     },
     {
       "id": "R6",
       "title": "Trampoline SHALL NOT constraints",
-      "spec": "THE SYSTEM SHALL NOT add new NativeContinuation variants without corresponding resume handlers in handle_native_continuation. THE SYSTEM SHALL NOT return Term::NIL from a BIF without first setting a trampoline request — Term::NIL is the sentinel that triggers trampoline dispatch. THE SYSTEM SHALL NOT allocate heap terms inside continuation resume handlers without ensuring the process heap has space (use context.alloc_tuple or equivalent). THE SYSTEM SHALL NOT modify ProcessContext.trampoline field directly — use set_continuation_trampoline() or set_trampoline().",
+      "spec": "THE SYSTEM SHALL NOT add new NativeContinuation variants without corresponding resume handlers in handle_native_continuation. THE SYSTEM SHALL NOT return Term::NIL from a BIF without first setting a trampoline request \u2014 Term::NIL is the sentinel that triggers trampoline dispatch. THE SYSTEM SHALL NOT allocate heap terms inside continuation resume handlers without ensuring the process heap has space (use context.alloc_tuple or equivalent). THE SYSTEM SHALL NOT modify ProcessContext.trampoline field directly \u2014 use set_continuation_trampoline() or set_trampoline().",
       "acceptance": [
         "Every NativeContinuation variant has a match arm in handle_native_continuation",
         "No BIF returns Term::NIL without prior set_continuation_trampoline call",
@@ -116,23 +148,23 @@
       "files": {
         "modify": []
       },
-      "checklist": ["C150"],
-      "stories": ["S4"]
+      "checklist": [
+        "C150"
+      ],
+      "stories": [
+        "S4"
+      ]
     }
   ],
-  "boundaries": {
-    "in_scope": [
-      "Wire 4 closure-calling stubs into existing trampoline mechanism",
-      "Fix 2 intensity_tracker stubs with real tuple construction",
-      "Add NativeContinuation variants for option/result higher-order patterns",
-      "Verify JIT -> trampoline path with differential test"
-    ],
-    "out_of_scope": [
-      "Bytecode stdlib approach (compile Gleam stdlib to .beam and embed)",
-      "New trampoline infrastructure changes",
-      "JIT-native closure invocation (compiled code calling closures directly without interpreter)",
-      "Cross-module BIF calls from embedded .beam modules"
-    ]
-  },
+  "boundaries": [
+    "Wire 4 closure-calling stubs into existing trampoline mechanism",
+    "Fix 2 intensity_tracker stubs with real tuple construction",
+    "Add NativeContinuation variants for option/result higher-order patterns",
+    "Verify JIT -> trampoline path with differential test",
+    "OUT OF SCOPE: Bytecode stdlib approach (compile Gleam stdlib to .beam and embed)",
+    "OUT OF SCOPE: New trampoline infrastructure changes",
+    "OUT OF SCOPE: JIT-native closure invocation (compiled code calling closures directly without interpreter)",
+    "OUT OF SCOPE: Cross-module BIF calls from embedded .beam modules"
+  ],
   "verification": "cargo test --package beamr --lib && cargo test --package beamr --test differential"
 }

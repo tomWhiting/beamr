@@ -1,17 +1,23 @@
 {
   "id": "B-170",
   "cluster": "beamr",
-  "title": "OTP erlang stdlib — replace stubs with real implementations",
+  "title": "OTP erlang stdlib \u2014 replace stubs with real implementations",
   "depends_on": [],
   "blocked_by": [],
-  "checklist": ["C150", "C151"],
-  "stories": ["S8", "S9"],
+  "checklist": [
+    "C150",
+    "C151"
+  ],
+  "stories": [
+    "S8",
+    "S9"
+  ],
   "purpose": "Eight OTP stdlib BIF stubs return hardcoded values or no-op results: application:ensure_all_started/1 returns {ok, []}, os:getenv/0,1 ignore the real environment, os:putenv/2 and os:unsetenv/1 are no-ops, os:type/0 is hardcoded to {unix, darwin}, code:priv_dir/1 always returns {error, badarg}, and string:split/2 wraps input in a list without splitting. Real implementations are needed for Gleam OTP applications that depend on environment variables, runtime detection, and string manipulation. All stubs are in crates/beamr/src/native/otp_stubs/erlang_stubs.rs.",
-  "task": "Replace the 8 stubs in erlang_stubs.rs with real implementations that interact with the host system (std::env for environment variables, cfg! for OS detection, actual string splitting). application:ensure_all_started/1 needs module loading infrastructure that may not exist yet — implement a best-effort version that validates the application atom and returns {ok, [app]} if the module is loaded.",
+  "task": "Replace the 8 stubs in erlang_stubs.rs with real implementations that interact with the host system (std::env for environment variables, cfg! for OS detection, actual string splitting). application:ensure_all_started/1 needs module loading infrastructure that may not exist yet \u2014 implement a best-effort version that validates the application atom and returns {ok, [app]} if the module is loaded.",
   "requirements": [
     {
       "id": "R1",
-      "title": "os:getenv/0 and os:getenv/1 — real environment variable access",
+      "title": "os:getenv/0 and os:getenv/1 \u2014 real environment variable access",
       "spec": "WHEN os:getenv/0 is called, THE SYSTEM SHALL read all host environment variables via std::env::vars() and return them as a list of \"KEY=VALUE\" binary strings. WHEN os:getenv/1 is called with a binary or list string key, THE SYSTEM SHALL look up the key via std::env::var() and return the value as a binary string, or false if the variable is not set. THE SYSTEM SHALL convert the key argument from a BEAM binary or list to a Rust String before lookup.",
       "acceptance": [
         "os:getenv/0 returns a non-empty list on a host with environment variables",
@@ -21,14 +27,20 @@
         "Returned values are binary strings, not list strings"
       ],
       "files": {
-        "modify": ["crates/beamr/src/native/otp_stubs/erlang_stubs.rs"]
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/erlang_stubs.rs"
+        ]
       },
-      "checklist": ["C151"],
-      "stories": ["S8"]
+      "checklist": [
+        "C151"
+      ],
+      "stories": [
+        "S8"
+      ]
     },
     {
       "id": "R2",
-      "title": "os:putenv/2 and os:unsetenv/1 — real environment mutation",
+      "title": "os:putenv/2 and os:unsetenv/1 \u2014 real environment mutation",
       "spec": "WHEN os:putenv/2 is called with key and value binary strings, THE SYSTEM SHALL call std::env::set_var() to set the host environment variable and return true. WHEN os:unsetenv/1 is called with a key binary string, THE SYSTEM SHALL call std::env::remove_var() and return true. THE SYSTEM SHALL validate that key and value are binary or list strings and return badarg otherwise. THE SYSTEM SHALL NOT allow empty keys.",
       "acceptance": [
         "os:putenv(<<\"BEAMR_TEST\">>, <<\"hello\">>) returns true",
@@ -38,14 +50,20 @@
         "os:putenv with non-string args returns badarg"
       ],
       "files": {
-        "modify": ["crates/beamr/src/native/otp_stubs/erlang_stubs.rs"]
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/erlang_stubs.rs"
+        ]
       },
-      "checklist": ["C151"],
-      "stories": ["S8"]
+      "checklist": [
+        "C151"
+      ],
+      "stories": [
+        "S8"
+      ]
     },
     {
       "id": "R3",
-      "title": "os:type/0 — runtime OS detection",
+      "title": "os:type/0 \u2014 runtime OS detection",
       "spec": "WHEN os:type/0 is called, THE SYSTEM SHALL detect the host OS at runtime using cfg! macros and return the appropriate tuple. IF running on macOS, THE SYSTEM SHALL return {unix, darwin}. IF running on Linux, THE SYSTEM SHALL return {unix, linux}. IF running on Windows, THE SYSTEM SHALL return {win32, nt}. THE SYSTEM SHALL NOT hardcode a single OS type.",
       "acceptance": [
         "os:type/0 returns {unix, darwin} on macOS",
@@ -53,14 +71,20 @@
         "The OS family and name atoms are registered in init_erlang_atoms"
       ],
       "files": {
-        "modify": ["crates/beamr/src/native/otp_stubs/erlang_stubs.rs"]
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/erlang_stubs.rs"
+        ]
       },
-      "checklist": ["C151"],
-      "stories": ["S8"]
+      "checklist": [
+        "C151"
+      ],
+      "stories": [
+        "S8"
+      ]
     },
     {
       "id": "R4",
-      "title": "code:priv_dir/1 — application priv directory resolution",
+      "title": "code:priv_dir/1 \u2014 application priv directory resolution",
       "spec": "WHEN code:priv_dir/1 is called with an application atom, THE SYSTEM SHALL resolve the priv directory path relative to the application's code path. IF the application module is loaded and the priv directory exists, THE SYSTEM SHALL return the path as a binary string. IF the application is not loaded or the priv directory does not exist, THE SYSTEM SHALL return {error, bad_name}. THE SYSTEM SHALL check for a priv/ directory adjacent to the ebin/ directory containing the loaded .beam files.",
       "acceptance": [
         "code:priv_dir(unknown_app) returns {error, bad_name}",
@@ -68,14 +92,20 @@
         "When a priv directory exists, returns a binary path string"
       ],
       "files": {
-        "modify": ["crates/beamr/src/native/otp_stubs/erlang_stubs.rs"]
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/erlang_stubs.rs"
+        ]
       },
-      "checklist": ["C151"],
-      "stories": ["S8"]
+      "checklist": [
+        "C151"
+      ],
+      "stories": [
+        "S8"
+      ]
     },
     {
       "id": "R5",
-      "title": "string:split/2 — real string splitting",
+      "title": "string:split/2 \u2014 real string splitting",
       "spec": "WHEN string:split/2 is called with an input string and a pattern string, THE SYSTEM SHALL split the input at the first occurrence of the pattern and return a list of the two parts. IF the pattern is not found, THE SYSTEM SHALL return [Input]. THE SYSTEM SHALL support both binary and list string inputs. THE SYSTEM SHALL return binary results when the input is binary, list results when the input is a list string.",
       "acceptance": [
         "string:split(<<\"a.b.c\">>, <<\".\">>) returns [<<\"a\">>, <<\"b.c\">>]",
@@ -84,40 +114,48 @@
         "string:split with non-string arguments returns badarg"
       ],
       "files": {
-        "modify": ["crates/beamr/src/native/otp_stubs/erlang_stubs.rs"]
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/erlang_stubs.rs"
+        ]
       },
-      "checklist": ["C151"],
-      "stories": ["S8"]
+      "checklist": [
+        "C151"
+      ],
+      "stories": [
+        "S8"
+      ]
     },
     {
       "id": "R6",
-      "title": "application:ensure_all_started/1 — best-effort module validation",
-      "spec": "WHEN application:ensure_all_started/1 is called with an application atom, THE SYSTEM SHALL check whether a module with that name is loaded in the module registry. IF the module is loaded, THE SYSTEM SHALL return {ok, [App]}. IF the module is not loaded, THE SYSTEM SHALL return {error, {App, {not_loaded, App}}}. THE SYSTEM SHALL NOT attempt recursive dependency loading — this is a best-effort implementation that validates presence, not a full OTP application controller.",
+      "title": "application:ensure_all_started/1 \u2014 best-effort module validation",
+      "spec": "WHEN application:ensure_all_started/1 is called with an application atom, THE SYSTEM SHALL check whether a module with that name is loaded in the module registry. IF the module is loaded, THE SYSTEM SHALL return {ok, [App]}. IF the module is not loaded, THE SYSTEM SHALL return {error, {App, {not_loaded, App}}}. THE SYSTEM SHALL NOT attempt recursive dependency loading \u2014 this is a best-effort implementation that validates presence, not a full OTP application controller.",
       "acceptance": [
         "ensure_all_started(loaded_app) returns {ok, [loaded_app]} when module exists",
         "ensure_all_started(missing_app) returns {error, {missing_app, {not_loaded, missing_app}}}",
         "ensure_all_started with non-atom argument returns badarg"
       ],
       "files": {
-        "modify": ["crates/beamr/src/native/otp_stubs/erlang_stubs.rs"]
+        "modify": [
+          "crates/beamr/src/native/otp_stubs/erlang_stubs.rs"
+        ]
       },
-      "checklist": ["C150"],
-      "stories": ["S9"]
+      "checklist": [
+        "C150"
+      ],
+      "stories": [
+        "S9"
+      ]
     }
   ],
-  "boundaries": {
-    "in_scope": [
-      "Real os:getenv, putenv, unsetenv, type implementations via std::env",
-      "Real string:split/2 with first-occurrence splitting",
-      "Best-effort code:priv_dir/1 path resolution",
-      "Best-effort application:ensure_all_started/1 module validation"
-    ],
-    "out_of_scope": [
-      "Full OTP application controller (start, stop, dependency trees)",
-      "code:add_path, code:load_file and other code server functions",
-      "string:split/3 (with 'all' option for split-all behavior)",
-      "Unicode normalization in string operations"
-    ]
-  },
+  "boundaries": [
+    "Real os:getenv, putenv, unsetenv, type implementations via std::env",
+    "Real string:split/2 with first-occurrence splitting",
+    "Best-effort code:priv_dir/1 path resolution",
+    "Best-effort application:ensure_all_started/1 module validation",
+    "OUT OF SCOPE: Full OTP application controller (start, stop, dependency trees)",
+    "OUT OF SCOPE: code:add_path, code:load_file and other code server functions",
+    "OUT OF SCOPE: string:split/3 (with 'all' option for split-all behavior)",
+    "OUT OF SCOPE: Unicode normalization in string operations"
+  ],
   "verification": "cargo test --package beamr --lib"
 }
