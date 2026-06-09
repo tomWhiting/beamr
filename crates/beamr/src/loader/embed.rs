@@ -132,14 +132,14 @@ impl From<io::Error> for EmbedError {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct EmbeddedEntry<'a> {
     name: &'a str,
     compressed_beam: &'a [u8],
 }
 
 /// Borrowed view of an embedded BEAM archive.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddedArchive<'a> {
     entries: Vec<EmbeddedEntry<'a>>,
 }
