@@ -292,6 +292,7 @@ fn make_shared_state() -> Arc<SharedState> {
         local_node: crate::distribution::Node::new(crate::atom::Atom::new(0), 0),
         net_kernel,
         jit_profiler: Arc::new(crate::jit::JitProfiler::new(1000)),
+        jit_cache: Arc::new(crate::jit::JitCache::new()),
     })
 }
 
