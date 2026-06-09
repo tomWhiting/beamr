@@ -678,6 +678,67 @@ fn compiled_float_arithmetic_uses_float_registers() {
 }
 
 #[test]
+fn compiled_fsub_fmul_and_fdiv_use_float_registers() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fconv {
+                    source: Operand::X(1),
+                    dest: Operand::FloatRegister(1),
+                },
+                Instruction::Fsub {
+                    fail: Operand::Label(9),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fmul {
+                    fail: Operand::Label(9),
+                    left: Operand::FloatRegister(2),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(3),
+                },
+                Instruction::Fdiv {
+                    fail: Operand::Label(9),
+                    left: Operand::FloatRegister(3),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(4),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(4),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::BADARITH)),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            2,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let left = heap_float(&mut process, 5.5);
+    let right = heap_float(&mut process, 2.0);
+    let mut registers = vec![left.raw(), right.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, registers[0]);
+    let float = Float::new(Term::from_raw(registers[0])).expect("boxed float");
+    assert_eq!(float.value(), 3.5);
+}
+
+#[test]
 fn compiled_fdiv_zero_takes_fail_label() {
     let compiler = JitCompiler::new(JitSettings).unwrap();
     let native = compiler
@@ -718,6 +779,100 @@ fn compiled_fdiv_zero_takes_fail_label() {
     let mut process = Process::new(0, 233);
     let left = heap_float(&mut process, 1.0);
     let right = heap_float(&mut process, -0.0);
+    let mut registers = vec![left.raw(), right.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, Term::atom(Atom::BADARITH).raw());
+}
+
+#[test]
+fn compiled_fdiv_positive_zero_takes_fail_label() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fconv {
+                    source: Operand::X(1),
+                    dest: Operand::FloatRegister(1),
+                },
+                Instruction::Fdiv {
+                    fail: Operand::Label(9),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(2),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::BADARITH)),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            2,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let left = heap_float(&mut process, 1.0);
+    let right = heap_float(&mut process, 0.0);
+    let mut registers = vec![left.raw(), right.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, Term::atom(Atom::BADARITH).raw());
+}
+
+#[test]
+fn compiled_float_nan_or_inf_result_takes_fail_label() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fconv {
+                    source: Operand::X(1),
+                    dest: Operand::FloatRegister(1),
+                },
+                Instruction::Fadd {
+                    fail: Operand::Label(9),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(2),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::BADARITH)),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            2,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let left = heap_float(&mut process, f64::MAX);
+    let right = heap_float(&mut process, f64::MAX);
     let mut registers = vec![left.raw(), right.raw()];
     let returned = call_native_with_process(&native, &mut registers, &mut process);
 

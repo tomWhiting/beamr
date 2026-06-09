@@ -1,1 +1,1 @@
-feat(beamr-jit): lower float arithmetic IR
+Harden JIT float IR translation validation and test coverage

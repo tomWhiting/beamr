@@ -175,6 +175,51 @@ impl TranslationPlan {
                 Instruction::MakeFun { .. } => {
                     block_starts.insert(index + 1);
                 }
+                Instruction::Fmove { source, dest } => {
+                    validate_fmove_operands(source, dest)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::Fconv { source, dest } => {
+                    validate_read_operand(source)?;
+                    validate_float_register_operand(dest, "fconv destination")?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::Fadd {
+                    fail,
+                    left,
+                    right,
+                    dest,
+                }
+                | Instruction::Fsub {
+                    fail,
+                    left,
+                    right,
+                    dest,
+                }
+                | Instruction::Fmul {
+                    fail,
+                    left,
+                    right,
+                    dest,
+                }
+                | Instruction::Fdiv {
+                    fail,
+                    left,
+                    right,
+                    dest,
+                } => {
+                    validate_label_operand(fail)?;
+                    validate_float_register_operand(left, "float arithmetic left")?;
+                    validate_float_register_operand(right, "float arithmetic right")?;
+                    validate_float_register_operand(dest, "float arithmetic destination")?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::Fnegate { fail, source, dest } => {
+                    validate_label_operand(fail)?;
+                    validate_float_register_operand(source, "fnegate source")?;
+                    validate_float_register_operand(dest, "fnegate destination")?;
+                    block_starts.insert(index + 1);
+                }
                 Instruction::Apply { .. } | Instruction::CallFun { .. } => {
                     block_starts.insert(index + 1);
                 }
@@ -243,6 +288,13 @@ impl TranslationPlan {
                         ensure_known_label(&labels, parsed.fail)?;
                     }
                 }
+                Instruction::Fadd { fail, .. }
+                | Instruction::Fsub { fail, .. }
+                | Instruction::Fmul { fail, .. }
+                | Instruction::Fdiv { fail, .. }
+                | Instruction::Fnegate { fail, .. } => {
+                    ensure_known_label(&labels, fail)?;
+                }
                 Instruction::LoopRec { fail, .. }
                 | Instruction::LoopRecEnd { fail }
                 | Instruction::Wait { fail }
@@ -295,6 +347,50 @@ fn validate_supported_type_test(op: TypeTestOp) -> Result<(), JitError> {
         other => Err(JitError::UnsupportedOpcode {
             opcode: format!("TypeTest({other:?})"),
         }),
+    }
+}
+
+fn validate_fmove_operands(
+    source: &crate::loader::decode::compact::Operand,
+    dest: &crate::loader::decode::compact::Operand,
+) -> Result<(), JitError> {
+    match (source, dest) {
+        (
+            crate::loader::decode::Operand::FloatRegister(_),
+            crate::loader::decode::Operand::FloatRegister(_),
+        ) => {
+            validate_float_register_operand(source, "fmove source")?;
+            validate_float_register_operand(dest, "fmove destination")
+        }
+        (crate::loader::decode::Operand::FloatRegister(_), _) => {
+            validate_float_register_operand(source, "fmove source")?;
+            validate_write_operand(dest)
+        }
+        (_, crate::loader::decode::Operand::FloatRegister(_)) => {
+            validate_read_operand(source)?;
+            validate_float_register_operand(dest, "fmove destination")
+        }
+        _ => Err(JitError::UnsupportedOperand {
+            operand: format!("fmove source {source:?} destination {dest:?}"),
+        }),
+    }
+}
+
+fn validate_float_register_operand(
+    operand: &crate::loader::decode::compact::Operand,
+    context: &'static str,
+) -> Result<(), JitError> {
+    let crate::loader::decode::Operand::FloatRegister(index) = operand else {
+        return Err(JitError::UnsupportedOperand {
+            operand: format!("{context} {operand:?}"),
+        });
+    };
+    if *index < 16 {
+        Ok(())
+    } else {
+        Err(JitError::UnsupportedOperand {
+            operand: format!("{context} fr{index}"),
+        })
     }
 }
 
