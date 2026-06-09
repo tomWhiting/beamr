@@ -211,9 +211,9 @@ pub(super) fn float_fail_block(
     builder: &mut FunctionBuilder<'_>,
     status: u8,
     raw: i64,
-    _continuation: cranelift_codegen::ir::Block,
+    continuation: cranelift_codegen::ir::Block,
 ) -> cranelift_codegen::ir::Block {
-    let current = builder.current_block().expect("must be in a block");
+    let current = builder.current_block().unwrap_or(continuation);
     let fail = builder.create_block();
     builder.switch_to_block(fail);
     return_status_raw(builder, status, raw);
