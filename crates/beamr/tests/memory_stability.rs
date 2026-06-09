@@ -38,6 +38,7 @@ fn bif_and_literal_heavy_workload_does_not_grow_monotonically() {
         system_info_facility: None,
         group_leader_facility: None,
         ets_facility: None,
+        pg_facility: None,
         io_facility: None,
         io_message_facility: None,
         net_kernel: None,

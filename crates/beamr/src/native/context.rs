@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::atom::AtomTable;
 use crate::distribution::control::DistributionSendFacility;
+use crate::distribution::pg::PgFacility;
 use crate::distribution::remote_link::DistributionControlFacility;
 use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, write_fd_resource};
 use crate::io::{
@@ -240,6 +241,7 @@ pub struct ProcessContext<'process> {
     select_facility: Option<Arc<dyn SelectFacility>>,
     system_info_facility: Option<Arc<dyn SystemInfoFacility>>,
     ets_facility: Option<Arc<dyn EtsFacility>>,
+    pg_facility: Option<Arc<dyn PgFacility>>,
     io_facility: Option<Arc<dyn IoFacility>>,
     io_message_facility: Option<Arc<dyn IoMessageFacility>>,
     file_io_facility: Option<Arc<dyn FileIoFacility>>,
@@ -312,6 +314,7 @@ impl fmt::Debug for ProcessContext<'_> {
                 &self.system_info_facility.as_ref().map(|_| ".."),
             )
             .field("ets_facility", &self.ets_facility.as_ref().map(|_| ".."))
+            .field("pg_facility", &self.pg_facility.as_ref().map(|_| ".."))
             .field("io_facility", &self.io_facility.as_ref().map(|_| ".."))
             .field(
                 "io_message_facility",
@@ -367,6 +370,7 @@ impl<'process> ProcessContext<'process> {
             select_facility: None,
             system_info_facility: None,
             ets_facility: None,
+            pg_facility: None,
             io_facility: None,
             io_message_facility: None,
             file_io_facility: None,
@@ -405,6 +409,7 @@ impl<'process> ProcessContext<'process> {
             select_facility: None,
             system_info_facility: None,
             ets_facility: None,
+            pg_facility: None,
             io_facility: None,
             io_message_facility: None,
             file_io_facility: None,
@@ -778,6 +783,19 @@ impl<'process> ProcessContext<'process> {
     /// Set the ETS facility for `ets` module BIFs.
     pub fn set_ets_facility(&mut self, facility: Option<Arc<dyn EtsFacility>>) {
         self.ets_facility = facility;
+    }
+
+    // --- PG facility ---
+
+    /// Return the pg facility, if one has been configured.
+    #[must_use]
+    pub fn pg_facility(&self) -> Option<&dyn PgFacility> {
+        self.pg_facility.as_deref()
+    }
+
+    /// Set the pg facility for process group BIFs.
+    pub fn set_pg_facility(&mut self, facility: Option<Arc<dyn PgFacility>>) {
+        self.pg_facility = facility;
     }
 
     // --- I/O facility ---

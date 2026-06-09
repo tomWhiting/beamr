@@ -14,6 +14,7 @@ use self::spawning::SpawnRequest;
 use crate::atom::AtomTable;
 use crate::distribution::DistributionConfig;
 use crate::distribution::connection::ConnectionManager;
+use crate::distribution::pg::PgRegistry;
 use crate::distribution::remote_link::ControlRouter;
 use crate::distribution::{DEFAULT_NODE_NAME, NetKernel, Node};
 
@@ -67,6 +68,7 @@ pub(super) struct SharedState {
     local_node: Node,
     net_kernel: Arc<NetKernel>,
     ets_registry: Arc<EtsRegistry>,
+    pg_registry: Arc<PgRegistry>,
     bif_registry: Arc<BifRegistryImpl>,
     capability_policy: Arc<dyn CapabilityPolicy>,
     spawn_counter: AtomicUsize,
@@ -327,6 +329,7 @@ impl Scheduler {
         let connection_manager =
             ConnectionManager::new(Arc::clone(&atom_table), distribution.resolver.clone());
         let net_kernel = Arc::new(NetKernel::new(connection_manager));
+        let pg_registry = Arc::new(PgRegistry::new(atom_table.as_ref()));
         let standard_io_server =
             StandardIoServer::new(standard_io_pid, standard_io_ring, atom_table.as_ref());
         let shared = Arc::new(SharedState {
@@ -339,6 +342,7 @@ impl Scheduler {
             local_node,
             net_kernel,
             ets_registry: Arc::new(EtsRegistry::new()),
+            pg_registry,
             bif_registry,
             capability_policy,
             spawn_counter: AtomicUsize::new(0),

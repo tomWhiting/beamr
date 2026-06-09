@@ -10,6 +10,7 @@ pub mod global;
 pub mod remote_link;
 pub mod handshake;
 mod node;
+pub mod pg;
 pub mod resolver;
 
 pub use connection::ConnectionManager;
@@ -119,3 +120,6 @@ impl fmt::Debug for DistributionConfig {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod pg_tests;

@@ -574,6 +574,8 @@ pub(super) fn build_native_services(
     let ets_facility: Arc<dyn crate::native::EtsFacility> = Arc::new(SchedulerEtsFacility {
         shared: Arc::clone(shared),
     });
+    let pg_facility: Arc<dyn crate::distribution::pg::PgFacility> =
+        Arc::clone(&shared.pg_registry) as _;
     let file_io_facility: Arc<dyn FileIoFacility> = Arc::new(SchedulerFileIoFacility {
         shared: Arc::clone(shared),
     });
@@ -587,6 +589,7 @@ pub(super) fn build_native_services(
         net_kernel: Some(Arc::clone(&shared.net_kernel)),
         distribution_send: Some(distribution_send),
         ets_facility: Some(ets_facility),
+        pg_facility: Some(pg_facility),
         timers: Some(Arc::clone(&shared.timers)),
         spawn_facility: Some(spawn),
         remote_spawn_facility: None,
