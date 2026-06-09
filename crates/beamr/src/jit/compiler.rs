@@ -213,10 +213,13 @@ impl JitCompiler {
                 }
             }
 
+            let exit = blocks.exit_block();
             if !terminated {
-                let value = read_register_term(&mut builder, register_file, Register::X(0));
-                builder.ins().return_(&[value]);
+                builder.ins().jump(exit, &[]);
             }
+            builder.switch_to_block(exit);
+            let value = read_register_term(&mut builder, register_file, Register::X(0));
+            builder.ins().return_(&[value]);
 
             builder.switch_to_block(blocks.deopt);
             let sentinel = builder.ins().iconst(types::I64, JIT_DEOPT_SENTINEL);
@@ -385,6 +388,10 @@ impl BlockMap {
 
     fn block_after(&self, index: usize) -> cranelift_codegen::ir::Block {
         self.blocks_by_index[index + 1]
+    }
+
+    fn exit_block(&self) -> cranelift_codegen::ir::Block {
+        self.blocks_by_index[self.blocks_by_index.len() - 1]
     }
 
     fn label_block(&self, label: u32) -> Result<cranelift_codegen::ir::Block, JitError> {
@@ -633,22 +640,17 @@ fn lower_arithmetic_bif(
             value
         }
         ArithmeticOp::Multiply => {
-            let value = builder.ins().imul(left_payload, right_payload);
-            let min_check =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::SignedLessThan, value, Term::SMALL_INT_MIN);
-            let max_check =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::SignedGreaterThan, value, Term::SMALL_INT_MAX);
-            let out_of_range = builder.ins().bor(min_check, max_check);
-            branch_to_fail_if(builder, out_of_range, lowering.fail);
+            let (value, overflow) = builder.ins().smul_overflow(left_payload, right_payload);
+            branch_to_fail_if(builder, overflow, lowering.fail);
             value
         }
         ArithmeticOp::Div | ArithmeticOp::Rem => {
             let zero = builder.ins().icmp_imm(IntCC::Equal, right_payload, 0);
             branch_to_fail_if(builder, zero, lowering.fail);
+            let min_divisor = builder.ins().icmp_imm(IntCC::Equal, right_payload, -1);
+            let min_dividend = builder.ins().icmp_imm(IntCC::Equal, left_payload, i64::MIN);
+            let division_overflow = builder.ins().band(min_dividend, min_divisor);
+            branch_to_fail_if(builder, division_overflow, lowering.fail);
             if matches!(lowering.op, ArithmeticOp::Div) {
                 builder.ins().sdiv(left_payload, right_payload)
             } else {
@@ -872,6 +874,70 @@ mod tests {
 
         assert_eq!(returned, Term::small_int(5).raw());
         assert_eq!(registers[0], Term::small_int(5).raw());
+    }
+
+    #[test]
+    fn compiled_add_at_end_falls_through_to_return_x0() {
+        let compiler = JitCompiler::new(JitSettings).unwrap();
+        let native = compiler
+            .compile(
+                &[
+                    Instruction::Label { label: 9 },
+                    Instruction::Bif {
+                        op: BifOp::Bif2,
+                        operands: vec![
+                            Operand::Label(9),
+                            Operand::Unsigned(0),
+                            Operand::Integer(2),
+                            Operand::Integer(3),
+                            Operand::X(0),
+                        ],
+                    },
+                ],
+                Atom::MODULE,
+                Atom::OK,
+                0,
+            )
+            .unwrap();
+        let mut registers = vec![0; 1];
+        let returned = call_native(&native, &mut registers);
+
+        assert_eq!(returned, Term::small_int(5).raw());
+    }
+
+    #[test]
+    fn compiled_multiply_overflow_takes_fail_label() {
+        let compiler = JitCompiler::new(JitSettings).unwrap();
+        let native = compiler
+            .compile(
+                &[
+                    Instruction::Bif {
+                        op: BifOp::Bif2,
+                        operands: vec![
+                            Operand::Label(9),
+                            Operand::Unsigned(2),
+                            Operand::Integer(Term::SMALL_INT_MAX),
+                            Operand::Integer(Term::SMALL_INT_MAX),
+                            Operand::X(0),
+                        ],
+                    },
+                    Instruction::Return,
+                    Instruction::Label { label: 9 },
+                    Instruction::Move {
+                        source: Operand::Integer(99),
+                        destination: Operand::X(0),
+                    },
+                    Instruction::Return,
+                ],
+                Atom::MODULE,
+                Atom::OK,
+                0,
+            )
+            .unwrap();
+        let mut registers = vec![0; 1];
+        let returned = call_native(&native, &mut registers);
+
+        assert_eq!(returned, Term::small_int(99).raw());
     }
 
     #[test]
