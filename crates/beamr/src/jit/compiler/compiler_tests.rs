@@ -1,4 +1,4 @@
-use super::{JitCompiler, JitError, JitSettings};
+use super::{JitCompiler, JitError, JitSettings, ModuleCompileMetadata};
 use crate::atom::Atom;
 use crate::jit::RootLocation;
 use crate::jit::ir_common::{JIT_DEOPT_SENTINEL, X_REGISTER_COUNT};
@@ -6,12 +6,12 @@ use crate::jit::ir_exceptions::{
     JIT_STATUS_DEOPT, JIT_STATUS_EXCEPTION, JIT_STATUS_NORMAL, JIT_STATUS_YIELD, JitReturn,
 };
 use crate::jit::type_info::{FunctionSignature, TypeDescriptor};
-use crate::loader::Instruction;
 use crate::loader::decode::{BifOp, ComparisonOp, Operand, TypeTestOp};
+use crate::loader::{Instruction, LambdaEntry};
 use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use crate::process::{JitRuntimeContext, Process};
 use crate::term::Term;
-use crate::term::boxed::{Cons, Tuple, write_cons, write_tuple};
+use crate::term::boxed::{Closure, Cons, Tuple, write_closure, write_cons, write_tuple};
 use std::collections::HashMap;
 
 type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> JitReturn;
@@ -53,6 +53,48 @@ fn raw_jit_fn(native: &crate::jit::types::NativeCode) -> RawJitFn {
     // SAFETY: `NativeCode::call_ptr` is produced by `JitCompiler::compile`
     // with the test ABI `extern "C" fn(*mut u64, *mut Process) -> JitReturn`.
     unsafe { std::mem::transmute(native.call_ptr()) }
+}
+
+fn test_lambda(
+    function: Atom,
+    arity: u8,
+    label: u32,
+    num_free: u32,
+    unique_id: u64,
+) -> LambdaEntry {
+    LambdaEntry {
+        function,
+        arity,
+        label,
+        num_free,
+        unique_id,
+    }
+}
+
+fn heap_closure(
+    process: &mut Process,
+    module: Atom,
+    function_index: u64,
+    arity: u8,
+    generation: u64,
+    unique_id: u64,
+    free_vars: &[Term],
+) -> Term {
+    let words = 7 + free_vars.len();
+    let ptr = process.heap_mut().alloc(words).expect("closure heap fits");
+    // SAFETY: `ptr` addresses `words` contiguous heap words returned by the
+    // process heap allocator for this test allocation.
+    let heap = unsafe { std::slice::from_raw_parts_mut(ptr, words) };
+    write_closure(
+        heap,
+        module,
+        function_index,
+        arity,
+        generation,
+        unique_id,
+        free_vars,
+    )
+    .expect("closure layout fits")
 }
 
 fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
@@ -886,6 +928,241 @@ fn compiled_allocation_with_tiny_heap_survives_gc() {
 }
 
 #[test]
+fn compiled_make_fun_captures_two_free_vars_and_records_safepoint_roots() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let lambdas = vec![test_lambda(Atom::OK, 1, 7, 2, 0xfeed)];
+    let native = compiler
+        .compile_module_function(
+            &[
+                Instruction::MakeFun {
+                    operands: vec![Operand::Unsigned(0)],
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+            ModuleCompileMetadata {
+                lambdas: &lambdas,
+                generation: 9,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 1);
+    assert_eq!(native.stack_maps()[0].offset_from_entry, 0);
+    assert_eq!(
+        native.stack_maps()[0].live_roots,
+        vec![RootLocation::Register(0), RootLocation::Register(1),]
+    );
+
+    let mut process = Process::new(0, 233);
+    let mut registers = vec![Term::small_int(11).raw(), Term::atom(Atom::ERROR).raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+    let closure = Closure::new(Term::from_raw(returned)).expect("closure term");
+
+    assert_eq!(registers[0], returned);
+    assert_eq!(closure.module(), Some(Atom::MODULE));
+    assert_eq!(closure.function_index(), 0);
+    assert_eq!(closure.arity(), 1);
+    assert_eq!(closure.num_free(), 2);
+    assert_eq!(closure.generation(), 9);
+    assert_eq!(closure.unique_id(), 0xfeed);
+    assert_eq!(closure.free_var(0), Some(Term::small_int(11)));
+    assert_eq!(closure.free_var(1), Some(Term::atom(Atom::ERROR)));
+}
+
+#[test]
+fn compiled_make_fun_creates_valid_zero_capture_closure() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let lambdas = vec![test_lambda(Atom::OK, 0, 7, 0, 0xbeef)];
+    let native = compiler
+        .compile_module_function(
+            &[
+                Instruction::MakeFun {
+                    operands: vec![
+                        Operand::Unsigned(0),
+                        Operand::Unsigned(0),
+                        Operand::Unsigned(0),
+                    ],
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+            ModuleCompileMetadata {
+                lambdas: &lambdas,
+                generation: 4,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 1);
+    assert_eq!(
+        native.stack_maps()[0].live_roots,
+        vec![RootLocation::Register(0)]
+    );
+
+    let mut process = Process::new(0, 233);
+    let mut registers = vec![0];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+    let closure = Closure::new(Term::from_raw(returned)).expect("closure term");
+
+    assert_eq!(closure.module(), Some(Atom::MODULE));
+    assert_eq!(closure.arity(), 0);
+    assert_eq!(closure.num_free(), 0);
+    assert_eq!(closure.free_var(0), None);
+}
+
+#[test]
+fn compiled_call_fun_copies_free_vars_after_explicit_args_and_returns_value() {
+    let caller_atom = Atom::MODULE;
+    let function_atom = Atom::OK;
+    let unique_id = 0xabcddcba;
+    let mut module = test_module(
+        caller_atom,
+        vec![
+            Instruction::Label { label: 7 },
+            Instruction::Move {
+                source: Operand::X(1),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    module
+        .lambdas
+        .push(test_lambda(function_atom, 1, 7, 1, unique_id));
+    module.function_table.push((0, function_atom, 1));
+    let registry = ModuleRegistry::new();
+    let module = registry.insert(module);
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[Instruction::CallFun {
+                arity: Operand::Unsigned(1),
+            }],
+            caller_atom,
+            function_atom,
+            1,
+        )
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    let closure = heap_closure(
+        &mut process,
+        caller_atom,
+        0,
+        1,
+        module.generation(),
+        unique_id,
+        &[Term::small_int(99)],
+    );
+    process.set_current_module(module.clone());
+    process.set_jit_runtime_context(Some(JitRuntimeContext::new(
+        module.as_ref() as *const Module,
+        &registry as *const ModuleRegistry,
+        std::ptr::null(),
+    )));
+    let mut registers = vec![Term::small_int(5).raw(), closure.raw()];
+
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, Term::small_int(99).raw());
+    assert_eq!(process.x_reg(0), Term::small_int(99));
+    assert_eq!(process.x_reg(1), Term::small_int(99));
+}
+
+#[test]
+fn compiled_apply_wrong_arity_raises_badarity() {
+    let caller_atom = Atom::MODULE;
+    let function_atom = Atom::OK;
+    let unique_id = 0x1234;
+    let mut module = test_module(
+        caller_atom,
+        vec![Instruction::Label { label: 7 }, Instruction::Return],
+    );
+    module
+        .lambdas
+        .push(test_lambda(function_atom, 2, 7, 0, unique_id));
+    let registry = ModuleRegistry::new();
+    let module = registry.insert(module);
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[Instruction::Apply {
+                arity: Operand::Unsigned(1),
+            }],
+            caller_atom,
+            function_atom,
+            1,
+        )
+        .unwrap();
+    let mut process = Process::new(0, 233);
+    let closure = heap_closure(
+        &mut process,
+        caller_atom,
+        0,
+        2,
+        module.generation(),
+        unique_id,
+        &[],
+    );
+    process.set_current_module(module.clone());
+    process.set_jit_runtime_context(Some(JitRuntimeContext::new(
+        module.as_ref() as *const Module,
+        &registry as *const ModuleRegistry,
+        std::ptr::null(),
+    )));
+    let mut registers = vec![Term::small_int(5).raw(), closure.raw()];
+
+    let returned = call_native_status(&native, &mut registers, &mut process);
+
+    assert_eq!(returned.status, JIT_STATUS_EXCEPTION);
+    assert_eq!(returned.value, Term::atom(Atom::BADARITY).raw());
+    let exception = process
+        .current_exception()
+        .expect("badarity exception state");
+    assert_eq!(exception.class, Term::atom(Atom::ERROR));
+    assert_eq!(exception.reason, Term::atom(Atom::BADARITY));
+}
+
+#[test]
+fn compiled_make_fun_survives_gc_before_apply() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let lambdas = vec![test_lambda(Atom::OK, 0, 7, 1, 0xcafe)];
+    let native = compiler
+        .compile_module_function(
+            &[
+                Instruction::MakeFun {
+                    operands: vec![Operand::Unsigned(0)],
+                },
+                Instruction::PutTuple2 {
+                    destination: Operand::X(2),
+                    elements: Operand::List(vec![Operand::X(0)]),
+                },
+                Instruction::CallFun {
+                    arity: Operand::Unsigned(0),
+                },
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+            ModuleCompileMetadata {
+                lambdas: &lambdas,
+                generation: 0,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 2);
+    assert_eq!(
+        native.stack_maps()[1].live_roots,
+        vec![RootLocation::Register(0), RootLocation::Register(2)]
+    );
+}
+
+#[test]
 fn compiled_is_integer_distinguishes_integer_from_atom() {
     let compiler = JitCompiler::new(JitSettings).unwrap();
     let native = compiler
@@ -1266,6 +1543,7 @@ fn compiled_external_call_falls_back_to_interpreter_and_returns_value() {
     process.set_jit_runtime_context(Some(JitRuntimeContext::new(
         caller.as_ref() as *const Module,
         &registry as *const ModuleRegistry,
+        std::ptr::null(),
     )));
     let mut registers = vec![Term::small_int(17).raw()];
 
@@ -1340,6 +1618,7 @@ fn compiled_try_catches_interpreted_exception_and_exposes_payload() {
     process.set_jit_runtime_context(Some(JitRuntimeContext::new(
         caller.as_ref() as *const Module,
         &registry as *const ModuleRegistry,
+        std::ptr::null(),
     )));
     let mut registers = vec![0; X_REGISTER_COUNT as usize + 3];
 
@@ -1395,6 +1674,7 @@ fn compiled_external_exception_without_try_propagates_status_and_frame() {
     process.set_jit_runtime_context(Some(JitRuntimeContext::new(
         caller.as_ref() as *const Module,
         &registry as *const ModuleRegistry,
+        std::ptr::null(),
     )));
     let mut registers = vec![
         Term::atom(Atom::ERROR).raw(),

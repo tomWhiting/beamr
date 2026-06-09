@@ -8,14 +8,14 @@
 //! [`JitCompiler`] path used by demand JIT compilation.
 
 use super::cache::{JitCache, JitCacheKey};
-use super::compiler::{JitCompiler, JitError, JitSettings};
+use super::compiler::{JitCompiler, JitError, JitSettings, ModuleCompileMetadata};
 use super::profiler::JitProfiler;
 use crate::atom::{Atom, AtomTable};
 use crate::error::LoadError;
 use crate::jit::aot_format::{
     DecodedBundle, write_atom, write_bytes, write_stack_maps, write_u32, write_u64,
 };
-use crate::jit::type_info::{FunctionSignature, GleamTypeReader, TypeError};
+use crate::jit::type_info::{GleamTypeReader, TypeError};
 use crate::jit::types::StackMapEntry;
 use crate::loader::{ExportEntry, Instruction, ParsedModule, load_beam_chunks};
 use crate::module::Module;
@@ -32,12 +32,6 @@ pub(crate) const VERSION: u8 = 1;
 /// Host AOT compiler that reuses the normal untyped JIT pipeline.
 pub struct AotCompiler {
     compiler: JitCompiler,
-}
-
-/// Type-aware AOT lowering coordinator.
-pub struct TypedIrTranslator<'a> {
-    signature: FunctionSignature,
-    compiler: &'a JitCompiler,
 }
 
 /// Result of compiling exported functions from one BEAM module.
@@ -88,28 +82,6 @@ pub enum AotError {
     TypeInfo(TypeError),
 }
 
-impl<'a> TypedIrTranslator<'a> {
-    /// Creates a type-aware translator backed by the shared JIT compiler.
-    #[must_use]
-    pub const fn new(signature: FunctionSignature, compiler: &'a JitCompiler) -> Self {
-        Self {
-            signature,
-            compiler,
-        }
-    }
-
-    fn compile(
-        self,
-        instructions: &[Instruction],
-        module: Atom,
-        function: Atom,
-        arity: u8,
-    ) -> Result<NativeCode, JitError> {
-        self.compiler
-            .compile_typed(instructions, module, function, arity, self.signature)
-    }
-}
-
 impl AotCompiler {
     /// Creates an AOT compiler backed by [`JitCompiler`].
     pub fn new() -> Result<Self, AotError> {
@@ -150,16 +122,27 @@ impl AotCompiler {
             let signature = atom_table
                 .resolve(export.function)
                 .and_then(|function| type_reader?.function_signature(function, export.arity));
+            let metadata = ModuleCompileMetadata {
+                lambdas: &parsed.lambdas,
+                generation: 0,
+            };
             let compiled_function = if let Some(signature) = signature {
-                TypedIrTranslator::new(signature, &self.compiler).compile(
+                self.compiler.compile_typed_module_function(
                     instructions,
                     parsed.name,
                     export.function,
                     export.arity,
+                    signature,
+                    metadata,
                 )
             } else {
-                self.compiler
-                    .compile(instructions, parsed.name, export.function, export.arity)
+                self.compiler.compile_module_function(
+                    instructions,
+                    parsed.name,
+                    export.function,
+                    export.arity,
+                    metadata,
+                )
             };
 
             match compiled_function {

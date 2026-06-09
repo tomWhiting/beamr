@@ -170,6 +170,15 @@ impl TranslationPlan {
                     validate_write_operand(parsed.destination)?;
                     block_starts.insert(index + 1);
                 }
+                Instruction::MakeFun { .. } => {
+                    block_starts.insert(index + 1);
+                }
+                Instruction::Apply { .. } | Instruction::CallFun { .. } => {
+                    block_starts.insert(index + 1);
+                }
+                Instruction::BinaryOp { .. } => {
+                    block_starts.insert(index + 1);
+                }
                 other => {
                     return Err(JitError::UnsupportedOpcode {
                         opcode: opcode_name(other),
