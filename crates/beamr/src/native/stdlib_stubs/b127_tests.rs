@@ -7,11 +7,13 @@ use crate::native::stdlib_stubs::lists_bifs::{
 use crate::native::stdlib_stubs::lists_hof_bifs::{
     bif_lists_filter, bif_lists_foreach, resume_lists_continuation,
 };
-use crate::native::stdlib_stubs::maps_bifs::ContinuationStep;
+use crate::native::stdlib_stubs::maps_bifs::{
+    ContinuationStep, bif_maps_map, resume_maps_continuation,
+};
 use crate::native::{NativeContinuation, ProcessContext};
 use crate::process::Process;
 use crate::term::Term;
-use crate::term::boxed::{Cons, Tuple, write_closure};
+use crate::term::boxed::{Cons, Map, Tuple, write_closure};
 
 fn context(process: &mut Process) -> ProcessContext<'_> {
     let mut context = ProcessContext::new();
@@ -49,8 +51,12 @@ fn tuple_to_vec(term: Term) -> Vec<Term> {
 }
 
 fn closure(process: &mut Process, unique_id: u64) -> Term {
+    closure_with_arity(process, 1, unique_id)
+}
+
+fn closure_with_arity(process: &mut Process, arity: u8, unique_id: u64) -> Term {
     let heap = process.heap_mut().alloc_slice(7).expect("closure heap");
-    write_closure(heap, Atom::OK, 0, 1, 1, unique_id, &[]).expect("closure")
+    write_closure(heap, Atom::OK, 0, arity, 1, unique_id, &[]).expect("closure")
 }
 
 #[test]
@@ -270,6 +276,53 @@ fn filter_uses_continuation_trampoline() {
         list_to_vec(result),
         vec![Term::small_int(1), Term::small_int(3)]
     );
+}
+
+#[test]
+fn maps_map_uses_continuation_trampoline_and_preserves_original() {
+    let mut process = Process::new(1, 1024);
+    let fun = closure_with_arity(&mut process, 2, 0x169);
+    let mut ctx = context(&mut process);
+    let keys = [Term::atom(Atom::OK), Term::atom(Atom::ERROR)];
+    let values = [Term::small_int(1), Term::small_int(2)];
+    let map_term = ctx.alloc_map(&keys, &values).expect("map");
+
+    let placeholder = bif_maps_map(&[fun, map_term], &mut ctx).expect("map starts");
+    assert_eq!(placeholder, Term::NIL);
+    let request = ctx.take_trampoline().expect("map trampoline");
+    assert_eq!(request.fun, fun);
+    assert_eq!(request.args, vec![keys[0], values[0]]);
+    let Some(NativeContinuation::Maps(state)) = request.continuation else {
+        panic!("expected maps continuation");
+    };
+
+    let next = resume_maps_continuation(state, Term::small_int(2), &mut ctx).expect("map resumes");
+    let ContinuationStep::Call {
+        args, continuation, ..
+    } = next
+    else {
+        panic!("expected next map call");
+    };
+    assert_eq!(args, vec![keys[1], values[1]]);
+
+    let done = resume_maps_continuation(
+        match continuation {
+            NativeContinuation::Maps(state) => state,
+            _ => panic!("expected maps continuation"),
+        },
+        Term::small_int(3),
+        &mut ctx,
+    )
+    .expect("map completes");
+    let ContinuationStep::Done(result) = done else {
+        panic!("expected map done");
+    };
+    let mapped = Map::new(result).expect("mapped result");
+    assert_eq!(mapped.get(keys[0]), Some(Term::small_int(2)));
+    assert_eq!(mapped.get(keys[1]), Some(Term::small_int(3)));
+    let original = Map::new(map_term).expect("original map");
+    assert_eq!(original.get(keys[0]), Some(values[0]));
+    assert_eq!(original.get(keys[1]), Some(values[1]));
 }
 
 #[test]

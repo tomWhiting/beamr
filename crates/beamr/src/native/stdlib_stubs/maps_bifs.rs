@@ -19,6 +19,12 @@ pub enum MapsHofState {
         index: usize,
         kept: Vec<(Term, Term)>,
     },
+    Map {
+        fun: Term,
+        entries: Vec<(Term, Term)>,
+        index: usize,
+        mapped: Vec<(Term, Term)>,
+    },
     MergeWith {
         fun: Term,
         pending: Vec<(Term, Term, Term)>,
@@ -127,6 +133,30 @@ pub fn bif_maps_filter(args: &[Term], context: &mut ProcessContext) -> Result<Te
             entries,
             index: 1,
             kept: Vec::new(),
+        }),
+    );
+    Ok(Term::NIL)
+}
+
+pub fn bif_maps_map(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let [fun, map_term] = args else {
+        return Err(badarg());
+    };
+    ensure_fun_arity(*fun, 2)?;
+    let entries = map_entries(*map_term)?;
+    if entries.is_empty() {
+        let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
+        return make_sorted_map(context, &[], atom_table.as_ref());
+    }
+    let (key, value) = entries[0];
+    context.set_continuation_trampoline(
+        *fun,
+        vec![key, value],
+        NativeContinuation::Maps(MapsHofState::Map {
+            fun: *fun,
+            entries,
+            index: 1,
+            mapped: Vec::new(),
         }),
     );
     Ok(Term::NIL)
@@ -273,6 +303,35 @@ pub fn resume_maps_continuation(
             } else {
                 Ok(ContinuationStep::Done(make_map_from_entries(
                     context, &kept,
+                )?))
+            }
+        }
+        MapsHofState::Map {
+            fun,
+            entries,
+            index,
+            mut mapped,
+        } => {
+            let previous = index.checked_sub(1).ok_or_else(badarg)?;
+            let previous_key = entries
+                .get(previous)
+                .map(|(key, _)| *key)
+                .ok_or_else(badarg)?;
+            mapped.push((previous_key, closure_result));
+            if let Some((key, value)) = entries.get(index).copied() {
+                Ok(ContinuationStep::Call {
+                    fun,
+                    args: vec![key, value],
+                    continuation: NativeContinuation::Maps(MapsHofState::Map {
+                        fun,
+                        entries,
+                        index: index + 1,
+                        mapped,
+                    }),
+                })
+            } else {
+                Ok(ContinuationStep::Done(make_map_from_entries(
+                    context, &mapped,
                 )?))
             }
         }

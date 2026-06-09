@@ -1,1 +1,1 @@
-test(beamr): harden EXPORT_EXT regressions for B-171
+harden(beamr): preserve gleam option tags in map continuation

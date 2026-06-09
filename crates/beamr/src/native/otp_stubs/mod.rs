@@ -8,7 +8,7 @@
 //! are in the `erlang_stubs` submodule.
 
 mod erlang_stubs;
-mod gleam_stubs;
+pub(crate) mod gleam_stubs;
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{

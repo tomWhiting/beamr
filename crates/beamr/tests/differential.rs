@@ -17,10 +17,11 @@ use beamr::native::BifRegistryImpl;
 use beamr::native::bifs::register_gate1_bifs;
 use beamr::native::gate3_bifs::register_gate3_bifs;
 use beamr::native::process_bifs::register_gate2_bifs;
+use beamr::native::stdlib_stubs::register_stdlib_stubs;
 use beamr::process::{CodePosition, Exception, ExitReason, Process};
 use beamr::scheduler::SchedulerConfig;
 use beamr::term::Term;
-use beamr::term::boxed::{Cons, Tuple, write_cons, write_tuple};
+use beamr::term::boxed::{Cons, Map, Tuple, write_cons, write_tuple};
 use proptest::prelude::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -468,6 +469,10 @@ fn compare_terms(left: Term, right: Term, path: &str) -> CompareResult {
         return compare_lists(left, right, path);
     }
 
+    if let (Some(left_map), Some(right_map)) = (Map::new(left), Map::new(right)) {
+        return compare_maps(left_map, right_map, path);
+    }
+
     CompareResult::Different {
         diff: format!(
             "{path} differs: interpreted={} compiled={}",
@@ -504,6 +509,49 @@ fn compare_lists(mut left: Term, mut right: Term, path: &str) -> CompareResult {
             }
         }
     }
+}
+
+fn compare_maps(left: Map, right: Map, path: &str) -> CompareResult {
+    if left.len() != right.len() {
+        return CompareResult::Different {
+            diff: format!(
+                "{path}.size differs: interpreted={} compiled={}",
+                left.len(),
+                right.len()
+            ),
+        };
+    }
+    for index in 0..left.len() {
+        let Some(left_key) = left.key(index) else {
+            return CompareResult::Different {
+                diff: format!("{path}.key[{index}] unavailable in interpreted map"),
+            };
+        };
+        let Some(right_key) = right.key(index) else {
+            return CompareResult::Different {
+                diff: format!("{path}.key[{index}] unavailable in compiled map"),
+            };
+        };
+        match compare_terms(left_key, right_key, &format!("{path}.key[{index}]")) {
+            CompareResult::Equal => {}
+            different => return different,
+        }
+        let Some(left_value) = left.value(index) else {
+            return CompareResult::Different {
+                diff: format!("{path}.value[{index}] unavailable in interpreted map"),
+            };
+        };
+        let Some(right_value) = right.value(index) else {
+            return CompareResult::Different {
+                diff: format!("{path}.value[{index}] unavailable in compiled map"),
+            };
+        };
+        match compare_terms(left_value, right_value, &format!("{path}.value[{index}]")) {
+            CompareResult::Equal => {}
+            different => return different,
+        }
+    }
+    CompareResult::Equal
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -669,6 +717,7 @@ fn registered_bifs(atoms: &AtomTable) -> BifRegistryImpl {
     register_gate1_bifs(&bifs, atoms).expect("register gate1 BIFs");
     register_gate2_bifs(&bifs, atoms).expect("register gate2 BIFs");
     register_gate3_bifs(&bifs, atoms).expect("register gate3 BIFs");
+    register_stdlib_stubs(&bifs, atoms).expect("register stdlib stubs");
     bifs
 }
 
@@ -1156,6 +1205,26 @@ fn list_processing_scenario_runs_differentially() {
         "reverse",
         1,
         &[Term::NIL]
+    );
+}
+
+#[test]
+fn maps_map_hof_runs_differentially() {
+    differential_test!(
+        include_bytes!("fixtures/stdlib/maps_hof.beam"),
+        "map_inc",
+        0,
+        &[]
+    );
+}
+
+#[test]
+fn compiled_wrapper_calling_maps_map_hof_returns_transformed_map() {
+    differential_test!(
+        include_bytes!("fixtures/stdlib/maps_hof.beam"),
+        "compiled_entry",
+        0,
+        &[]
     );
 }
 

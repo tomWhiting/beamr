@@ -16,6 +16,7 @@ use crate::io::{
     CompletionRing, IoCompletion, IoError, IoFacility, IoOp, IoSink, NullSink, ResultMode,
 };
 use crate::native::ets_bifs::EtsFoldlState;
+use crate::native::otp_stubs::gleam_stubs::{GleamOptionState, GleamResultState};
 use crate::native::stdlib_stubs::{lists_hof_bifs::ListsHofState, maps_bifs::MapsHofState};
 use crate::process::{Priority, Process};
 use crate::term::Term;
@@ -71,6 +72,10 @@ pub enum NativeContinuation {
     EtsFoldl(EtsFoldlState),
     /// Continuation for Gleam result.try/2 compatibility.
     GleamResultTry,
+    /// Continuation for Gleam option higher-order BIFs.
+    GleamOption(GleamOptionState),
+    /// Continuation for Gleam result higher-order BIFs.
+    GleamResult(GleamResultState),
 }
 
 /// File I/O continuation data used when a suspended file BIF resumes.
