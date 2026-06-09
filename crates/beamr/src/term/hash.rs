@@ -33,7 +33,7 @@ impl EtsKey {
 
 impl PartialEq for EtsKey {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        compare::partial_eq(&self.0, &other.0)
     }
 }
 
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn ets_key_hash_matches_equality_contract() {
+    fn ets_key_structural_equality_for_boxed_terms() {
         let mut left_heap = [0_u64; 3];
         let mut right_heap = [0_u64; 3];
         let left = boxed::write_tuple(&mut left_heap, &[Term::atom(Atom::OK), Term::small_int(1)])
@@ -355,6 +355,7 @@ mod tests {
         let left_key = EtsKey::new(left);
         let right_key = EtsKey::new(right);
 
+        assert_ne!(left.raw(), right.raw());
         assert_eq!(left_key, right_key);
         let mut left_hasher = DefaultHasher::new();
         let mut right_hasher = DefaultHasher::new();

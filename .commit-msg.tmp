@@ -1,1 +1,1 @@
-test(beamr): harden OTP stdlib stub acceptance coverage
+test(beamr): harden EXPORT_EXT regressions for B-171

@@ -616,12 +616,19 @@ fn configure_and_listen(fd: RawFd, port: u16, options: ListenOptions) -> Result<
 }
 
 fn finish_accept(completion: FileIoCompletion, context: &mut ProcessContext) -> Result<Term, Term> {
-    context.clear_receive_timeout();
     if !matches!(completion.continuation, FileIoContinuation::Accept) {
+        context.clear_receive_timeout();
         return error_tuple(context, Atom::UNKNOWN_ERROR);
     }
     match completion.completion.result {
         Ok(IoResult::Accepted(fd, _peer)) => {
+            if context.receive_timeout_expired() {
+                context.cancel_pending_file_io_for_current_process();
+                context.clear_receive_timeout();
+                close_raw_fd(fd);
+                return error_tuple(context, Atom::TIMEOUT);
+            }
+            context.clear_receive_timeout();
             let owner_pid = match context.pid() {
                 Some(pid) => pid,
                 None => {
@@ -632,8 +639,14 @@ fn finish_accept(completion: FileIoCompletion, context: &mut ProcessContext) -> 
             let fd_term = alloc_fd_resource_or_close(context, fd, owner_pid)?;
             ok_tuple(context, fd_term)
         }
-        Ok(_) => error_tuple(context, Atom::UNKNOWN_ERROR),
-        Err(error) => error_tuple(context, error_reason(error)),
+        Ok(_) => {
+            context.clear_receive_timeout();
+            error_tuple(context, Atom::UNKNOWN_ERROR)
+        }
+        Err(error) => {
+            context.clear_receive_timeout();
+            error_tuple(context, error_reason(error))
+        }
     }
 }
 
