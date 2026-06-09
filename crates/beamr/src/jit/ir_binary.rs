@@ -174,9 +174,8 @@ pub(crate) fn binary_allocation_roots(
             _ => Ok(Vec::new()),
         },
         BinaryOp::BsGetTail => match operands {
-            [_fail, context, _live, destination] | [_fail, context, destination] => {
-                Ok(vec![context.clone(), destination.clone()])
-            }
+            [_fail, context, _live, destination] => Ok(vec![context.clone(), destination.clone()]),
+            [_fail, context, destination] => Ok(vec![context.clone(), destination.clone()]),
             _ => Ok(Vec::new()),
         },
         _ => Ok(Vec::new()),
@@ -381,9 +380,8 @@ fn lower_bs_get_tail(
     operands: &[Operand],
 ) -> Result<(), JitError> {
     let (fail_operand, match_context, destination) = match operands {
-        [fail, context, _live, destination] | [fail, context, destination] => {
-            (fail, context, destination)
-        }
+        [fail, context, _live, destination] => (fail, context, destination),
+        [fail, context, destination] => (fail, context, destination),
         _ => return Err(invalid_operands("bs_get_tail")),
     };
     let fail = context.deopt;
@@ -555,9 +553,8 @@ fn parse_start_match_operands(
     operands: &[Operand],
 ) -> Result<(&Operand, &Operand, &Operand), JitError> {
     match operands {
-        [fail, source, destination] | [fail, source, _live, destination] => {
-            Ok((fail, source, destination))
-        }
+        [fail, source, destination] => Ok((fail, source, destination)),
+        [fail, source, _live, destination] => Ok((fail, source, destination)),
         _ => Err(invalid_operands("bs_start_match")),
     }
 }

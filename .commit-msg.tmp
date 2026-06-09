@@ -1,1 +1,1 @@
-feat(jit): lower binary matching and construction helpers
+fix(jit): split optional binary operand patterns
