@@ -1,8 +1,9 @@
 [package]
 name = "gleam-types"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 description = "Gleam type sidecar extractor for beamr"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -10,7 +11,6 @@ authors.workspace = true
 [dependencies]
 camino = "1.2.1"
 ecow.workspace = true
-gleam-core = { git = "https://github.com/gleam-lang/gleam", package = "gleam-core", rev = "afc1b7d956b433e638d52dbd06470f53a0b26f6a" }
 
 [[bin]]
 name = "gleam-types"

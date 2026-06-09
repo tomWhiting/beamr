@@ -403,7 +403,8 @@ impl Scheduler {
         supervision_integration::register_distribution_control_handler(&shared);
         if let (Some(ring), Some(registry)) = (&shared.io_ring, &shared.io_registry) {
             let target: Arc<dyn IoWakeTarget> = shared.clone();
-            let bridge = IoCompletionBridge::start(Arc::clone(ring), Arc::clone(registry), target);
+            let bridge = IoCompletionBridge::start(Arc::clone(ring), Arc::clone(registry), target)
+                .map_err(|error| format!("failed to spawn beamr-io-completion thread: {error}"))?;
             *lock_or_recover(&shared.io_bridge) = Some(bridge);
         }
         let inject_queues: Vec<_> = (0..thread_count)

@@ -34,11 +34,6 @@ impl EtsOrderedSet {
 
     #[must_use]
     pub fn with_atom_table(metadata: EtsTableMetadata, atom_table: Arc<AtomTable>) -> Self {
-        if metadata.write_concurrency {
-            eprintln!(
-                "ets: ordered_set write_concurrency is ignored to preserve global key ordering"
-            );
-        }
         let rows = if metadata.read_concurrency {
             OrderedSetRows::RwLock(RwLock::new(BTreeMap::new()))
         } else {

@@ -148,10 +148,6 @@ impl AotCompiler {
             match compiled_function {
                 Ok(native) => compiled.push((export.function, export.arity, native)),
                 Err(error) if is_skippable_jit_error(&error) => {
-                    eprintln!(
-                        "beamr AOT: skipping {:?}/{}, {}",
-                        export.function, export.arity, error
-                    );
                     skipped.push((export.function, export.arity, error.to_string()));
                 }
                 Err(error) => return Err(AotError::Jit(error)),

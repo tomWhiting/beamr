@@ -182,10 +182,7 @@ impl DirtyPool {
                     worker_names.push(thread_name);
                     threads.push(handle);
                 }
-                Err(error) => {
-                    eprintln!("failed to spawn {thread_name}: {error}");
-                    break;
-                }
+                Err(_error) => break,
             }
         }
 

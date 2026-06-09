@@ -74,12 +74,11 @@ pub struct IoCompletionBridge {
 
 impl IoCompletionBridge {
     /// Start a completion poller thread.
-    #[must_use]
     pub fn start(
         ring: Arc<dyn CompletionRing>,
         registry: Arc<PendingIoRegistry>,
         scheduler: Arc<dyn IoWakeTarget>,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_for_thread = Arc::clone(&shutdown);
         let handle = std::thread::Builder::new()
@@ -92,15 +91,12 @@ impl IoCompletionBridge {
                     }
                 }
             })
-            .unwrap_or_else(|error| {
-                shutdown.store(true, Ordering::Release);
-                panic!("failed to spawn beamr-io-completion thread: {error}");
-            });
+            .inspect_err(|_| shutdown.store(true, Ordering::Release))?;
 
-        Self {
+        Ok(Self {
             shutdown,
             handle: Mutex::new(Some(handle)),
-        }
+        })
     }
 
     /// Request poller shutdown and join the thread once.
@@ -312,7 +308,8 @@ mod tests {
         registry.register(9, 77, ResultMode::XRegister);
         let target = Arc::new(MockWakeTarget::default());
 
-        let bridge = IoCompletionBridge::start(ring, registry, target.clone());
+        let bridge = IoCompletionBridge::start(ring, registry, target.clone())
+            .expect("bridge thread starts");
         target.wait_for_notifications(1);
         bridge.shutdown();
         bridge.shutdown();
@@ -339,7 +336,8 @@ mod tests {
         registry.register(10, 88, ResultMode::Message);
         let target = Arc::new(MockWakeTarget::default());
 
-        let bridge = IoCompletionBridge::start(ring, registry, target.clone());
+        let bridge = IoCompletionBridge::start(ring, registry, target.clone())
+            .expect("bridge thread starts");
         target.wait_for_notifications(1);
         bridge.shutdown();
 

@@ -1,20 +1,22 @@
 use std::fmt;
 
-use camino::Utf8PathBuf;
-use gleam_core::ast::{Definition, Publicity, TypeAst, TypeAstConstructorName, UntypedModule};
-use gleam_core::parse;
-use gleam_core::warning::WarningEmitter;
-
 use crate::format::{FunctionSignature, TypeDescriptor};
 
 #[derive(Clone, Debug)]
 pub struct ParsedModule {
-    module: UntypedModule,
+    functions: Vec<ParsedFunction>,
 }
 
 #[derive(Clone, Debug)]
 pub struct TypedModule {
-    module: UntypedModule,
+    functions: Vec<FunctionSignature>,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedFunction {
+    name: String,
+    arguments: Vec<TypeDescriptor>,
+    return_type: TypeDescriptor,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -35,95 +37,149 @@ impl GleamTypeExtractor {
     }
 
     pub fn parse_module(source: &str) -> Result<ParsedModule, ExtractError> {
-        let path = Utf8PathBuf::from("beamr_sidecar.gleam");
-        let warnings = WarningEmitter::null();
-        let parsed = parse::parse_module(path, source, &warnings)
-            .map_err(|error| ExtractError::Parse(format!("{error:?}")))?;
-        Ok(ParsedModule {
-            module: parsed.module,
-        })
+        parse_public_functions(source).map(|functions| ParsedModule { functions })
     }
 
     pub fn type_check(parsed: ParsedModule) -> Result<TypedModule, ExtractError> {
-        for targeted in &parsed.module.definitions {
-            if let Definition::Function(function) = &targeted.definition {
-                let Some((_, name)) = function.name.as_ref() else {
-                    continue;
-                };
-                if matches!(function.publicity, Publicity::Private) {
-                    continue;
-                }
-                let arity = function.arguments.len();
-                if u8::try_from(arity).is_err() {
-                    return Err(ExtractError::ArityTooLarge {
-                        function: name.to_string(),
-                        arity,
-                    });
-                }
-
-                for argument in &function.arguments {
-                    let annotation = argument.annotation.as_ref().ok_or_else(|| {
-                        ExtractError::MissingAnnotation {
-                            function: name.to_string(),
-                        }
-                    })?;
-                    type_ast_to_descriptor(annotation).map_err(|message| {
-                        ExtractError::UnsupportedType(format!("{name}: {message}"))
-                    })?;
-                }
-
-                let return_annotation = function.return_annotation.as_ref().ok_or_else(|| {
-                    ExtractError::MissingAnnotation {
-                        function: name.to_string(),
+        let functions = parsed
+            .functions
+            .into_iter()
+            .map(|function| {
+                let arity = u8::try_from(function.arguments.len()).map_err(|_| {
+                    ExtractError::ArityTooLarge {
+                        function: function.name.clone(),
+                        arity: function.arguments.len(),
                     }
                 })?;
-                type_ast_to_descriptor(return_annotation).map_err(|message| {
-                    ExtractError::UnsupportedType(format!("{name}: {message}"))
-                })?;
-            }
-        }
-        Ok(TypedModule {
-            module: parsed.module,
-        })
+                Ok(FunctionSignature {
+                    name: function.name,
+                    arity,
+                    param_types: function.arguments,
+                    return_type: function.return_type,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(TypedModule { functions })
     }
 
     pub fn extract_signatures(typed: TypedModule) -> Vec<FunctionSignature> {
-        typed
-            .module
-            .definitions
-            .iter()
-            .filter_map(|targeted| {
-                let Definition::Function(function) = &targeted.definition else {
-                    return None;
-                };
-                if matches!(function.publicity, Publicity::Private) {
-                    return None;
-                }
-                let name = function.name.as_ref()?.1.to_string();
-                let arity = u8::try_from(function.arguments.len()).ok()?;
-                let param_types = function
-                    .arguments
-                    .iter()
-                    .map(|argument| {
-                        argument
-                            .annotation
-                            .as_ref()
-                            .and_then(|annotation| type_ast_to_descriptor(annotation).ok())
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                let return_type = function
-                    .return_annotation
-                    .as_ref()
-                    .and_then(|annotation| type_ast_to_descriptor(annotation).ok())?;
-                Some(FunctionSignature {
-                    name,
-                    arity,
-                    param_types,
-                    return_type,
-                })
-            })
-            .collect()
+        typed.functions
     }
+}
+
+fn parse_public_functions(source: &str) -> Result<Vec<ParsedFunction>, ExtractError> {
+    let mut functions = Vec::new();
+    for declaration in source.split("pub fn ").skip(1) {
+        let (name, after_name) = parse_identifier(declaration)
+            .ok_or_else(|| ExtractError::Parse("expected public function name".into()))?;
+        let after_name = after_name.trim_start();
+        let Some(after_open) = after_name.strip_prefix('(') else {
+            return Err(ExtractError::Parse(format!(
+                "expected argument list for function {name}"
+            )));
+        };
+        let (argument_list, after_arguments) = split_balanced(after_open, '(', ')')
+            .map_err(|message| ExtractError::Parse(format!("{name}: {message}")))?;
+        let after_arguments = after_arguments.trim_start();
+        let Some(after_arrow) = after_arguments.strip_prefix("->") else {
+            return Err(ExtractError::MissingAnnotation {
+                function: name.to_string(),
+            });
+        };
+        let return_source = type_source_before_body(after_arrow).ok_or_else(|| {
+            ExtractError::Parse(format!("expected function body for function {name}"))
+        })?;
+        let arguments = parse_arguments(argument_list, name)?;
+        let return_type = parse_type(return_source)
+            .map_err(|message| ExtractError::UnsupportedType(format!("{name}: {message}")))?;
+        functions.push(ParsedFunction {
+            name: name.to_string(),
+            arguments,
+            return_type,
+        });
+    }
+    Ok(functions)
+}
+
+fn parse_identifier(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    let end = input
+        .char_indices()
+        .find_map(|(index, character)| {
+            (!(character == '_' || character.is_ascii_alphanumeric())).then_some(index)
+        })
+        .unwrap_or(input.len());
+    (end > 0).then(|| input.split_at(end))
+}
+
+fn split_balanced(input: &str, open: char, close: char) -> Result<(&str, &str), String> {
+    let mut depth = 1usize;
+    for (index, character) in input.char_indices() {
+        match character {
+            value if value == open => depth = depth.saturating_add(1),
+            value if value == close => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let (balanced, rest) = input.split_at(index);
+                    return Ok((balanced, &rest[character.len_utf8()..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("unterminated balanced type expression".into())
+}
+
+fn type_source_before_body(input: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (index, character) in input.char_indices() {
+        match character {
+            '(' | '<' => depth = depth.saturating_add(1),
+            ')' | '>' => depth = depth.saturating_sub(1),
+            '{' if depth == 0 => return Some(input[..index].trim()),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_arguments(
+    argument_list: &str,
+    function: &str,
+) -> Result<Vec<TypeDescriptor>, ExtractError> {
+    split_top_level(argument_list, ',')
+        .into_iter()
+        .filter(|argument| !argument.trim().is_empty())
+        .map(|argument| {
+            let (_, type_source) =
+                argument
+                    .split_once(':')
+                    .ok_or_else(|| ExtractError::MissingAnnotation {
+                        function: function.to_string(),
+                    })?;
+            parse_type(type_source)
+                .map_err(|message| ExtractError::UnsupportedType(format!("{function}: {message}")))
+        })
+        .collect()
+}
+
+fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    for (index, character) in input.char_indices() {
+        match character {
+            '(' | '<' => depth = depth.saturating_add(1),
+            ')' | '>' => depth = depth.saturating_sub(1),
+            value if value == delimiter && depth == 0 => {
+                parts.push(input[start..index].trim());
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
 }
 
 impl fmt::Display for ExtractError {
@@ -144,50 +200,96 @@ impl fmt::Display for ExtractError {
 
 impl std::error::Error for ExtractError {}
 
-fn type_ast_to_descriptor(type_ast: &TypeAst) -> Result<TypeDescriptor, String> {
-    match type_ast {
-        TypeAst::Constructor(constructor) => {
-            let (module, name) = constructor_name(&constructor.name)
-                .ok_or_else(|| "malformed type constructor name".to_string())?;
-            let arguments = constructor
-                .arguments
-                .iter()
-                .map(type_ast_to_descriptor)
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(named_type_to_descriptor(module, name, arguments))
-        }
-        TypeAst::Fn(function) => {
-            let arguments = function
-                .arguments
-                .iter()
-                .map(type_ast_to_descriptor)
-                .collect::<Result<Vec<_>, _>>()?;
-            let return_ = type_ast_to_descriptor(&function.return_)?;
-            Ok(TypeDescriptor::Fn(arguments, Box::new(return_)))
-        }
-        TypeAst::Tuple(tuple) => tuple
-            .elements
-            .iter()
-            .map(type_ast_to_descriptor)
-            .collect::<Result<Vec<_>, _>>()
-            .map(TypeDescriptor::Tuple),
-        TypeAst::Var(var) => Ok(TypeDescriptor::CustomType {
-            module: String::new(),
-            name: var.name.to_string(),
-            type_params: Vec::new(),
-        }),
-        TypeAst::Hole(_) => Err("type holes are not supported in sidecars".into()),
+fn parse_type(input: &str) -> Result<TypeDescriptor, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err("empty type annotation".into());
     }
+    if input == "_" {
+        return Err("type holes are not supported in sidecars".into());
+    }
+
+    if let Some((arguments, return_type)) = split_function_type(input)? {
+        let arguments = if arguments.trim().is_empty() {
+            Vec::new()
+        } else {
+            split_top_level(arguments, ',')
+                .into_iter()
+                .map(parse_type)
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        return Ok(TypeDescriptor::Fn(
+            arguments,
+            Box::new(parse_type(return_type)?),
+        ));
+    }
+
+    if input.starts_with('#') && input.ends_with(')') {
+        let Some(elements) = input
+            .strip_prefix("#(")
+            .and_then(|value| value.strip_suffix(')'))
+        else {
+            return Err("malformed tuple type".into());
+        };
+        return split_top_level(elements, ',')
+            .into_iter()
+            .filter(|element| !element.trim().is_empty())
+            .map(parse_type)
+            .collect::<Result<Vec<_>, _>>()
+            .map(TypeDescriptor::Tuple);
+    }
+
+    let (name, arguments) = if let Some(open_index) = top_level_generic_open(input) {
+        let name = input[..open_index].trim();
+        let Some(generic_source) = input
+            .get(open_index + 1..)
+            .and_then(|value| value.strip_suffix(')'))
+            .or_else(|| {
+                input
+                    .get(open_index + 1..)
+                    .and_then(|value| value.strip_suffix('>'))
+            })
+        else {
+            return Err(format!("malformed generic type {input}"));
+        };
+        let arguments = split_top_level(generic_source, ',')
+            .into_iter()
+            .map(parse_type)
+            .collect::<Result<Vec<_>, _>>()?;
+        (name, arguments)
+    } else {
+        (input, Vec::new())
+    };
+
+    let (module, name) = match name.rsplit_once('.') {
+        Some((module, name)) => (module.replace('.', "/"), name.to_string()),
+        None => (String::new(), name.to_string()),
+    };
+    Ok(named_type_to_descriptor(module, name, arguments))
 }
 
-fn constructor_name(name: &TypeAstConstructorName) -> Option<(String, String)> {
-    match name {
-        TypeAstConstructorName::Unqualified { name, .. } => Some((String::new(), name.to_string())),
-        TypeAstConstructorName::Qualified { module, name, .. } => {
-            let (name, _) = name.as_ref()?;
-            Some((module.to_string(), name.to_string()))
+fn split_function_type(input: &str) -> Result<Option<(&str, &str)>, String> {
+    let Some(after_fn) = input.strip_prefix("fn(") else {
+        return Ok(None);
+    };
+    let (arguments, rest) = split_balanced(after_fn, '(', ')')?;
+    let Some(return_type) = rest.trim_start().strip_prefix("->") else {
+        return Err("function type missing return arrow".into());
+    };
+    Ok(Some((arguments, return_type)))
+}
+
+fn top_level_generic_open(input: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, character) in input.char_indices() {
+        match character {
+            '(' | '<' if depth == 0 => return Some(index),
+            '(' | '<' => depth = depth.saturating_add(1),
+            ')' | '>' => depth = depth.saturating_sub(1),
+            _ => {}
         }
     }
+    None
 }
 
 fn named_type_to_descriptor(

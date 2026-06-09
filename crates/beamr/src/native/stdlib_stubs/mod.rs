@@ -1076,23 +1076,21 @@ fn register_stub(
     }
 }
 
-/// logger:warning/2 — prints format string and args to stderr, returns `ok`.
+/// logger:warning/2 — writes format string and args to the configured I/O sink, returns `ok`.
 ///
 /// Accepts (Format, Args) where Format is a binary/string and Args is a list.
-/// Prints in a debug-friendly way using eprintln.
-pub fn bif_logger_warning(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_logger_warning(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [format_term, args_term] = args else {
         return Err(badarg());
     };
 
-    // Try to extract the format string from a binary term.
-    if let Some(binary) = BinaryRef::new(*format_term) {
+    let message = if let Some(binary) = BinaryRef::new(*format_term) {
         let format_str = String::from_utf8_lossy(binary.as_bytes());
-        eprintln!("[warning] {format_str} {args_term:?}");
+        format!("[warning] {format_str} {args_term:?}\n")
     } else {
-        // Fall back to debug formatting for non-binary format terms.
-        eprintln!("[warning] {format_term:?} {args_term:?}");
-    }
+        format!("[warning] {format_term:?} {args_term:?}\n")
+    };
+    context.io_sink().write(message.as_bytes());
 
     Ok(Term::atom(Atom::OK))
 }
