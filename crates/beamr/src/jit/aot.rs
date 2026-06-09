@@ -151,15 +151,24 @@ impl AotCompiler {
                 .resolve(export.function)
                 .and_then(|function| type_reader?.function_signature(function, export.arity));
             let compiled_function = if let Some(signature) = signature {
-                TypedIrTranslator::new(signature, &self.compiler).compile(
+                self.compiler.compile_typed_module_function(
                     instructions,
                     parsed.name,
                     export.function,
                     export.arity,
+                    signature,
+                    &parsed.lambdas,
+                    0,
                 )
             } else {
-                self.compiler
-                    .compile(instructions, parsed.name, export.function, export.arity)
+                self.compiler.compile_module_function(
+                    instructions,
+                    parsed.name,
+                    export.function,
+                    export.arity,
+                    &parsed.lambdas,
+                    0,
+                )
             };
 
             match compiled_function {

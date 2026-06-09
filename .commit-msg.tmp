@@ -1,1 +1,1 @@
-harden(beamr): fix JIT try_case frame fallback and add exception tests
+feat(jit): lower closure creation and dispatch IR

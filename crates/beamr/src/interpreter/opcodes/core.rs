@@ -643,7 +643,7 @@ fn dispatch_local_jit(
         module: module.name,
         instruction_pointer: target_ip,
     }));
-    invoke_jit(process, module, native, registry)
+    invoke_jit(process, module, native, registry, jit_cache)
 }
 
 fn dispatch_external_jit(
@@ -670,7 +670,7 @@ fn dispatch_external_jit(
         module: target_module.name,
         instruction_pointer: target_ip,
     }));
-    invoke_jit(process, target_module, native, ctx.registry)
+    invoke_jit(process, target_module, native, ctx.registry, ctx.jit_cache)
 }
 
 fn invoke_jit(
@@ -678,6 +678,7 @@ fn invoke_jit(
     module: &Module,
     native: crate::jit::NativeCode,
     registry: Option<&ModuleRegistry>,
+    jit_cache: Option<&JitCache>,
 ) -> Result<Option<InstructionOutcome>, ExecError> {
     let Some(registry) = registry else {
         return Ok(None);
@@ -686,6 +687,7 @@ fn invoke_jit(
     process.set_jit_runtime_context(Some(JitRuntimeContext::new(
         module as *const Module,
         registry as *const ModuleRegistry,
+        jit_cache.map_or(std::ptr::null(), |cache| cache as *const JitCache),
     )));
     process.set_jit_status(None);
     let outcome = call_native(process, native);

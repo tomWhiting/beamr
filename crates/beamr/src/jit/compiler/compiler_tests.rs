@@ -1266,6 +1266,7 @@ fn compiled_external_call_falls_back_to_interpreter_and_returns_value() {
     process.set_jit_runtime_context(Some(JitRuntimeContext::new(
         caller.as_ref() as *const Module,
         &registry as *const ModuleRegistry,
+        std::ptr::null(),
     )));
     let mut registers = vec![Term::small_int(17).raw()];
 
@@ -1340,6 +1341,7 @@ fn compiled_try_catches_interpreted_exception_and_exposes_payload() {
     process.set_jit_runtime_context(Some(JitRuntimeContext::new(
         caller.as_ref() as *const Module,
         &registry as *const ModuleRegistry,
+        std::ptr::null(),
     )));
     let mut registers = vec![0; X_REGISTER_COUNT as usize + 3];
 
@@ -1395,6 +1397,7 @@ fn compiled_external_exception_without_try_propagates_status_and_frame() {
     process.set_jit_runtime_context(Some(JitRuntimeContext::new(
         caller.as_ref() as *const Module,
         &registry as *const ModuleRegistry,
+        std::ptr::null(),
     )));
     let mut registers = vec![
         Term::atom(Atom::ERROR).raw(),

@@ -181,6 +181,8 @@ pub struct JitRuntimeContext {
     pub module: *const Module,
     /// Registry used by mixed-mode fallback calls.
     pub registry: *const crate::module::ModuleRegistry,
+    /// Optional native-code cache used by helper-backed dynamic dispatch.
+    pub jit_cache: *const crate::jit::JitCache,
 }
 
 impl JitRuntimeContext {
@@ -189,8 +191,13 @@ impl JitRuntimeContext {
     pub const fn new(
         module: *const Module,
         registry: *const crate::module::ModuleRegistry,
+        jit_cache: *const crate::jit::JitCache,
     ) -> Self {
-        Self { module, registry }
+        Self {
+            module,
+            registry,
+            jit_cache,
+        }
     }
 }
 

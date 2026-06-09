@@ -4,6 +4,7 @@ use crate::atom::Atom;
 use crate::jit::type_info::{FunctionSignature, TypeDescriptor};
 use crate::loader::Instruction;
 use crate::loader::decode::TypeTestOp;
+use crate::loader::decode::chunks::LambdaEntry;
 use crate::loader::decode::compact::Operand;
 use crate::scheduler::lock_or_recover;
 use crate::term::Term;
@@ -27,6 +28,10 @@ use super::ir_allocation::{
 use super::ir_arithmetic::{
     ArithmeticLowering, ArithmeticOp, ParsedBif, lower_arithmetic_bif, lower_comparison,
 };
+use super::ir_closure::{
+    ClosureCall, ClosureHelpers, ClosureMetadata, lower_call_fun, lower_make_fun2,
+    make_fun_free_var_operands, make_fun_free_var_roots,
+};
 use super::ir_common::{
     JIT_DEOPT_SENTINEL, Register, SMALL_INT_SHIFT, label_operand, read_operand_term,
     read_register_term, register_operand, write_operand_term, write_register_term,
@@ -43,7 +48,8 @@ use super::ir_guards::{
     lower_test_arity, lower_type_test, parse_select_pairs,
 };
 use super::runtime::{
-    JIT_YIELD_SENTINEL, jit_alloc_cons, jit_alloc_tuple, jit_call_interpreted, jit_charge_reduction,
+    JIT_YIELD_SENTINEL, jit_alloc_closure, jit_alloc_cons, jit_alloc_tuple, jit_call_closure,
+    jit_call_interpreted, jit_charge_reduction,
 };
 use super::safepoint::SafepointBuilder;
 use super::types::NativeCode;
@@ -301,6 +307,8 @@ impl JitCompiler {
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
         builder.symbol("beamr_jit_alloc_tuple", jit_alloc_tuple as *const u8);
         builder.symbol("beamr_jit_alloc_cons", jit_alloc_cons as *const u8);
+        builder.symbol("beamr_jit_alloc_closure", jit_alloc_closure as *const u8);
+        builder.symbol("beamr_jit_call_closure", jit_call_closure as *const u8);
         builder.symbol(
             "beamr_jit_charge_reduction",
             jit_charge_reduction as *const u8,
@@ -365,6 +373,49 @@ impl JitCompiler {
         self.compile_with_signature(instructions, module, function, arity, Some(signature))
     }
 
+    /// Compiles with module-level closure metadata available to `make_fun` lowering.
+    pub fn compile_module_function(
+        &self,
+        instructions: &[Instruction],
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        lambdas: &[LambdaEntry],
+        generation: u64,
+    ) -> Result<NativeCode, JitError> {
+        self.compile_with_module_metadata(
+            instructions,
+            module,
+            function,
+            arity,
+            None,
+            lambdas,
+            generation,
+        )
+    }
+
+    /// Compiles typed code with module-level closure metadata available to `make_fun` lowering.
+    pub fn compile_typed_module_function(
+        &self,
+        instructions: &[Instruction],
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        signature: FunctionSignature,
+        lambdas: &[LambdaEntry],
+        generation: u64,
+    ) -> Result<NativeCode, JitError> {
+        self.compile_with_module_metadata(
+            instructions,
+            module,
+            function,
+            arity,
+            Some(signature),
+            lambdas,
+            generation,
+        )
+    }
+
     fn compile_with_signature(
         &self,
         instructions: &[Instruction],
@@ -372,6 +423,27 @@ impl JitCompiler {
         function: Atom,
         arity: u8,
         typed_signature: Option<FunctionSignature>,
+    ) -> Result<NativeCode, JitError> {
+        self.compile_with_module_metadata(
+            instructions,
+            module,
+            function,
+            arity,
+            typed_signature,
+            &[],
+            0,
+        )
+    }
+
+    fn compile_with_module_metadata(
+        &self,
+        instructions: &[Instruction],
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        typed_signature: Option<FunctionSignature>,
+        lambdas: &[LambdaEntry],
+        generation: u64,
     ) -> Result<NativeCode, JitError> {
         let plan = TranslationPlan::new(instructions)?;
 
@@ -403,6 +475,55 @@ impl JitCompiler {
             .declare_function("beamr_jit_alloc_cons", Linkage::Import, &cons_signature)
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
         let cons_helper = jit_module.declare_func_in_func(cons_helper, &mut ctx.func);
+
+        let mut closure_alloc_signature = jit_module.make_signature();
+        closure_alloc_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        closure_alloc_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        closure_alloc_signature
+            .returns
+            .push(AbiParam::new(types::I64));
+        let closure_alloc_helper = jit_module
+            .declare_function(
+                "beamr_jit_alloc_closure",
+                Linkage::Import,
+                &closure_alloc_signature,
+            )
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let closure_alloc_helper =
+            jit_module.declare_func_in_func(closure_alloc_helper, &mut ctx.func);
+
+        let mut closure_call_signature = jit_module.make_signature();
+        closure_call_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        closure_call_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        closure_call_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        closure_call_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        closure_call_signature
+            .returns
+            .push(AbiParam::new(types::I8));
+        closure_call_signature
+            .returns
+            .push(AbiParam::new(types::I64));
+        let closure_call_helper = jit_module
+            .declare_function(
+                "beamr_jit_call_closure",
+                Linkage::Import,
+                &closure_call_signature,
+            )
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let closure_call_helper =
+            jit_module.declare_func_in_func(closure_call_helper, &mut ctx.func);
 
         let mut charge_signature = jit_module.make_signature();
         charge_signature.params.push(AbiParam::new(types::I64));
@@ -460,6 +581,10 @@ impl JitCompiler {
         let allocation_helpers = AllocationHelpers {
             tuple: tuple_helper,
             cons: cons_helper,
+        };
+        let closure_helpers = ClosureHelpers {
+            alloc: closure_alloc_helper,
+            dispatch: closure_call_helper,
         };
 
         let mut safepoints = SafepointBuilder::new();
@@ -697,37 +822,131 @@ impl JitCompiler {
                             ],
                         );
                         let results = builder.inst_results(returned).to_vec();
-                        let status = results[0];
-                        let returned = results[1];
-                        let status_continuation = builder.create_block();
-                        branch_to_status_blocks(
+                        handle_helper_return(
                             &mut builder,
-                            status,
+                            results[0],
+                            results[1],
                             blocks.deopt,
                             blocks.yield_block,
-                            status_continuation,
-                        );
-                        let normal_continuation = builder.create_block();
-                        dispatch_exception_status(
-                            &mut builder,
-                            ExceptionDispatch {
-                                helpers: exception_helpers,
-                                frame: exceptions.current_frame(),
-                                compiled_frame,
-                                process,
-                                register_file,
-                                status,
-                                value: returned,
-                                continuation: normal_continuation,
-                            },
-                        );
-                        write_operand_term(
+                            exception_helpers,
+                            exceptions.current_frame(),
+                            compiled_frame,
+                            process,
+                            register_file,
+                        )?;
+                        terminated = true;
+                    }
+                    Instruction::MakeFun { operands } => {
+                        let lambda_index = make_fun_lambda_index(operands)?;
+                        let lambda = lambdas.get(lambda_index).ok_or_else(|| {
+                            JitError::UnsupportedOperand {
+                                operand: format!("make_fun lambda index {lambda_index}"),
+                            }
+                        })?;
+                        let num_free = usize::try_from(lambda.num_free).map_err(|_| {
+                            JitError::UnsupportedOperand {
+                                operand: format!("make_fun num_free {}", lambda.num_free),
+                            }
+                        })?;
+                        safepoints.record_allocation_site(
+                            index,
+                            make_fun_free_var_roots(&Operand::X(0), num_free)?,
+                        )?;
+                        let free_vars = make_fun_free_var_operands(num_free)?;
+                        typed_state.materialize_operands_for_untyped_lowering(
                             &mut builder,
                             register_file,
-                            &crate::loader::decode::Operand::X(0),
-                            returned,
+                            free_vars.iter(),
+                        );
+                        lower_make_fun2(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            closure_helpers.alloc,
+                            ClosureMetadata {
+                                module,
+                                function_index: u64::try_from(lambda_index).map_err(|_| {
+                                    JitError::UnsupportedOperand {
+                                        operand: format!("make_fun lambda index {lambda_index}"),
+                                    }
+                                })?,
+                                arity: lambda.arity,
+                                generation,
+                                unique_id: lambda.unique_id,
+                            },
+                            &free_vars,
+                            &Operand::X(0),
                         )?;
-                        return_status(&mut builder, JIT_STATUS_NORMAL, returned);
+                        typed_state.clear_operand(&Operand::X(0));
+                        terminated = false;
+                    }
+                    Instruction::CallFun { arity } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let call_arity = immediate_u8(arity, "call_fun arity")?;
+                        let fun = Operand::X(u32::from(call_arity));
+                        let (status, returned) = lower_call_fun(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            closure_helpers.dispatch,
+                            ClosureCall {
+                                fun: &fun,
+                                arity: call_arity,
+                            },
+                        )?;
+                        handle_helper_return(
+                            &mut builder,
+                            status,
+                            returned,
+                            blocks.deopt,
+                            blocks.yield_block,
+                            exception_helpers,
+                            exceptions.current_frame(),
+                            compiled_frame,
+                            process,
+                            register_file,
+                        )?;
+                        terminated = true;
+                    }
+                    Instruction::CallFun2 {
+                        function: fun,
+                        arity,
+                        destination,
+                    } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let call_arity = immediate_u8(arity, "call_fun2 arity")?;
+                        let (status, returned) = lower_call_fun(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            closure_helpers.dispatch,
+                            ClosureCall {
+                                fun,
+                                arity: call_arity,
+                            },
+                        )?;
+                        handle_helper_return(
+                            &mut builder,
+                            status,
+                            returned,
+                            blocks.deopt,
+                            blocks.yield_block,
+                            exception_helpers,
+                            exceptions.current_frame(),
+                            compiled_frame,
+                            process,
+                            register_file,
+                        )?;
+                        typed_state.clear_operand(destination);
                         terminated = true;
                     }
                     Instruction::Call { label, .. } | Instruction::CallOnly { label, .. } => {
@@ -899,6 +1118,37 @@ impl JitCompiler {
                             destination,
                             destination_type,
                         );
+                    }
+                    Instruction::Apply { arity } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let call_arity = immediate_u8(arity, "closure apply arity")?;
+                        let fun = Operand::X(u32::from(call_arity));
+                        let (status, returned) = lower_call_fun(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            closure_helpers.dispatch,
+                            ClosureCall {
+                                fun: &fun,
+                                arity: call_arity,
+                            },
+                        )?;
+                        handle_helper_return(
+                            &mut builder,
+                            status,
+                            returned,
+                            blocks.deopt,
+                            blocks.yield_block,
+                            exception_helpers,
+                            exceptions.current_frame(),
+                            compiled_frame,
+                            process,
+                            register_file,
+                        )?;
+                        terminated = true;
                     }
                     other => {
                         return Err(JitError::UnsupportedOpcode {
@@ -1295,6 +1545,61 @@ fn declare_add_frame_helper(
         .declare_function("beamr_jit_add_compiled_frame", Linkage::Import, &signature)
         .map_err(|error| JitError::CraneliftError(error.to_string()))?;
     Ok(module.declare_func_in_func(helper, func))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_helper_return(
+    builder: &mut FunctionBuilder<'_>,
+    status: cranelift_codegen::ir::Value,
+    returned: cranelift_codegen::ir::Value,
+    deopt_block: cranelift_codegen::ir::Block,
+    yield_block: cranelift_codegen::ir::Block,
+    exception_helpers: ExceptionHelpers,
+    frame: Option<super::ir_exceptions::TryCatchFrame>,
+    compiled_frame: CompiledFrameInfo,
+    process: cranelift_codegen::ir::Value,
+    register_file: cranelift_codegen::ir::Value,
+) -> Result<(), JitError> {
+    let status_continuation = builder.create_block();
+    branch_to_status_blocks(
+        builder,
+        status,
+        deopt_block,
+        yield_block,
+        status_continuation,
+    );
+    let normal_continuation = builder.create_block();
+    dispatch_exception_status(
+        builder,
+        ExceptionDispatch {
+            helpers: exception_helpers,
+            frame,
+            compiled_frame,
+            process,
+            register_file,
+            status,
+            value: returned,
+            continuation: normal_continuation,
+        },
+    );
+    write_operand_term(
+        builder,
+        register_file,
+        &crate::loader::decode::Operand::X(0),
+        returned,
+    )?;
+    return_status(builder, JIT_STATUS_NORMAL, returned);
+    Ok(())
+}
+
+fn make_fun_lambda_index(operands: &[Operand]) -> Result<usize, JitError> {
+    match operands {
+        [index] => immediate_usize(index, "make_fun lambda index"),
+        [index, _uniq, _old_index] => immediate_usize(index, "make_fun lambda index"),
+        _ => Err(JitError::UnsupportedOperand {
+            operand: format!("make_fun operands {operands:?}"),
+        }),
+    }
 }
 
 fn import_index(import: &Operand) -> Result<usize, JitError> {
