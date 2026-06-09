@@ -3,7 +3,7 @@ use super::matching::{Endian, MatchContext, SegmentFlags, decode_integer};
 use super::*;
 use crate::atom::Atom;
 use crate::loader::{Instruction, Literal};
-use crate::module::Module;
+use crate::module::{Module, ModuleOrigin};
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
@@ -25,6 +25,7 @@ fn module(code: Vec<Instruction>) -> Module {
     Module {
         name: Atom::OK,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,

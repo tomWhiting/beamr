@@ -200,24 +200,44 @@ pub fn display(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Ter
     Ok(bool_term(true))
 }
 
-/// erlang:get_module_info/1 returns an empty property list for currently unused metadata.
+/// erlang:get_module_info/1 returns loaded module metadata as a property list.
 pub fn get_module_info_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [module] = args else {
         return Err(badarg());
     };
-    let _ = (module, context);
+    let module = module.as_atom().ok_or_else(badarg)?;
+    let source = module_source_atom(module, context)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let source_key = atom_table.intern("source");
+    let source_tuple = context.alloc_tuple(&[Term::atom(source_key), Term::atom(source)])?;
 
-    Ok(Term::NIL)
+    context.alloc_cons(source_tuple, Term::NIL)
 }
 
-/// erlang:get_module_info/2 returns an empty value for currently unused metadata keys.
+/// erlang:get_module_info/2 returns a single metadata value.
 pub fn get_module_info_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [module, key] = args else {
         return Err(badarg());
     };
-    let _ = (module, key, context);
+    let module = module.as_atom().ok_or_else(badarg)?;
+    let key = key.as_atom().ok_or_else(badarg)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let source_key = atom_table.intern("source");
+    if key != source_key {
+        return Ok(Term::NIL);
+    }
 
-    Ok(Term::NIL)
+    Ok(Term::atom(module_source_atom(module, context)?))
+}
+
+fn module_source_atom(module: Atom, context: &mut ProcessContext) -> Result<Atom, Term> {
+    let facility = context.code_management_facility().ok_or_else(badarg)?;
+    let Some(origin) = facility.module_origin(module) else {
+        return Err(badarg());
+    };
+    let source = origin.source_atom_name();
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    Ok(atom_table.intern(source))
 }
 
 /// erlang:send_after/3 schedules `Msg` to be delivered to `Pid` after `Time` ms.
@@ -338,12 +358,18 @@ fn badarg() -> Term {
 mod tests {
     use super::{
         add, cancel_timer, compare, display, div, error, exact_equal, exact_not_equal,
-        greater_equal, greater_than, less_equal, less_than, multiply, numeric_equal,
-        numeric_not_equal, register_gate1_bifs, rem, send_after, start_timer, subtract, throw,
+        get_module_info_2, greater_equal, greater_than, less_equal, less_than, multiply,
+        numeric_equal, numeric_not_equal, register_gate1_bifs, rem, send_after, start_timer,
+        subtract, throw,
     };
     use crate::atom::{Atom, AtomTable};
-    use crate::native::{BifRegistryImpl, Capability, ExceptionClass, ProcessContext};
+    use crate::error::LoadError;
+    use crate::module::{ModuleOrigin, PurgeError};
+    use crate::native::{
+        BifRegistryImpl, Capability, CodeManagementFacility, ExceptionClass, ProcessContext,
+    };
     use crate::process::Process;
+    use crate::scheduler::{HotLoadResult, PurgeResult};
     use crate::term::Term;
     use crate::term::boxed::{Tuple, write_cons, write_float, write_map, write_tuple};
     use crate::timer::TimerWheel;
@@ -368,6 +394,41 @@ mod tests {
 
     fn badarg() -> Term {
         Term::atom(Atom::BADARG)
+    }
+
+    struct MetadataFacility {
+        module: Atom,
+        origin: ModuleOrigin,
+    }
+
+    impl CodeManagementFacility for MetadataFacility {
+        fn load_module(&self, _bytes: &[u8]) -> Result<HotLoadResult, LoadError> {
+            Err(LoadError::DecodeError("unused test facility".into()))
+        }
+
+        fn purge_module(&self, module: Atom) -> Result<PurgeResult, PurgeError> {
+            Err(PurgeError::NoOldVersion { module })
+        }
+
+        fn delete_module(&self, _module: Atom) -> bool {
+            false
+        }
+
+        fn check_old_code(&self, _module: Atom) -> bool {
+            false
+        }
+
+        fn check_process_code(&self, _pid: u64, _module: Atom) -> bool {
+            false
+        }
+
+        fn module_origin(&self, module: Atom) -> Option<ModuleOrigin> {
+            (module == self.module).then(|| self.origin.clone())
+        }
+
+        fn all_loaded_modules(&self) -> Vec<(Atom, ModuleOrigin)> {
+            vec![(self.module, self.origin.clone())]
+        }
     }
 
     #[test]
@@ -648,6 +709,27 @@ mod tests {
         assert_eq!(
             display(&[small_int(42)], &mut context),
             Ok(Term::atom(Atom::TRUE))
+        );
+    }
+
+    #[test]
+    fn module_info_source_reports_embedded_origin() {
+        let mut process = Process::new(1, 128);
+        let mut context = context(&mut process);
+        let module = context
+            .atom_table()
+            .expect("atom table")
+            .intern("embedded_fixture");
+        context.set_code_management_facility(Some(Arc::new(MetadataFacility {
+            module,
+            origin: ModuleOrigin::Embedded,
+        })));
+        let source = context.atom_table().expect("atom table").intern("source");
+        let embedded = context.atom_table().expect("atom table").intern("embedded");
+
+        assert_eq!(
+            get_module_info_2(&[Term::atom(module), Term::atom(source)], &mut context),
+            Ok(Term::atom(embedded))
         );
     }
 

@@ -199,7 +199,7 @@ mod tests {
 
     use crate::atom::Atom;
     use crate::loader::Instruction;
-    use crate::module::Module;
+    use crate::module::{Module, ModuleOrigin};
     use crate::term::Term;
     use crate::term::boxed::{Float, write_float};
 
@@ -209,6 +209,7 @@ mod tests {
         Module {
             name: Atom::OK,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index: HashMap::new(),
             code: Vec::new(),

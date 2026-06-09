@@ -309,13 +309,14 @@ mod tests {
 
     use crate::atom::Atom;
     use crate::loader::Instruction;
-    use crate::module::{Module, ModuleRegistry, PurgeError};
+    use crate::module::{Module, ModuleOrigin, ModuleRegistry, PurgeError};
     use crate::term::Term;
 
     fn test_module(name: Atom) -> Module {
         Module {
             name,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index: HashMap::from([(1, 0)]),
             code: vec![Instruction::Label { label: 1 }],

@@ -175,6 +175,7 @@ mod tests {
     use crate::atom::Atom;
     use crate::interpreter::{ExecutionResult, run};
     use crate::loader::Instruction;
+    use crate::module::ModuleOrigin;
     use crate::process::{ExitReason, Process};
     use crate::term::Term;
     use crate::term::boxed::write_external_pid;
@@ -192,6 +193,7 @@ mod tests {
         Module {
             name: Atom::OK,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index,
             code,

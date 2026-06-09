@@ -2,7 +2,7 @@ use beamr::atom::{Atom, AtomTable};
 use beamr::interpreter::{ExecutionResult, InstructionOutcome, run};
 use beamr::loader::decode::Operand;
 use beamr::loader::{Instruction, load_beam_chunks, prepare_module};
-use beamr::module::{Module, ModuleRegistry};
+use beamr::module::{Module, ModuleOrigin, ModuleRegistry};
 use beamr::native::BifRegistryImpl;
 use beamr::process::{CodePosition, ExitReason, Process};
 use beamr::term::Term;
@@ -72,6 +72,7 @@ fn decoded_is_tagged_tuple_handler_checks_tuple_arity_and_first_atom() {
     let module = Module {
         name: Atom::OK,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: Default::default(),
         label_index: [(7, 0)].into_iter().collect(),
         code: vec![Instruction::Label { label: 7 }],

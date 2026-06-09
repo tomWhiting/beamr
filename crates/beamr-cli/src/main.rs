@@ -6,8 +6,10 @@ use std::{env, fmt};
 use beamr::atom::{Atom, AtomTable};
 use beamr::error::{ExecError, LoadError};
 use beamr::io::StdoutSink;
-use beamr::loader::{UnresolvedImportReport, load_module};
-use beamr::module::ModuleRegistry;
+use beamr::loader::{
+    UnresolvedImportReport, embedded_module_bytes, load_module_with_origin,
+};
+use beamr::module::{ModuleOrigin, ModuleRegistry};
 use beamr::native::{
     BifRegistryImpl, NativeRegistrationError,
     bifs::register_gate1_bifs,
@@ -339,13 +341,30 @@ fn load_context(path: &Path, dirs: &[PathBuf]) -> Result<LoadContext, CliError> 
         load_beam_dir(dir, &atom_table, &module_registry, &bif_registry)?;
     }
 
-    let bytes = std::fs::read(path).map_err(|source| CliError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    let (module, report) = load_module(&bytes, &atom_table, &module_registry, &bif_registry)
-        .map_err(CliError::Load)?;
+    let embedded_name = path.file_stem().and_then(|stem| stem.to_str());
+    let embedded_bytes = embedded_name.and_then(embedded_module_bytes);
+    let (module, report) = if let Some(bytes) = embedded_bytes {
+        load_module_with_origin(
+            &bytes,
+            &atom_table,
+            &module_registry,
+            &bif_registry,
+            ModuleOrigin::Embedded,
+        )
+    } else {
+        let bytes = std::fs::read(path).map_err(|source| CliError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        load_module_with_origin(
+            &bytes,
+            &atom_table,
+            &module_registry,
+            &bif_registry,
+            ModuleOrigin::Filesystem(path.to_path_buf()),
+        )
+    }
+    .map_err(CliError::Load)?;
 
     Ok(LoadContext {
         atom_table,
@@ -380,7 +399,13 @@ fn load_beam_dir(
                 Err(_) => continue,
             };
             // Best-effort: skip files that fail to decode.
-            let _ = load_module(&bytes, atom_table, module_registry, bif_registry);
+            let _ = load_module_with_origin(
+                &bytes,
+                atom_table,
+                module_registry,
+                bif_registry,
+                ModuleOrigin::Filesystem(file_path),
+            );
         }
     }
     Ok(())

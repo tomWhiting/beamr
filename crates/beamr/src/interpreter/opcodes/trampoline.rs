@@ -207,7 +207,7 @@ mod tests {
     use super::*;
     use crate::atom::{Atom, AtomTable};
     use crate::loader::{Instruction, LambdaEntry};
-    use crate::module::{Module, ModuleRegistry};
+    use crate::module::{Module, ModuleOrigin, ModuleRegistry};
     use crate::native::select::SelectFacility;
     use crate::process::Process;
     use crate::term::boxed::{Closure, write_closure};
@@ -225,6 +225,7 @@ mod tests {
         Module {
             name,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index,
             code,
@@ -288,6 +289,7 @@ mod tests {
         let module = Module {
             name: Atom::OK,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index: HashMap::new(),
             code: vec![Instruction::Return],

@@ -2,7 +2,7 @@ use super::*;
 use crate::atom::AtomTable;
 use crate::interpreter::{ExecutionResult, run_with_registry};
 use crate::loader::{Instruction, LambdaEntry};
-use crate::module::ModuleRegistry;
+use crate::module::{ModuleOrigin, ModuleRegistry};
 use crate::process::ExitReason;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ fn module(name: Atom, code: Vec<Instruction>) -> Module {
     Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,

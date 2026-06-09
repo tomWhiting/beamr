@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -67,6 +68,29 @@ pub struct ResolvedImport {
     pub target: ResolvedImportTarget,
 }
 
+/// Origin metadata for a loaded module.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModuleOrigin {
+    /// Module loaded from a filesystem path.
+    Filesystem(PathBuf),
+    /// Module loaded from the compile-time embedded archive.
+    Embedded,
+    /// Module loaded directly from caller-provided bytes or test/preload setup.
+    Preloaded,
+}
+
+impl ModuleOrigin {
+    /// Return the atom name used by `module_info(Module, source)`.
+    #[must_use]
+    pub const fn source_atom_name(&self) -> &'static str {
+        match self {
+            Self::Filesystem(_) => "filesystem",
+            Self::Embedded => "embedded",
+            Self::Preloaded => "preloaded",
+        }
+    }
+}
+
 /// Immutable loaded module data shared by the registry and processes.
 #[derive(Clone, Debug)]
 pub struct Module {
@@ -74,6 +98,8 @@ pub struct Module {
     pub name: Atom,
     /// Monotonically increasing generation assigned by the registry.
     pub generation: u64,
+    /// Where this module was loaded from.
+    pub origin: ModuleOrigin,
     /// Exported functions keyed by function atom and arity, mapping to code labels.
     pub exports: HashMap<(Atom, u8), u32>,
     /// O(1) index from code label numbers to instruction indices.
@@ -276,6 +302,24 @@ impl ModuleRegistry {
             .map(|entry| Arc::clone(&entry.value().current))
     }
 
+    /// Looks up the origin metadata for the current module version by name.
+    #[must_use]
+    pub fn origin(&self, name: Atom) -> Option<ModuleOrigin> {
+        self.lookup(name).map(|module| module.origin.clone())
+    }
+
+    /// Lists current loaded modules and their origin metadata.
+    #[must_use]
+    pub fn all_loaded(&self) -> Vec<(Atom, ModuleOrigin)> {
+        let mut modules: Vec<_> = self
+            .modules
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().current.origin.clone()))
+            .collect();
+        modules.sort_by_key(|(name, _)| name.index());
+        modules
+    }
+
     /// Looks up the retained old module version by name.
     #[must_use]
     pub fn lookup_old(&self, name: Atom) -> Option<Arc<Module>> {
@@ -381,7 +425,7 @@ impl ModuleRegistry {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{Module, ModuleRegistry, PurgeError};
+    use super::{Module, ModuleOrigin, ModuleRegistry, PurgeError};
     use crate::atom::AtomTable;
     use crate::error::ExecError;
     use crate::loader::{LambdaEntry, LineInfo};
@@ -400,6 +444,7 @@ mod tests {
         Module {
             name,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index: HashMap::new(),
             code: Vec::new(),

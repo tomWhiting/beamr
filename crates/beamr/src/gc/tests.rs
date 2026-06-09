@@ -9,7 +9,7 @@ use crate::{
     constant_pool::materialise_literals,
     io::resource::{FD_RESOURCE_WORDS, FdInner, FdResource, write_fd_resource},
     loader::{Instruction, Literal},
-    module::Module,
+    module::{Module, ModuleOrigin},
     term::{
         boxed::{Closure, Cons, ProcBin, Tuple, write_closure, write_cons, write_tuple},
         shared_binary::{SharedBinary, write_proc_bin},
@@ -31,6 +31,7 @@ pub(crate) fn module_pin(name: Atom) -> Arc<Module> {
     Arc::new(Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index: HashMap::from([(1, 0)]),
         code: vec![Instruction::Label { label: 1 }],

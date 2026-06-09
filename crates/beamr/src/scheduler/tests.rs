@@ -16,7 +16,7 @@ use crate::io::{NullSink, RingConfig};
 use crate::loader::Instruction;
 use crate::loader::decode::compact::Operand;
 use crate::mailbox::Mailbox;
-use crate::module::Module;
+use crate::module::{Module, ModuleOrigin};
 use crate::native::{SpawnFacility, SpawnOptions};
 use crate::process::heap::{DEFAULT_HEAP_SIZE, Heap};
 use crate::process::registry::ProcessTable;
@@ -128,6 +128,7 @@ fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
     Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: StdHashMap::new(),
         label_index,
         code,

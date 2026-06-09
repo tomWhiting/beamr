@@ -9,7 +9,7 @@ use beamr::constant_pool::materialise_literals;
 use beamr::error::LoadError;
 use beamr::jit::{JitCacheKey, JitCompiler, JitSettings};
 use beamr::loader::{Instruction, Literal};
-use beamr::module::{Module, ModuleRegistry};
+use beamr::module::{Module, ModuleOrigin, ModuleRegistry};
 use beamr::native::BifRegistryImpl;
 use beamr::native::bifs::register_gate1_bifs;
 use beamr::process::ExitReason;
@@ -29,6 +29,7 @@ fn literal_module(name: beamr::atom::Atom, literals: Vec<Literal>) -> Module {
     Module {
         name,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index: HashMap::new(),
         code: vec![Instruction::Return],

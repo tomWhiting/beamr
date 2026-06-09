@@ -69,6 +69,7 @@ mod tests {
     use super::*;
     use crate::atom::Atom;
     use crate::loader::Instruction;
+    use crate::module::ModuleOrigin;
     use crate::term::Term;
     use crate::term::boxed::write_tuple;
     use std::collections::HashMap;
@@ -90,6 +91,7 @@ mod tests {
         Module {
             name: Atom::OK,
             generation: 0,
+            origin: ModuleOrigin::Preloaded,
             exports: HashMap::new(),
             label_index,
             code,

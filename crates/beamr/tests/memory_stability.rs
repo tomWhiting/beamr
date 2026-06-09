@@ -10,7 +10,7 @@ use beamr::{
     interpreter::{ExecutionResult, NativeServices, run_with_native_services},
     loader::decode::compact::Operand,
     loader::{Instruction, Literal},
-    module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget},
+    module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget},
     native::{Capability, NativeEntry},
     process::{ExitReason, Process},
 };
@@ -129,6 +129,7 @@ fn workload_module(atom_table: &AtomTable) -> Module {
     Module {
         name: Atom::OK,
         generation: 0,
+        origin: ModuleOrigin::Preloaded,
         exports: HashMap::new(),
         label_index,
         code,
