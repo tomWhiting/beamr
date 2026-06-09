@@ -34,7 +34,8 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("beamr: {error}");
+            let mut stderr = std::io::stderr().lock();
+            let _ = std::io::Write::write_fmt(&mut stderr, format_args!("beamr: {error}\n"));
             ExitCode::from(error.exit_code())
         }
     }

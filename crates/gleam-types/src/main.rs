@@ -2,14 +2,15 @@ use std::env;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use gleam_types::{GleamTypeExtractor, GleamTypes};
 
 fn main() {
     if let Err(error) = run(env::args_os()) {
-        eprintln!("gleam-types: {error}");
+        let mut stderr = io::stderr().lock();
+        let _ = writeln!(stderr, "gleam-types: {error}");
         std::process::exit(1);
     }
 }
@@ -35,7 +36,6 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliError> {
     for source_path in sources {
         let module_name = module_name(&src_dir, &source_path)?;
         let Some(beam_path) = find_beam(&beams, &module_name) else {
-            eprintln!("warning: no .beam found for Gleam module {module_name}; skipping");
             skipped = skipped.saturating_add(1);
             continue;
         };
