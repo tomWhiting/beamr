@@ -1,1 +1,1 @@
-harden(jit): cache successful generation-aware compilation
+feat(beamr): add JIT safepoints and allocation helpers

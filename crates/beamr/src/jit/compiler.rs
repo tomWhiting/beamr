@@ -14,6 +14,9 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::ir_allocation::{
+    AllocationHelpers, LoweringContext, lower_put_list, lower_put_tuple2, tuple_root_operands,
+};
 use super::ir_arithmetic::{
     ArithmeticLowering, ArithmeticOp, ParsedBif, lower_arithmetic_bif, lower_comparison,
 };
@@ -22,6 +25,8 @@ use super::ir_common::{
     write_operand_term,
 };
 use super::ir_control::{BlockMap, TranslationPlan, opcode_name};
+use super::runtime::{jit_alloc_cons, jit_alloc_tuple};
+use super::safepoint::SafepointBuilder;
 use super::types::NativeCode;
 
 /// Error returned when scaffold JIT compilation cannot produce native code.
@@ -84,7 +89,9 @@ impl JitCompiler {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
-        let builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+        builder.symbol("beamr_jit_alloc_tuple", jit_alloc_tuple as *const u8);
+        builder.symbol("beamr_jit_alloc_cons", jit_alloc_cons as *const u8);
         Ok(Self {
             module: Arc::new(Mutex::new(JITModule::new(builder))),
             next_function_id: AtomicU64::new(0),
@@ -94,10 +101,10 @@ impl JitCompiler {
     /// Compiles a BEAM instruction slice into callable native code.
     ///
     /// The current raw JIT ABI is intentionally narrow for mixed-mode bring-up:
-    /// `extern "C" fn(*mut u64) -> u64`, where the pointer addresses a flat
-    /// register file. X registers occupy words `0..1024`; Y registers occupy
-    /// words starting at `1024`. The function returns the raw word in `x(0)`, or
-    /// `u64::MAX` to request interpreter fallback/deoptimization.
+    /// `extern "C" fn(*mut u64, *mut Process) -> u64`, where the first pointer
+    /// addresses a flat register file. X registers occupy words `0..1024`; Y
+    /// registers occupy words starting at `1024`. The function returns the raw
+    /// word in `x(0)`, or `u64::MAX` to request interpreter fallback/deopt.
     pub fn compile(
         &self,
         instructions: &[Instruction],
@@ -114,14 +121,40 @@ impl JitCompiler {
         let mut ctx = jit_module.make_context();
         let mut signature = jit_module.make_signature();
         signature.params.push(AbiParam::new(types::I64));
+        signature.params.push(AbiParam::new(types::I64));
         signature.returns.push(AbiParam::new(types::I64));
         ctx.func.signature = signature.clone();
+
+        let mut tuple_signature = jit_module.make_signature();
+        tuple_signature.params.push(AbiParam::new(types::I64));
+        tuple_signature.params.push(AbiParam::new(types::I64));
+        tuple_signature.returns.push(AbiParam::new(types::I64));
+        let tuple_helper = jit_module
+            .declare_function("beamr_jit_alloc_tuple", Linkage::Import, &tuple_signature)
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let tuple_helper = jit_module.declare_func_in_func(tuple_helper, &mut ctx.func);
+
+        let mut cons_signature = jit_module.make_signature();
+        cons_signature.params.push(AbiParam::new(types::I64));
+        cons_signature.returns.push(AbiParam::new(types::I64));
+        let cons_helper = jit_module
+            .declare_function("beamr_jit_alloc_cons", Linkage::Import, &cons_signature)
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let cons_helper = jit_module.declare_func_in_func(cons_helper, &mut ctx.func);
+
+        let allocation_helpers = AllocationHelpers {
+            tuple: tuple_helper,
+            cons: cons_helper,
+        };
+
+        let mut safepoints = SafepointBuilder::new();
 
         let mut builder_context = FunctionBuilderContext::new();
         {
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
             let blocks = BlockMap::new(&mut builder, instructions, &plan);
             let register_file = builder.block_params(blocks.entry)[0];
+            let process = builder.block_params(blocks.entry)[1];
             builder.switch_to_block(blocks.entry);
 
             let mut terminated = false;
@@ -199,10 +232,51 @@ impl JitCompiler {
                         terminated = true;
                     }
                     Instruction::Return => {
-                        let value =
-                            read_register_term(&mut builder, register_file, Register::X(0));
+                        let value = read_register_term(&mut builder, register_file, Register::X(0));
                         builder.ins().return_(&[value]);
                         terminated = true;
+                    }
+                    Instruction::PutList {
+                        head,
+                        tail,
+                        destination,
+                    } => {
+                        safepoints.record_allocation_site(
+                            index,
+                            [head.clone(), tail.clone(), destination.clone()],
+                        )?;
+                        lower_put_list(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            allocation_helpers.cons,
+                            head,
+                            tail,
+                            destination,
+                        )?;
+                    }
+                    Instruction::PutTuple2 {
+                        destination,
+                        elements,
+                    } => {
+                        safepoints.record_allocation_site(
+                            index,
+                            tuple_root_operands(destination, elements)?,
+                        )?;
+                        lower_put_tuple2(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            allocation_helpers.tuple,
+                            destination,
+                            elements,
+                        )?;
                     }
                     other => {
                         return Err(JitError::UnsupportedOpcode {
@@ -241,7 +315,7 @@ impl JitCompiler {
         drop(jit_module);
         Ok(NativeCode::new(
             call_ptr,
-            Vec::new(),
+            safepoints.finish(),
             Arc::clone(&self.module),
         ))
     }
@@ -257,243 +331,4 @@ fn cranelift_error(error: cranelift_module::ModuleError) -> JitError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{JitCompiler, JitError, JitSettings};
-    use crate::atom::Atom;
-    use crate::jit::ir_common::X_REGISTER_COUNT;
-    use crate::loader::Instruction;
-    use crate::loader::decode::{BifOp, ComparisonOp, Operand};
-    use crate::term::Term;
-
-    type RawJitFn = extern "C" fn(*mut u64) -> u64;
-
-    fn call_native(native: &crate::jit::types::NativeCode, registers: &mut [u64]) -> u64 {
-        let function: RawJitFn = unsafe { std::mem::transmute(native.call_ptr()) };
-        function(registers.as_mut_ptr())
-    }
-
-    #[test]
-    fn compiles_return_only_function() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let native = compiler
-            .compile(&[Instruction::Return], Atom::MODULE, Atom::OK, 0)
-            .unwrap();
-
-        assert!(!native.call_ptr().is_null());
-        assert!(native.stack_maps().is_empty());
-    }
-
-    #[test]
-    fn compiled_move_writes_register_file() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let native = compiler
-            .compile(
-                &[
-                    Instruction::Move {
-                        source: Operand::Integer(42),
-                        destination: Operand::X(1),
-                    },
-                    Instruction::Move {
-                        source: Operand::X(1),
-                        destination: Operand::Y(0),
-                    },
-                    Instruction::Return,
-                ],
-                Atom::MODULE,
-                Atom::OK,
-                0,
-            )
-            .unwrap();
-        let mut registers = vec![0; X_REGISTER_COUNT as usize + 1];
-        let returned = call_native(&native, &mut registers);
-
-        assert_eq!(returned, 0);
-        assert_eq!(registers[1], Term::small_int(42).raw());
-        assert_eq!(
-            registers[X_REGISTER_COUNT as usize],
-            Term::small_int(42).raw()
-        );
-    }
-
-    #[test]
-    fn compiled_swap_reads_before_writing() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let native = compiler
-            .compile(
-                &[
-                    Instruction::Swap {
-                        left: Operand::X(0),
-                        right: Operand::X(1),
-                    },
-                    Instruction::Return,
-                ],
-                Atom::MODULE,
-                Atom::OK,
-                0,
-            )
-            .unwrap();
-        let mut registers = vec![Term::small_int(2).raw(), Term::small_int(3).raw()];
-        let returned = call_native(&native, &mut registers);
-
-        assert_eq!(returned, Term::small_int(3).raw());
-        assert_eq!(registers[0], Term::small_int(3).raw());
-        assert_eq!(registers[1], Term::small_int(2).raw());
-    }
-
-    #[test]
-    fn compiled_add_returns_small_int_result() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let native = compiler
-            .compile(
-                &[
-                    Instruction::Bif {
-                        op: BifOp::Bif2,
-                        operands: vec![
-                            Operand::Label(9),
-                            Operand::Unsigned(0),
-                            Operand::Integer(2),
-                            Operand::Integer(3),
-                            Operand::X(0),
-                        ],
-                    },
-                    Instruction::Return,
-                    Instruction::Label { label: 9 },
-                    Instruction::Return,
-                ],
-                Atom::MODULE,
-                Atom::OK,
-                0,
-            )
-            .unwrap();
-        let mut registers = vec![0; 1];
-        let returned = call_native(&native, &mut registers);
-
-        assert_eq!(returned, Term::small_int(5).raw());
-        assert_eq!(registers[0], Term::small_int(5).raw());
-    }
-
-    #[test]
-    fn compiled_add_at_end_falls_through_to_return_x0() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let native = compiler
-            .compile(
-                &[
-                    Instruction::Label { label: 1 },
-                    Instruction::Bif {
-                        op: BifOp::Bif2,
-                        operands: vec![
-                            Operand::Label(9),
-                            Operand::Unsigned(0),
-                            Operand::Integer(2),
-                            Operand::Integer(3),
-                            Operand::X(0),
-                        ],
-                    },
-                    Instruction::Label { label: 9 },
-                    Instruction::Return,
-                ],
-                Atom::MODULE,
-                Atom::OK,
-                0,
-            )
-            .unwrap();
-        let mut registers = vec![0; 1];
-        let returned = call_native(&native, &mut registers);
-
-        assert_eq!(returned, Term::small_int(5).raw());
-    }
-
-    #[test]
-    fn compiled_multiply_overflow_takes_fail_label() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let native = compiler
-            .compile(
-                &[
-                    Instruction::Bif {
-                        op: BifOp::Bif2,
-                        operands: vec![
-                            Operand::Label(9),
-                            Operand::Unsigned(2),
-                            Operand::Integer(Term::SMALL_INT_MAX),
-                            Operand::Integer(Term::SMALL_INT_MAX),
-                            Operand::X(0),
-                        ],
-                    },
-                    Instruction::Return,
-                    Instruction::Label { label: 9 },
-                    Instruction::Move {
-                        source: Operand::Integer(99),
-                        destination: Operand::X(0),
-                    },
-                    Instruction::Return,
-                ],
-                Atom::MODULE,
-                Atom::OK,
-                0,
-            )
-            .unwrap();
-        let mut registers = vec![0; 1];
-        let returned = call_native(&native, &mut registers);
-
-        assert_eq!(returned, Term::small_int(99).raw());
-    }
-
-    #[test]
-    fn compiled_branch_takes_fail_label_on_false_comparison() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let native = compiler
-            .compile(
-                &[
-                    Instruction::Comparison {
-                        op: ComparisonOp::EqExact,
-                        fail: Operand::Label(7),
-                        left: Operand::Integer(1),
-                        right: Operand::Integer(2),
-                    },
-                    Instruction::Move {
-                        source: Operand::Integer(10),
-                        destination: Operand::X(0),
-                    },
-                    Instruction::Return,
-                    Instruction::Label { label: 7 },
-                    Instruction::Move {
-                        source: Operand::Integer(20),
-                        destination: Operand::X(0),
-                    },
-                    Instruction::Return,
-                ],
-                Atom::MODULE,
-                Atom::OK,
-                0,
-            )
-            .unwrap();
-        let mut registers = vec![0; 1];
-        let returned = call_native(&native, &mut registers);
-
-        assert_eq!(returned, Term::small_int(20).raw());
-    }
-
-    #[test]
-    fn reports_unsupported_opcode() {
-        let compiler = JitCompiler::new(JitSettings).unwrap();
-        let error = compiler
-            .compile(
-                &[Instruction::Generic {
-                    opcode: 255,
-                    name: "unknown",
-                    operands: Vec::new(),
-                }],
-                Atom::MODULE,
-                Atom::OK,
-                0,
-            )
-            .unwrap_err();
-
-        assert_eq!(
-            error,
-            JitError::UnsupportedOpcode {
-                opcode: "unknown (255)".to_owned()
-            }
-        );
-    }
-}
+mod compiler_tests;
