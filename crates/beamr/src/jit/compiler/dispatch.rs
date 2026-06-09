@@ -5,20 +5,20 @@ use crate::jit::ir_binary::lower_exception_block;
 use crate::jit::ir_common::JIT_DEOPT_SENTINEL;
 use crate::jit::ir_control::{BlockMap, TranslationPlan};
 use crate::jit::ir_exceptions::{
-    return_status, return_status_raw, CompiledFrameInfo, ExceptionLoweringState, JIT_STATUS_DEOPT,
-    JIT_STATUS_NORMAL, JIT_STATUS_YIELD,
+    CompiledFrameInfo, ExceptionLoweringState, JIT_STATUS_DEOPT, JIT_STATUS_NORMAL,
+    JIT_STATUS_YIELD, return_status, return_status_raw,
 };
 use crate::jit::ir_float::FloatRegisterMap;
 use crate::jit::runtime::{
-    jit_alloc_cons, jit_alloc_tuple, jit_box_float, jit_call_interpreted, jit_charge_reduction,
-    JIT_YIELD_SENTINEL,
+    JIT_YIELD_SENTINEL, jit_alloc_cons, jit_alloc_tuple, jit_box_float, jit_call_interpreted,
+    jit_charge_reduction,
 };
 use crate::jit::runtime_binary_build::{
-    jit_bs_finish, jit_bs_init, jit_bs_put_binary, jit_bs_put_integer, jit_bs_put_utf16,
-    jit_bs_put_utf32, jit_bs_put_utf8,
+    jit_bs_finish, jit_bs_init, jit_bs_put_binary, jit_bs_put_integer, jit_bs_put_utf8,
+    jit_bs_put_utf16, jit_bs_put_utf32,
 };
 use crate::jit::runtime_binary_match::{
-    jit_bs_get_binary, jit_bs_get_integer, jit_bs_get_utf16, jit_bs_get_utf32, jit_bs_get_utf8,
+    jit_bs_get_binary, jit_bs_get_integer, jit_bs_get_utf8, jit_bs_get_utf16, jit_bs_get_utf32,
     jit_bs_start_match, jit_bs_test_tail, jit_bs_test_unit,
 };
 use crate::jit::runtime_closure::{jit_alloc_closure, jit_call_closure};
@@ -31,11 +31,11 @@ use crate::jit::safepoint::SafepointBuilder;
 use crate::jit::type_info::FunctionSignature;
 use crate::jit::types::NativeCode;
 use crate::scheduler::lock_or_recover;
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITBuilder;
-use cranelift_module::{default_libcall_names, Linkage, Module};
+use cranelift_module::{Linkage, Module, default_libcall_names};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -269,7 +269,6 @@ impl JitCompiler {
                         builder.ins().jump(block, &[]);
                     }
                     builder.switch_to_block(block);
-                    terminated = false;
                 }
 
                 // Try each lowering pass in order.
