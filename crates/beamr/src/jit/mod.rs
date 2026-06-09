@@ -1,6 +1,7 @@
 //! JIT compilation infrastructure.
 
 pub mod aot;
+pub(crate) mod aot_format;
 pub mod cache;
 pub mod compile_job;
 pub mod compiler;

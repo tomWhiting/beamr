@@ -12,6 +12,7 @@ use super::compiler::{JitCompiler, JitError, JitSettings};
 use super::profiler::JitProfiler;
 use crate::atom::{Atom, AtomTable};
 use crate::error::LoadError;
+use crate::jit::aot_format::{DecodedBundle, write_atom, write_bytes, write_stack_maps, write_u64};
 use crate::loader::{ExportEntry, Instruction, ParsedModule, load_beam_chunks};
 use crate::module::Module;
 use std::collections::HashMap;
@@ -19,10 +20,10 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use super::{NativeCode, RootLocation, StackMapEntry};
+use super::NativeCode;
 
-const MAGIC: &[u8; 10] = b"BEAMR_AOT\0";
-const VERSION: u8 = 1;
+pub(crate) const MAGIC: &[u8; 10] = b"BEAMR_AOT\0";
+pub(crate) const VERSION: u8 = 1;
 
 /// Host AOT compiler that reuses the normal untyped JIT pipeline.
 pub struct AotCompiler {
@@ -181,7 +182,7 @@ impl NativeCodeBundle {
 
     /// Deserializes and recompiles native entries for `target`.
     pub fn deserialize(bytes: &[u8], target: &str) -> Result<NativeEntries, AotError> {
-        let bundle = DecodedBundle::read(bytes, target)?;
+        let bundle = DecodedBundle::read(bytes, target_hash(target))?;
         let compiler = JitCompiler::new(JitSettings).map_err(AotError::Jit)?;
         let atom_table = AtomTable::with_common_atoms();
         let parsed = load_beam_chunks(&bundle.module_bytes, &atom_table).map_err(AotError::Load)?;
@@ -194,7 +195,7 @@ impl NativeCodeBundle {
         target: &str,
         beam_bytes: &[u8],
     ) -> Result<NativeModuleEntries, AotError> {
-        let bundle = DecodedBundle::read(bytes, target)?;
+        let bundle = DecodedBundle::read(bytes, target_hash(target))?;
         let actual = module_checksum(beam_bytes);
         if bundle.module_checksum != actual {
             return Err(AotError::ChecksumMismatch {
@@ -342,60 +343,6 @@ fn is_skippable_jit_error(error: &JitError) -> bool {
     )
 }
 
-fn write_atom(output: &mut Vec<u8>, atom: Atom) {
-    write_u32(output, atom_index(atom));
-}
-
-fn atom_index(atom: Atom) -> u32 {
-    let debug = format!("{atom:?}");
-    debug
-        .strip_prefix("Atom(")
-        .and_then(|rest| rest.strip_suffix(')'))
-        .and_then(|digits| digits.parse::<u32>().ok())
-        .unwrap_or(0)
-}
-
-fn write_stack_maps(output: &mut Vec<u8>, stack_maps: &[StackMapEntry]) {
-    write_u32(output, stack_maps.len() as u32);
-    for entry in stack_maps {
-        write_u32(output, entry.offset_from_entry);
-        write_u32(output, entry.live_roots.len() as u32);
-        for root in &entry.live_roots {
-            match root {
-                RootLocation::Register(register) => {
-                    output.push(0);
-                    write_u16(output, *register);
-                }
-                RootLocation::StackSlot(slot) => {
-                    output.push(1);
-                    write_i32(output, *slot);
-                }
-            }
-        }
-    }
-}
-
-fn write_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
-    write_u64(output, bytes.len() as u64);
-    output.extend_from_slice(bytes);
-}
-
-fn write_u16(output: &mut Vec<u8>, value: u16) {
-    output.extend_from_slice(&value.to_le_bytes());
-}
-
-fn write_u32(output: &mut Vec<u8>, value: u32) {
-    output.extend_from_slice(&value.to_le_bytes());
-}
-
-fn write_i32(output: &mut Vec<u8>, value: i32) {
-    output.extend_from_slice(&value.to_le_bytes());
-}
-
-fn write_u64(output: &mut Vec<u8>, value: u64) {
-    output.extend_from_slice(&value.to_le_bytes());
-}
-
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -403,156 +350,6 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
-}
-
-struct DecodedBundle {
-    module_checksum: u64,
-    module_bytes: Vec<u8>,
-    entries: Vec<(Atom, u8, Vec<StackMapEntry>)>,
-}
-
-impl DecodedBundle {
-    fn read(bytes: &[u8], target: &str) -> Result<Self, AotError> {
-        let mut reader = Reader::new(bytes);
-        let magic = reader.read_exact(MAGIC.len())?;
-        if magic != MAGIC {
-            return Err(AotError::InvalidMagic);
-        }
-        let version = reader.read_u8()?;
-        if version != VERSION {
-            return Err(AotError::UnsupportedVersion(version));
-        }
-        let actual_target = reader.read_u64()?;
-        let expected_target = target_hash(target);
-        if actual_target != expected_target {
-            return Err(AotError::TargetMismatch {
-                expected: expected_target,
-                actual: actual_target,
-            });
-        }
-        let module_checksum = reader.read_u64()?;
-        let _module_index = reader.read_u32()?;
-        let module_bytes = reader.read_bytes()?;
-        let atom_table = AtomTable::with_common_atoms();
-        let parsed = load_beam_chunks(&module_bytes, &atom_table).map_err(AotError::Load)?;
-        let functions_by_index: HashMap<u32, Atom> = parsed
-            .exports
-            .iter()
-            .map(|export| (atom_index(export.function), export.function))
-            .collect();
-        let entry_count = reader.read_u32()? as usize;
-        let mut entries = Vec::with_capacity(entry_count);
-        for _ in 0..entry_count {
-            let function_index = reader.read_u32()?;
-            let function = functions_by_index
-                .get(&function_index)
-                .copied()
-                .ok_or_else(|| {
-                    AotError::Malformed(format!("unknown function atom index {function_index}"))
-                })?;
-            let arity = reader.read_u8()?;
-            let stack_maps = reader.read_stack_maps()?;
-            entries.push((function, arity, stack_maps));
-        }
-        if !reader.is_empty() {
-            return Err(AotError::Malformed(
-                "trailing bytes after AOT bundle".into(),
-            ));
-        }
-        Ok(Self {
-            module_checksum,
-            module_bytes,
-            entries,
-        })
-    }
-}
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
-
-    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], AotError> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or_else(|| AotError::Malformed("bundle offset overflow".into()))?;
-        let slice = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or_else(|| AotError::Malformed("truncated AOT bundle".into()))?;
-        self.offset = end;
-        Ok(slice)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, AotError> {
-        self.read_exact(1).map(|bytes| bytes[0])
-    }
-
-    fn read_u32(&mut self) -> Result<u32, AotError> {
-        let bytes = self.read_exact(4)?;
-        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, AotError> {
-        let bytes = self.read_exact(8)?;
-        Ok(u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]))
-    }
-
-    fn read_i32(&mut self) -> Result<i32, AotError> {
-        let bytes = self.read_exact(4)?;
-        Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    fn read_u16(&mut self) -> Result<u16, AotError> {
-        let bytes = self.read_exact(2)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn read_bytes(&mut self) -> Result<Vec<u8>, AotError> {
-        let len = usize::try_from(self.read_u64()?)
-            .map_err(|_| AotError::Malformed("byte section length overflows usize".into()))?;
-        self.read_exact(len).map(<[u8]>::to_vec)
-    }
-
-    fn read_stack_maps(&mut self) -> Result<Vec<StackMapEntry>, AotError> {
-        let count = self.read_u32()? as usize;
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            let offset_from_entry = self.read_u32()?;
-            let root_count = self.read_u32()? as usize;
-            let mut live_roots = Vec::with_capacity(root_count);
-            for _ in 0..root_count {
-                let tag = self.read_u8()?;
-                let root = match tag {
-                    0 => RootLocation::Register(self.read_u16()?),
-                    1 => RootLocation::StackSlot(self.read_i32()?),
-                    other => {
-                        return Err(AotError::Malformed(format!(
-                            "unknown stack-map root tag {other}"
-                        )));
-                    }
-                };
-                live_roots.push(root);
-            }
-            entries.push(StackMapEntry {
-                offset_from_entry,
-                live_roots,
-            });
-        }
-        Ok(entries)
-    }
 }
 
 impl fmt::Display for AotError {

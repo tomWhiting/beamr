@@ -1,1 +1,1 @@
-fix(beamr): factor AOT and compile job clippy types
+Harden AOT bundle formatting and keep aot.rs within size limit
