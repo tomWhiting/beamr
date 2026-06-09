@@ -1,1 +1,1 @@
-feat(beamr-jit): lower message send and receive opcodes
+Harden JIT message opcode lowering validation and wait status handling

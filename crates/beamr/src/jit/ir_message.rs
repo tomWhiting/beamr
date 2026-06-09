@@ -12,6 +12,7 @@ const RECEIVE_STATUS_MESSAGE: i64 = 0;
 const RECEIVE_STATUS_EMPTY: i64 = 1;
 const WAIT_STATUS_NEW_MESSAGE: i64 = 0;
 const WAIT_STATUS_TIMEOUT: i64 = 1;
+const WAIT_STATUS_WAITING: i64 = 2;
 
 /// Runtime helpers used by message-send and receive lowering.
 #[derive(Clone, Copy)]
@@ -102,7 +103,14 @@ pub(crate) fn translate_wait(
     let call = builder.ins().call(helpers.receive_wait, &[context.process]);
     let status = builder.inst_results(call)[0];
     charge_reduction_or_yield(builder, charge_helper, context.process, context.yield_block);
-    branch_wait_status(builder, status, loop_label, context.yield_block, None);
+    branch_wait_status(
+        builder,
+        status,
+        loop_label,
+        context.yield_block,
+        context.deopt,
+        None,
+    );
 }
 
 pub(crate) fn translate_wait_timeout(
@@ -125,6 +133,7 @@ pub(crate) fn translate_wait_timeout(
         status,
         loop_label,
         context.yield_block,
+        context.deopt,
         Some(timeout_label),
     );
     Ok(())
@@ -159,6 +168,7 @@ fn branch_wait_status(
     status: Value,
     loop_label: Block,
     yield_block: Block,
+    deopt: Block,
     timeout_label: Option<Block>,
 ) {
     let is_new_message = builder
@@ -181,7 +191,10 @@ fn branch_wait_status(
         builder.switch_to_block(check_waiting);
     }
 
-    builder.ins().jump(yield_block, &[]);
+    let is_waiting = builder
+        .ins()
+        .icmp_imm(IntCC::Equal, status, WAIT_STATUS_WAITING);
+    builder.ins().brif(is_waiting, yield_block, &[], deopt, &[]);
 }
 
 fn charge_reduction_or_yield(

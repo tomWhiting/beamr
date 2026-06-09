@@ -8,6 +8,7 @@ use crate::jit::NativeCode;
 use crate::module::ResolvedImportTarget;
 use crate::process::{
     CodePosition, Exception, ExitReason, JitRuntimeContext, JitStatus, Process, ProcessStatus,
+    ReceiveTimeout,
 };
 use crate::term::Term;
 use crate::term::binary::packed_word_count;
@@ -168,6 +169,11 @@ pub(crate) extern "C" fn jit_receive_wait(process: *mut Process) -> u8 {
 }
 
 /// Prepares a process to wait with a timeout.
+///
+/// When interpreted code position metadata is available, records a scheduler
+/// timer using that position as the resume target. Compiled code also branches
+/// to its in-function timeout label for immediate `after 0`; non-zero timeouts
+/// yield out to the scheduler after the waiting state is installed.
 pub(crate) extern "C" fn jit_receive_wait_timeout(process: *mut Process, timeout: u64) -> u8 {
     let Some(process) = process_from_abi(process) else {
         return WAIT_STATUS_WAITING;
@@ -180,6 +186,15 @@ pub(crate) extern "C" fn jit_receive_wait_timeout(process: *mut Process, timeout
         .and_then(|value| u64::try_from(value).ok());
     if milliseconds == Some(0) {
         return WAIT_STATUS_TIMEOUT;
+    }
+    if let Some(milliseconds) = milliseconds
+        && let Some(position) = process.code_position()
+    {
+        process.set_receive_timeout(Some(ReceiveTimeout {
+            timeout_position: position,
+            milliseconds,
+        }));
+        process.set_receive_timer_ref(None);
     }
     transition_process_to_waiting(process);
     process.set_jit_status(Some(JitStatus::Yield));

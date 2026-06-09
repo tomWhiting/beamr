@@ -1782,6 +1782,26 @@ fn compiles_message_send_and_selective_receive_opcodes() {
 }
 
 #[test]
+fn compiled_send_records_destination_and_message_safepoint_roots() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[Instruction::Send, Instruction::Return],
+            Atom::MODULE,
+            Atom::OK,
+            2,
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 1);
+    assert_eq!(native.stack_maps()[0].offset_from_entry, 0);
+    assert_eq!(
+        native.stack_maps()[0].live_roots,
+        vec![RootLocation::Register(0), RootLocation::Register(1)]
+    );
+}
+
+#[test]
 fn compiles_wait_timeout_and_timeout_opcodes() {
     let compiler = JitCompiler::new(JitSettings).unwrap();
 

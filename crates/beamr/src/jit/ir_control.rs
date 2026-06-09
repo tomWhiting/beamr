@@ -179,6 +179,36 @@ impl TranslationPlan {
                 Instruction::BinaryOp { .. } => {
                     block_starts.insert(index + 1);
                 }
+                Instruction::Send | Instruction::RemoveMessage | Instruction::Timeout => {
+                    block_starts.insert(index + 1);
+                }
+                Instruction::LoopRec { fail, destination } => {
+                    validate_label_operand(fail)?;
+                    validate_write_operand(destination)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::LoopRecEnd { fail } | Instruction::Wait { fail } => {
+                    validate_label_operand(fail)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::WaitTimeout { fail, timeout } => {
+                    validate_label_operand(fail)?;
+                    validate_read_operand(timeout)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::RecvMarkerReserve { dest } => {
+                    validate_write_operand(dest)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::RecvMarkerBind { marker, label } => {
+                    validate_read_operand(marker)?;
+                    validate_label_operand(label)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::RecvMarkerClear { marker } | Instruction::RecvMarkerUse { marker } => {
+                    validate_read_operand(marker)?;
+                    block_starts.insert(index + 1);
+                }
                 other => {
                     return Err(JitError::UnsupportedOpcode {
                         opcode: opcode_name(other),
@@ -210,6 +240,13 @@ impl TranslationPlan {
                         let parsed = ParsedBif::parse(*op, operands)?;
                         ensure_known_label(&labels, parsed.fail)?;
                     }
+                }
+                Instruction::LoopRec { fail, .. }
+                | Instruction::LoopRecEnd { fail }
+                | Instruction::Wait { fail }
+                | Instruction::WaitTimeout { fail, .. }
+                | Instruction::RecvMarkerBind { label: fail, .. } => {
+                    ensure_known_label(&labels, fail)?;
                 }
                 _ => {}
             }
