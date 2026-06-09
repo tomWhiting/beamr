@@ -15,7 +15,6 @@ use beamr::loader::{Instruction, load_beam_chunks};
 use beamr::module::{Module, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use beamr::native::BifRegistryImpl;
 use beamr::native::bifs::register_gate1_bifs;
-use beamr::native::dictionary_bifs::register_dictionary_bifs;
 use beamr::native::gate3_bifs::register_gate3_bifs;
 use beamr::native::process_bifs::register_gate2_bifs;
 use beamr::process::{CodePosition, Exception, ExitReason, Process};
@@ -640,7 +639,6 @@ fn registered_bifs(atoms: &AtomTable) -> BifRegistryImpl {
     register_gate1_bifs(&bifs, atoms).expect("register gate1 BIFs");
     register_gate2_bifs(&bifs, atoms).expect("register gate2 BIFs");
     register_gate3_bifs(&bifs, atoms).expect("register gate3 BIFs");
-    register_dictionary_bifs(&bifs, atoms).expect("register dictionary BIFs");
     bifs
 }
 
