@@ -1,1 +1,1 @@
-feat(beamr): lower JIT type tests and guards
+harden(beamr): guard JIT select_val CFG and tagged tuple edge cases

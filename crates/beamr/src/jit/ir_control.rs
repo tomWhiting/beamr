@@ -86,6 +86,7 @@ impl TranslationPlan {
                         let _ = immediate_raw_term(candidate)?;
                         validate_label_operand(target)?;
                     }
+                    block_starts.insert(index + 1);
                 }
                 Instruction::Jump { target } => {
                     validate_label_operand(target)?;

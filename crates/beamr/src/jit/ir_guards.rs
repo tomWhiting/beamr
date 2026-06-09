@@ -108,6 +108,10 @@ pub(crate) fn lower_is_tagged_tuple(
     success: Block,
 ) -> Result<(), JitError> {
     let expected_arity = immediate_usize(arity, "is_tagged_tuple arity")?;
+    if expected_arity == 0 {
+        builder.ins().jump(fail, &[]);
+        return Ok(());
+    }
     let expected_tag = atom_term(tag)?;
     let value = read_operand_term(builder, register_file, value)?;
     let header = checked_tuple_header(builder, value, fail);

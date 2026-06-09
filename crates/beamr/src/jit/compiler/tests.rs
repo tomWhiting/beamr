@@ -347,6 +347,87 @@ fn compiled_select_val_dispatches_matching_atom() {
 }
 
 #[test]
+fn compiled_select_val_does_not_fall_through_after_match() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::SelectVal {
+                    value: Operand::X(0),
+                    fail: Operand::Label(9),
+                    list: Operand::List(vec![Operand::Integer(7), Operand::Label(2)]),
+                },
+                Instruction::Move {
+                    source: Operand::Integer(99),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 2 },
+                Instruction::Move {
+                    source: Operand::Integer(20),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Integer(90),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+    let mut registers = vec![Term::small_int(7).raw()];
+
+    assert_eq!(
+        call_native(&native, &mut registers),
+        Term::small_int(20).raw()
+    );
+}
+
+#[test]
+fn compiled_zero_arity_is_tagged_tuple_takes_fail_label() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::IsTaggedTuple {
+                    fail: Operand::Label(9),
+                    value: Operand::X(0),
+                    arity: Operand::Unsigned(0),
+                    tag: Operand::Atom(Some(Atom::OK)),
+                },
+                Instruction::Move {
+                    source: Operand::Integer(1),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Integer(0),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+    let mut tuple_words = [0; 1];
+    let tuple = write_tuple(&mut tuple_words, &[]).unwrap();
+    let mut registers = vec![tuple.raw()];
+
+    assert_eq!(
+        call_native(&native, &mut registers),
+        Term::small_int(0).raw()
+    );
+}
+
+#[test]
 fn reports_unsupported_opcode() {
     let compiler = JitCompiler::new(JitSettings).unwrap();
     let error = compiler
