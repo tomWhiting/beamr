@@ -11,9 +11,7 @@ use crate::distribution::control::{
     ControlDelivery, ControlRegistry, DistributionSendError, DistributionSendFacility,
     encode_send_frame,
 };
-use crate::distribution::remote_link::{
-    DistributionControlFacility, RemoteLinkError,
-};
+use crate::distribution::remote_link::{DistributionControlFacility, RemoteLinkError};
 use crate::ets::{EtsError, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::io::{CompletionRing, IoOp};
 use crate::namespace::NamespaceId;
@@ -247,11 +245,7 @@ pub(super) fn establish_remote_link(
     }
 }
 
-pub(super) fn remove_remote_link(
-    shared: &SharedState,
-    local_pid: u64,
-    remote: RemotePid,
-) -> bool {
+pub(super) fn remove_remote_link(shared: &SharedState, local_pid: u64, remote: RemotePid) -> bool {
     let Some(entry) = shared.process_bodies.get(&local_pid) else {
         return false;
     };
@@ -349,12 +343,7 @@ pub(crate) fn connection_down(shared: &SharedState, node: Atom) {
     }
 }
 
-fn send_remote_exit(
-    shared: &SharedState,
-    caller_pid: u64,
-    target: RemotePid,
-    reason: ExitReason,
-) {
+fn send_remote_exit(shared: &SharedState, caller_pid: u64, target: RemotePid, reason: ExitReason) {
     shared
         .control_router
         .send_exit(shared.local_node.name, caller_pid, target, reason);
@@ -612,6 +601,7 @@ pub(super) fn build_native_services(
         tcp_io_facility: Some(Arc::new(SchedulerTcpIoFacility {
             shared: Arc::clone(shared),
         })),
+        jit_cache: Some(Arc::clone(&shared.jit_cache)),
     }
 }
 

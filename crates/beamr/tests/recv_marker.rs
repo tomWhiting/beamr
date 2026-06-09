@@ -83,6 +83,7 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
         distribution_send: None,
         file_io_facility: None,
         tcp_io_facility: None,
+        jit_cache: None,
     };
 
     assert_eq!(

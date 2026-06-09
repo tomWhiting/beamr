@@ -9,10 +9,12 @@ pub mod pattern;
 use std::sync::{Arc, Mutex};
 
 use crate::atom::AtomTable;
-use crate::distribution::{NetKernel, Node};
 use crate::distribution::control::DistributionSendFacility;
+use crate::distribution::remote_link::DistributionControlFacility;
+use crate::distribution::{NetKernel, Node};
 use crate::error::ExecError;
 use crate::io::{IoFacility, IoSink};
+use crate::jit::JitCache;
 use crate::module::{Module, ModuleRegistry};
 use crate::native::code_management_bifs::CodeManagementFacility;
 use crate::native::ets_bifs::EtsFacility;
@@ -23,7 +25,6 @@ use crate::native::process_info_bifs::ProcessInfoFacility;
 use crate::native::spawn::SpawnFacility;
 use crate::native::supervision::SupervisionFacility;
 use crate::native::system_info_bifs::SystemInfoFacility;
-use crate::distribution::remote_link::DistributionControlFacility;
 use crate::native::{FileIoFacility, NativeEntry, RemoteSpawnFacility, TcpIoFacility};
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::scheduler::dirty::DirtySchedulerKind;
@@ -76,6 +77,8 @@ pub struct NativeServices {
     pub file_io_facility: Option<Arc<dyn FileIoFacility>>,
     /// Active-mode TCP read-loop facility for socket option BIFs.
     pub tcp_io_facility: Option<Arc<dyn TcpIoFacility>>,
+    /// Shared JIT cache used for mixed interpreter/native dispatch.
+    pub jit_cache: Option<Arc<JitCache>>,
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.
@@ -151,6 +154,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         io_message_facility: None,
         file_io_facility: None,
         tcp_io_facility: None,
+        jit_cache: None,
     };
     run_loop(process, module, None, &empty)
 }
@@ -184,6 +188,7 @@ pub fn run_with_registry(
         io_message_facility: None,
         file_io_facility: None,
         tcp_io_facility: None,
+        jit_cache: None,
     };
     run_loop(process, initial_module, Some(registry), &empty)
 }
@@ -217,6 +222,7 @@ pub fn run_with_timer_services(
         io_message_facility: None,
         file_io_facility: None,
         tcp_io_facility: None,
+        jit_cache: None,
     };
     run_loop(process, initial_module, None, &services)
 }

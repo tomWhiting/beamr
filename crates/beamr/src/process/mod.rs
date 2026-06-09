@@ -170,6 +170,33 @@ impl ExitReason {
     }
 }
 
+/// Transient runtime context installed while the interpreter is inside native JIT code.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct JitRuntimeContext {
+    /// Current module for import-table resolution.
+    pub module: *const Module,
+    /// Registry used by mixed-mode fallback calls.
+    pub registry: *const crate::module::ModuleRegistry,
+}
+
+impl JitRuntimeContext {
+    /// Creates a runtime context from borrowed interpreter dispatch state.
+    #[must_use]
+    pub const fn new(
+        module: *const Module,
+        registry: *const crate::module::ModuleRegistry,
+    ) -> Self {
+        Self { module, registry }
+    }
+}
+
+/// Out-of-band status set by native JIT helpers when a raw return word is not a normal term.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum JitStatus {
+    /// The compiled function consumed the current reduction budget and yielded.
+    Yield,
+}
+
 /// Stable identity for a PID hosted by another distribution node.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct RemotePid {
@@ -288,6 +315,8 @@ pub struct Process {
     code_position: Option<CodePosition>,
     current_module: Option<Arc<Module>>,
     current_mfa: Option<(Atom, Atom, u8)>,
+    jit_runtime_context: Option<JitRuntimeContext>,
+    jit_status: Option<JitStatus>,
     links: Vec<u64>,
     remote_links: Vec<RemotePid>,
     monitors: Vec<Monitor>,
@@ -323,6 +352,8 @@ impl Process {
             code_position: None,
             current_module: None,
             current_mfa: None,
+            jit_runtime_context: None,
+            jit_status: None,
             links: Vec::new(),
             remote_links: Vec::new(),
             monitors: Vec::new(),
@@ -793,6 +824,27 @@ impl Process {
     /// Store module/function/arity metadata for later error reporting.
     pub const fn set_current_mfa(&mut self, current_mfa: Option<(Atom, Atom, u8)>) {
         self.current_mfa = current_mfa;
+    }
+
+    /// Runtime context visible to JIT helper calls for the current native invocation.
+    #[must_use]
+    pub const fn jit_runtime_context(&self) -> Option<JitRuntimeContext> {
+        self.jit_runtime_context
+    }
+
+    /// Set the transient JIT runtime context for the duration of a native invocation.
+    pub const fn set_jit_runtime_context(&mut self, context: Option<JitRuntimeContext>) {
+        self.jit_runtime_context = context;
+    }
+
+    /// Mark the outcome status reported by JIT-generated code.
+    pub const fn set_jit_status(&mut self, status: Option<JitStatus>) {
+        self.jit_status = status;
+    }
+
+    /// Take and clear the current JIT status.
+    pub fn take_jit_status(&mut self) -> Option<JitStatus> {
+        self.jit_status.take()
     }
 
     /// Linked process IDs.
