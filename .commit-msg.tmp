@@ -1,1 +1,1 @@
-review(beamr): harden compiler split float fail helper
+feat(beamr): wire higher-order BIF trampolines

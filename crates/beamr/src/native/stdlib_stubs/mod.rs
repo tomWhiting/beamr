@@ -787,8 +787,7 @@ const STDLIB_STUBS: &[StubBif] = &[
     ),
     ("maps", "merge", 2, Capability::Pure, None, bif_maps_merge),
     ("maps", "remove", 2, Capability::Pure, None, bif_maps_remove),
-    // maps:map/2 is a stub — requires interpreter re-entry for closures.
-    // The real implementation needs compiled BEAM bytecode; see B-028b.
+    // maps:map/2 uses continuation trampolines for closure calls.
     ("maps", "map", 2, Capability::Pure, None, bif_maps_map),
     ("maps", "put", 3, Capability::Pure, None, bif_maps_put),
     ("maps", "find", 2, Capability::Pure, None, bif_maps_find),

@@ -8,7 +8,7 @@
 //! are in the `erlang_stubs` submodule.
 
 mod erlang_stubs;
-mod gleam_stubs;
+pub(crate) mod gleam_stubs;
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{
@@ -17,8 +17,8 @@ use crate::native::{
 use crate::term::Term;
 
 use erlang_stubs::{
-    bif_code_priv_dir, bif_connect_node, bif_ensure_all_started, bif_os_getenv_0,
-    bif_os_getenv_1, bif_os_putenv, bif_os_type, bif_os_unsetenv, bif_string_split,
+    bif_code_priv_dir, bif_connect_node, bif_ensure_all_started, bif_os_getenv_0, bif_os_getenv_1,
+    bif_os_putenv, bif_os_type, bif_os_unsetenv, bif_string_split,
 };
 use gleam_stubs::{
     bif_dynamic_classify, bif_dynamic_int, bif_dynamic_string, bif_intensity_tracker_add_event,

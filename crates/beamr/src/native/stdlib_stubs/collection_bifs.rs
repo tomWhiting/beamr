@@ -117,21 +117,9 @@ pub fn bif_lists_reverse(args: &[Term], context: &mut ProcessContext) -> Result<
     context.alloc_list(&reversed)
 }
 
-/// maps:map/2 — stub for higher-order map transformation.
-///
-/// This function requires interpreter re-entry to call the closure argument,
-/// which the native BIF signature does not support. Returns `badarg` as a
-/// documented limitation. The real implementation should be loaded from
-/// compiled BEAM bytecode (see `fixtures/stdlib/`) once maps:to_list/1 and
-/// maps:from_list/1 are available within Erlang-level code.
-pub fn bif_maps_map(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    let [_fun, _map] = args else {
-        return Err(badarg());
-    };
-
-    // TODO: Implement via compiled BEAM bytecode once cross-module calls from
-    // stdlib .beam modules to native BIFs (maps:to_list, maps:from_list) work.
-    Err(badarg())
+/// maps:map/2 — trampoline-backed higher-order map transformation.
+pub fn bif_maps_map(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    super::maps_bifs::bif_maps_map(args, context)
 }
 
 /// timer:sleep/1 — sleeps the current thread for the given milliseconds.

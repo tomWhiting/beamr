@@ -262,26 +262,37 @@ fn maps_remove_rejects_wrong_arity() {
     assert_eq!(bif_maps_remove(&[], &mut ctx), Err(badarg()));
 }
 
-// ---- maps:map/2 (stub — returns badarg) ----
+// ---- maps:map/2 ----
 
 #[test]
-fn maps_map_stub_returns_badarg() {
+fn maps_map_empty_map_returns_fresh_empty_map() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+
+    let mut heap = [0u64; 2];
+    let m = write_map(&mut heap, &[], &[]).unwrap();
+
+    let result = bif_maps_map(&[Term::atom(Atom::OK), m], &mut ctx).expect("empty maps:map");
+    let mapped = Map::new(result).expect("mapped map");
+    assert_eq!(mapped.len(), 0);
+    assert!(!ctx.has_trampoline());
+}
+
+#[test]
+fn maps_map_non_empty_sets_continuation_trampoline() {
     let mut process = Process::new(1, 128);
     let mut ctx = context(&mut process);
 
     let mut heap = [0u64; 4];
     let m = write_map(&mut heap, &[Term::small_int(1)], &[Term::atom(Atom::OK)]).unwrap();
 
-    // Even with valid-looking arguments, the stub returns badarg because
-    // it cannot re-enter the interpreter to call the closure.
-    assert_eq!(
-        bif_maps_map(&[Term::atom(Atom::OK), m], &mut ctx),
-        Err(badarg())
-    );
+    let result = bif_maps_map(&[Term::atom(Atom::OK), m], &mut ctx);
+    assert_eq!(result, Ok(Term::NIL));
+    assert!(ctx.has_trampoline());
 }
 
 #[test]
-fn maps_map_stub_rejects_wrong_arity() {
+fn maps_map_rejects_wrong_arity() {
     let mut process = Process::new(1, 128);
     let mut ctx = context(&mut process);
     assert_eq!(bif_maps_map(&[], &mut ctx), Err(badarg()));
