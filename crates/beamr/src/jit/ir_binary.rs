@@ -210,36 +210,18 @@ fn bs_match_allocation_roots(operands: &[Operand]) -> Result<Vec<Operand>, JitEr
             return Err(invalid_operands("bs_match command"));
         };
         match items.as_slice() {
-            [
-                Operand::Unsigned(4) | Operand::Integer(4),
-                _live,
-                _flags,
-                _size,
-                _unit,
-                dst,
-            ]
-            | [Operand::Unsigned(6) | Operand::Integer(6), _live, dst]
-            | [Operand::Unsigned(6) | Operand::Integer(6), _live, _, dst] => {
+            [Operand::Unsigned(4) | Operand::Integer(4), .., dst] if items.len() == 6 => {
                 destinations.push(dst.clone());
             }
-            [Operand::Unsigned(0) | Operand::Integer(0), _live, _bits]
-            | [Operand::Unsigned(1) | Operand::Integer(1), _bits, _unit]
-            | [
-                Operand::Unsigned(2) | Operand::Integer(2),
-                _live,
-                _flags,
-                _size,
-                _unit,
-                _dst,
-            ]
-            | [
-                Operand::Unsigned(3) | Operand::Integer(3),
-                _live,
-                _flags,
-                _size,
-                _unit,
-                _dst,
-            ] => {}
+            [Operand::Unsigned(6) | Operand::Integer(6), .., dst]
+                if items.len() == 3 || items.len() == 4 =>
+            {
+                destinations.push(dst.clone());
+            }
+            [Operand::Unsigned(0) | Operand::Integer(0), ..] if items.len() == 3 => {}
+            [Operand::Unsigned(1) | Operand::Integer(1), ..] if items.len() == 3 => {}
+            [Operand::Unsigned(2) | Operand::Integer(2), ..] if items.len() == 6 => {}
+            [Operand::Unsigned(3) | Operand::Integer(3), ..] if items.len() == 6 => {}
             _ => {
                 return Err(JitError::UnsupportedOperand {
                     operand: format!("bs_match command {items:?}"),

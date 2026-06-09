@@ -1,1 +1,1 @@
-fix(beamr): root BsMatch allocations and avoid GC-dangling sources
+fix(beamr): root BsMatch allocations without dangling GC sources
