@@ -1,1 +1,1 @@
-feat(beamr): wire higher-order BIF trampolines
+harden(beamr): preserve gleam option tags in map continuation

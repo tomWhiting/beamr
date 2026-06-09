@@ -154,10 +154,6 @@ fn option_map_some_sets_trampoline_and_resume_wraps_some() {
     let request = context.take_trampoline().expect("option trampoline");
     assert_eq!(request.fun, fun);
     assert_eq!(request.args, vec![Term::small_int(1)]);
-    assert!(matches!(
-        request.continuation,
-        Some(NativeContinuation::GleamOption(_))
-    ));
     let Some(NativeContinuation::GleamOption(state)) = request.continuation else {
         panic!("expected option continuation");
     };

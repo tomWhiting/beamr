@@ -21,7 +21,7 @@ static SOME_ATOM: std::sync::OnceLock<Atom> = std::sync::OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub enum GleamOptionState {
-    Map,
+    Map { some_tag: Atom },
 }
 
 #[derive(Clone, Debug)]
@@ -35,12 +35,12 @@ pub fn init_gleam_atoms(atom_table: &AtomTable) {
     let _ = SOME_ATOM.set(atom_table.intern("Some"));
 }
 
-fn none_atom_index() -> u32 {
-    NONE_ATOM.get().map_or(u32::MAX, |a| a.index())
+fn none_atom_index() -> Option<u32> {
+    NONE_ATOM.get().map(Atom::index)
 }
 
-fn some_atom_index() -> u32 {
-    SOME_ATOM.get().map_or(u32::MAX, |a| a.index())
+fn some_atom_index() -> Option<u32> {
+    SOME_ATOM.get().map(Atom::index)
 }
 
 // ── gleam@dynamic ─────────────────────────────────────────────────────────
@@ -128,29 +128,25 @@ pub fn bif_option_map(args: &[Term], context: &mut ProcessContext) -> Result<Ter
     if is_option_none(*option) {
         return Ok(*option);
     }
-    let value = option_some_value(*option, context)?;
+    let (some_tag, value) = option_some(*option, context)?;
     context.set_continuation_trampoline(
         *fun,
         vec![value],
-        NativeContinuation::GleamOption(GleamOptionState::Map),
+        NativeContinuation::GleamOption(GleamOptionState::Map { some_tag }),
     );
     Ok(Term::NIL)
 }
 
 /// `gleam@option:unwrap/2` -- unwraps `{some, Value}` or returns default for `none`.
-pub fn bif_option_unwrap(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_option_unwrap(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [option, default] = args else {
         return Err(badarg());
     };
-    if let Some(atom) = option.as_atom()
-        && (atom == Atom::NIL || atom.index() == none_atom_index())
-    {
+    if is_option_none(*option) {
         return Ok(*default);
     }
-    if let Some(tuple) = crate::term::boxed::Tuple::new(*option)
-        && tuple.arity() == 2
-    {
-        return tuple.get(1).ok_or_else(badarg);
+    if let Ok((_, value)) = option_some(*option, context) {
+        return Ok(value);
     }
     Ok(*option)
 }
@@ -249,7 +245,9 @@ pub fn resume_gleam_option_continuation(
     context: &mut ProcessContext,
 ) -> Result<ContinuationStep, Term> {
     match state {
-        GleamOptionState::Map => Ok(ContinuationStep::Done(some_tuple(closure_result, context)?)),
+        GleamOptionState::Map { some_tag } => Ok(ContinuationStep::Done(
+            context.alloc_tuple(&[Term::atom(some_tag), closure_result])?,
+        )),
     }
 }
 
@@ -276,19 +274,19 @@ fn ensure_fun_arity(fun: Term, arity: u8) -> Result<(), Term> {
 }
 
 fn is_option_none(option: Term) -> bool {
-    option
-        .as_atom()
-        .is_some_and(|atom| atom == Atom::NIL || atom.index() == none_atom_index())
+    option.as_atom().is_some_and(|atom| {
+        atom == Atom::NIL || none_atom_index().is_some_and(|none_index| atom.index() == none_index)
+    })
 }
 
-fn option_some_value(option: Term, context: &ProcessContext) -> Result<Term, Term> {
+fn option_some(option: Term, context: &ProcessContext) -> Result<(Atom, Term), Term> {
     let tuple = Tuple::new(option).ok_or_else(badarg)?;
     if tuple.arity() != 2 {
         return Err(badarg());
     }
     let tag = tuple.get(0).and_then(Term::as_atom).ok_or_else(badarg)?;
     if is_some_tag(tag, context) {
-        tuple.get(1).ok_or_else(badarg)
+        Ok((tag, tuple.get(1).ok_or_else(badarg)?))
     } else {
         Err(badarg())
     }
@@ -296,22 +294,13 @@ fn option_some_value(option: Term, context: &ProcessContext) -> Result<Term, Ter
 
 fn is_some_tag(tag: Atom, context: &ProcessContext) -> bool {
     tag == Atom::OK
-        || tag.index() == some_atom_index()
+        || some_atom_index().is_some_and(|some_index| tag.index() == some_index)
         || context.atom_table().is_some_and(|atom_table| {
             atom_table
                 .lookup("Some")
                 .or_else(|| atom_table.lookup("some"))
                 .is_some_and(|some| some == tag)
         })
-}
-
-fn some_tag(context: &ProcessContext) -> Atom {
-    context.atom_table().map_or(Atom::OK, |atom_table| {
-        atom_table
-            .lookup("Some")
-            .or_else(|| atom_table.lookup("some"))
-            .unwrap_or(Atom::OK)
-    })
 }
 
 fn result_tuple(result: Term) -> Result<(Atom, Term), Term> {
@@ -322,10 +311,6 @@ fn result_tuple(result: Term) -> Result<(Atom, Term), Term> {
     let tag = tuple.get(0).and_then(Term::as_atom).ok_or_else(badarg)?;
     let value = tuple.get(1).ok_or_else(badarg)?;
     Ok((tag, value))
-}
-
-fn some_tuple(value: Term, context: &mut ProcessContext) -> Result<Term, Term> {
-    context.alloc_tuple(&[Term::atom(some_tag(context)), value])
 }
 
 fn badarg() -> Term {
