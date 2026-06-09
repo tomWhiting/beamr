@@ -1,1 +1,1 @@
-Harden JIT message opcode lowering validation and wait status handling
+feat(beamr-jit): lower float arithmetic IR

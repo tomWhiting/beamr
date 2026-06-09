@@ -13,6 +13,7 @@ pub(crate) mod ir_closure;
 pub(crate) mod ir_common;
 pub(crate) mod ir_control;
 pub(crate) mod ir_exceptions;
+pub(crate) mod ir_float;
 pub(crate) mod ir_guards;
 pub(crate) mod ir_message;
 pub mod profiler;

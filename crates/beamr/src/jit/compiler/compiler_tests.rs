@@ -11,7 +11,9 @@ use crate::loader::{Instruction, LambdaEntry};
 use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use crate::process::{JitRuntimeContext, Process};
 use crate::term::Term;
-use crate::term::boxed::{Closure, Cons, Tuple, write_closure, write_cons, write_tuple};
+use crate::term::boxed::{
+    Closure, Cons, Float, Tuple, write_closure, write_cons, write_float, write_tuple,
+};
 use std::collections::HashMap;
 
 type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> JitReturn;
@@ -95,6 +97,14 @@ fn heap_closure(
         free_vars,
     )
     .expect("closure layout fits")
+}
+
+fn heap_float(process: &mut Process, value: f64) -> Term {
+    let ptr = process.heap_mut().alloc(2).expect("float heap fits");
+    // SAFETY: `ptr` addresses two contiguous heap words returned by the
+    // process heap allocator for this test allocation.
+    let heap = unsafe { std::slice::from_raw_parts_mut(ptr, 2) };
+    write_float(heap, value).expect("float layout fits")
 }
 
 fn test_module(name: Atom, code: Vec<Instruction>) -> Module {
@@ -553,6 +563,237 @@ fn compiled_branch_takes_fail_label_on_false_comparison() {
     let returned = call_native(&native, &mut registers);
 
     assert_eq!(returned, Term::small_int(20).raw());
+}
+
+#[test]
+fn compiled_fconv_converts_small_integer_to_float_register() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(0),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            1,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let mut registers = vec![Term::small_int(42).raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, registers[0]);
+    let float = Float::new(Term::from_raw(registers[0])).expect("boxed float");
+    assert_eq!(float.value(), 42.0);
+}
+
+#[test]
+fn compiled_fconv_accepts_boxed_float() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(0),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            1,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let input = heap_float(&mut process, 3.14);
+    let mut registers = vec![input.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, registers[0]);
+    let float = Float::new(Term::from_raw(registers[0])).expect("boxed float");
+    assert_eq!(float.value(), 3.14);
+}
+
+#[test]
+fn compiled_float_arithmetic_uses_float_registers() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fconv {
+                    source: Operand::X(1),
+                    dest: Operand::FloatRegister(1),
+                },
+                Instruction::Fadd {
+                    fail: Operand::Label(9),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(2),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::BADARITH)),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            2,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let left = heap_float(&mut process, 1.5);
+    let right = heap_float(&mut process, 2.5);
+    let mut registers = vec![left.raw(), right.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, registers[0]);
+    let float = Float::new(Term::from_raw(registers[0])).expect("boxed float");
+    assert_eq!(float.value(), 4.0);
+}
+
+#[test]
+fn compiled_fdiv_zero_takes_fail_label() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fconv {
+                    source: Operand::X(1),
+                    dest: Operand::FloatRegister(1),
+                },
+                Instruction::Fdiv {
+                    fail: Operand::Label(9),
+                    left: Operand::FloatRegister(0),
+                    right: Operand::FloatRegister(1),
+                    dest: Operand::FloatRegister(2),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(2),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::BADARITH)),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            2,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let left = heap_float(&mut process, 1.0);
+    let right = heap_float(&mut process, -0.0);
+    let mut registers = vec![left.raw(), right.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, Term::atom(Atom::BADARITH).raw());
+}
+
+#[test]
+fn compiled_fnegate_negates_float_register() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fnegate {
+                    fail: Operand::Label(9),
+                    source: Operand::FloatRegister(0),
+                    dest: Operand::FloatRegister(1),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(1),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+                Instruction::Label { label: 9 },
+                Instruction::Move {
+                    source: Operand::Atom(Some(Atom::BADARITH)),
+                    destination: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            1,
+        )
+        .unwrap();
+
+    let mut process = Process::new(0, 233);
+    let input = heap_float(&mut process, -3.14);
+    let mut registers = vec![input.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, registers[0]);
+    let float = Float::new(Term::from_raw(registers[0])).expect("boxed float");
+    assert_eq!(float.value(), 3.14);
+}
+
+#[test]
+fn compiled_float_boxing_emits_safepoint() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::Fconv {
+                    source: Operand::X(0),
+                    dest: Operand::FloatRegister(0),
+                },
+                Instruction::Fmove {
+                    source: Operand::FloatRegister(0),
+                    dest: Operand::X(0),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            1,
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 1);
+    assert_eq!(
+        native.stack_maps()[0].live_roots,
+        vec![RootLocation::Register(0)]
+    );
 }
 
 #[test]

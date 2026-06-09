@@ -59,9 +59,13 @@ use super::ir_common::{
 use super::ir_control::{BlockMap, TranslationPlan, opcode_name};
 use super::ir_exceptions::{
     CompiledFrameInfo, ExceptionDispatch, ExceptionHelpers, ExceptionLoweringState,
-    JIT_STATUS_DEOPT, JIT_STATUS_NORMAL, JIT_STATUS_YIELD, dispatch_exception_status,
-    jit_add_compiled_frame, jit_clear_exception, jit_exception_class, jit_exception_reason,
-    jit_exception_trace, return_status, return_status_raw,
+    JIT_STATUS_DEOPT, JIT_STATUS_EXCEPTION, JIT_STATUS_NORMAL, JIT_STATUS_YIELD,
+    dispatch_exception_status, jit_add_compiled_frame, jit_clear_exception, jit_exception_class,
+    jit_exception_reason, jit_exception_trace, return_status, return_status_raw,
+};
+use super::ir_float::{
+    FloatBinaryOp, FloatLoweringContext, FloatRegisterMap, float_boxing_roots, translate_fconv,
+    translate_float_binary, translate_fmove, translate_fnegate,
 };
 use super::ir_guards::{
     SelectPair, immediate_raw_term, immediate_usize, lower_is_tagged_tuple, lower_select_val,
@@ -73,13 +77,13 @@ use super::ir_message::{
     translate_wait_timeout,
 };
 use super::runtime::{
-    JIT_YIELD_SENTINEL, jit_alloc_closure, jit_alloc_cons, jit_alloc_tuple, jit_bs_finish,
-    jit_bs_get_binary, jit_bs_get_integer, jit_bs_get_utf8, jit_bs_get_utf16, jit_bs_get_utf32,
-    jit_bs_init, jit_bs_put_binary, jit_bs_put_integer, jit_bs_put_utf8, jit_bs_put_utf16,
-    jit_bs_put_utf32, jit_bs_start_match, jit_bs_test_tail, jit_bs_test_unit, jit_call_closure,
-    jit_call_interpreted, jit_charge_reduction, jit_receive_accept, jit_receive_next,
-    jit_receive_peek, jit_receive_timeout, jit_receive_wait, jit_receive_wait_timeout,
-    jit_send_message,
+    JIT_YIELD_SENTINEL, jit_alloc_closure, jit_alloc_cons, jit_alloc_tuple, jit_box_float,
+    jit_bs_finish, jit_bs_get_binary, jit_bs_get_integer, jit_bs_get_utf8, jit_bs_get_utf16,
+    jit_bs_get_utf32, jit_bs_init, jit_bs_put_binary, jit_bs_put_integer, jit_bs_put_utf8,
+    jit_bs_put_utf16, jit_bs_put_utf32, jit_bs_start_match, jit_bs_test_tail, jit_bs_test_unit,
+    jit_call_closure, jit_call_interpreted, jit_charge_reduction, jit_receive_accept,
+    jit_receive_next, jit_receive_peek, jit_receive_timeout, jit_receive_wait,
+    jit_receive_wait_timeout, jit_send_message,
 };
 use super::safepoint::SafepointBuilder;
 use super::types::NativeCode;
@@ -307,6 +311,19 @@ fn branch_to_block_if(
     builder.switch_to_block(continuation);
 }
 
+fn float_fail_block(
+    builder: &mut FunctionBuilder<'_>,
+    status: u8,
+    raw: i64,
+    continuation: cranelift_codegen::ir::Block,
+) -> cranelift_codegen::ir::Block {
+    let fail = builder.create_block();
+    builder.switch_to_block(fail);
+    return_status_raw(builder, status, raw);
+    builder.switch_to_block(continuation);
+    fail
+}
+
 impl Error for JitError {}
 
 /// Required host Cranelift settings for the Beamr JIT scaffold.
@@ -338,6 +355,7 @@ impl JitCompiler {
         builder.symbol("beamr_jit_alloc_tuple", jit_alloc_tuple as *const u8);
         builder.symbol("beamr_jit_alloc_cons", jit_alloc_cons as *const u8);
         builder.symbol("beamr_jit_alloc_closure", jit_alloc_closure as *const u8);
+        builder.symbol("beamr_jit_box_float", jit_box_float as *const u8);
         builder.symbol("beamr_jit_call_closure", jit_call_closure as *const u8);
         builder.symbol(
             "beamr_jit_charge_reduction",
@@ -541,6 +559,15 @@ impl JitCompiler {
         let closure_alloc_helper =
             jit_module.declare_func_in_func(closure_alloc_helper, &mut ctx.func);
 
+        let mut box_float_signature = jit_module.make_signature();
+        box_float_signature.params.push(AbiParam::new(types::I64));
+        box_float_signature.params.push(AbiParam::new(types::F64));
+        box_float_signature.returns.push(AbiParam::new(types::I64));
+        let box_float_helper = jit_module
+            .declare_function("beamr_jit_box_float", Linkage::Import, &box_float_signature)
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let box_float_helper = jit_module.declare_func_in_func(box_float_helper, &mut ctx.func);
+
         let mut closure_call_signature = jit_module.make_signature();
         closure_call_signature
             .params
@@ -657,6 +684,8 @@ impl JitCompiler {
             builder.switch_to_block(blocks.entry);
             let mut typed_state = TypedRegisterState::new(typed_signature.as_ref());
             typed_state.initialize_entry_values(&mut builder, register_file);
+            let zero_float = builder.ins().f64const(0.0);
+            let mut float_registers = FloatRegisterMap::new(zero_float);
 
             let exhausted = builder.ins().call(charge_helper, &[process]);
             let exhausted = builder.inst_results(exhausted)[0];
@@ -1173,6 +1202,111 @@ impl JitCompiler {
                         let value = typed_state.read_return_value(&mut builder, register_file);
                         return_status(&mut builder, JIT_STATUS_NORMAL, value);
                         terminated = true;
+                    }
+                    Instruction::Fmove { source, dest } => {
+                        if matches!(source, Operand::FloatRegister(_))
+                            && !matches!(dest, Operand::FloatRegister(_))
+                        {
+                            safepoints.record_allocation_site(index, float_boxing_roots(dest)?)?;
+                        }
+                        typed_state.materialize_operands_for_untyped_lowering(
+                            &mut builder,
+                            register_file,
+                            [source, dest],
+                        );
+                        let next = blocks.block_after(index);
+                        let fail = float_fail_block(
+                            &mut builder,
+                            JIT_STATUS_EXCEPTION,
+                            Term::atom(Atom::BADARITH).raw() as i64,
+                            next,
+                        );
+                        translate_fmove(
+                            &mut builder,
+                            FloatLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                box_float: box_float_helper,
+                            },
+                            &mut float_registers,
+                            source,
+                            dest,
+                            fail,
+                        )?;
+                        typed_state.clear_operand(dest);
+                        terminated = false;
+                    }
+                    Instruction::Fconv { source, dest } => {
+                        typed_state.materialize_operands_for_untyped_lowering(
+                            &mut builder,
+                            register_file,
+                            [source],
+                        );
+                        let next = blocks.block_after(index);
+                        let fail = float_fail_block(
+                            &mut builder,
+                            JIT_STATUS_EXCEPTION,
+                            Term::atom(Atom::BADARITH).raw() as i64,
+                            next,
+                        );
+                        translate_fconv(
+                            &mut builder,
+                            register_file,
+                            &mut float_registers,
+                            source,
+                            dest,
+                            fail,
+                        )?;
+                        terminated = false;
+                    }
+                    Instruction::Fadd {
+                        fail,
+                        left,
+                        right,
+                        dest,
+                    }
+                    | Instruction::Fsub {
+                        fail,
+                        left,
+                        right,
+                        dest,
+                    }
+                    | Instruction::Fmul {
+                        fail,
+                        left,
+                        right,
+                        dest,
+                    }
+                    | Instruction::Fdiv {
+                        fail,
+                        left,
+                        right,
+                        dest,
+                    } => {
+                        let fail = blocks.label_block(label_operand(fail)?)?;
+                        let op = match instruction {
+                            Instruction::Fadd { .. } => FloatBinaryOp::Add,
+                            Instruction::Fsub { .. } => FloatBinaryOp::Subtract,
+                            Instruction::Fmul { .. } => FloatBinaryOp::Multiply,
+                            Instruction::Fdiv { .. } => FloatBinaryOp::Divide,
+                            _ => FloatBinaryOp::Add,
+                        };
+                        translate_float_binary(
+                            &mut builder,
+                            &mut float_registers,
+                            op,
+                            left,
+                            right,
+                            dest,
+                            fail,
+                        )?;
+                        terminated = false;
+                    }
+                    Instruction::Fnegate { fail, source, dest } => {
+                        let fail = blocks.label_block(label_operand(fail)?)?;
+                        translate_fnegate(&mut builder, &mut float_registers, source, dest, fail)?;
+                        terminated = false;
                     }
                     Instruction::PutList {
                         head,

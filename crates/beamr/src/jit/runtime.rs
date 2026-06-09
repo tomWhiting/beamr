@@ -13,7 +13,7 @@ use crate::process::{
 use crate::term::Term;
 use crate::term::binary::packed_word_count;
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::{BoxedHeader, BoxedTag, Closure, ProcBin};
+use crate::term::boxed::{BoxedHeader, BoxedTag, Closure, ProcBin, write_float};
 use crate::term::pid_ref::PidRef;
 use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 use crate::term::sub_binary::{SUB_BINARY_WORDS, write_sub_binary};
@@ -67,6 +67,22 @@ pub(crate) extern "C" fn jit_alloc_closure(process: *mut Process, num_free: u64)
         return std::ptr::null_mut();
     };
     alloc_words(process, words)
+}
+
+/// Allocates a boxed float and returns its tagged term, or `0` when allocation fails.
+pub(crate) extern "C" fn jit_box_float(process: *mut Process, value: f64) -> u64 {
+    let Some(process) = process_from_abi(process) else {
+        return 0;
+    };
+    let heap = alloc_words(process, 2);
+    if heap.is_null() {
+        return 0;
+    }
+
+    // SAFETY: `alloc_words(process, 2)` returned a non-null pointer to exactly
+    // two heap words owned by `process` for the duration of this helper call.
+    let heap = unsafe { std::slice::from_raw_parts_mut(heap, 2) };
+    write_float(heap, value).map_or(0, Term::raw)
 }
 
 /// Charges one reduction at compiled function entry.
