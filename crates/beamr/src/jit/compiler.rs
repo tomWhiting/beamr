@@ -426,6 +426,7 @@ impl JitCompiler {
                             tail,
                             destination,
                         )?;
+                        terminated = false;
                     }
                     Instruction::GetList { source, head, tail } => {
                         lower_get_list(&mut builder, register_file, source, head, tail)?;
@@ -461,6 +462,7 @@ impl JitCompiler {
                             destination,
                             elements,
                         )?;
+                        terminated = false;
                     }
                     Instruction::GetTupleElement {
                         source,
