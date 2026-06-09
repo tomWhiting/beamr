@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::os::fd::IntoRawFd;
+use std::os::fd::{IntoRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 
 use crate::atom::{Atom, AtomTable};
@@ -141,6 +141,12 @@ fn binary_term(bytes: &[u8]) -> Term {
     let words = 2 + packed_word_count(bytes.len());
     let heap = Box::leak(vec![0_u64; words].into_boxed_slice());
     write_binary(heap, bytes).expect("binary")
+}
+
+fn fd_is_closed(fd: RawFd) -> bool {
+    // SAFETY: F_GETFD only observes descriptor table state for the supplied raw fd.
+    let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    result < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
 }
 
 #[test]
@@ -287,6 +293,43 @@ fn tcp_accept_completion_returns_ok_fd_resource() {
     let conn = FdResource::new(tuple.get(1).expect("conn fd")).expect("conn resource");
     assert_eq!(conn.fd(), accepted_fd);
     assert_eq!(conn.owner_pid(), PID);
+}
+
+#[test]
+fn tcp_accept_timeout_does_not_leak_fd() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockFileIoFacility::default());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
+    let listener_fd = listener.into_raw_fd();
+    let accepted = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("accepted fd stand-in");
+    let accepted_fd = accepted.into_raw_fd();
+    facility.push_completion(
+        FileIoContinuation::Accept,
+        Ok(IoResult::Accepted(
+            accepted_fd,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 12345)),
+        )),
+    );
+    let mut process = Process::new(PID, 128);
+    process.set_receive_timeout(Some(ReceiveTimeout {
+        timeout_position: CodePosition {
+            module: Atom::OK,
+            instruction_pointer: 0,
+        },
+        milliseconds: 1,
+    }));
+    let mut context = context(&mut process, atom_table, Some(Arc::clone(&facility)));
+    let resource = context
+        .alloc_fd_resource(Arc::new(FdInner::new(listener_fd, PID)))
+        .expect("fd resource");
+
+    let result = tcp_accept(&[resource, Term::small_int(1)], &mut context).expect("timeout");
+
+    let tuple = Tuple::new(result).expect("error tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::TIMEOUT)));
+    assert!(fd_is_closed(accepted_fd));
+    assert!(facility.tracked().is_empty());
 }
 
 #[test]
@@ -708,11 +751,7 @@ struct MockTcpIoFacility {
 }
 
 impl TcpIoFacility for MockTcpIoFacility {
-    fn submit_active_tcp_read(
-        &self,
-        socket: Arc<FdInner>,
-        buf_len: usize,
-    ) -> Option<u64> {
+    fn submit_active_tcp_read(&self, socket: Arc<FdInner>, buf_len: usize) -> Option<u64> {
         let mut submissions = self
             .submissions
             .lock()
@@ -731,8 +770,7 @@ fn socket_term(socket: Arc<FdInner>) -> (Vec<u64>, Term) {
 fn active_option_list(atom_table: &AtomTable, value: Term) -> (Vec<u64>, Vec<u64>, Term) {
     let active = atom_table.intern("active");
     let mut tuple_heap = vec![0; 3];
-    let option =
-        write_tuple(&mut tuple_heap, &[Term::atom(active), value]).expect("option tuple");
+    let option = write_tuple(&mut tuple_heap, &[Term::atom(active), value]).expect("option tuple");
     let mut cons_heap = vec![0; 2];
     let list = write_cons(&mut cons_heap, option, Term::NIL).expect("option list");
     (tuple_heap, cons_heap, list)

@@ -26,6 +26,7 @@ pub enum DecodeError {
     IntegerOutOfRange,
     InvalidBigSign(u8),
     HeapAllocationFailed,
+    InvalidExportFunction,
     SizeLimitExceeded,
     DecompressionFailed,
     DecompressedSizeMismatch { expected: usize, actual: usize },
@@ -217,6 +218,9 @@ fn decode_after_tag(
         tag if tag == tags::EXPORT_EXT => {
             let module = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
             let function = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
+            if function.as_atom().is_none() {
+                return Err(DecodeError::InvalidExportFunction);
+            }
             let arity = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
             context
                 .alloc_tuple(&[module, function, arity])
@@ -586,6 +590,40 @@ mod tests {
             ),
             Err(DecodeError::UnsafeAtom("novel".to_owned()))
         );
+    }
+
+    #[test]
+    fn export_ext_decodes_correct_function_atom() {
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+        let bytes = [
+            tags::VERSION,
+            tags::EXPORT_EXT,
+            tags::SMALL_ATOM_UTF8_EXT,
+            6,
+            b'e',
+            b'r',
+            b'l',
+            b'a',
+            b'n',
+            b'g',
+            tags::SMALL_ATOM_UTF8_EXT,
+            4,
+            b's',
+            b'e',
+            b'l',
+            b'f',
+            tags::SMALL_INTEGER_EXT,
+            0,
+        ];
+
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode export");
+
+        let tuple = Tuple::new(decoded).expect("export tuple");
+        assert_eq!(tuple.get(0), Some(Term::atom(atoms.intern("erlang"))));
+        assert_eq!(tuple.get(1), Some(Term::atom(atoms.intern("self"))));
+        assert_eq!(tuple.get(2), Some(Term::small_int(0)));
     }
 
     #[test]
