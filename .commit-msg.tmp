@@ -1,1 +1,1 @@
-feat(beamr): add JIT safepoints and allocation helpers
+harden(beamr): make JIT allocation helpers raw-pointer ABI safe
