@@ -1,1 +1,1 @@
-feat(beamr): embed compressed BEAM archives
+fix(beamr): resolve embed import and stack test origin import

@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::atom::Atom;
-use crate::module::{Module, ModuleOrigin};
+use crate::module::Module;
 use crate::term::Term;
 
 /// Default maximum call-stack depth in frames.
@@ -309,7 +309,7 @@ mod tests {
 
     use crate::atom::Atom;
     use crate::loader::Instruction;
-    use crate::module::{Module, ModuleRegistry, PurgeError};
+    use crate::module::{Module, ModuleOrigin, ModuleRegistry, PurgeError};
     use crate::term::Term;
 
     fn test_module(name: Atom) -> Module {

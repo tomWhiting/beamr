@@ -10,10 +10,10 @@ use std::io::{self, Cursor};
 use std::path::Path;
 
 use crate::atom::AtomTable;
-use crate::capability::CapabilityPolicy;
 use crate::error::LoadError;
 use crate::module::{Module, ModuleOrigin, ModuleRegistry};
 use crate::native::BifRegistry;
+use crate::native::CapabilityPolicy;
 
 use super::load::{
     UnresolvedImportReport, load_module_with_origin, load_module_with_origin_and_policy,
