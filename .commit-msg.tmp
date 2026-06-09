@@ -1,1 +1,1 @@
-harden(jit): cache successful generation-aware compilation
+feat(beamr): lower JIT type tests and guards

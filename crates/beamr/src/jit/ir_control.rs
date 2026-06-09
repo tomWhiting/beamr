@@ -1,7 +1,7 @@
 //! Control flow structures for the JIT compiler.
 
 use crate::loader::Instruction;
-use crate::loader::decode::BifOp;
+use crate::loader::decode::{BifOp, TypeTestOp};
 use cranelift_frontend::FunctionBuilder;
 use std::collections::{HashMap, HashSet};
 
@@ -9,6 +9,9 @@ use super::compiler::JitError;
 use super::ir_arithmetic::{ArithmeticOp, ParsedBif};
 use super::ir_common::{
     ensure_known_label, validate_label_operand, validate_read_operand, validate_write_operand,
+};
+use super::ir_guards::{
+    immediate_raw_term, immediate_usize, parse_select_pairs, validate_tag_atom,
 };
 
 pub(crate) struct TranslationPlan {
@@ -44,6 +47,12 @@ impl TranslationPlan {
                     validate_write_operand(left)?;
                     validate_write_operand(right)?;
                 }
+                Instruction::TypeTest { op, fail, value } => {
+                    validate_supported_type_test(*op)?;
+                    validate_label_operand(fail)?;
+                    validate_read_operand(value)?;
+                    block_starts.insert(index + 1);
+                }
                 Instruction::Comparison {
                     fail, left, right, ..
                 } => {
@@ -51,6 +60,32 @@ impl TranslationPlan {
                     validate_read_operand(left)?;
                     validate_read_operand(right)?;
                     block_starts.insert(index + 1);
+                }
+                Instruction::TestArity { fail, tuple, arity } => {
+                    validate_label_operand(fail)?;
+                    validate_read_operand(tuple)?;
+                    let _ = immediate_usize(arity, "test_arity arity")?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::IsTaggedTuple {
+                    fail,
+                    value,
+                    arity,
+                    tag,
+                } => {
+                    validate_label_operand(fail)?;
+                    validate_read_operand(value)?;
+                    let _ = immediate_usize(arity, "is_tagged_tuple arity")?;
+                    validate_tag_atom(tag)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::SelectVal { value, fail, list } => {
+                    validate_read_operand(value)?;
+                    validate_label_operand(fail)?;
+                    for (candidate, target) in parse_select_pairs(list)? {
+                        let _ = immediate_raw_term(candidate)?;
+                        validate_label_operand(target)?;
+                    }
                 }
                 Instruction::Jump { target } => {
                     validate_label_operand(target)?;
@@ -79,7 +114,16 @@ impl TranslationPlan {
 
         for instruction in instructions {
             match instruction {
-                Instruction::Comparison { fail, .. } => ensure_known_label(&labels, fail)?,
+                Instruction::TypeTest { fail, .. }
+                | Instruction::Comparison { fail, .. }
+                | Instruction::TestArity { fail, .. }
+                | Instruction::IsTaggedTuple { fail, .. } => ensure_known_label(&labels, fail)?,
+                Instruction::SelectVal { fail, list, .. } => {
+                    ensure_known_label(&labels, fail)?;
+                    for (_, target) in parse_select_pairs(list)? {
+                        ensure_known_label(&labels, target)?;
+                    }
+                }
                 Instruction::Jump { target }
                 | Instruction::Call { label: target, .. }
                 | Instruction::CallOnly { label: target, .. } => {
@@ -99,6 +143,23 @@ impl TranslationPlan {
             labels,
             block_starts,
         })
+    }
+}
+
+fn validate_supported_type_test(op: TypeTestOp) -> Result<(), JitError> {
+    match op {
+        TypeTestOp::IsInteger
+        | TypeTestOp::IsAtom
+        | TypeTestOp::IsPid
+        | TypeTestOp::IsBinary
+        | TypeTestOp::IsList
+        | TypeTestOp::IsTuple => Ok(()),
+        TypeTestOp::IsFloat => Err(JitError::UnsupportedOpcode {
+            opcode: "TypeTest(IsFloat)".to_owned(),
+        }),
+        other => Err(JitError::UnsupportedOpcode {
+            opcode: format!("TypeTest({other:?})"),
+        }),
     }
 }
 
