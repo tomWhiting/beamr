@@ -6,7 +6,8 @@ use crate::loader::decode::{BifOp, ComparisonOp, Operand};
 use crate::scheduler::lock_or_recover;
 use crate::term::Term;
 use cranelift_codegen::CodegenError;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, IntCC, MemFlags, Value, types};
+use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Value, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -227,7 +228,7 @@ impl JitCompiler {
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
         jit_module
             .define_function(func_id, &mut ctx)
-            .map_err(|error| cranelift_error(error))?;
+            .map_err(cranelift_error)?;
         jit_module.clear_context(&mut ctx);
         jit_module
             .finalize_definitions()

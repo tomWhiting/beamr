@@ -48,7 +48,11 @@ impl CompilationJob {
                 self.profiler
                     .mark_compiled(self.module, self.function, self.arity);
             }
-            Err(JitError::UnsupportedOpcode { .. }) => {
+            Err(
+                JitError::UnsupportedOpcode { .. }
+                | JitError::UnsupportedOperand { .. }
+                | JitError::UnknownLabel { .. },
+            ) => {
                 self.profiler
                     .mark_unsupported(self.module, self.function, self.arity);
             }
