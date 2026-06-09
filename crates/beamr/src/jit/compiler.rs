@@ -14,6 +14,9 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::ir_allocation::{
+    AllocationHelpers, LoweringContext, lower_put_list, lower_put_tuple2, tuple_root_operands,
+};
 use super::ir_arithmetic::{
     ArithmeticLowering, ArithmeticOp, ParsedBif, lower_arithmetic_bif, lower_comparison,
 };
@@ -26,6 +29,8 @@ use super::ir_guards::{
     SelectPair, immediate_raw_term, lower_is_tagged_tuple, lower_select_val, lower_test_arity,
     lower_type_test, parse_select_pairs,
 };
+use super::runtime::{jit_alloc_cons, jit_alloc_tuple};
+use super::safepoint::SafepointBuilder;
 use super::types::NativeCode;
 
 /// Error returned when scaffold JIT compilation cannot produce native code.
@@ -88,7 +93,9 @@ impl JitCompiler {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
-        let builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+        builder.symbol("beamr_jit_alloc_tuple", jit_alloc_tuple as *const u8);
+        builder.symbol("beamr_jit_alloc_cons", jit_alloc_cons as *const u8);
         Ok(Self {
             module: Arc::new(Mutex::new(JITModule::new(builder))),
             next_function_id: AtomicU64::new(0),
@@ -98,10 +105,10 @@ impl JitCompiler {
     /// Compiles a BEAM instruction slice into callable native code.
     ///
     /// The current raw JIT ABI is intentionally narrow for mixed-mode bring-up:
-    /// `extern "C" fn(*mut u64) -> u64`, where the pointer addresses a flat
-    /// register file. X registers occupy words `0..1024`; Y registers occupy
-    /// words starting at `1024`. The function returns the raw word in `x(0)`, or
-    /// `u64::MAX` to request interpreter fallback/deoptimization.
+    /// `extern "C" fn(*mut u64, *mut Process) -> u64`, where the first pointer
+    /// addresses a flat register file. X registers occupy words `0..1024`; Y
+    /// registers occupy words starting at `1024`. The function returns the raw
+    /// word in `x(0)`, or `u64::MAX` to request interpreter fallback/deopt.
     pub fn compile(
         &self,
         instructions: &[Instruction],
@@ -118,14 +125,40 @@ impl JitCompiler {
         let mut ctx = jit_module.make_context();
         let mut signature = jit_module.make_signature();
         signature.params.push(AbiParam::new(types::I64));
+        signature.params.push(AbiParam::new(types::I64));
         signature.returns.push(AbiParam::new(types::I64));
         ctx.func.signature = signature.clone();
+
+        let mut tuple_signature = jit_module.make_signature();
+        tuple_signature.params.push(AbiParam::new(types::I64));
+        tuple_signature.params.push(AbiParam::new(types::I64));
+        tuple_signature.returns.push(AbiParam::new(types::I64));
+        let tuple_helper = jit_module
+            .declare_function("beamr_jit_alloc_tuple", Linkage::Import, &tuple_signature)
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let tuple_helper = jit_module.declare_func_in_func(tuple_helper, &mut ctx.func);
+
+        let mut cons_signature = jit_module.make_signature();
+        cons_signature.params.push(AbiParam::new(types::I64));
+        cons_signature.returns.push(AbiParam::new(types::I64));
+        let cons_helper = jit_module
+            .declare_function("beamr_jit_alloc_cons", Linkage::Import, &cons_signature)
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let cons_helper = jit_module.declare_func_in_func(cons_helper, &mut ctx.func);
+
+        let allocation_helpers = AllocationHelpers {
+            tuple: tuple_helper,
+            cons: cons_helper,
+        };
+
+        let mut safepoints = SafepointBuilder::new();
 
         let mut builder_context = FunctionBuilderContext::new();
         {
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
             let blocks = BlockMap::new(&mut builder, instructions, &plan);
             let register_file = builder.block_params(blocks.entry)[0];
+            let process = builder.block_params(blocks.entry)[1];
             builder.switch_to_block(blocks.entry);
 
             let mut terminated = false;
@@ -252,6 +285,48 @@ impl JitCompiler {
                         builder.ins().return_(&[value]);
                         terminated = true;
                     }
+                    Instruction::PutList {
+                        head,
+                        tail,
+                        destination,
+                    } => {
+                        safepoints.record_allocation_site(
+                            index,
+                            [head.clone(), tail.clone(), destination.clone()],
+                        )?;
+                        lower_put_list(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            allocation_helpers.cons,
+                            head,
+                            tail,
+                            destination,
+                        )?;
+                    }
+                    Instruction::PutTuple2 {
+                        destination,
+                        elements,
+                    } => {
+                        safepoints.record_allocation_site(
+                            index,
+                            tuple_root_operands(destination, elements)?,
+                        )?;
+                        lower_put_tuple2(
+                            &mut builder,
+                            LoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                            },
+                            allocation_helpers.tuple,
+                            destination,
+                            elements,
+                        )?;
+                    }
                     other => {
                         return Err(JitError::UnsupportedOpcode {
                             opcode: opcode_name(other),
@@ -289,7 +364,7 @@ impl JitCompiler {
         drop(jit_module);
         Ok(NativeCode::new(
             call_ptr,
-            Vec::new(),
+            safepoints.finish(),
             Arc::clone(&self.module),
         ))
     }
@@ -305,4 +380,4 @@ fn cranelift_error(error: cranelift_module::ModuleError) -> JitError {
 }
 
 #[cfg(test)]
-mod tests;
+mod compiler_tests;

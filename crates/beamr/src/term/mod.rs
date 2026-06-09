@@ -55,6 +55,7 @@ pub enum Tag {
 ///
 /// The low three bits hold the primary tag. The remaining bits hold immediate
 /// payload data or, for future boxed/list terms, tagged heap pointer data.
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug)]
 pub struct Term(u64);
 

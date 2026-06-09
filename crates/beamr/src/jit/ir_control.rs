@@ -53,6 +53,33 @@ impl TranslationPlan {
                     validate_read_operand(value)?;
                     block_starts.insert(index + 1);
                 }
+                Instruction::PutList {
+                    head,
+                    tail,
+                    destination,
+                } => {
+                    validate_read_operand(head)?;
+                    validate_read_operand(tail)?;
+                    validate_write_operand(destination)?;
+                    block_starts.insert(index + 1);
+                }
+                Instruction::PutTuple2 {
+                    destination,
+                    elements,
+                } => {
+                    validate_write_operand(destination)?;
+                    let crate::loader::decode::Operand::List(elements) = elements else {
+                        return Err(JitError::UnsupportedOperand {
+                            operand: format!(
+                                "put_tuple2 elements must be a list, got {elements:?}"
+                            ),
+                        });
+                    };
+                    for element in elements {
+                        validate_read_operand(element)?;
+                    }
+                    block_starts.insert(index + 1);
+                }
                 Instruction::Comparison {
                     fail, left, right, ..
                 } => {

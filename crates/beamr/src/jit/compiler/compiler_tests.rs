@@ -1,16 +1,40 @@
 use super::{JitCompiler, JitError, JitSettings};
 use crate::atom::Atom;
+use crate::jit::RootLocation;
 use crate::jit::ir_common::X_REGISTER_COUNT;
 use crate::loader::Instruction;
 use crate::loader::decode::{BifOp, ComparisonOp, Operand, TypeTestOp};
+use crate::process::Process;
 use crate::term::Term;
-use crate::term::boxed::write_tuple;
+use crate::term::boxed::{Cons, Tuple, write_tuple};
 
-type RawJitFn = extern "C" fn(*mut u64) -> u64;
+type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> u64;
 
 fn call_native(native: &crate::jit::types::NativeCode, registers: &mut [u64]) -> u64 {
-    let function: RawJitFn = unsafe { std::mem::transmute(native.call_ptr()) };
-    function(registers.as_mut_ptr())
+    let mut process = Process::new(0, 233);
+    call_native_with_process(native, registers, &mut process)
+}
+
+fn call_native_with_process(
+    native: &crate::jit::types::NativeCode,
+    registers: &mut [u64],
+    process: &mut Process,
+) -> u64 {
+    raw_jit_fn(native)(registers.as_mut_ptr(), process)
+}
+
+fn call_native_with_process_x_regs(
+    native: &crate::jit::types::NativeCode,
+    process: &mut Process,
+) -> u64 {
+    let registers = process.x_regs_mut().as_mut_ptr().cast::<u64>();
+    raw_jit_fn(native)(registers, process)
+}
+
+fn raw_jit_fn(native: &crate::jit::types::NativeCode) -> RawJitFn {
+    // SAFETY: `NativeCode::call_ptr` is produced by `JitCompiler::compile`
+    // with the test ABI `extern "C" fn(*mut u64, *mut Process) -> u64`.
+    unsafe { std::mem::transmute(native.call_ptr()) }
 }
 
 #[test]
@@ -213,6 +237,115 @@ fn compiled_branch_takes_fail_label_on_false_comparison() {
 
     assert_eq!(returned, Term::small_int(20).raw());
 }
+
+#[test]
+fn compiled_put_list_emits_safepoint_and_allocates_cons() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::PutList {
+                    head: Operand::X(0),
+                    tail: Operand::Atom(None),
+                    destination: Operand::X(1),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 1);
+    assert_eq!(native.stack_maps()[0].offset_from_entry, 0);
+    assert_eq!(
+        native.stack_maps()[0].live_roots,
+        vec![RootLocation::Register(0), RootLocation::Register(1)]
+    );
+
+    let mut process = Process::new(0, 233);
+    let mut registers = vec![Term::small_int(7).raw(), Term::NIL.raw()];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, Term::small_int(7).raw());
+    let cons = Cons::new(Term::from_raw(registers[1])).unwrap();
+    assert_eq!(cons.head(), Term::small_int(7));
+    assert_eq!(cons.tail(), Term::NIL);
+}
+
+#[test]
+fn compiled_put_tuple2_emits_safepoint_and_allocates_tuple() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::PutTuple2 {
+                    destination: Operand::X(2),
+                    elements: Operand::List(vec![Operand::X(0), Operand::Integer(9)]),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 1);
+    assert_eq!(native.stack_maps()[0].offset_from_entry, 0);
+    assert_eq!(
+        native.stack_maps()[0].live_roots,
+        vec![RootLocation::Register(0), RootLocation::Register(2)]
+    );
+
+    let mut process = Process::new(0, 233);
+    let mut registers = vec![Term::small_int(4).raw(), 0, 0];
+    let returned = call_native_with_process(&native, &mut registers, &mut process);
+
+    assert_eq!(returned, Term::small_int(4).raw());
+    let tuple = Tuple::new(Term::from_raw(registers[2])).unwrap();
+    assert_eq!(tuple.arity(), 2);
+    assert_eq!(tuple.get(0), Some(Term::small_int(4)));
+    assert_eq!(tuple.get(1), Some(Term::small_int(9)));
+}
+
+#[test]
+fn compiled_allocation_with_tiny_heap_survives_gc() {
+    let compiler = JitCompiler::new(JitSettings).unwrap();
+    let native = compiler
+        .compile(
+            &[
+                Instruction::PutTuple2 {
+                    destination: Operand::X(1),
+                    elements: Operand::List(vec![Operand::X(0)]),
+                },
+                Instruction::PutTuple2 {
+                    destination: Operand::X(2),
+                    elements: Operand::List(vec![Operand::X(1), Operand::Integer(8)]),
+                },
+                Instruction::Return,
+            ],
+            Atom::MODULE,
+            Atom::OK,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(native.stack_maps().len(), 2);
+
+    let mut process = Process::new(0, 2);
+    process.set_x_reg(0, Term::small_int(3));
+    let returned = call_native_with_process_x_regs(&native, &mut process);
+
+    assert_eq!(returned, Term::small_int(3).raw());
+    let outer = Tuple::new(process.x_reg(2)).unwrap();
+    assert_eq!(outer.arity(), 2);
+    let inner = Tuple::new(outer.get(0).unwrap()).unwrap();
+    assert_eq!(inner.get(0), Some(Term::small_int(3)));
+    assert_eq!(outer.get(1), Some(Term::small_int(8)));
+}
+
 
 #[test]
 fn compiled_is_integer_distinguishes_integer_from_atom() {

@@ -1,6 +1,5 @@
 //! Dirty-CPU JIT compilation job wiring.
 
-use crate::atom::Atom;
 use crate::loader::Instruction;
 use crate::scheduler::dirty::{DirtyPool, DirtySubmitError, DirtyTask};
 use std::sync::Arc;
@@ -11,10 +10,7 @@ use super::profiler::JitProfiler;
 
 /// Owned function identity and instruction slice for a pending JIT compilation.
 pub struct CompilationRequest {
-    module: Atom,
-    function: Atom,
-    arity: u8,
-    generation: u64,
+    key: JitCacheKey,
     instructions: Vec<Instruction>,
 }
 
@@ -22,17 +18,14 @@ impl CompilationRequest {
     /// Creates a request to compile one generation of an MFA.
     #[must_use]
     pub fn new(
-        module: Atom,
-        function: Atom,
+        module: crate::atom::Atom,
+        function: crate::atom::Atom,
         arity: u8,
         generation: u64,
         instructions: Vec<Instruction>,
     ) -> Self {
         Self {
-            module,
-            function,
-            arity,
-            generation,
+            key: JitCacheKey::new(module, function, arity, generation),
             instructions,
         }
     }
@@ -65,24 +58,17 @@ impl CompilationJob {
 
     fn run(self) {
         let request = self.request;
+        let key = request.key;
         match self.compiler.compile(
             &request.instructions,
-            request.module,
-            request.function,
-            request.arity,
+            key.module,
+            key.function,
+            key.arity,
         ) {
             Ok(native_code) => {
-                self.cache.insert(
-                    JitCacheKey::new(
-                        request.module,
-                        request.function,
-                        request.arity,
-                        request.generation,
-                    ),
-                    native_code,
-                );
+                self.cache.insert(key, native_code);
                 self.profiler
-                    .mark_compiled(request.module, request.function, request.arity);
+                    .mark_compiled(key.module, key.function, key.arity);
             }
             Err(
                 JitError::UnsupportedOpcode { .. }
@@ -90,11 +76,11 @@ impl CompilationJob {
                 | JitError::UnknownLabel { .. },
             ) => {
                 self.profiler
-                    .mark_unsupported(request.module, request.function, request.arity);
+                    .mark_unsupported(key.module, key.function, key.arity);
             }
             Err(JitError::CraneliftError(_) | JitError::EmptyFunction) => {
                 self.profiler
-                    .reset_counter(request.module, request.function, request.arity);
+                    .reset_counter(key.module, key.function, key.arity);
             }
         }
     }

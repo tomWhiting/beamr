@@ -3,11 +3,14 @@
 pub mod cache;
 pub mod compile_job;
 pub mod compiler;
+pub(crate) mod ir_allocation;
 pub(crate) mod ir_arithmetic;
 pub(crate) mod ir_common;
 pub(crate) mod ir_control;
 pub(crate) mod ir_guards;
 pub mod profiler;
+pub(crate) mod runtime;
+pub mod safepoint;
 pub mod types;
 
 pub use cache::{JitCache, JitCacheKey};
