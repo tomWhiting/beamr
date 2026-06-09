@@ -9,13 +9,38 @@ use super::cache::{JitCache, JitCacheKey};
 use super::compiler::{JitCompiler, JitError};
 use super::profiler::JitProfiler;
 
-/// Owned request to compile one BEAM function on a dirty CPU worker.
-pub struct CompilationJob {
+/// Owned function identity and instruction slice for a pending JIT compilation.
+pub struct CompilationRequest {
     module: Atom,
     function: Atom,
     arity: u8,
     generation: u64,
     instructions: Vec<Instruction>,
+}
+
+impl CompilationRequest {
+    /// Creates a request to compile one generation of an MFA.
+    #[must_use]
+    pub fn new(
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        generation: u64,
+        instructions: Vec<Instruction>,
+    ) -> Self {
+        Self {
+            module,
+            function,
+            arity,
+            generation,
+            instructions,
+        }
+    }
+}
+
+/// Owned request to compile one BEAM function on a dirty CPU worker.
+pub struct CompilationJob {
+    request: CompilationRequest,
     compiler: Arc<JitCompiler>,
     profiler: Arc<JitProfiler>,
     cache: Arc<JitCache>,
@@ -25,21 +50,13 @@ impl CompilationJob {
     /// Creates a compilation job for an MFA and its current instruction slice.
     #[must_use]
     pub fn new(
-        module: Atom,
-        function: Atom,
-        arity: u8,
-        generation: u64,
-        instructions: Vec<Instruction>,
+        request: CompilationRequest,
         compiler: Arc<JitCompiler>,
         profiler: Arc<JitProfiler>,
         cache: Arc<JitCache>,
     ) -> Self {
         Self {
-            module,
-            function,
-            arity,
-            generation,
-            instructions,
+            request,
             compiler,
             profiler,
             cache,
@@ -47,17 +64,25 @@ impl CompilationJob {
     }
 
     fn run(self) {
-        match self
-            .compiler
-            .compile(&self.instructions, self.module, self.function, self.arity)
-        {
+        let request = self.request;
+        match self.compiler.compile(
+            &request.instructions,
+            request.module,
+            request.function,
+            request.arity,
+        ) {
             Ok(native_code) => {
                 self.cache.insert(
-                    JitCacheKey::new(self.module, self.function, self.arity, self.generation),
+                    JitCacheKey::new(
+                        request.module,
+                        request.function,
+                        request.arity,
+                        request.generation,
+                    ),
                     native_code,
                 );
                 self.profiler
-                    .mark_compiled(self.module, self.function, self.arity);
+                    .mark_compiled(request.module, request.function, request.arity);
             }
             Err(
                 JitError::UnsupportedOpcode { .. }
@@ -65,11 +90,11 @@ impl CompilationJob {
                 | JitError::UnknownLabel { .. },
             ) => {
                 self.profiler
-                    .mark_unsupported(self.module, self.function, self.arity);
+                    .mark_unsupported(request.module, request.function, request.arity);
             }
             Err(JitError::CraneliftError(_) | JitError::EmptyFunction) => {
                 self.profiler
-                    .reset_counter(self.module, self.function, self.arity);
+                    .reset_counter(request.module, request.function, request.arity);
             }
         }
     }
@@ -85,7 +110,7 @@ pub fn submit_jit_compilation(
 
 #[cfg(test)]
 mod tests {
-    use super::{CompilationJob, submit_jit_compilation};
+    use super::{CompilationJob, CompilationRequest, submit_jit_compilation};
     use crate::atom::Atom;
     use crate::jit::cache::JitCache;
     use crate::jit::compiler::{JitCompiler, JitSettings};
@@ -119,12 +144,8 @@ mod tests {
         );
 
         let job = CompilationJob::new(
-            Atom::MODULE,
-            Atom::OK,
-            0,
-            1,
-            vec![Instruction::Return],
-            compiler,
+            CompilationRequest::new(Atom::MODULE, Atom::OK, 0, 1, vec![Instruction::Return]),
+            Arc::clone(&compiler),
             Arc::clone(&profiler),
             Arc::clone(&cache),
         );
@@ -152,16 +173,18 @@ mod tests {
         );
 
         let job = CompilationJob::new(
-            Atom::MODULE,
-            Atom::ERROR,
-            0,
-            1,
-            vec![Instruction::Generic {
-                opcode: 255,
-                name: "unknown",
-                operands: Vec::new(),
-            }],
-            compiler,
+            CompilationRequest::new(
+                Atom::MODULE,
+                Atom::ERROR,
+                0,
+                1,
+                vec![Instruction::Generic {
+                    opcode: 255,
+                    name: "unknown",
+                    operands: Vec::new(),
+                }],
+            ),
+            Arc::clone(&compiler),
             Arc::clone(&profiler),
             Arc::clone(&cache),
         );
