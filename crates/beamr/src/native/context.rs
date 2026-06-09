@@ -27,6 +27,7 @@ use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 use crate::timer::{TimerRef, TimerWheel};
 
 use super::code_management_bifs::CodeManagementFacility;
+use super::distribution_bifs::GlobalNameFacility;
 use super::ets_bifs::EtsFacility;
 use super::group_leader::GroupLeaderFacility;
 use super::io_message::IoMessageFacility;
@@ -230,6 +231,7 @@ pub struct ProcessContext<'process> {
     remote_spawn_facility: Option<Arc<dyn RemoteSpawnFacility>>,
     link_facility: Option<Arc<dyn LinkFacility>>,
     distribution_control_facility: Option<Arc<dyn DistributionControlFacility>>,
+    global_name_facility: Option<Arc<dyn GlobalNameFacility>>,
     group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
     code_management_facility: Option<Arc<dyn CodeManagementFacility>>,
@@ -276,6 +278,10 @@ impl fmt::Debug for ProcessContext<'_> {
             .field(
                 "distribution_control_facility",
                 &self.distribution_control_facility.as_ref().map(|_| ".."),
+            )
+            .field(
+                "global_name_facility",
+                &self.global_name_facility.as_ref().map(|_| ".."),
             )
             .field(
                 "group_leader_facility",
@@ -352,6 +358,7 @@ impl<'process> ProcessContext<'process> {
             remote_spawn_facility: None,
             link_facility: None,
             distribution_control_facility: None,
+            global_name_facility: None,
             group_leader_facility: None,
             supervision_facility: None,
             code_management_facility: None,
@@ -389,6 +396,7 @@ impl<'process> ProcessContext<'process> {
             remote_spawn_facility: None,
             link_facility: None,
             distribution_control_facility: None,
+            global_name_facility: None,
             group_leader_facility: None,
             supervision_facility: None,
             code_management_facility: None,
@@ -569,6 +577,17 @@ impl<'process> ProcessContext<'process> {
         facility: Option<Arc<dyn DistributionControlFacility>>,
     ) {
         self.distribution_control_facility = facility;
+    }
+
+    /// Return the global name facility, if one has been configured.
+    #[must_use]
+    pub fn global_name_facility(&self) -> Option<&dyn GlobalNameFacility> {
+        self.global_name_facility.as_deref()
+    }
+
+    /// Set the global name facility for `global:*_name` BIFs.
+    pub fn set_global_name_facility(&mut self, facility: Option<Arc<dyn GlobalNameFacility>>) {
+        self.global_name_facility = facility;
     }
 
     /// Return the group-leader facility, if one has been configured.

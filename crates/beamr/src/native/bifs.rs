@@ -56,6 +56,7 @@ pub fn register_gate1_bifs(
 
     crate::native::code_management_bifs::register_code_management_bifs(registry, atom_table)?;
     crate::native::dictionary_bifs::register_dictionary_bifs(registry, atom_table)?;
+    crate::native::distribution_bifs::register_distribution_bifs(registry, atom_table)?;
     crate::native::etf_bifs::register_etf_bifs(registry, atom_table)?;
     crate::native::ets_bifs::register_ets_bifs(registry, atom_table)?;
     crate::native::exception_bifs::register_exception_bifs(registry, atom_table)?;
@@ -748,6 +749,20 @@ mod tests {
                 .lookup(ets, function, arity)
                 .expect("registered ETS BIF should be present");
             assert_eq!(entry.capability, Capability::ProcessLocal);
+        }
+
+        let global = atom_table.intern("global");
+        for (name, arity) in [
+            ("register_name", 2),
+            ("register_name", 3),
+            ("whereis_name", 1),
+            ("unregister_name", 1),
+        ] {
+            let function = atom_table.intern(name);
+            let entry = registry
+                .lookup(global, function, arity)
+                .expect("registered global BIF should be present");
+            assert_eq!(entry.capability, Capability::Pure);
         }
     }
 

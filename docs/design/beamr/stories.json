@@ -156,6 +156,28 @@
           "text": "As a reviewer, I want to verify that the loader rejects adversarial .beam files (deep nesting, huge counts, zlib bombs) within bounded resource usage, so that untrusted bytecode cannot crash or OOM the host during decode."
         }
       ]
+    },
+    {
+      "name": "Performance Engineer",
+      "role": "Optimising Workflow Execution",
+      "stories": [
+        { "id": "S34", "text": "As a performance engineer, I want hot BEAM functions to be automatically compiled to native code so that compute-heavy workflows run at near-native speed without manual intervention." },
+        { "id": "S35", "text": "As a performance engineer, I want to configure the JIT compilation threshold so that I can trade startup latency for peak throughput based on the workload profile." },
+        { "id": "S36", "text": "As a performance engineer, I want Gleam's static type information to eliminate tag checks in AOT-compiled code so that typed operations run at native-width arithmetic speed." },
+        { "id": "S37", "text": "As a performance engineer, I want criterion benchmarks comparing JIT vs interpreter execution so that I can measure and track the compilation speedup." },
+        { "id": "S38", "text": "As a performance engineer, I want to deploy a single self-contained binary with embedded .beam files so that there are no external file dependencies at runtime." }
+      ]
+    },
+    {
+      "name": "Compiler Developer",
+      "role": "Maintaining the JIT/AOT Pipeline",
+      "stories": [
+        { "id": "S39", "text": "As a compiler developer, I want every test to run through both the interpreter and the JIT so that any miscompilation is caught as a divergence before it reaches production." },
+        { "id": "S40", "text": "As a compiler developer, I want GC to work correctly during compiled code execution so that safepoints and stack maps keep root tracking accurate." },
+        { "id": "S41", "text": "As a compiler developer, I want hot code loading to invalidate compiled code so that reloaded modules always execute fresh code." },
+        { "id": "S42", "text": "As a compiler developer, I want compiled and interpreted functions to coexist in the same call stack so that partial compilation doesn't break the execution model." },
+        { "id": "S43", "text": "As a compiler developer, I want the Cranelift dependency to be feature-gated so that interpreter-only builds don't pay the dependency cost." }
+      ]
     }
   ]
 }

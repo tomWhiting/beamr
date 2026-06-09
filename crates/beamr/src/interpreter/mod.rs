@@ -50,6 +50,8 @@ pub struct NativeServices {
     pub link_facility: Option<Arc<dyn LinkFacility>>,
     /// Distribution control facility for remote link lifecycle BIFs.
     pub distribution_control_facility: Option<Arc<dyn DistributionControlFacility>>,
+    /// Global name facility for `global:*_name` BIFs.
+    pub global_name_facility: Option<Arc<dyn crate::native::GlobalNameFacility>>,
     /// Group-leader facility for process metadata BIFs.
     pub group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
     /// Supervision facility for monitor/demonitor/exit BIFs.
@@ -134,6 +136,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         remote_spawn_facility: None,
         link_facility: None,
         distribution_control_facility: None,
+        global_name_facility: None,
         group_leader_facility: None,
         supervision_facility: None,
         process_info_facility: None,
@@ -165,6 +168,7 @@ pub fn run_with_registry(
         remote_spawn_facility: None,
         link_facility: None,
         distribution_control_facility: None,
+        global_name_facility: None,
         group_leader_facility: None,
         supervision_facility: None,
         process_info_facility: None,
@@ -196,6 +200,7 @@ pub fn run_with_timer_services(
         remote_spawn_facility: None,
         link_facility: None,
         distribution_control_facility: None,
+        global_name_facility: None,
         group_leader_facility: None,
         supervision_facility: None,
         process_info_facility: None,

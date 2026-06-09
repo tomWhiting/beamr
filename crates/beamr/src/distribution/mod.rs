@@ -6,6 +6,7 @@ pub mod control;
 pub mod control_lifecycle;
 pub mod control_monitor;
 pub mod etf;
+pub mod global;
 pub mod remote_link;
 pub mod handshake;
 mod node;

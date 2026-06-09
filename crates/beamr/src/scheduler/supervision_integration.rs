@@ -594,6 +594,7 @@ pub(super) fn build_native_services(
         distribution_control_facility: Some(Arc::new(SchedulerDistributionControlFacility {
             shared: Arc::clone(shared),
         })),
+        global_name_facility: None,
         group_leader_facility: Some(group_leader),
         supervision_facility: Some(supervision),
         process_info_facility: Some(process_info),

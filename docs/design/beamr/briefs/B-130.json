@@ -1,90 +1,137 @@
 {
   "id": "B-130",
   "cluster": "beamr",
-  "title": "JIT infrastructure \u2014 Cranelift integration and compilation pipeline",
-  "depends_on": [
-    "B-021"
-  ],
+  "title": "JIT infrastructure — Cranelift integration and compilation pipeline",
+  "depends_on": [],
   "blocked_by": [],
-  "checklist": [
-    "C150"
-  ],
-  "stories": [],
-  "purpose": "The JIT compiler transforms hot BEAM functions into native machine code via Cranelift. This brief sets up the compilation pipeline: Cranelift dependency, IR builder abstraction, and the tiered execution model (interpret first, compile after N calls).",
-  "task": "Add Cranelift as an optional dependency, define the JIT compilation pipeline, and implement the hot function detection mechanism.",
+  "checklist": ["C177", "C178", "C179", "C192"],
+  "stories": ["S34", "S35", "S43"],
+  "purpose": "The JIT compiler transforms hot BEAM functions into native machine code via Cranelift. This brief sets up the compilation pipeline: Cranelift dependency, IR builder abstraction, the tiered execution model (interpret first, compile after N calls), and the background compilation pathway via dirty CPU threads. Per D1, D2, D3, and D9 in the JIT/AOT design doc.",
+  "task": "Add Cranelift as an optional dependency behind a feature flag, define the JitCompiler struct that translates BEAM instruction sequences into Cranelift IR and emits callable native code, implement a per-function call profiler that triggers compilation after a configurable threshold, and route compilation work to the dirty CPU thread pool. This brief delivers the scaffold only — no opcode translation (B-131+). The jit/ module root follows the project convention: pub mod + pub use only, no logic.",
   "requirements": [
     {
       "id": "R1",
       "title": "Cranelift dependency and feature gate",
-      "spec": "Add cranelift-codegen and cranelift-frontend as optional dependencies behind a 'jit' feature flag.",
+      "spec": "THE SYSTEM SHALL declare cranelift-codegen, cranelift-frontend, cranelift-module, and cranelift-jit as optional dependencies behind a cargo feature named 'jit'. THE SYSTEM SHALL NOT expose any Cranelift types in beamr's public API. THE SYSTEM SHALL NOT change the compilation output or dependency tree when the jit feature is disabled.",
       "acceptance": [
-        "Cargo.toml has cranelift dependencies behind [features] jit",
-        "Feature-gated: jit code compiles only with --features jit",
-        "Non-jit builds are unaffected",
-        "Test: cargo check --features jit passes"
+        "crates/beamr/Cargo.toml contains [features] jit = ['dep:cranelift-codegen', 'dep:cranelift-frontend', 'dep:cranelift-module', 'dep:cranelift-jit']",
+        "cargo check --workspace passes without --features jit (no Cranelift pulled in)",
+        "cargo check --workspace --features jit passes (Cranelift compiles)",
+        "cargo tree -p beamr shows zero Cranelift crates without --features jit",
+        "All jit/ module files are gated with #[cfg(feature = 'jit')]"
       ],
       "files": {
-        "modify": [
-          "crates/beamr/Cargo.toml"
-        ]
+        "modify": ["crates/beamr/Cargo.toml"],
+        "create": ["crates/beamr/src/jit/mod.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C177"],
+      "stories": ["S43"]
     },
     {
       "id": "R2",
-      "title": "Compilation pipeline scaffold",
-      "spec": "Define the JitCompiler struct that takes BEAM bytecode and produces native function pointers.",
+      "title": "JitCompiler struct and Cranelift IR builder",
+      "spec": "THE SYSTEM SHALL provide a JitCompiler struct that accepts a BEAM function's instruction slice and produces a callable native function pointer via Cranelift's JIT module. WHEN compilation succeeds, THE SYSTEM SHALL return a NativeCode wrapper containing the function pointer and its stack map metadata. IF compilation fails (unsupported opcode, Cranelift error), THE SYSTEM SHALL return JitError with a descriptive variant. THE SYSTEM SHALL NOT panic on any compilation input.",
       "acceptance": [
-        "JitCompiler::new() creates a compiler instance with Cranelift settings",
-        "JitCompiler::compile(module, function, arity) -> Result<NativeCode, JitError>",
-        "NativeCode wraps a function pointer callable from the interpreter",
-        "JitError enum: UnsupportedOpcode, CompilationFailed(String)",
-        "Test: compile a trivial function (return constant)"
+        "JitCompiler::new(settings) creates a compiler with Cranelift ISA settings for the host target",
+        "JitCompiler::compile(&self, instructions: &[Instruction], module: Atom, function: Atom, arity: u8) returns Result<NativeCode, JitError>",
+        "NativeCode stores an extern 'C' fn pointer and a Vec<StackMapEntry> for GC safepoints",
+        "JitError has variants: UnsupportedOpcode { opcode: String }, CraneliftError(String), EmptyFunction",
+        "Test: compile an empty function (single 'return' instruction) → Ok(NativeCode) with zero stack map entries",
+        "Test: compile with an unrecognised opcode → Err(JitError::UnsupportedOpcode { .. })"
       ],
       "files": {
-        "create": [
-          "crates/beamr/src/jit/mod.rs",
-          "crates/beamr/src/jit/compiler.rs"
-        ]
+        "create": ["crates/beamr/src/jit/compiler.rs"]
       },
-      "checklist": [
-        "C150"
-      ],
-      "stories": []
+      "checklist": ["C178"],
+      "stories": ["S34"]
     },
     {
       "id": "R3",
-      "title": "Hot function detection",
-      "spec": "Track function call counts and trigger compilation when a threshold is reached.",
+      "title": "NativeCode and StackMapEntry types",
+      "spec": "THE SYSTEM SHALL define NativeCode as a type-safe wrapper around a Cranelift-emitted function pointer, together with the stack map entries needed for GC cooperation. THE SYSTEM SHALL NOT allow NativeCode to be constructed from an arbitrary function pointer — only JitCompiler::compile may produce one.",
       "acceptance": [
-        "Per-function call counter (AtomicU32) incremented on call/apply",
-        "Configurable threshold (default: 1000 calls)",
-        "When threshold reached, function is queued for JIT compilation",
-        "Compilation happens on a background thread, not the scheduler thread",
-        "Test: call function 1000 times, verify compilation triggered"
+        "NativeCode has pub(crate) visibility on its constructor",
+        "NativeCode::call_ptr() returns *const u8 (the raw JIT'd function pointer)",
+        "NativeCode::stack_maps() returns &[StackMapEntry]",
+        "StackMapEntry contains: offset_from_entry (u32), live_roots (Vec<RootLocation>)",
+        "RootLocation enum has Register(u16) and StackSlot(i32) variants",
+        "NativeCode is Send + Sync (the compiled code is immutable after creation)"
       ],
       "files": {
-        "create": [
-          "crates/beamr/src/jit/profiler.rs"
-        ]
+        "create": ["crates/beamr/src/jit/types.rs"]
       },
-      "checklist": [
-        "C150"
+      "checklist": ["C178"],
+      "stories": ["S34"]
+    },
+    {
+      "id": "R4",
+      "title": "Hot function profiler",
+      "spec": "THE SYSTEM SHALL maintain per-function call counters using AtomicU32 in a DashMap keyed by (module: Atom, function: Atom, arity: u8). WHEN a function's call count reaches the configurable compilation threshold, THE SYSTEM SHALL mark it as pending compilation and submit a compilation request. THE SYSTEM SHALL NOT count calls for functions already compiled or pending compilation. THE SYSTEM SHALL NOT block the calling process while incrementing the counter.",
+      "acceptance": [
+        "JitProfiler::new(threshold: u32) creates a profiler with the given threshold",
+        "JitProfiler::record_call(module, function, arity) returns RecordResult::Continue or RecordResult::CompileNow",
+        "First call to a new MFA returns Continue and sets counter to 1",
+        "Call number equal to threshold returns CompileNow exactly once",
+        "Subsequent calls after CompileNow return Continue (function marked as pending)",
+        "JitProfiler::mark_compiled(module, function, arity) transitions from pending to compiled — no further CompileNow",
+        "Test: record_call 999 times → all Continue; call 1000 → CompileNow; call 1001 → Continue",
+        "Test: mark_compiled then record_call → Continue (no re-trigger)"
       ],
-      "stories": []
+      "files": {
+        "create": ["crates/beamr/src/jit/profiler.rs"]
+      },
+      "checklist": ["C179"],
+      "stories": ["S35"]
+    },
+    {
+      "id": "R5",
+      "title": "Compilation threshold in SchedulerConfig",
+      "spec": "THE SYSTEM SHALL add a jit_threshold: Option<u32> field to SchedulerConfig. WHEN jit_threshold is Some(n), THE SYSTEM SHALL create a JitProfiler with threshold n. WHEN jit_threshold is None and the jit feature is enabled, THE SYSTEM SHALL use a default threshold of 1000. THE SYSTEM SHALL NOT create a JitProfiler when the jit feature is disabled.",
+      "acceptance": [
+        "SchedulerConfig has pub jit_threshold: Option<u32> with Default = None",
+        "With --features jit and no explicit threshold: profiler uses 1000",
+        "With --features jit and jit_threshold = Some(500): profiler uses 500",
+        "Without --features jit: no JitProfiler created regardless of config",
+        "Test: SchedulerConfig::default().jit_threshold == None"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/scheduler/mod.rs"]
+      },
+      "checklist": ["C192"],
+      "stories": ["S35"]
+    },
+    {
+      "id": "R6",
+      "title": "Background compilation via dirty CPU pool",
+      "spec": "WHEN the profiler returns CompileNow for a function, THE SYSTEM SHALL submit a compilation job to the dirty CPU thread pool (per D9). The compilation job calls JitCompiler::compile and installs the result. THE SYSTEM SHALL NOT block the scheduler thread during compilation. IF compilation fails, THE SYSTEM SHALL log the error and leave the function in interpreted mode.",
+      "acceptance": [
+        "CompilationJob struct wraps module/function/arity and a reference to JitCompiler",
+        "submit_jit_compilation(job) enqueues on dirty_cpu pool",
+        "Dirty CPU worker calls JitCompiler::compile and on success calls JitProfiler::mark_compiled",
+        "On compilation failure: error logged, function reverts to interpreted (not stuck in pending state)",
+        "Test: submit compilation for an empty function → mark_compiled called",
+        "Test: submit compilation for unsupported function → error logged, profiler state reset to countable"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/jit/compile_job.rs"]
+      },
+      "checklist": ["C178", "C179"],
+      "stories": ["S34"]
     }
   ],
   "boundaries": [
-    "SHALL NOT implement any opcode translation in this brief \u2014 only the pipeline scaffold",
-    "SHALL NOT block the scheduler during compilation \u2014 background thread",
-    "SHALL be entirely behind the jit feature flag \u2014 no runtime cost when disabled"
+    "SHALL NOT implement any opcode translation — only the pipeline scaffold (opcode translation is B-131 through B-137)",
+    "SHALL NOT block any scheduler thread during compilation — all JIT work runs on dirty CPU threads",
+    "SHALL NOT affect non-JIT builds — all JIT code behind #[cfg(feature = 'jit')]",
+    "SHALL NOT install compiled code into any cache in this brief — cache is B-133",
+    "SHALL NOT emit GC safepoints in this brief — safepoints are B-134"
   ],
   "verification": [
-    "cargo check --workspace passes",
-    "cargo clippy --workspace -- -D warnings passes",
-    "cargo test -p beamr passes with all tests green"
+    "cargo check --workspace passes without --features jit",
+    "cargo check --workspace --features jit passes",
+    "cargo test -p beamr --features jit passes with all tests green",
+    "cargo clippy --workspace --features jit -- -D warnings passes",
+    "grep -r 'cfg(feature = \"jit\")' crates/beamr/src/jit/ confirms all jit modules are gated",
+    "No Cranelift types appear in any pub item outside the jit/ module"
   ]
 }
