@@ -23,6 +23,7 @@ crossbeam-deque = "0.8.6"
 crossbeam-queue = "0.3.12"
 dashmap = "6.1.0"
 flate2 = "1.1.9"
+gleam-types = { path = "../gleam-types", version = "0.1.0" }
 libc = "0.2.186"
 md5 = "0.8.0"
 num_cpus = "1.17.0"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/beamr", "crates/beamr-cli"]
+members = ["crates/beamr", "crates/beamr-cli", "crates/gleam-types"]
 
 [workspace.package]
 license = "Apache-2.0"

@@ -1,1 +1,1 @@
-harden(beamr): guard JIT select_val CFG and tagged tuple edge cases
+feat: add Gleam type sidecar tool and reader
