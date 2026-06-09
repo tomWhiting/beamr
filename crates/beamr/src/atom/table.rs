@@ -77,6 +77,7 @@ impl Atom {
     pub const ECONNRESET: Self = Self(63);
     pub const EINPROGRESS: Self = Self(64);
     pub const ENOTCONN: Self = Self(65);
+    pub const NOCONNECTION: Self = Self(66);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -154,6 +155,7 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("econnreset", Atom::ECONNRESET),
     ("einprogress", Atom::EINPROGRESS),
     ("enotconn", Atom::ENOTCONN),
+    ("noconnection", Atom::NOCONNECTION),
 ];
 
 /// Concurrent intern table for atom strings.

@@ -486,6 +486,9 @@ fn call_external_target(
                 context.set_distribution_send_facility(svc.distribution_send.clone());
                 context.set_spawn_facility(svc.spawn_facility.clone());
                 context.set_link_facility(svc.link_facility.clone());
+                context.set_distribution_control_facility(
+                    svc.distribution_control_facility.clone(),
+                );
                 context.set_group_leader_facility(svc.group_leader_facility.clone());
                 context.set_supervision_facility(svc.supervision_facility.clone());
                 context.set_process_info_facility(svc.process_info_facility.clone());

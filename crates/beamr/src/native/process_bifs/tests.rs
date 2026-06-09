@@ -1,5 +1,6 @@
 use super::*;
 use crate::atom::{Atom, AtomTable};
+use crate::distribution::remote_link::{DistributionControlFacility, RemoteLinkError};
 use crate::native::links::{LinkError, LinkFacility, LinkRecord};
 use crate::native::spawn::{
     SpawnError, SpawnFacility, SpawnMonitorResult, SpawnOptions, SpawnOptionsResult, SpawnRecord,
@@ -11,9 +12,11 @@ use crate::native::{
     BifRegistryImpl, ExceptionClass, ProcessContext, RemoteSpawnError, RemoteSpawnFacility,
     RemoteSpawnResult,
 };
-use crate::process::{ExitReason, Priority, Process};
+use crate::process::{ExitReason, Priority, Process, RemotePid};
 use crate::term::Term;
-use crate::term::boxed::{Reference, Tuple, write_closure, write_cons, write_tuple};
+use crate::term::boxed::{
+    Reference, Tuple, write_closure, write_cons, write_external_pid, write_tuple,
+};
 use crate::term::pid_ref::PidRef;
 use std::sync::{Arc, Mutex};
 
@@ -1510,4 +1513,135 @@ fn remote_spawn_ctx(
     ctx.set_atom_table(Some(atoms));
     ctx.set_remote_spawn_facility(Some(facility.clone()));
     (facility, ctx, node, module, function)
+}
+
+// ---- Remote link mock and tests ----
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DistributionRecord {
+    LinkRemote {
+        caller_pid: u64,
+        target: RemotePid,
+    },
+    UnlinkRemote {
+        caller_pid: u64,
+        target: RemotePid,
+    },
+    ExitRemote {
+        caller_pid: u64,
+        target: RemotePid,
+        reason: ExitReason,
+    },
+}
+
+struct MockDistributionControlFacility {
+    records: Mutex<Vec<DistributionRecord>>,
+}
+
+impl MockDistributionControlFacility {
+    fn new() -> Self {
+        Self {
+            records: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn records(&self) -> Vec<DistributionRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+impl DistributionControlFacility for MockDistributionControlFacility {
+    fn link_remote(&self, caller_pid: u64, target: RemotePid) -> Result<(), RemoteLinkError> {
+        self.records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(DistributionRecord::LinkRemote { caller_pid, target });
+        Ok(())
+    }
+
+    fn unlink_remote(&self, caller_pid: u64, target: RemotePid) -> Result<(), RemoteLinkError> {
+        self.records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(DistributionRecord::UnlinkRemote { caller_pid, target });
+        Ok(())
+    }
+
+    fn exit_remote(
+        &self,
+        caller_pid: u64,
+        target: RemotePid,
+        reason: ExitReason,
+    ) -> Result<(), RemoteLinkError> {
+        self.records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(DistributionRecord::ExitRemote {
+                caller_pid,
+                target,
+                reason,
+            });
+        Ok(())
+    }
+}
+
+fn remote_link_ctx(
+    caller_pid: u64,
+) -> (
+    Arc<MockDistributionControlFacility>,
+    ProcessContext<'static>,
+) {
+    let f = Arc::new(MockDistributionControlFacility::new());
+    let mut ctx = ProcessContext::new();
+    ctx.set_pid(Some(caller_pid));
+    ctx.set_distribution_control_facility(Some(f.clone()));
+    (f, ctx)
+}
+
+fn remote_pid_term(node: Atom, pid_number: u64, serial: u64) -> Term {
+    let words = Box::leak(Box::new([0_u64; 4]));
+    write_external_pid(words, node, pid_number, serial).expect("external pid fits")
+}
+
+#[test]
+fn link_remote_pid_routes_through_distribution_control() {
+    let (f, mut ctx) = remote_link_ctx(1);
+    let remote = remote_pid_term(Atom::OK, 42, 7);
+
+    assert_eq!(bif_link(&[remote], &mut ctx), Ok(Term::atom(Atom::TRUE)));
+
+    assert_eq!(
+        f.records(),
+        vec![DistributionRecord::LinkRemote {
+            caller_pid: 1,
+            target: RemotePid {
+                node: Atom::OK,
+                pid_number: 42,
+                serial: 7,
+            },
+        }]
+    );
+}
+
+#[test]
+fn unlink_remote_pid_routes_through_distribution_control() {
+    let (f, mut ctx) = remote_link_ctx(1);
+    let remote = remote_pid_term(Atom::OK, 42, 7);
+
+    assert_eq!(bif_unlink(&[remote], &mut ctx), Ok(Term::atom(Atom::TRUE)));
+
+    assert_eq!(
+        f.records(),
+        vec![DistributionRecord::UnlinkRemote {
+            caller_pid: 1,
+            target: RemotePid {
+                node: Atom::OK,
+                pid_number: 42,
+                serial: 7,
+            },
+        }]
+    );
 }

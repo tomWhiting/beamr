@@ -67,6 +67,7 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
         spawn_facility: None,
         remote_spawn_facility: None,
         link_facility: None,
+        distribution_control_facility: None,
         supervision_facility: None,
         io_sink: None,
         code_management_facility: None,

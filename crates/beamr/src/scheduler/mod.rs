@@ -14,6 +14,7 @@ use self::spawning::SpawnRequest;
 use crate::atom::AtomTable;
 use crate::distribution::DistributionConfig;
 use crate::distribution::connection::ConnectionManager;
+use crate::distribution::remote_link::ControlRouter;
 use crate::distribution::{DEFAULT_NODE_NAME, NetKernel, Node};
 
 use crate::error::ExecError;
@@ -92,6 +93,7 @@ pub(super) struct SharedState {
     hook: Hook,
     distribution: DistributionConfig,
     distribution_connections: ConnectionManager,
+    control_router: ControlRouter,
     process_registry: DashMap<crate::atom::Atom, u64>,
     timers: Arc<Mutex<TimerWheel>>,
     output_sink: Mutex<Arc<dyn IoSink>>,
@@ -363,6 +365,7 @@ impl Scheduler {
             hook: Hook::new(),
             distribution,
             distribution_connections,
+            control_router: ControlRouter::new(),
             process_registry: DashMap::new(),
             timers: Arc::new(Mutex::new(TimerWheel::new())),
             output_sink: Mutex::new(Arc::new(NullSink)),

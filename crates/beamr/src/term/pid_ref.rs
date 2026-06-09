@@ -2,6 +2,7 @@
 
 use crate::{
     atom::Atom,
+    process::RemotePid,
     term::{Term, boxed::ExternalPid},
 };
 
@@ -46,6 +47,19 @@ impl PidRef {
             Self::Local(_) => None,
             Self::Remote(pid) => pid.node(),
         }
+    }
+
+    /// Returns the stable remote identity, or `None` for local PIDs.
+    #[must_use]
+    pub fn remote_pid(self) -> Option<RemotePid> {
+        let Self::Remote(pid) = self else {
+            return None;
+        };
+        Some(RemotePid {
+            node: pid.node()?,
+            pid_number: pid.pid_number(),
+            serial: pid.serial(),
+        })
     }
 
     /// Returns true when the PID uses the local immediate representation.

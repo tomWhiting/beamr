@@ -146,6 +146,8 @@ pub enum ExitReason {
     Killed,
     /// Placeholder error exit until error terms land.
     Error,
+    /// Distribution connection to a linked or monitored remote process was lost.
+    NoConnection,
 }
 
 impl ExitReason {
@@ -157,6 +159,7 @@ impl ExitReason {
             Self::Kill => Atom::KILL,
             Self::Killed => Atom::KILLED,
             Self::Error => Atom::ERROR,
+            Self::NoConnection => Atom::NOCONNECTION,
         }
     }
 
@@ -165,6 +168,17 @@ impl ExitReason {
     pub const fn as_term(self) -> Term {
         Term::atom(self.as_atom())
     }
+}
+
+/// Stable identity for a PID hosted by another distribution node.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct RemotePid {
+    /// Remote node atom.
+    pub node: Atom,
+    /// Remote process id number.
+    pub pid_number: u64,
+    /// Remote pid serial.
+    pub serial: u64,
 }
 
 /// Lifecycle state for a process.
@@ -275,6 +289,7 @@ pub struct Process {
     current_module: Option<Arc<Module>>,
     current_mfa: Option<(Atom, Atom, u8)>,
     links: Vec<u64>,
+    remote_links: Vec<RemotePid>,
     monitors: Vec<Monitor>,
     trap_exit: bool,
     group_leader: Term,
@@ -309,6 +324,7 @@ impl Process {
             current_module: None,
             current_mfa: None,
             links: Vec::new(),
+            remote_links: Vec::new(),
             monitors: Vec::new(),
             trap_exit: false,
             group_leader: Self::initial_group_leader(pid),
@@ -807,6 +823,36 @@ impl Process {
     /// Remove all links and return the previous link set in insertion order.
     pub fn take_links(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.links)
+    }
+
+    /// Linked remote process IDs.
+    #[must_use]
+    pub fn remote_links(&self) -> &[RemotePid] {
+        &self.remote_links
+    }
+
+    /// Add a linked remote process id. Returns whether the ordered set changed.
+    ///
+    /// Link insertion order is preserved separately from local links so remote
+    /// exit propagation is deterministic without losing node/serial identity.
+    pub fn add_remote_link(&mut self, pid: RemotePid) -> bool {
+        if self.remote_links.contains(&pid) {
+            return false;
+        }
+        self.remote_links.push(pid);
+        true
+    }
+
+    /// Remove a linked remote process id. Returns whether the ordered set changed.
+    pub fn remove_remote_link(&mut self, pid: RemotePid) -> bool {
+        let before = self.remote_links.len();
+        self.remote_links.retain(|linked| *linked != pid);
+        before != self.remote_links.len()
+    }
+
+    /// Remove all remote links and return the previous set in insertion order.
+    pub fn take_remote_links(&mut self) -> Vec<RemotePid> {
+        std::mem::take(&mut self.remote_links)
     }
 
     /// Monitor metadata attached to this process.

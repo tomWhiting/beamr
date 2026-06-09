@@ -13,7 +13,7 @@ use crate::atom::Atom;
 use crate::ets::{EtsTableMetadata, EtsTableType, Protection};
 use crate::io::RingConfig;
 use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, write_fd_resource};
-use crate::process::ProcessStatus;
+use crate::process::{ProcessStatus, RemotePid};
 use crate::process::registry::ProcessTable;
 use crate::scheduler::execution::{
     cleanup_exited_process, cleanup_if_tombstoned_after_store, store_runnable_process,
@@ -80,6 +80,18 @@ fn add_link(shared: &SharedState, a: u64, b: u64) {
     }
 }
 
+fn add_remote_link(shared: &SharedState, pid: u64, remote: RemotePid) {
+    let entry = shared
+        .process_bodies
+        .get(&pid)
+        .unwrap_or_else(|| panic!("process {pid} exists"));
+    let mut slot = lock_or_recover(&entry);
+    let ProcessSlot::Present(ScheduledProcess(process)) = &mut *slot else {
+        panic!("process {pid} is present");
+    };
+    assert!(process.add_remote_link(remote));
+}
+
 /// Helper: set trap_exit on a process.
 fn set_trap_exit(shared: &SharedState, pid: u64, value: bool) {
     if let Some(entry) = shared.process_bodies.get(&pid) {
@@ -125,6 +137,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
             let metadata = ProcessMetadata {
                 namespace_id: process.namespace_id(),
                 links: process.links().to_vec(),
+                remote_links: process.remote_links().to_vec(),
                 monitors: process.monitors().to_vec(),
                 trap_exit: process.trap_exit(),
                 priority: process.priority(),
@@ -248,6 +261,7 @@ fn make_shared_state() -> Arc<SharedState> {
         hook: crate::hook::Hook::new(),
         distribution,
         distribution_connections,
+        control_router: crate::distribution::remote_link::ControlRouter::new(),
         process_registry: DashMap::new(),
         timers: Arc::new(std::sync::Mutex::new(crate::timer::TimerWheel::new())),
         output_sink: std::sync::Mutex::new(Arc::new(crate::io::NullSink)),
@@ -746,4 +760,98 @@ fn sentinel_links_merge_into_body_on_store_back() {
     store_runnable_process(&shared, process);
 
     assert!(process_links_contain(&shared, pid, linked));
+}
+
+#[test]
+fn remote_link_exit_sends_exit_control() {
+    let shared = make_shared_state();
+    let pid = insert_process(&shared, 1);
+    let remote = RemotePid {
+        node: Atom::OK,
+        pid_number: 42,
+        serial: 7,
+    };
+    add_remote_link(&shared, pid, remote);
+
+    cleanup_exited_process(&shared, pid, ExitReason::Error);
+
+    let messages = shared.control_router.messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].op,
+        crate::distribution::control_lifecycle::ControlOp::Exit
+    );
+    assert_eq!(messages[0].from.pid_number, pid);
+    assert_eq!(messages[0].to, remote);
+    assert_eq!(messages[0].reason, Some(ExitReason::Error));
+}
+
+#[test]
+fn remote_exit_to_trapping_process_enqueues_remote_exit_tuple() {
+    let shared = make_shared_state();
+    let target = insert_process(&shared, 1);
+    let remote = RemotePid {
+        node: Atom::OK,
+        pid_number: 42,
+        serial: 7,
+    };
+    add_remote_link(&shared, target, remote);
+    set_trap_exit(&shared, target, true);
+
+    supervision_integration::process_remote_exit_signal(
+        &shared, remote, target, ExitReason::Error,
+    );
+
+    let tuple = read_mailbox_tuple(&shared, target).expect("remote EXIT message");
+    assert_eq!(tuple.len(), 3);
+    assert_eq!(tuple[0], Term::atom(Atom::EXIT));
+    let source =
+        crate::term::boxed::ExternalPid::new(tuple[1]).expect("remote source pid");
+    assert_eq!(source.node(), Some(remote.node));
+    assert_eq!(source.pid_number(), remote.pid_number);
+    assert_eq!(source.serial(), remote.serial);
+    assert_eq!(tuple[2], Term::atom(Atom::ERROR));
+    assert!(is_alive(&shared, target));
+}
+
+#[test]
+fn connection_down_delivers_noconnection_to_all_remote_links_on_node() {
+    let shared = make_shared_state();
+    let first = insert_process(&shared, 1);
+    let second = insert_process(&shared, 2);
+    let other_node = insert_process(&shared, 3);
+    let node = Atom::OK;
+    let remote_a = RemotePid {
+        node,
+        pid_number: 10,
+        serial: 0,
+    };
+    let remote_b = RemotePid {
+        node,
+        pid_number: 11,
+        serial: 0,
+    };
+    let remote_c = RemotePid {
+        node: Atom::ERROR,
+        pid_number: 12,
+        serial: 0,
+    };
+    add_remote_link(&shared, first, remote_a);
+    add_remote_link(&shared, first, remote_b);
+    add_remote_link(&shared, second, remote_b);
+    add_remote_link(&shared, other_node, remote_c);
+    set_trap_exit(&shared, first, true);
+    set_trap_exit(&shared, second, true);
+
+    supervision_integration::connection_down(&shared, node);
+
+    assert_eq!(
+        read_mailbox_tuple(&shared, first).expect("first noconnection")[2],
+        Term::atom(Atom::NOCONNECTION)
+    );
+    assert_eq!(
+        read_mailbox_tuple(&shared, second).expect("second noconnection")[2],
+        Term::atom(Atom::NOCONNECTION)
+    );
+    assert!(is_alive(&shared, other_node));
 }

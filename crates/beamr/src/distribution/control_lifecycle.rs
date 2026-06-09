@@ -299,6 +299,7 @@ pub fn exit_reason_from_term(term: Term) -> Option<ExitReason> {
         Atom::KILL => Some(ExitReason::Kill),
         Atom::KILLED => Some(ExitReason::Killed),
         Atom::ERROR => Some(ExitReason::Error),
+        Atom::NOCONNECTION => Some(ExitReason::NoConnection),
         _ => None,
     }
 }

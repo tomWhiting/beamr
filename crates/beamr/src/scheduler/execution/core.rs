@@ -94,6 +94,7 @@ pub(in crate::scheduler) fn take_runnable_process(
             let metadata = ProcessMetadata {
                 namespace_id: process.namespace_id(),
                 links: process.links().to_vec(),
+                remote_links: process.remote_links().to_vec(),
                 monitors: process.monitors().to_vec(),
                 trap_exit: process.trap_exit(),
                 priority: process.priority(),
@@ -129,6 +130,9 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
             for linked_pid in &metadata.links {
                 process.add_link(*linked_pid);
             }
+            for remote_link in &metadata.remote_links {
+                process.add_remote_link(*remote_link);
+            }
             for monitor in process.monitors().to_vec() {
                 if !metadata
                     .monitors
@@ -147,12 +151,23 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
                     process.add_monitor(*monitor);
                 }
             }
-            for (source_pid, reason) in metadata.pending_exit_messages.drain(..) {
-                crate::supervision::link::enqueue_exit_message_pub(
-                    &mut process,
-                    source_pid,
-                    reason,
-                );
+            for (source, reason) in metadata.pending_exit_messages.drain(..) {
+                match source {
+                    crate::scheduler::process_slot::PendingExitSource::Local(source_pid) => {
+                        crate::supervision::link::enqueue_exit_message_pub(
+                            &mut process,
+                            source_pid,
+                            reason,
+                        );
+                    }
+                    crate::scheduler::process_slot::PendingExitSource::Remote(remote_pid) => {
+                        crate::supervision::link::enqueue_remote_exit_message_pub(
+                            &mut process,
+                            remote_pid,
+                            reason,
+                        );
+                    }
+                }
             }
             for (reference, target_pid, reason) in metadata.pending_down_messages.drain(..) {
                 crate::supervision::monitor::enqueue_down_message_pub(

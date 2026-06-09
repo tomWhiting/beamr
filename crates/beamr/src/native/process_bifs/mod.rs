@@ -13,6 +13,7 @@ use crate::native::{
 use crate::process::{ExitReason, Priority};
 use crate::term::Term;
 use crate::term::boxed::{Closure, Cons, Tuple};
+use crate::term::pid_ref::PidRef;
 
 type Gate2Bif = (&'static str, u8, Capability, NativeFn);
 
@@ -110,16 +111,28 @@ pub fn bif_link(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
     let [target_term] = args else {
         return Err(badarg());
     };
-    let target_pid = target_term.as_pid().ok_or_else(badarg)?;
+    let target_pid = PidRef::new(*target_term).ok_or_else(badarg)?;
     let caller_pid = context.pid().ok_or_else(badarg)?;
-    if caller_pid == target_pid {
-        return Ok(Term::atom(Atom::TRUE));
-    }
-    let facility = context.link_facility().ok_or_else(badarg)?;
-    match facility.link(caller_pid, target_pid) {
-        Ok(()) => Ok(Term::atom(Atom::TRUE)),
-        Err(LinkError::NoProc) => Err(Term::atom(Atom::NOPROC)),
-        Err(LinkError::NoCaller) => Err(badarg()),
+    match target_pid {
+        PidRef::Local(target_pid) => {
+            if caller_pid == target_pid {
+                return Ok(Term::atom(Atom::TRUE));
+            }
+            let facility = context.link_facility().ok_or_else(badarg)?;
+            match facility.link(caller_pid, target_pid) {
+                Ok(()) => Ok(Term::atom(Atom::TRUE)),
+                Err(LinkError::NoProc) => Err(Term::atom(Atom::NOPROC)),
+                Err(LinkError::NoCaller) => Err(badarg()),
+            }
+        }
+        PidRef::Remote(_) => {
+            let remote = target_pid.remote_pid().ok_or_else(badarg)?;
+            let facility = context.distribution_control_facility().ok_or_else(badarg)?;
+            facility
+                .link_remote(caller_pid, remote)
+                .map_err(|_| Term::atom(Atom::NOPROC))?;
+            Ok(Term::atom(Atom::TRUE))
+        }
     }
 }
 
@@ -128,16 +141,28 @@ pub fn bif_unlink(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
     let [target_term] = args else {
         return Err(badarg());
     };
-    let target_pid = target_term.as_pid().ok_or_else(badarg)?;
+    let target_pid = PidRef::new(*target_term).ok_or_else(badarg)?;
     let caller_pid = context.pid().ok_or_else(badarg)?;
-    if caller_pid == target_pid {
-        return Ok(Term::atom(Atom::TRUE));
+    match target_pid {
+        PidRef::Local(target_pid) => {
+            if caller_pid == target_pid {
+                return Ok(Term::atom(Atom::TRUE));
+            }
+            let facility = context.link_facility().ok_or_else(badarg)?;
+            facility
+                .unlink(caller_pid, target_pid)
+                .map_err(|_| badarg())?;
+            Ok(Term::atom(Atom::TRUE))
+        }
+        PidRef::Remote(_) => {
+            let remote = target_pid.remote_pid().ok_or_else(badarg)?;
+            let facility = context.distribution_control_facility().ok_or_else(badarg)?;
+            facility
+                .unlink_remote(caller_pid, remote)
+                .map_err(|_| badarg())?;
+            Ok(Term::atom(Atom::TRUE))
+        }
     }
-    let facility = context.link_facility().ok_or_else(badarg)?;
-    facility
-        .unlink(caller_pid, target_pid)
-        .map_err(|_| badarg())?;
-    Ok(Term::atom(Atom::TRUE))
 }
 
 /// erlang:process_flag/2 — sets a process flag, returns the previous value.
@@ -264,6 +289,7 @@ fn exit_reason_from_term(term: Term) -> Result<ExitReason, Term> {
         Atom::KILL => Ok(ExitReason::Kill),
         Atom::KILLED => Ok(ExitReason::Killed),
         Atom::ERROR => Ok(ExitReason::Error),
+        Atom::NOCONNECTION => Ok(ExitReason::NoConnection),
         _ => Err(badarg()),
     }
 }

@@ -11,6 +11,9 @@ use crate::distribution::control::{
     ControlDelivery, ControlRegistry, DistributionSendError, DistributionSendFacility,
     encode_send_frame,
 };
+use crate::distribution::remote_link::{
+    DistributionControlFacility, RemoteLinkError,
+};
 use crate::ets::{EtsError, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::io::{CompletionRing, IoOp};
 use crate::namespace::NamespaceId;
@@ -23,7 +26,8 @@ use crate::native::spawn::{
 use crate::native::supervision::{MonitorResult, SupervisionError, SupervisionFacility};
 use crate::native::{FileIoCompletion, FileIoContinuation, FileIoFacility};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
-use crate::process::{ExitReason, Priority, Process, ProcessStatus};
+use crate::process::{ExitReason, Priority, Process, ProcessStatus, RemotePid};
+use crate::scheduler::process_slot::PendingExitSource;
 use crate::supervision::link;
 use crate::supervision::monitor;
 use crate::term::Term;
@@ -40,6 +44,7 @@ use super::{ProcessSlot, ScheduledProcess, SharedState, lock_or_recover, namespa
 pub(super) fn propagate_exit(shared: &SharedState, pid: u64, reason: ExitReason) {
     // Collect linked PIDs from the exiting process.
     let linked_pids = take_links_from(shared, pid);
+    let remote_links = take_remote_links_from(shared, pid);
     let terminal_reason = link::terminal_reason(reason);
 
     // Deliver DOWN messages to all monitors of this process.
@@ -49,6 +54,11 @@ pub(super) fn propagate_exit(shared: &SharedState, pid: u64, reason: ExitReason)
     {
         let mut ls = lock_or_recover(&shared.link_set);
         ls.process_exited_tombstone(pid, terminal_reason);
+    }
+
+    // Send remote EXIT controls for cross-node links.
+    for remote in remote_links {
+        send_remote_exit(shared, pid, remote, terminal_reason);
     }
 
     // Process link cascade with worklist pattern.
@@ -202,6 +212,154 @@ pub(super) fn take_links_from(shared: &SharedState, pid: u64) -> Vec<u64> {
     Vec::new()
 }
 
+pub(super) fn take_remote_links_from(shared: &SharedState, pid: u64) -> Vec<RemotePid> {
+    if let Some(entry) = shared.process_bodies.get(&pid) {
+        let mut slot = lock_or_recover(&entry);
+        match &mut *slot {
+            ProcessSlot::Present(ScheduledProcess(process)) => {
+                return process.take_remote_links();
+            }
+            ProcessSlot::Executing(metadata) => {
+                return std::mem::take(&mut metadata.remote_links);
+            }
+            ProcessSlot::Absent => {}
+        }
+    }
+    Vec::new()
+}
+
+pub(super) fn establish_remote_link(
+    shared: &SharedState,
+    local_pid: u64,
+    remote: RemotePid,
+) -> bool {
+    let Some(entry) = shared.process_bodies.get(&local_pid) else {
+        return false;
+    };
+    let mut slot = lock_or_recover(&entry);
+    match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(process)) => process.add_remote_link(remote),
+        ProcessSlot::Executing(metadata) => {
+            metadata.add_remote_link(remote);
+            true
+        }
+        ProcessSlot::Absent => false,
+    }
+}
+
+pub(super) fn remove_remote_link(
+    shared: &SharedState,
+    local_pid: u64,
+    remote: RemotePid,
+) -> bool {
+    let Some(entry) = shared.process_bodies.get(&local_pid) else {
+        return false;
+    };
+    let mut slot = lock_or_recover(&entry);
+    match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(process)) => process.remove_remote_link(remote),
+        ProcessSlot::Executing(metadata) => {
+            metadata.remove_remote_link(remote);
+            true
+        }
+        ProcessSlot::Absent => false,
+    }
+}
+
+#[allow(dead_code)] // Called by distribution connection layer and tests
+pub(crate) fn process_remote_exit_signal(
+    shared: &SharedState,
+    source_pid: RemotePid,
+    target_pid: u64,
+    reason: ExitReason,
+) {
+    let Some(entry) = shared.process_bodies.get(&target_pid) else {
+        return;
+    };
+    let mut slot = lock_or_recover(&entry);
+    match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(target)) => {
+            if matches!(target.status(), ProcessStatus::Exited(_)) {
+                return;
+            }
+            target.remove_remote_link(source_pid);
+            let should_die =
+                reason == ExitReason::Kill || (reason != ExitReason::Normal && !target.trap_exit());
+            if should_die {
+                let propagated_reason = link::terminal_reason(reason);
+                target.terminate(propagated_reason);
+                drop(slot);
+                drop(entry);
+                cleanup_exited_process(shared, target_pid, propagated_reason);
+            } else if target.trap_exit() {
+                link::enqueue_remote_exit_message_pub(target, source_pid, reason);
+                drop(slot);
+                drop(entry);
+                wake_process(shared, target_pid);
+            }
+        }
+        ProcessSlot::Executing(metadata) => {
+            metadata.remove_remote_link(source_pid);
+            if metadata.trap_exit {
+                metadata
+                    .pending_exit_messages
+                    .push((PendingExitSource::Remote(source_pid), reason));
+                drop(slot);
+                drop(entry);
+                wake_process(shared, target_pid);
+            } else if reason != ExitReason::Normal {
+                shared
+                    .exit_tombstones
+                    .insert(target_pid, link::terminal_reason(reason));
+            }
+        }
+        ProcessSlot::Absent => {}
+    }
+}
+
+#[allow(dead_code)] // Called by distribution connection layer and tests
+pub(crate) fn connection_down(shared: &SharedState, node: Atom) {
+    let affected: Vec<(u64, RemotePid)> = shared
+        .process_bodies
+        .iter()
+        .flat_map(|entry| {
+            let pid = *entry.key();
+            let slot = lock_or_recover(entry.value());
+            match &*slot {
+                ProcessSlot::Present(ScheduledProcess(process)) => process
+                    .remote_links()
+                    .iter()
+                    .copied()
+                    .filter(|remote| remote.node == node)
+                    .map(|remote| (pid, remote))
+                    .collect::<Vec<_>>(),
+                ProcessSlot::Executing(metadata) => metadata
+                    .remote_links
+                    .iter()
+                    .copied()
+                    .filter(|remote| remote.node == node)
+                    .map(|remote| (pid, remote))
+                    .collect::<Vec<_>>(),
+                ProcessSlot::Absent => Vec::new(),
+            }
+        })
+        .collect();
+    for (local_pid, remote_pid) in affected {
+        process_remote_exit_signal(shared, remote_pid, local_pid, ExitReason::NoConnection);
+    }
+}
+
+fn send_remote_exit(
+    shared: &SharedState,
+    caller_pid: u64,
+    target: RemotePid,
+    reason: ExitReason,
+) {
+    shared
+        .control_router
+        .send_exit(shared.local_node.name, caller_pid, target, reason);
+}
+
 /// Deliver a single exit signal to a linked process. Returns any cascade
 /// entries (source_pid, linked_pid, reason) for processes that must also die.
 fn process_exit_signal(
@@ -316,7 +474,9 @@ fn process_exit_signal(
                     .map(|linked_pid| (target_pid, linked_pid, propagated_reason))
                     .collect()
             } else if reason != ExitReason::Normal && metadata.trap_exit {
-                metadata.pending_exit_messages.push((source_pid, reason));
+                metadata
+                    .pending_exit_messages
+                    .push((PendingExitSource::Local(source_pid), reason));
                 drop(slot);
                 drop(entry);
                 wake_process(shared, target_pid);
@@ -431,6 +591,9 @@ pub(super) fn build_native_services(
         spawn_facility: Some(spawn),
         remote_spawn_facility: None,
         link_facility: Some(link),
+        distribution_control_facility: Some(Arc::new(SchedulerDistributionControlFacility {
+            shared: Arc::clone(shared),
+        })),
         group_leader_facility: Some(group_leader),
         supervision_facility: Some(supervision),
         process_info_facility: Some(process_info),
@@ -1311,6 +1474,49 @@ impl LinkFacility for SchedulerLinkFacility {
     }
 }
 
+/// Real `DistributionControlFacility` backed by scheduler remote-link metadata.
+pub(super) struct SchedulerDistributionControlFacility {
+    pub(super) shared: Arc<SharedState>,
+}
+
+impl DistributionControlFacility for SchedulerDistributionControlFacility {
+    fn link_remote(&self, caller_pid: u64, target: RemotePid) -> Result<(), RemoteLinkError> {
+        if self.shared.process_table.get(caller_pid).is_none() {
+            return Err(RemoteLinkError::BadTarget);
+        }
+        if !establish_remote_link(&self.shared, caller_pid, target) {
+            return Err(RemoteLinkError::BadTarget);
+        }
+        self.shared
+            .control_router
+            .send_link(self.shared.local_node.name, caller_pid, target);
+        Ok(())
+    }
+
+    fn unlink_remote(&self, caller_pid: u64, target: RemotePid) -> Result<(), RemoteLinkError> {
+        remove_remote_link(&self.shared, caller_pid, target);
+        self.shared
+            .control_router
+            .send_unlink(self.shared.local_node.name, caller_pid, target);
+        Ok(())
+    }
+
+    fn exit_remote(
+        &self,
+        caller_pid: u64,
+        target: RemotePid,
+        reason: ExitReason,
+    ) -> Result<(), RemoteLinkError> {
+        self.shared.control_router.send_exit(
+            self.shared.local_node.name,
+            caller_pid,
+            target,
+            reason,
+        );
+        Ok(())
+    }
+}
+
 /// Real `SupervisionFacility` backed by the scheduler's shared state.
 pub(super) struct SchedulerSupervisionFacility {
     pub(super) shared: Arc<SharedState>,
@@ -1435,7 +1641,9 @@ impl SupervisionFacility for SchedulerSupervisionFacility {
                         let terminal = link::terminal_reason(reason);
                         shared_exit_tombstone(&self.shared, target_pid, terminal);
                     } else if reason != ExitReason::Normal && metadata.trap_exit {
-                        metadata.pending_exit_messages.push((_caller_pid, reason));
+                        metadata
+                            .pending_exit_messages
+                            .push((PendingExitSource::Local(_caller_pid), reason));
                         drop(slot);
                         drop(entry);
                         wake_process(&self.shared, target_pid);

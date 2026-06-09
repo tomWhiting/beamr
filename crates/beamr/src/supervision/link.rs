@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::{
     atom::Atom,
-    process::{ExitReason, Process, ProcessStatus},
+    process::{ExitReason, Process, ProcessStatus, RemotePid},
     term::{Term, boxed},
 };
 
@@ -173,14 +173,52 @@ fn should_die_from_signal(target: &Process, reason: ExitReason) -> bool {
 /// to processes that have `trap_exit` enabled. Falls back to terminating
 /// the process with `Error` if heap allocation fails.
 pub fn enqueue_exit_message_pub(target: &mut Process, source_pid: u64, reason: ExitReason) {
-    if enqueue_exit_message(target, source_pid, reason).is_err() {
+    let source = Ok(Term::pid(source_pid));
+    if enqueue_exit_message_with_source(target, source, reason).is_err() {
         target.terminate(ExitReason::Error);
     }
+}
+
+/// Deliver an {EXIT, RemoteSourcePid, Reason} message to a trapping process.
+pub fn enqueue_remote_exit_message_pub(
+    target: &mut Process,
+    source_pid: RemotePid,
+    reason: ExitReason,
+) {
+    let source = source_pid_term(target, source_pid);
+    if enqueue_exit_message_with_source(target, source, reason).is_err() {
+        target.terminate(ExitReason::Error);
+    }
+}
+
+fn source_pid_term(target: &mut Process, source_pid: RemotePid) -> Result<Term, ()> {
+    const EXTERNAL_PID_WORDS: usize = 4;
+    crate::gc::ensure_space(target, EXTERNAL_PID_WORDS, 256).map_err(|_| ())?;
+    let words = target
+        .heap_mut()
+        .alloc_slice(EXTERNAL_PID_WORDS)
+        .map_err(|_| ())?;
+    boxed::write_external_pid(
+        words,
+        source_pid.node,
+        source_pid.pid_number,
+        source_pid.serial,
+    )
+    .ok_or(())
 }
 
 fn enqueue_exit_message(
     target: &mut Process,
     source_pid: u64,
+    reason: ExitReason,
+) -> Result<(), ()> {
+    let source = Ok(Term::pid(source_pid));
+    enqueue_exit_message_with_source(target, source, reason)
+}
+
+fn enqueue_exit_message_with_source(
+    target: &mut Process,
+    source_pid: Result<Term, ()>,
     reason: ExitReason,
 ) -> Result<(), ()> {
     const EXIT_TUPLE_WORDS: usize = 4;
@@ -192,10 +230,11 @@ fn enqueue_exit_message(
     // without copying live data, leaving registers, prior mailbox messages, and
     // stack slots dangling. See `gc::ensure_space` and `heap.rs` region invariant.
     crate::gc::ensure_space(target, EXIT_TUPLE_WORDS, 256).map_err(|_| ())?;
+    let source_pid = source_pid?;
 
     let elements = [
         Term::atom(Atom::EXIT),
-        Term::pid(source_pid),
+        source_pid,
         terminal_reason(reason).as_term(),
     ];
     let words = target

@@ -514,6 +514,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         hook: Hook::new(),
         distribution,
         distribution_connections,
+        control_router: crate::distribution::remote_link::ControlRouter::new(),
         process_registry: DashMap::new(),
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
@@ -805,6 +806,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         hook: Hook::new(),
         distribution,
         distribution_connections,
+        control_router: crate::distribution::remote_link::ControlRouter::new(),
         process_registry: DashMap::new(),
         timers: Arc::new(Mutex::new(TimerWheel::new())),
         output_sink: Mutex::new(Arc::new(NullSink)),
@@ -847,6 +849,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         Mutex::new(ProcessSlot::Executing(ProcessMetadata {
             namespace_id: NamespaceId::DEFAULT,
             links: Vec::new(),
+            remote_links: Vec::new(),
             monitors: Vec::new(),
             trap_exit: false,
             priority: process.priority(),

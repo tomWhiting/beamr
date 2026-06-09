@@ -23,6 +23,7 @@ use crate::native::process_info_bifs::ProcessInfoFacility;
 use crate::native::spawn::SpawnFacility;
 use crate::native::supervision::SupervisionFacility;
 use crate::native::system_info_bifs::SystemInfoFacility;
+use crate::distribution::remote_link::DistributionControlFacility;
 use crate::native::{FileIoFacility, NativeEntry, RemoteSpawnFacility, TcpIoFacility};
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::scheduler::dirty::DirtySchedulerKind;
@@ -47,6 +48,8 @@ pub struct NativeServices {
     pub remote_spawn_facility: Option<Arc<dyn RemoteSpawnFacility>>,
     /// Link facility for link management BIFs.
     pub link_facility: Option<Arc<dyn LinkFacility>>,
+    /// Distribution control facility for remote link lifecycle BIFs.
+    pub distribution_control_facility: Option<Arc<dyn DistributionControlFacility>>,
     /// Group-leader facility for process metadata BIFs.
     pub group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
     /// Supervision facility for monitor/demonitor/exit BIFs.
@@ -130,6 +133,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         spawn_facility: None,
         remote_spawn_facility: None,
         link_facility: None,
+        distribution_control_facility: None,
         group_leader_facility: None,
         supervision_facility: None,
         process_info_facility: None,
@@ -160,6 +164,7 @@ pub fn run_with_registry(
         spawn_facility: None,
         remote_spawn_facility: None,
         link_facility: None,
+        distribution_control_facility: None,
         group_leader_facility: None,
         supervision_facility: None,
         process_info_facility: None,
@@ -190,6 +195,7 @@ pub fn run_with_timer_services(
         spawn_facility: None,
         remote_spawn_facility: None,
         link_facility: None,
+        distribution_control_facility: None,
         group_leader_facility: None,
         supervision_facility: None,
         process_info_facility: None,
