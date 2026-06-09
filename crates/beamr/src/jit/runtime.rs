@@ -60,6 +60,7 @@ pub(crate) extern "C" fn jit_charge_reduction(process: *mut Process) -> u64 {
 
 const BUILDER_META_WORDS: usize = 3;
 const MATCH_CONTEXT_WORDS: usize = 4;
+const BINARY_HELPER_FAILURE: u64 = u64::MAX;
 
 /// Starts binary matching and returns a heap match-context term, or zero on match failure/deopt.
 pub(crate) extern "C" fn jit_bs_start_match(process: *mut Process, binary: u64) -> u64 {
@@ -68,10 +69,10 @@ pub(crate) extern "C" fn jit_bs_start_match(process: *mut Process, binary: u64) 
     };
     let source = Term::from_raw(binary);
     let Some(binary) = BinaryRef::new(source) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let Some(total_bits) = binary.len().checked_mul(u8::BITS as usize) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let ptr = alloc_words(process, MATCH_CONTEXT_WORDS);
     if ptr.is_null() {
@@ -90,25 +91,25 @@ pub(crate) extern "C" fn jit_bs_start_match(process: *mut Process, binary: u64) 
 /// Extracts a byte-aligned integer from a match context and advances it on success.
 pub(crate) extern "C" fn jit_bs_get_integer(match_ctx: u64, size_bits: u64, flags: u64) -> u64 {
     let Some(context) = JitMatchContext::new(Term::from_raw(match_ctx)) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let Ok(size_bits) = usize::try_from(size_bits) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     if !size_bits.is_multiple_of(u8::BITS as usize)
         || !context.position_bits().is_multiple_of(u8::BITS as usize)
         || !context.has_bits(size_bits)
     {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     }
     let Some(bytes) = context.slice(size_bits) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let Some(value) = decode_integer(bytes, SegmentFlags::from_raw(flags)) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let Some(term) = Term::try_small_int(value) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     context.set_position_bits(context.position_bits() + size_bits);
     term.raw()
@@ -124,13 +125,13 @@ pub(crate) extern "C" fn jit_bs_get_binary(
         return 0;
     };
     let Some(context) = JitMatchContext::new(Term::from_raw(match_ctx)) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let bits = if size_bits == u64::MAX {
         context.remaining_bits()
     } else {
         let Ok(bits) = usize::try_from(size_bits) else {
-            return 0;
+            return BINARY_HELPER_FAILURE;
         };
         bits
     };
@@ -138,10 +139,10 @@ pub(crate) extern "C" fn jit_bs_get_binary(
         || !context.position_bits().is_multiple_of(u8::BITS as usize)
         || !context.has_bits(bits)
     {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     }
     let Some(bytes) = context.slice(bits) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let Some(binary) = allocate_extracted_binary(process, context, bytes, bits) else {
         return 0;
@@ -692,13 +693,13 @@ fn get_utf(
     decoder: fn(JitMatchContext, Endian) -> Option<(u32, usize)>,
 ) -> u64 {
     let Some(context) = JitMatchContext::new(Term::from_raw(match_ctx)) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let Some((codepoint, bits)) = decoder(context, Endian::from_raw(flags)) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     let Some(term) = Term::try_small_int(i64::from(codepoint)) else {
-        return 0;
+        return BINARY_HELPER_FAILURE;
     };
     context.set_position_bits(context.position_bits() + bits);
     term.raw()

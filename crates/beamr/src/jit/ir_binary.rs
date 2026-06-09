@@ -212,7 +212,7 @@ fn lower_start_match(
     let binary = read_operand_term(builder, context.register_file, source)?;
     let call = builder.ins().call(helper, &[context.process, binary]);
     let match_context = builder.inst_results(call)[0];
-    branch_to_fail_if_null(builder, match_context, fail);
+    branch_to_fail_if_invalid_binary_result(builder, match_context, fail);
     write_operand_term(builder, context.register_file, destination, match_context)
 }
 
@@ -237,7 +237,7 @@ fn lower_get_integer(
         .ins()
         .call(lowering.helper, &[match_context, bits, flags]);
     let value = builder.inst_results(call)[0];
-    branch_to_fail_if_null(builder, value, lowering.fail);
+    branch_to_fail_if_invalid_binary_result(builder, value, lowering.fail);
     write_operand_term(builder, context.register_file, lowering.destination, value)
 }
 
@@ -256,7 +256,7 @@ fn lower_get_binary(
         .ins()
         .call(helper, &[context.process, match_context, bits]);
     let value = builder.inst_results(call)[0];
-    branch_to_fail_if_null(builder, value, fail);
+    branch_to_fail_if_invalid_binary_result(builder, value, fail);
     write_operand_term(builder, context.register_file, destination, value)
 }
 
@@ -273,7 +273,7 @@ fn lower_get_utf(
     let flags = iconst_u64(builder, flags);
     let call = builder.ins().call(helper, &[match_context, flags]);
     let value = builder.inst_results(call)[0];
-    branch_to_fail_if_null(builder, value, fail);
+    branch_to_fail_if_invalid_binary_result(builder, value, fail);
     write_operand_term(builder, context.register_file, destination, value)
 }
 
@@ -542,9 +542,15 @@ fn dispatch_helper_status(
     builder.switch_to_block(continuation);
 }
 
-fn branch_to_fail_if_null(builder: &mut FunctionBuilder<'_>, value: Value, fail: Block) {
+fn branch_to_fail_if_invalid_binary_result(
+    builder: &mut FunctionBuilder<'_>,
+    value: Value,
+    fail: Block,
+) {
     let is_null = builder.ins().icmp_imm(IntCC::Equal, value, 0);
     branch_to_fail_if(builder, is_null, fail);
+    let is_failure = builder.ins().icmp_imm(IntCC::Equal, value, -1);
+    branch_to_fail_if(builder, is_failure, fail);
 }
 
 fn branch_to_deopt_if_null(builder: &mut FunctionBuilder<'_>, value: Value, deopt: Block) {
