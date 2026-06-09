@@ -2,8 +2,10 @@
 
 use crate::atom::Atom;
 use crate::loader::Instruction;
+use crate::loader::decode::compact::Operand;
 use crate::scheduler::lock_or_recover;
 use cranelift_codegen::CodegenError;
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -29,7 +31,9 @@ use super::ir_guards::{
     SelectPair, immediate_raw_term, lower_is_tagged_tuple, lower_select_val, lower_test_arity,
     lower_type_test, parse_select_pairs,
 };
-use super::runtime::{jit_alloc_cons, jit_alloc_tuple};
+use super::runtime::{
+    JIT_YIELD_SENTINEL, jit_alloc_cons, jit_alloc_tuple, jit_call_interpreted, jit_charge_reduction,
+};
 use super::safepoint::SafepointBuilder;
 use super::types::NativeCode;
 
@@ -96,6 +100,14 @@ impl JitCompiler {
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
         builder.symbol("beamr_jit_alloc_tuple", jit_alloc_tuple as *const u8);
         builder.symbol("beamr_jit_alloc_cons", jit_alloc_cons as *const u8);
+        builder.symbol(
+            "beamr_jit_charge_reduction",
+            jit_charge_reduction as *const u8,
+        );
+        builder.symbol(
+            "beamr_jit_call_interpreted",
+            jit_call_interpreted as *const u8,
+        );
         Ok(Self {
             module: Arc::new(Mutex::new(JITModule::new(builder))),
             next_function_id: AtomicU64::new(0),
@@ -108,7 +120,8 @@ impl JitCompiler {
     /// `extern "C" fn(*mut u64, *mut Process) -> u64`, where the first pointer
     /// addresses a flat register file. X registers occupy words `0..1024`; Y
     /// registers occupy words starting at `1024`. The function returns the raw
-    /// word in `x(0)`, or `u64::MAX` to request interpreter fallback/deopt.
+    /// word in `x(0)`, `u64::MAX` to request interpreter fallback/deopt, or the
+    /// yield sentinel when the process reduction budget is exhausted.
     pub fn compile(
         &self,
         instructions: &[Instruction],
@@ -146,6 +159,47 @@ impl JitCompiler {
             .map_err(|error| JitError::CraneliftError(error.to_string()))?;
         let cons_helper = jit_module.declare_func_in_func(cons_helper, &mut ctx.func);
 
+        let mut charge_signature = jit_module.make_signature();
+        charge_signature.params.push(AbiParam::new(types::I64));
+        charge_signature.returns.push(AbiParam::new(types::I64));
+        let charge_helper = jit_module
+            .declare_function(
+                "beamr_jit_charge_reduction",
+                Linkage::Import,
+                &charge_signature,
+            )
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let charge_helper = jit_module.declare_func_in_func(charge_helper, &mut ctx.func);
+
+        let mut call_interpreted_signature = jit_module.make_signature();
+        call_interpreted_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        call_interpreted_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        call_interpreted_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        call_interpreted_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        call_interpreted_signature
+            .params
+            .push(AbiParam::new(types::I64));
+        call_interpreted_signature
+            .returns
+            .push(AbiParam::new(types::I64));
+        let call_interpreted_helper = jit_module
+            .declare_function(
+                "beamr_jit_call_interpreted",
+                Linkage::Import,
+                &call_interpreted_signature,
+            )
+            .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+        let call_interpreted_helper =
+            jit_module.declare_func_in_func(call_interpreted_helper, &mut ctx.func);
+
         let allocation_helpers = AllocationHelpers {
             tuple: tuple_helper,
             cons: cons_helper,
@@ -161,7 +215,17 @@ impl JitCompiler {
             let process = builder.block_params(blocks.entry)[1];
             builder.switch_to_block(blocks.entry);
 
-            let mut terminated = false;
+            let exhausted = builder.ins().call(charge_helper, &[process]);
+            let exhausted = builder.inst_results(exhausted)[0];
+            let first_instruction = blocks.block_for_instruction(0);
+            branch_to_yield_if_exhausted(
+                &mut builder,
+                exhausted,
+                blocks.yield_block,
+                first_instruction,
+            );
+
+            let mut terminated = true;
             for (index, instruction) in instructions.iter().enumerate() {
                 let block = blocks.block_for_instruction(index);
                 if builder.current_block() != Some(block) {
@@ -275,6 +339,47 @@ impl JitCompiler {
                         builder.ins().jump(target, &[]);
                         terminated = true;
                     }
+                    Instruction::CallExt { arity: _, import }
+                    | Instruction::CallExtOnly { arity: _, import } => {
+                        let import_index = import_index(import)?;
+                        let call_arity = match instruction {
+                            Instruction::CallExt { arity, .. }
+                            | Instruction::CallExtOnly { arity, .. } => {
+                                immediate_u8(arity, "external call arity")?
+                            }
+                            _ => 0,
+                        };
+                        let module_value =
+                            builder.ins().iconst(types::I64, i64::from(module.index()));
+                        let import_value = builder.ins().iconst(
+                            types::I64,
+                            i64::try_from(import_index).map_err(|_| {
+                                JitError::UnsupportedOperand {
+                                    operand: format!("import index out of range: {import_index}"),
+                                }
+                            })?,
+                        );
+                        let arity_value = builder.ins().iconst(types::I64, i64::from(call_arity));
+                        let returned = builder.ins().call(
+                            call_interpreted_helper,
+                            &[
+                                process,
+                                module_value,
+                                import_value,
+                                arity_value,
+                                register_file,
+                            ],
+                        );
+                        let returned = builder.inst_results(returned)[0];
+                        write_operand_term(
+                            &mut builder,
+                            register_file,
+                            &crate::loader::decode::compact::Operand::X(0),
+                            returned,
+                        )?;
+                        builder.ins().return_(&[returned]);
+                        terminated = true;
+                    }
                     Instruction::Call { label, .. } | Instruction::CallOnly { label, .. } => {
                         let target = blocks.label_block(label_operand(label)?)?;
                         builder.ins().jump(target, &[]);
@@ -346,6 +451,10 @@ impl JitCompiler {
             builder.switch_to_block(blocks.deopt);
             let sentinel = builder.ins().iconst(types::I64, JIT_DEOPT_SENTINEL);
             builder.ins().return_(&[sentinel]);
+
+            builder.switch_to_block(blocks.yield_block);
+            let sentinel = builder.ins().iconst(types::I64, JIT_YIELD_SENTINEL);
+            builder.ins().return_(&[sentinel]);
             builder.seal_all_blocks();
             builder.finalize();
         }
@@ -367,6 +476,53 @@ impl JitCompiler {
             safepoints.finish(),
             Arc::clone(&self.module),
         ))
+    }
+}
+
+fn branch_to_yield_if_exhausted(
+    builder: &mut FunctionBuilder<'_>,
+    exhausted: cranelift_codegen::ir::Value,
+    yield_block: cranelift_codegen::ir::Block,
+    continuation: cranelift_codegen::ir::Block,
+) {
+    let should_yield = builder.ins().icmp_imm(IntCC::NotEqual, exhausted, 0);
+    builder
+        .ins()
+        .brif(should_yield, yield_block, &[], continuation, &[]);
+    builder.switch_to_block(continuation);
+}
+
+fn import_index(import: &Operand) -> Result<usize, JitError> {
+    match import {
+        Operand::Unsigned(value) => {
+            usize::try_from(*value).map_err(|_| JitError::UnsupportedOperand {
+                operand: format!("import index out of range: {value}"),
+            })
+        }
+        Operand::Integer(value) => {
+            usize::try_from(*value).map_err(|_| JitError::UnsupportedOperand {
+                operand: format!("import index out of range: {value}"),
+            })
+        }
+        other => Err(JitError::UnsupportedOperand {
+            operand: format!("external call import must be an index, got {other:?}"),
+        }),
+    }
+}
+
+fn immediate_u8(operand: &Operand, context: &'static str) -> Result<u8, JitError> {
+    match operand {
+        Operand::Unsigned(value) => {
+            u8::try_from(*value).map_err(|_| JitError::UnsupportedOperand {
+                operand: format!("{context} out of range: {value}"),
+            })
+        }
+        Operand::Integer(value) => u8::try_from(*value).map_err(|_| JitError::UnsupportedOperand {
+            operand: format!("{context} out of range: {value}"),
+        }),
+        other => Err(JitError::UnsupportedOperand {
+            operand: format!("{context} must be an integer, got {other:?}"),
+        }),
     }
 }
 

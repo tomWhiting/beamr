@@ -123,6 +123,10 @@ impl TranslationPlan {
                     validate_label_operand(label)?;
                     block_starts.insert(index + 1);
                 }
+                Instruction::CallExt { import, .. } | Instruction::CallExtOnly { import, .. } => {
+                    validate_import_operand(import)?;
+                    block_starts.insert(index + 1);
+                }
                 Instruction::Bif { op, operands } => {
                     let parsed = ParsedBif::parse(*op, operands)?;
                     let _ = ArithmeticOp::from_import(parsed.import)?;
@@ -174,6 +178,26 @@ impl TranslationPlan {
     }
 }
 
+fn validate_import_operand(
+    import: &crate::loader::decode::compact::Operand,
+) -> Result<(), JitError> {
+    match import {
+        crate::loader::decode::compact::Operand::Unsigned(value) => usize::try_from(*value)
+            .map(|_| ())
+            .map_err(|_| JitError::UnsupportedOperand {
+                operand: format!("import index out of range: {value}"),
+            }),
+        crate::loader::decode::compact::Operand::Integer(value) => usize::try_from(*value)
+            .map(|_| ())
+            .map_err(|_| JitError::UnsupportedOperand {
+                operand: format!("import index out of range: {value}"),
+            }),
+        other => Err(JitError::UnsupportedOperand {
+            operand: format!("external call import must be an index, got {other:?}"),
+        }),
+    }
+}
+
 fn validate_supported_type_test(op: TypeTestOp) -> Result<(), JitError> {
     match op {
         TypeTestOp::IsInteger
@@ -196,6 +220,7 @@ pub(crate) struct BlockMap {
     label_blocks: HashMap<u32, cranelift_codegen::ir::Block>,
     pub(crate) entry: cranelift_codegen::ir::Block,
     pub(crate) deopt: cranelift_codegen::ir::Block,
+    pub(crate) yield_block: cranelift_codegen::ir::Block,
 }
 
 impl BlockMap {
@@ -205,8 +230,9 @@ impl BlockMap {
         plan: &TranslationPlan,
     ) -> Self {
         let mut blocks_by_index = Vec::with_capacity(instructions.len() + 1);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
         let mut current = builder.create_block();
-        builder.append_block_params_for_function_params(current);
         for index in 0..=instructions.len() {
             if index > 0 && plan.block_starts.contains(&index) {
                 current = builder.create_block();
@@ -220,10 +246,11 @@ impl BlockMap {
         }
 
         Self {
-            entry: blocks_by_index[0],
+            entry,
             blocks_by_index,
             label_blocks,
             deopt: builder.create_block(),
+            yield_block: builder.create_block(),
         }
     }
 

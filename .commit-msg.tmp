@@ -1,1 +1,1 @@
-harden(beamr): guard JIT select_val CFG and tagged tuple edge cases
+feat(beamr): integrate mixed-mode JIT dispatch

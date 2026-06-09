@@ -7,10 +7,13 @@ use crate::error::ExecError;
 use crate::gc::{GcError, ensure_space};
 use crate::interpreter::InstructionOutcome;
 use crate::interpreter::NativeServices;
+use crate::jit::JitCache;
+use crate::jit::ir_common::JIT_DEOPT_SENTINEL;
+use crate::jit::runtime::JIT_YIELD_SENTINEL;
 use crate::loader::decode::compact::Operand;
 use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
 use crate::native::{ExceptionClass, ProcessContext};
-use crate::process::{CodePosition, ExitReason, Process};
+use crate::process::{CodePosition, ExitReason, JitRuntimeContext, JitStatus, Process};
 use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
 use crate::timer::TimerWheel;
@@ -23,6 +26,7 @@ pub struct ExtCallContext<'a> {
     pub services: Option<&'a NativeServices>,
     pub registry: Option<&'a ModuleRegistry>,
     pub atom_table: Option<&'a AtomTable>,
+    pub jit_cache: Option<&'a JitCache>,
 }
 
 fn exception_class_atom(class: ExceptionClass) -> Atom {
@@ -83,8 +87,11 @@ pub fn call(
     label: &Operand,
     return_ip: usize,
     save_return: bool,
+    jit_cache: Option<&JitCache>,
+    registry: Option<&ModuleRegistry>,
 ) -> Result<InstructionOutcome, ExecError> {
-    let _arity = operand_u8(arity, "call arity")?;
+    let arity = operand_u8(arity, "call arity")?;
+    let target = label_ip(module, operand_label(label)?)?;
     if save_return {
         let caller_module = current_module_pin(process, module);
         process
@@ -92,7 +99,17 @@ pub fn call(
             .push_frame(module.name, return_ip, caller_module, 0)
             .map_err(ExecError::from)?;
     }
-    let target = label_ip(module, operand_label(label)?)?;
+    if let Some(outcome) = dispatch_local_jit(
+        process,
+        module,
+        target,
+        arity,
+        save_return,
+        jit_cache,
+        registry,
+    )? {
+        return Ok(outcome);
+    }
     jump_with_reduction(process, module.name, target)
 }
 
@@ -409,6 +426,17 @@ fn call_external_target(
                     .push_frame(module.name, return_ip, caller_module, 0)
                     .map_err(ExecError::from)?;
             }
+            if let Some(outcome) = dispatch_external_jit(
+                process,
+                target_mod.as_ref(),
+                instruction_pointer,
+                resolved.function,
+                arity,
+                save_return,
+                ctx,
+            )? {
+                return Ok(outcome);
+            }
             let target = CodePosition {
                 module: target_module,
                 instruction_pointer,
@@ -436,6 +464,17 @@ fn call_external_target(
                     .stack_mut()
                     .push_frame(module.name, return_ip, caller_module, 0)
                     .map_err(ExecError::from)?;
+            }
+            if let Some(outcome) = dispatch_external_jit(
+                process,
+                target_mod.as_ref(),
+                instruction_pointer,
+                function,
+                target_arity,
+                save_return,
+                ctx,
+            )? {
+                return Ok(outcome);
             }
             let target = CodePosition {
                 module: target_module,
@@ -486,9 +525,8 @@ fn call_external_target(
                 context.set_distribution_send_facility(svc.distribution_send.clone());
                 context.set_spawn_facility(svc.spawn_facility.clone());
                 context.set_link_facility(svc.link_facility.clone());
-                context.set_distribution_control_facility(
-                    svc.distribution_control_facility.clone(),
-                );
+                context
+                    .set_distribution_control_facility(svc.distribution_control_facility.clone());
                 context.set_global_name_facility(svc.global_name_facility.clone());
                 context.set_group_leader_facility(svc.group_leader_facility.clone());
                 context.set_supervision_facility(svc.supervision_facility.clone());
@@ -566,6 +604,110 @@ fn call_external_target(
                 return_(process)
             }
         }
+    }
+}
+
+type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> u64;
+
+fn dispatch_local_jit(
+    process: &mut Process,
+    module: &Module,
+    target_ip: usize,
+    arity: u8,
+    save_return: bool,
+    jit_cache: Option<&JitCache>,
+    registry: Option<&ModuleRegistry>,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    let Some(cache) = jit_cache else {
+        return Ok(None);
+    };
+    let Some((function, function_arity)) = module.function_at_ip(target_ip) else {
+        return Ok(None);
+    };
+    if function_arity != arity {
+        return Ok(None);
+    }
+    let Some(native) = cache.lookup(module.name, function, arity, module.generation()) else {
+        return Ok(None);
+    };
+    invoke_jit(process, module, native, save_return, registry)
+}
+
+fn dispatch_external_jit(
+    process: &mut Process,
+    target_module: &Module,
+    target_ip: usize,
+    function: Atom,
+    arity: u8,
+    save_return: bool,
+    ctx: &ExtCallContext<'_>,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    let Some(cache) = ctx.jit_cache else {
+        return Ok(None);
+    };
+    let Some(native) = cache.lookup(
+        target_module.name,
+        function,
+        arity,
+        target_module.generation(),
+    ) else {
+        return Ok(None);
+    };
+    process.set_code_position(Some(CodePosition {
+        module: target_module.name,
+        instruction_pointer: target_ip,
+    }));
+    invoke_jit(process, target_module, native, save_return, ctx.registry)
+}
+
+fn invoke_jit(
+    process: &mut Process,
+    module: &Module,
+    native: crate::jit::NativeCode,
+    save_return: bool,
+    registry: Option<&ModuleRegistry>,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    let Some(registry) = registry else {
+        return Ok(None);
+    };
+    let previous_context = process.jit_runtime_context();
+    process.set_jit_runtime_context(Some(JitRuntimeContext::new(
+        module as *const Module,
+        registry as *const ModuleRegistry,
+    )));
+    process.set_jit_status(None);
+    let outcome = call_native(process, native, save_return);
+    process.set_jit_runtime_context(previous_context);
+    outcome
+}
+
+fn call_native(
+    process: &mut Process,
+    native: crate::jit::NativeCode,
+    save_return: bool,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    let register_file = process.x_regs_mut().as_mut_ptr().cast::<u64>();
+    // SAFETY: `NativeCode` is produced by `JitCompiler` with the raw ABI
+    // `extern "C" fn(*mut u64, *mut Process) -> u64`. `NativeCode` clones keep
+    // the owning JIT module alive, and the register/process pointers are valid
+    // for the synchronous duration of this call.
+    let raw_fn: RawJitFn = unsafe { std::mem::transmute(native.call_ptr()) };
+    let raw = raw_fn(register_file, process);
+    match process.take_jit_status() {
+        Some(JitStatus::Yield) => return Ok(Some(InstructionOutcome::Yield)),
+        None => {}
+    }
+    if raw == JIT_YIELD_SENTINEL as u64 {
+        return Ok(Some(InstructionOutcome::Yield));
+    }
+    if raw == JIT_DEOPT_SENTINEL as u64 {
+        return Ok(None);
+    }
+    process.set_x_reg(0, Term::from_raw(raw));
+    if save_return {
+        Ok(Some(InstructionOutcome::Continue))
+    } else {
+        return_(process).map(Some)
     }
 }
 

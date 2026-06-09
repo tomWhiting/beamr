@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use crate::atom::AtomTable;
 use crate::error::ExecError;
 use crate::interpreter::{InstructionOutcome, NativeServices};
+use crate::jit::JitCache;
 use crate::loader::Instruction;
 use crate::loader::decode::Operand;
 use crate::module::{Module, ModuleRegistry};
@@ -34,6 +35,7 @@ struct DispatchCtx<'a> {
     registry: Option<&'a ModuleRegistry>,
     services: Option<&'a NativeServices>,
     atom_table: Option<&'a AtomTable>,
+    jit_cache: Option<&'a JitCache>,
 }
 
 /// Dispatch one already-fetched instruction.
@@ -67,6 +69,7 @@ pub fn dispatch_with_timer_services(
             registry,
             services: None,
             atom_table: None,
+            jit_cache: None,
         },
     )
 }
@@ -91,6 +94,7 @@ pub fn dispatch_with_services(
             registry,
             services: Some(services),
             atom_table: services.atom_table.as_deref(),
+            jit_cache: services.jit_cache.as_deref(),
         },
     )
 }
@@ -120,6 +124,7 @@ pub fn dispatch_with_receiver(
             registry,
             services: None,
             atom_table: None,
+            jit_cache: None,
         },
     )
 }
@@ -177,18 +182,33 @@ fn dispatch_common(
             dest,
         } => floats::fnegate(process, source, dest),
         Instruction::Swap { left, right } => core::swap(process, module, left, right),
-        Instruction::Call { arity, label } => {
-            core::call(process, module, arity, label, next_ip, true)
-        }
-        Instruction::CallOnly { arity, label } => {
-            core::call(process, module, arity, label, next_ip, false)
-        }
+        Instruction::Call { arity, label } => core::call(
+            process,
+            module,
+            arity,
+            label,
+            next_ip,
+            true,
+            ctx.jit_cache,
+            ctx.registry,
+        ),
+        Instruction::CallOnly { arity, label } => core::call(
+            process,
+            module,
+            arity,
+            label,
+            next_ip,
+            false,
+            ctx.jit_cache,
+            ctx.registry,
+        ),
         Instruction::CallExt { arity, import } => {
             let ext = core::ExtCallContext {
                 timers: ctx.timers,
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                jit_cache: ctx.jit_cache,
             };
             core::call_ext(process, module, arity, import, next_ip, true, &ext)
         }
@@ -198,6 +218,7 @@ fn dispatch_common(
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                jit_cache: ctx.jit_cache,
             };
             core::call_ext(process, module, arity, import, next_ip, false, &ext)
         }
@@ -216,6 +237,7 @@ fn dispatch_common(
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                jit_cache: ctx.jit_cache,
             };
             core::call_ext_last(process, module, arity, import, deallocate, &ext)
         }
