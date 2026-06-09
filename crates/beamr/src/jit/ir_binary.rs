@@ -65,12 +65,14 @@ pub(crate) fn lower_binary_op(
             lower_get_integer(
                 builder,
                 context,
-                helpers.get_integer,
-                match_context,
-                segment_bits(size, unit, "bs_get_integer2 size")?,
-                flags_to_raw(flags),
-                destination,
-                fail,
+                IntegerGetLowering {
+                    helper: helpers.get_integer,
+                    match_context,
+                    bits: segment_bits(size, unit, "bs_get_integer2 size")?,
+                    flags: flags_to_raw(flags),
+                    destination,
+                    fail,
+                },
             )
         }
         BinaryOp::BsGetBinary2 => {
@@ -214,23 +216,29 @@ fn lower_start_match(
     write_operand_term(builder, context.register_file, destination, match_context)
 }
 
+struct IntegerGetLowering<'a> {
+    helper: FuncRef,
+    match_context: &'a Operand,
+    bits: u64,
+    flags: u64,
+    destination: &'a Operand,
+    fail: Block,
+}
+
 fn lower_get_integer(
     builder: &mut FunctionBuilder<'_>,
     context: BinaryLoweringContext,
-    helper: FuncRef,
-    match_context: &Operand,
-    bits: u64,
-    flags: u64,
-    destination: &Operand,
-    fail: Block,
+    lowering: IntegerGetLowering<'_>,
 ) -> Result<(), JitError> {
-    let match_context = read_operand_term(builder, context.register_file, match_context)?;
-    let bits = iconst_u64(builder, bits);
-    let flags = iconst_u64(builder, flags);
-    let call = builder.ins().call(helper, &[match_context, bits, flags]);
+    let match_context = read_operand_term(builder, context.register_file, lowering.match_context)?;
+    let bits = iconst_u64(builder, lowering.bits);
+    let flags = iconst_u64(builder, lowering.flags);
+    let call = builder
+        .ins()
+        .call(lowering.helper, &[match_context, bits, flags]);
     let value = builder.inst_results(call)[0];
-    branch_to_fail_if_null(builder, value, fail);
-    write_operand_term(builder, context.register_file, destination, value)
+    branch_to_fail_if_null(builder, value, lowering.fail);
+    write_operand_term(builder, context.register_file, lowering.destination, value)
 }
 
 fn lower_get_binary(
@@ -308,6 +316,7 @@ fn lower_bs_create_bin(
     helpers: BinaryHelpers,
     operands: &[Operand],
 ) -> Result<(), JitError> {
+    let _utf_put_helpers = (helpers.put_utf16, helpers.put_utf32);
     let [destination, size_hint, segments @ ..] = operands else {
         return Err(invalid_operands("bs_create_bin"));
     };
@@ -470,12 +479,14 @@ fn lower_nested_match_command(
             lower_get_integer(
                 builder,
                 context,
-                helpers.get_integer,
-                match_context,
-                segment_bits(size, unit, "bs_match integer size")?,
-                flags_to_raw(flags),
-                dst,
-                fail,
+                IntegerGetLowering {
+                    helper: helpers.get_integer,
+                    match_context,
+                    bits: segment_bits(size, unit, "bs_match integer size")?,
+                    flags: flags_to_raw(flags),
+                    destination: dst,
+                    fail,
+                },
             )?;
         }
         [
@@ -597,7 +608,7 @@ fn parse_utf_get_operands<'a>(
     }
 }
 
-fn required_fail<'a>(resolved: Option<Block>, operand: &Operand) -> Result<Block, JitError> {
+fn required_fail(resolved: Option<Block>, operand: &Operand) -> Result<Block, JitError> {
     resolved.ok_or_else(|| JitError::UnsupportedOperand {
         operand: format!("missing fail block for {operand:?}"),
     })

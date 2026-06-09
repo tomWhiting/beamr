@@ -1,1 +1,1 @@
-fix(jit): split optional binary operand patterns
+fix(jit): satisfy clippy for binary lowering
