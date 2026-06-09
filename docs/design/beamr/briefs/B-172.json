@@ -1,11 +1,20 @@
 {
   "id": "B-172",
   "cluster": "beamr",
-  "title": "Release 0.4.0 preparation — version bump, changelog, publish checklist",
-  "depends_on": ["B-165", "B-169", "B-170", "B-171"],
+  "title": "Release 0.4.0 preparation \u2014 version bump, changelog, publish checklist",
+  "depends_on": [
+    "B-165",
+    "B-169",
+    "B-170",
+    "B-171"
+  ],
   "blocked_by": [],
-  "checklist": ["C171"],
-  "stories": ["S14"],
+  "checklist": [
+    "C171"
+  ],
+  "stories": [
+    "S14"
+  ],
   "purpose": "Phase 4 JIT/AOT compilation is complete (21 briefs, 1247+ tests). The cleanup briefs (B-165 through B-168) fix GC safety and code organisation. B-169 wires higher-order BIF trampolines. B-170 replaces OTP stdlib stubs. B-171 fixes correctness bugs. Once these land, the crate is ready for a 0.4.0 release with JIT compilation as the headline feature. This brief covers the mechanical release tasks: version bump, changelog generation, crates.io publish preparation, and pre-publish validation.",
   "task": "Bump version to 0.4.0 in all Cargo.toml files, write a CHANGELOG entry summarizing Phase 4 additions, verify crates.io publish readiness (no path dependencies, license, description, repository fields), and create a release checklist.",
   "requirements": [
@@ -20,10 +29,17 @@
         "No version mismatches in dependency declarations"
       ],
       "files": {
-        "modify": ["crates/beamr/Cargo.toml", "crates/gleam-types/Cargo.toml"]
+        "modify": [
+          "crates/beamr/Cargo.toml",
+          "crates/gleam-types/Cargo.toml"
+        ]
       },
-      "checklist": ["C171"],
-      "stories": ["S14"]
+      "checklist": [
+        "C171"
+      ],
+      "stories": [
+        "S14"
+      ]
     },
     {
       "id": "R2",
@@ -37,10 +53,16 @@
         "Breaking changes section present if applicable"
       ],
       "files": {
-        "create": ["CHANGELOG.md"]
+        "create": [
+          "CHANGELOG.md"
+        ]
       },
-      "checklist": ["C171"],
-      "stories": ["S14"]
+      "checklist": [
+        "C171"
+      ],
+      "stories": [
+        "S14"
+      ]
     },
     {
       "id": "R3",
@@ -53,10 +75,17 @@
         "No path-only dependencies without version fallback"
       ],
       "files": {
-        "modify": ["crates/beamr/Cargo.toml", "crates/gleam-types/Cargo.toml"]
+        "modify": [
+          "crates/beamr/Cargo.toml",
+          "crates/gleam-types/Cargo.toml"
+        ]
       },
-      "checklist": ["C171"],
-      "stories": ["S14"]
+      "checklist": [
+        "C171"
+      ],
+      "stories": [
+        "S14"
+      ]
     },
     {
       "id": "R4",
@@ -72,8 +101,12 @@
       "files": {
         "modify": []
       },
-      "checklist": ["C171"],
-      "stories": ["S14"]
+      "checklist": [
+        "C171"
+      ],
+      "stories": [
+        "S14"
+      ]
     },
     {
       "id": "R5",
@@ -88,23 +121,23 @@
       "files": {
         "modify": []
       },
-      "checklist": ["C171"],
-      "stories": ["S14"]
+      "checklist": [
+        "C171"
+      ],
+      "stories": [
+        "S14"
+      ]
     }
   ],
-  "boundaries": {
-    "in_scope": [
-      "Version bump in Cargo.toml files",
-      "CHANGELOG.md creation",
-      "crates.io metadata validation",
-      "Pre-publish dry-run and validation"
-    ],
-    "out_of_scope": [
-      "Actual crates.io publish (requires explicit approval)",
-      "GitHub release creation",
-      "CI/CD pipeline setup",
-      "Documentation website"
-    ]
-  },
+  "boundaries": [
+    "Version bump in Cargo.toml files",
+    "CHANGELOG.md creation",
+    "crates.io metadata validation",
+    "Pre-publish dry-run and validation",
+    "OUT OF SCOPE: Actual crates.io publish (requires explicit approval)",
+    "OUT OF SCOPE: GitHub release creation",
+    "OUT OF SCOPE: CI/CD pipeline setup",
+    "OUT OF SCOPE: Documentation website"
+  ],
   "verification": "cargo test --package beamr --lib && cargo clippy --package beamr && cargo publish --dry-run -p beamr"
 }
