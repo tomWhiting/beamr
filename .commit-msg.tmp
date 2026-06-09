@@ -1,1 +1,1 @@
-harden(beamr): fix JIT try_case frame fallback and add exception tests
+fix(jit): avoid zero-term collision in binary helper failure checks

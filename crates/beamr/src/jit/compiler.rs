@@ -3,8 +3,8 @@
 use crate::atom::Atom;
 use crate::jit::type_info::{FunctionSignature, TypeDescriptor};
 use crate::loader::Instruction;
-use crate::loader::decode::TypeTestOp;
 use crate::loader::decode::compact::Operand;
+use crate::loader::decode::{BinaryOp, TypeTestOp};
 use crate::scheduler::lock_or_recover;
 use crate::term::Term;
 use cranelift_codegen::CodegenError;
@@ -27,6 +27,10 @@ use super::ir_allocation::{
 use super::ir_arithmetic::{
     ArithmeticLowering, ArithmeticOp, ParsedBif, lower_arithmetic_bif, lower_comparison,
 };
+use super::ir_binary::{
+    BinaryHelpers, BinaryLoweringContext, binary_allocation_roots, fail_operand, lower_binary_op,
+    lower_exception_block,
+};
 use super::ir_common::{
     JIT_DEOPT_SENTINEL, Register, SMALL_INT_SHIFT, label_operand, read_operand_term,
     read_register_term, register_operand, write_operand_term, write_register_term,
@@ -43,7 +47,11 @@ use super::ir_guards::{
     lower_test_arity, lower_type_test, parse_select_pairs,
 };
 use super::runtime::{
-    JIT_YIELD_SENTINEL, jit_alloc_cons, jit_alloc_tuple, jit_call_interpreted, jit_charge_reduction,
+    JIT_YIELD_SENTINEL, jit_alloc_cons, jit_alloc_tuple, jit_bs_finish, jit_bs_get_binary,
+    jit_bs_get_integer, jit_bs_get_utf8, jit_bs_get_utf16, jit_bs_get_utf32, jit_bs_init,
+    jit_bs_put_binary, jit_bs_put_integer, jit_bs_put_utf8, jit_bs_put_utf16, jit_bs_put_utf32,
+    jit_bs_start_match, jit_bs_test_tail, jit_bs_test_unit, jit_call_interpreted,
+    jit_charge_reduction,
 };
 use super::safepoint::SafepointBuilder;
 use super::types::NativeCode;
@@ -309,6 +317,21 @@ impl JitCompiler {
             "beamr_jit_call_interpreted",
             jit_call_interpreted as *const u8,
         );
+        builder.symbol("beamr_jit_bs_start_match", jit_bs_start_match as *const u8);
+        builder.symbol("beamr_jit_bs_get_integer", jit_bs_get_integer as *const u8);
+        builder.symbol("beamr_jit_bs_get_binary", jit_bs_get_binary as *const u8);
+        builder.symbol("beamr_jit_bs_test_tail", jit_bs_test_tail as *const u8);
+        builder.symbol("beamr_jit_bs_test_unit", jit_bs_test_unit as *const u8);
+        builder.symbol("beamr_jit_bs_get_utf8", jit_bs_get_utf8 as *const u8);
+        builder.symbol("beamr_jit_bs_get_utf16", jit_bs_get_utf16 as *const u8);
+        builder.symbol("beamr_jit_bs_get_utf32", jit_bs_get_utf32 as *const u8);
+        builder.symbol("beamr_jit_bs_init", jit_bs_init as *const u8);
+        builder.symbol("beamr_jit_bs_put_integer", jit_bs_put_integer as *const u8);
+        builder.symbol("beamr_jit_bs_put_binary", jit_bs_put_binary as *const u8);
+        builder.symbol("beamr_jit_bs_put_utf8", jit_bs_put_utf8 as *const u8);
+        builder.symbol("beamr_jit_bs_put_utf16", jit_bs_put_utf16 as *const u8);
+        builder.symbol("beamr_jit_bs_put_utf32", jit_bs_put_utf32 as *const u8);
+        builder.symbol("beamr_jit_bs_finish", jit_bs_finish as *const u8);
         builder.symbol(
             "beamr_jit_exception_class",
             jit_exception_class as *const u8,
@@ -457,6 +480,7 @@ impl JitCompiler {
         let exception_clear_helper = declare_void_unary_helper(&mut jit_module, &mut ctx.func)?;
         let exception_add_frame_helper = declare_add_frame_helper(&mut jit_module, &mut ctx.func)?;
 
+        let binary_helpers = declare_binary_helpers(&mut jit_module, &mut ctx.func)?;
         let allocation_helpers = AllocationHelpers {
             tuple: tuple_helper,
             cons: cons_helper,
@@ -900,6 +924,35 @@ impl JitCompiler {
                             destination_type,
                         );
                     }
+                    Instruction::BinaryOp { op, operands } if supported_binary_op(*op) => {
+                        if allocation_binary_op(*op) {
+                            safepoints.record_allocation_site(
+                                index,
+                                binary_allocation_roots(*op, operands)?,
+                            )?;
+                        }
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
+                        let fail = fail_operand(*op, operands)
+                            .map(label_operand)
+                            .transpose()?
+                            .map(|label| blocks.label_block(label))
+                            .transpose()?;
+                        lower_binary_op(
+                            &mut builder,
+                            BinaryLoweringContext {
+                                register_file,
+                                process,
+                                deopt: blocks.deopt,
+                                exception: blocks.exception_block,
+                            },
+                            binary_helpers,
+                            *op,
+                            operands,
+                            fail,
+                        )?;
+                        clear_binary_outputs(&mut typed_state, *op, operands);
+                        terminated = false;
+                    }
                     other => {
                         return Err(JitError::UnsupportedOpcode {
                             opcode: opcode_name(other),
@@ -918,6 +971,9 @@ impl JitCompiler {
 
             builder.switch_to_block(blocks.deopt);
             return_status_raw(&mut builder, JIT_STATUS_DEOPT, JIT_DEOPT_SENTINEL);
+
+            builder.switch_to_block(blocks.exception_block);
+            lower_exception_block(&mut builder);
 
             builder.switch_to_block(blocks.yield_block);
             return_status_raw(&mut builder, JIT_STATUS_YIELD, JIT_YIELD_SENTINEL);
@@ -1254,6 +1310,174 @@ fn branch_to_status_blocks(
         .ins()
         .brif(is_yield, yield_block, &[], continuation, &[]);
     builder.switch_to_block(continuation);
+}
+
+fn supported_binary_op(op: BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::BsStartMatch3
+            | BinaryOp::BsStartMatch4
+            | BinaryOp::BsGetInteger2
+            | BinaryOp::BsGetBinary2
+            | BinaryOp::BsTestTail2
+            | BinaryOp::BsTestUnit
+            | BinaryOp::BsGetUtf8
+            | BinaryOp::BsGetUtf16
+            | BinaryOp::BsGetUtf32
+            | BinaryOp::BsInitWritable
+            | BinaryOp::BsCreateBin
+            | BinaryOp::BsGetTail
+            | BinaryOp::BsMatch
+    )
+}
+
+fn allocation_binary_op(op: BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::BsStartMatch3
+            | BinaryOp::BsStartMatch4
+            | BinaryOp::BsGetBinary2
+            | BinaryOp::BsInitWritable
+            | BinaryOp::BsCreateBin
+            | BinaryOp::BsGetTail
+            | BinaryOp::BsMatch
+    )
+}
+
+fn clear_binary_outputs(_state: &mut TypedRegisterState, _op: BinaryOp, _operands: &[Operand]) {
+    // Binary lowerings are emitted after `materialize_all_for_untyped_call`, so
+    // typed-register metadata has already been conservatively cleared.
+}
+
+fn declare_binary_helpers(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+) -> Result<BinaryHelpers, JitError> {
+    Ok(BinaryHelpers {
+        start_match: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_start_match",
+            &[types::I64, types::I64],
+            types::I64,
+        )?,
+        get_integer: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_get_integer",
+            &[types::I64, types::I64, types::I64],
+            types::I64,
+        )?,
+        get_binary: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_get_binary",
+            &[types::I64, types::I64, types::I64],
+            types::I64,
+        )?,
+        test_tail: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_test_tail",
+            &[types::I64, types::I64],
+            types::I8,
+        )?,
+        test_unit: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_test_unit",
+            &[types::I64, types::I64],
+            types::I8,
+        )?,
+        get_utf8: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_get_utf8",
+            &[types::I64, types::I64],
+            types::I64,
+        )?,
+        get_utf16: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_get_utf16",
+            &[types::I64, types::I64],
+            types::I64,
+        )?,
+        get_utf32: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_get_utf32",
+            &[types::I64, types::I64],
+            types::I64,
+        )?,
+        init: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_init",
+            &[types::I64, types::I64],
+            types::I64,
+        )?,
+        put_integer: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_put_integer",
+            &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            types::I8,
+        )?,
+        put_binary: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_put_binary",
+            &[types::I64, types::I64, types::I64],
+            types::I8,
+        )?,
+        put_utf8: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_put_utf8",
+            &[types::I64, types::I64, types::I64],
+            types::I8,
+        )?,
+        put_utf16: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_put_utf16",
+            &[types::I64, types::I64, types::I64, types::I64],
+            types::I8,
+        )?,
+        put_utf32: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_put_utf32",
+            &[types::I64, types::I64, types::I64, types::I64],
+            types::I8,
+        )?,
+        finish: declare_helper(
+            module,
+            func,
+            "beamr_jit_bs_finish",
+            &[types::I64, types::I64],
+            types::I64,
+        )?,
+    })
+}
+
+fn declare_helper(
+    module: &mut JITModule,
+    func: &mut cranelift_codegen::ir::Function,
+    name: &str,
+    params: &[cranelift_codegen::ir::Type],
+    return_type: cranelift_codegen::ir::Type,
+) -> Result<cranelift_codegen::ir::FuncRef, JitError> {
+    let mut signature = module.make_signature();
+    for param in params {
+        signature.params.push(AbiParam::new(*param));
+    }
+    signature.returns.push(AbiParam::new(return_type));
+    let helper = module
+        .declare_function(name, Linkage::Import, &signature)
+        .map_err(|error| JitError::CraneliftError(error.to_string()))?;
+    Ok(module.declare_func_in_func(helper, func))
 }
 
 fn declare_unary_helper(

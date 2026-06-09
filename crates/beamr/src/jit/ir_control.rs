@@ -255,6 +255,7 @@ pub(crate) struct BlockMap {
     label_blocks: HashMap<u32, cranelift_codegen::ir::Block>,
     pub(crate) entry: cranelift_codegen::ir::Block,
     pub(crate) deopt: cranelift_codegen::ir::Block,
+    pub(crate) exception_block: cranelift_codegen::ir::Block,
     pub(crate) yield_block: cranelift_codegen::ir::Block,
 }
 
@@ -285,6 +286,7 @@ impl BlockMap {
             blocks_by_index,
             label_blocks,
             deopt: builder.create_block(),
+            exception_block: builder.create_block(),
             yield_block: builder.create_block(),
         }
     }
