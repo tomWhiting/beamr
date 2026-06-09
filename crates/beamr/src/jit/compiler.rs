@@ -1,9 +1,12 @@
 //! Cranelift-backed BEAM JIT compiler scaffold.
 
 use crate::atom::Atom;
+use crate::jit::type_info::{FunctionSignature, TypeDescriptor};
 use crate::loader::Instruction;
+use crate::loader::decode::TypeTestOp;
 use crate::loader::decode::compact::Operand;
 use crate::scheduler::lock_or_recover;
+use crate::term::Term;
 use cranelift_codegen::CodegenError;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
@@ -11,6 +14,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,8 +28,8 @@ use super::ir_arithmetic::{
     ArithmeticLowering, ArithmeticOp, ParsedBif, lower_arithmetic_bif, lower_comparison,
 };
 use super::ir_common::{
-    JIT_DEOPT_SENTINEL, Register, label_operand, read_operand_term, read_register_term,
-    write_operand_term,
+    JIT_DEOPT_SENTINEL, Register, SMALL_INT_SHIFT, label_operand, read_operand_term,
+    read_register_term, register_operand, write_operand_term, write_register_term,
 };
 use super::ir_control::{BlockMap, TranslationPlan, opcode_name};
 use super::ir_exceptions::{
@@ -75,6 +79,196 @@ impl fmt::Display for JitError {
             }
         }
     }
+}
+
+fn lower_typed_int_arithmetic(
+    builder: &mut FunctionBuilder<'_>,
+    register_file: cranelift_codegen::ir::Value,
+    lowering: ArithmeticLowering<'_>,
+    deopt: cranelift_codegen::ir::Block,
+) -> Result<(), JitError> {
+    let left = read_register_term(builder, register_file, register_operand(lowering.left)?);
+    let right = read_register_term(builder, register_file, register_operand(lowering.right)?);
+    let result = match lowering.op {
+        ArithmeticOp::Add => {
+            let value = builder.ins().iadd(left, right);
+            let overflow = signed_add_overflow(builder, left, right, value);
+            branch_to_block_if(builder, overflow, deopt);
+            branch_to_deopt_if_not_small_int(builder, value, deopt);
+            value
+        }
+        ArithmeticOp::Subtract => {
+            let value = builder.ins().isub(left, right);
+            let overflow = signed_sub_overflow(builder, left, right, value);
+            branch_to_block_if(builder, overflow, deopt);
+            branch_to_deopt_if_not_small_int(builder, value, deopt);
+            value
+        }
+        ArithmeticOp::Multiply => {
+            let (value, overflow) = builder.ins().smul_overflow(left, right);
+            branch_to_block_if(builder, overflow, deopt);
+            branch_to_deopt_if_not_small_int(builder, value, deopt);
+            value
+        }
+        ArithmeticOp::Div | ArithmeticOp::Rem => {
+            let zero = builder.ins().icmp_imm(IntCC::Equal, right, 0);
+            branch_to_block_if(builder, zero, lowering.fail);
+            let min_divisor = builder.ins().icmp_imm(IntCC::Equal, right, -1);
+            let min_dividend = builder.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
+            let division_overflow = builder.ins().band(min_dividend, min_divisor);
+            branch_to_block_if(builder, division_overflow, deopt);
+            if matches!(lowering.op, ArithmeticOp::Div) {
+                builder.ins().sdiv(left, right)
+            } else {
+                builder.ins().srem(left, right)
+            }
+        }
+    };
+    write_register_term(
+        builder,
+        register_file,
+        register_operand(lowering.destination)?,
+        result,
+    );
+    builder.ins().jump(lowering.success, &[]);
+    Ok(())
+}
+
+fn lower_typed_type_test(
+    builder: &mut FunctionBuilder<'_>,
+    typed_state: &TypedRegisterState,
+    op: TypeTestOp,
+    value: &Operand,
+    fail: cranelift_codegen::ir::Block,
+    success: cranelift_codegen::ir::Block,
+) -> Result<bool, JitError> {
+    let Some(type_) = typed_state.operand_type(value) else {
+        return Ok(false);
+    };
+    match typed_guard_decision(type_, op) {
+        GuardDecision::AlwaysTrue => builder.ins().jump(success, &[]),
+        GuardDecision::AlwaysFalse => builder.ins().jump(fail, &[]),
+        GuardDecision::Unknown => return Ok(false),
+    };
+    Ok(true)
+}
+
+fn lower_typed_test_arity(
+    builder: &mut FunctionBuilder<'_>,
+    typed_state: &TypedRegisterState,
+    tuple: &Operand,
+    arity: &Operand,
+    fail: cranelift_codegen::ir::Block,
+    success: cranelift_codegen::ir::Block,
+) -> Result<bool, JitError> {
+    let Some(TypeDescriptor::Tuple(elements)) = typed_state.operand_type(tuple) else {
+        return Ok(false);
+    };
+    let expected = immediate_usize(arity, "test_arity arity")?;
+    if elements.len() == expected {
+        builder.ins().jump(success, &[]);
+    } else {
+        builder.ins().jump(fail, &[]);
+    }
+    Ok(true)
+}
+
+#[derive(Clone, Copy)]
+enum GuardDecision {
+    AlwaysTrue,
+    AlwaysFalse,
+    Unknown,
+}
+
+fn typed_guard_decision(type_: &TypeDescriptor, op: TypeTestOp) -> GuardDecision {
+    match op {
+        TypeTestOp::IsInteger => bool_decision(matches!(type_, TypeDescriptor::Int)),
+        TypeTestOp::IsAtom => {
+            bool_decision(matches!(type_, TypeDescriptor::Atom | TypeDescriptor::Bool))
+        }
+        TypeTestOp::IsList => bool_decision(matches!(
+            type_,
+            TypeDescriptor::List(_) | TypeDescriptor::Nil
+        )),
+        TypeTestOp::IsTuple => bool_decision(matches!(type_, TypeDescriptor::Tuple(_))),
+        TypeTestOp::IsBoolean => bool_decision(matches!(type_, TypeDescriptor::Bool)),
+        TypeTestOp::IsNonemptyList => {
+            if matches!(type_, TypeDescriptor::Nil) {
+                GuardDecision::AlwaysFalse
+            } else {
+                GuardDecision::Unknown
+            }
+        }
+        TypeTestOp::IsBinary => bool_decision(matches!(
+            type_,
+            TypeDescriptor::String | TypeDescriptor::BitArray
+        )),
+        TypeTestOp::IsFloat => bool_decision(matches!(type_, TypeDescriptor::Float)),
+        _ => GuardDecision::Unknown,
+    }
+}
+
+fn bool_decision(value: bool) -> GuardDecision {
+    if value {
+        GuardDecision::AlwaysTrue
+    } else {
+        GuardDecision::AlwaysFalse
+    }
+}
+
+fn signed_add_overflow(
+    builder: &mut FunctionBuilder<'_>,
+    left: cranelift_codegen::ir::Value,
+    right: cranelift_codegen::ir::Value,
+    result: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let left_xor_result = builder.ins().bxor(left, result);
+    let right_xor_result = builder.ins().bxor(right, result);
+    let both_changed_sign = builder.ins().band(left_xor_result, right_xor_result);
+    builder
+        .ins()
+        .icmp_imm(IntCC::SignedLessThan, both_changed_sign, 0)
+}
+
+fn signed_sub_overflow(
+    builder: &mut FunctionBuilder<'_>,
+    left: cranelift_codegen::ir::Value,
+    right: cranelift_codegen::ir::Value,
+    result: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let left_xor_right = builder.ins().bxor(left, right);
+    let left_xor_result = builder.ins().bxor(left, result);
+    let both_changed_sign = builder.ins().band(left_xor_right, left_xor_result);
+    builder
+        .ins()
+        .icmp_imm(IntCC::SignedLessThan, both_changed_sign, 0)
+}
+
+fn branch_to_deopt_if_not_small_int(
+    builder: &mut FunctionBuilder<'_>,
+    value: cranelift_codegen::ir::Value,
+    deopt: cranelift_codegen::ir::Block,
+) {
+    let below_min = builder
+        .ins()
+        .icmp_imm(IntCC::SignedLessThan, value, Term::SMALL_INT_MIN);
+    branch_to_block_if(builder, below_min, deopt);
+    let above_max = builder
+        .ins()
+        .icmp_imm(IntCC::SignedGreaterThan, value, Term::SMALL_INT_MAX);
+    branch_to_block_if(builder, above_max, deopt);
+}
+
+fn branch_to_block_if(
+    builder: &mut FunctionBuilder<'_>,
+    condition: cranelift_codegen::ir::Value,
+    target: cranelift_codegen::ir::Block,
+) {
+    let continuation = builder.create_block();
+    builder
+        .ins()
+        .brif(condition, target, &[], continuation, &[]);
+    builder.switch_to_block(continuation);
 }
 
 impl Error for JitError {}
@@ -155,6 +349,29 @@ impl JitCompiler {
         module: Atom,
         function: Atom,
         arity: u8,
+    ) -> Result<NativeCode, JitError> {
+        self.compile_with_signature(instructions, module, function, arity, None)
+    }
+
+    /// Compiles a BEAM instruction slice with statically-known Gleam types.
+    pub fn compile_typed(
+        &self,
+        instructions: &[Instruction],
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        signature: FunctionSignature,
+    ) -> Result<NativeCode, JitError> {
+        self.compile_with_signature(instructions, module, function, arity, Some(signature))
+    }
+
+    fn compile_with_signature(
+        &self,
+        instructions: &[Instruction],
+        module: Atom,
+        function: Atom,
+        arity: u8,
+        typed_signature: Option<FunctionSignature>,
     ) -> Result<NativeCode, JitError> {
         let plan = TranslationPlan::new(instructions)?;
 
@@ -266,6 +483,8 @@ impl JitCompiler {
             let register_file = builder.block_params(blocks.entry)[0];
             let process = builder.block_params(blocks.entry)[1];
             builder.switch_to_block(blocks.entry);
+            let mut typed_state = TypedRegisterState::new(typed_signature.as_ref());
+            typed_state.initialize_entry_values(&mut builder, register_file);
 
             let exhausted = builder.ins().call(charge_helper, &[process]);
             let exhausted = builder.inst_results(exhausted)[0];
@@ -295,38 +514,65 @@ impl JitCompiler {
                         source,
                         destination,
                     } => {
-                        let value = read_operand_term(&mut builder, register_file, source)?;
+                        let value =
+                            typed_state.read_operand_value(&mut builder, register_file, source)?;
                         write_operand_term(&mut builder, register_file, destination, value)?;
+                        typed_state.copy(source, destination);
                     }
                     Instruction::Swap { left, right } => {
                         let left_value = read_operand_term(&mut builder, register_file, left)?;
                         let right_value = read_operand_term(&mut builder, register_file, right)?;
                         write_operand_term(&mut builder, register_file, left, right_value)?;
                         write_operand_term(&mut builder, register_file, right, left_value)?;
+                        typed_state.swap(left, right);
                     }
                     Instruction::Bif { op, operands } => {
                         let bif = ParsedBif::parse(*op, operands)?;
                         let arithmetic = ArithmeticOp::from_import(bif.import)?;
                         let fail = blocks.label_block(label_operand(bif.fail)?)?;
                         let next = blocks.block_after(index);
-                        lower_arithmetic_bif(
-                            &mut builder,
-                            register_file,
-                            ArithmeticLowering {
-                                op: arithmetic,
-                                left: bif.left,
-                                right: bif.right,
-                                destination: bif.destination,
-                                fail,
-                                success: next,
-                            },
-                        )?;
+                        let lowering = ArithmeticLowering {
+                            op: arithmetic,
+                            left: bif.left,
+                            right: bif.right,
+                            destination: bif.destination,
+                            fail,
+                            success: next,
+                        };
+                        if typed_state.operands_are_int(bif.left, bif.right)
+                            && typed_state.can_write_typed(bif.destination)
+                        {
+                            lower_typed_int_arithmetic(
+                                &mut builder,
+                                register_file,
+                                lowering,
+                                blocks.deopt,
+                            )?;
+                            typed_state.set_operand_type(bif.destination, TypeDescriptor::Int);
+                        } else {
+                            typed_state.materialize_operands_for_untyped_lowering(
+                                &mut builder,
+                                register_file,
+                                [bif.left, bif.right],
+                            );
+                            lower_arithmetic_bif(&mut builder, register_file, lowering)?;
+                            typed_state.clear_operand(bif.destination);
+                        }
                         terminated = true;
                     }
                     Instruction::TypeTest { op, fail, value } => {
                         let fail = blocks.label_block(label_operand(fail)?)?;
                         let next = blocks.block_after(index);
-                        lower_type_test(&mut builder, register_file, *op, value, fail, next)?;
+                        if !lower_typed_type_test(
+                            &mut builder,
+                            &typed_state,
+                            *op,
+                            value,
+                            fail,
+                            next,
+                        )? {
+                            lower_type_test(&mut builder, register_file, *op, value, fail, next)?;
+                        }
                         terminated = true;
                     }
                     Instruction::Comparison {
@@ -337,6 +583,11 @@ impl JitCompiler {
                     } => {
                         let fail = blocks.label_block(label_operand(fail)?)?;
                         let next = blocks.block_after(index);
+                        typed_state.materialize_operands_for_untyped_lowering(
+                            &mut builder,
+                            register_file,
+                            [left, right],
+                        );
                         lower_comparison(
                             &mut builder,
                             register_file,
@@ -351,7 +602,23 @@ impl JitCompiler {
                     Instruction::TestArity { fail, tuple, arity } => {
                         let fail = blocks.label_block(label_operand(fail)?)?;
                         let next = blocks.block_after(index);
-                        lower_test_arity(&mut builder, register_file, tuple, arity, fail, next)?;
+                        if !lower_typed_test_arity(
+                            &mut builder,
+                            &typed_state,
+                            tuple,
+                            arity,
+                            fail,
+                            next,
+                        )? {
+                            lower_test_arity(
+                                &mut builder,
+                                register_file,
+                                tuple,
+                                arity,
+                                fail,
+                                next,
+                            )?;
+                        }
                         terminated = true;
                     }
                     Instruction::IsTaggedTuple {
@@ -375,6 +642,11 @@ impl JitCompiler {
                     }
                     Instruction::SelectVal { value, fail, list } => {
                         let fail = blocks.label_block(label_operand(fail)?)?;
+                        typed_state.materialize_operands_for_untyped_lowering(
+                            &mut builder,
+                            register_file,
+                            [value],
+                        );
                         let pairs = parse_select_pairs(list)?
                             .into_iter()
                             .map(|(candidate, target)| {
@@ -394,6 +666,7 @@ impl JitCompiler {
                     }
                     Instruction::CallExt { arity: _, import }
                     | Instruction::CallExtOnly { arity: _, import } => {
+                        typed_state.materialize_all_for_untyped_call(&mut builder, register_file);
                         let import_index = import_index(import)?;
                         let call_arity = match instruction {
                             Instruction::CallExt { arity, .. }
@@ -501,7 +774,7 @@ impl JitCompiler {
                         )?;
                     }
                     Instruction::Return => {
-                        let value = read_register_term(&mut builder, register_file, Register::X(0));
+                        let value = typed_state.read_return_value(&mut builder, register_file);
                         return_status(&mut builder, JIT_STATUS_NORMAL, value);
                         terminated = true;
                     }
@@ -514,6 +787,12 @@ impl JitCompiler {
                             index,
                             [head.clone(), tail.clone(), destination.clone()],
                         )?;
+                        let destination_type = typed_state.list_type_from_head(head);
+                        typed_state.materialize_operands_for_untyped_lowering(
+                            &mut builder,
+                            register_file,
+                            [head, tail],
+                        );
                         lower_put_list(
                             &mut builder,
                             LoweringContext {
@@ -526,22 +805,51 @@ impl JitCompiler {
                             tail,
                             destination,
                         )?;
+                        typed_state.set_optional_operand_type(destination, destination_type);
                         terminated = false;
                     }
                     Instruction::GetList { source, head, tail } => {
+                        let head_type = typed_state.list_head_type(source);
+                        let tail_type = typed_state.list_tail_type(source);
                         lower_get_list(&mut builder, register_file, source, head, tail)?;
+                        typed_state.mark_loaded_operand_type(
+                            &mut builder,
+                            register_file,
+                            head,
+                            head_type,
+                        );
+                        typed_state.mark_loaded_operand_type(
+                            &mut builder,
+                            register_file,
+                            tail,
+                            tail_type,
+                        );
                     }
                     Instruction::GetHd {
                         source,
                         destination,
                     } => {
+                        let destination_type = typed_state.list_head_type(source);
                         lower_get_hd(&mut builder, register_file, source, destination)?;
+                        typed_state.mark_loaded_operand_type(
+                            &mut builder,
+                            register_file,
+                            destination,
+                            destination_type,
+                        );
                     }
                     Instruction::GetTl {
                         source,
                         destination,
                     } => {
+                        let destination_type = typed_state.list_tail_type(source);
                         lower_get_tl(&mut builder, register_file, source, destination)?;
+                        typed_state.mark_loaded_operand_type(
+                            &mut builder,
+                            register_file,
+                            destination,
+                            destination_type,
+                        );
                     }
                     Instruction::PutTuple2 {
                         destination,
@@ -550,6 +858,12 @@ impl JitCompiler {
                         safepoints.record_allocation_site(
                             index,
                             tuple_root_operands(destination, elements)?,
+                        )?;
+                        let destination_type = typed_state.tuple_type_from_elements(elements);
+                        typed_state.materialize_tuple_elements_for_untyped_lowering(
+                            &mut builder,
+                            register_file,
+                            elements,
                         )?;
                         lower_put_tuple2(
                             &mut builder,
@@ -562,6 +876,7 @@ impl JitCompiler {
                             destination,
                             elements,
                         )?;
+                        typed_state.set_optional_operand_type(destination, destination_type);
                         terminated = false;
                     }
                     Instruction::GetTupleElement {
@@ -570,6 +885,7 @@ impl JitCompiler {
                         destination,
                     } => {
                         let index = immediate_usize(index, "get_tuple_element index")?;
+                        let destination_type = typed_state.tuple_element_type(source, index);
                         lower_get_tuple_element(
                             &mut builder,
                             register_file,
@@ -577,6 +893,12 @@ impl JitCompiler {
                             index,
                             destination,
                         )?;
+                        typed_state.mark_loaded_operand_type(
+                            &mut builder,
+                            register_file,
+                            destination,
+                            destination_type,
+                        );
                     }
                     other => {
                         return Err(JitError::UnsupportedOpcode {
@@ -591,7 +913,7 @@ impl JitCompiler {
                 builder.ins().jump(exit, &[]);
             }
             builder.switch_to_block(exit);
-            let value = read_register_term(&mut builder, register_file, Register::X(0));
+            let value = typed_state.read_return_value(&mut builder, register_file);
             return_status(&mut builder, JIT_STATUS_NORMAL, value);
 
             builder.switch_to_block(blocks.deopt);
@@ -620,6 +942,268 @@ impl JitCompiler {
             safepoints.finish(),
             Arc::clone(&self.module),
         ))
+    }
+}
+
+struct TypedRegisterState {
+    registers: HashMap<Register, TypeDescriptor>,
+}
+
+impl TypedRegisterState {
+    fn new(signature: Option<&FunctionSignature>) -> Self {
+        let mut registers = HashMap::new();
+        if let Some(signature) = signature {
+            for (index, type_) in signature.param_types.iter().enumerate() {
+                if let Some(type_) = supported_type(type_)
+                    && let Ok(index) = u32::try_from(index)
+                {
+                    registers.insert(Register::X(index), type_);
+                }
+            }
+        }
+        Self { registers }
+    }
+
+    fn initialize_entry_values(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+    ) {
+        for (register, type_) in &self.registers {
+            if matches!(type_, TypeDescriptor::Int) {
+                let tagged = read_register_term(builder, register_file, *register);
+                let payload = builder.ins().sshr_imm(tagged, SMALL_INT_SHIFT);
+                write_register_term(builder, register_file, *register, payload);
+            }
+        }
+    }
+
+    fn read_return_value(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+    ) -> cranelift_codegen::ir::Value {
+        let value = read_register_term(builder, register_file, Register::X(0));
+        if matches!(
+            self.registers.get(&Register::X(0)),
+            Some(TypeDescriptor::Int)
+        ) {
+            builder.ins().ishl_imm(value, SMALL_INT_SHIFT)
+        } else {
+            value
+        }
+    }
+
+    fn materialize_all_for_untyped_call(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+    ) {
+        let registers = self.registers.keys().copied().collect::<Vec<_>>();
+        self.materialize_registers(builder, register_file, registers);
+    }
+
+    fn materialize_operands_for_untyped_lowering<'a>(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+        operands: impl IntoIterator<Item = &'a Operand>,
+    ) {
+        let registers = operands
+            .into_iter()
+            .filter_map(|operand| register_operand(operand).ok())
+            .collect::<Vec<_>>();
+        self.materialize_registers(builder, register_file, registers);
+    }
+
+    fn materialize_tuple_elements_for_untyped_lowering(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+        elements: &Operand,
+    ) -> Result<(), JitError> {
+        let Operand::List(elements) = elements else {
+            return Err(JitError::UnsupportedOperand {
+                operand: format!("put_tuple2 elements must be a list, got {elements:?}"),
+            });
+        };
+        let registers = elements
+            .iter()
+            .filter_map(|operand| register_operand(operand).ok())
+            .collect::<Vec<_>>();
+        self.materialize_registers(builder, register_file, registers);
+        Ok(())
+    }
+
+    fn materialize_registers(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+        registers: impl IntoIterator<Item = Register>,
+    ) {
+        for register in registers {
+            if matches!(self.registers.remove(&register), Some(TypeDescriptor::Int)) {
+                let payload = read_register_term(builder, register_file, register);
+                let tagged = builder.ins().ishl_imm(payload, SMALL_INT_SHIFT);
+                write_register_term(builder, register_file, register, tagged);
+            }
+        }
+    }
+
+    fn read_operand_value(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+        operand: &Operand,
+    ) -> Result<cranelift_codegen::ir::Value, JitError> {
+        if matches!(self.operand_type(operand), Some(TypeDescriptor::Int)) {
+            Ok(read_register_term(
+                builder,
+                register_file,
+                register_operand(operand)?,
+            ))
+        } else {
+            read_operand_term(builder, register_file, operand)
+        }
+    }
+
+    fn operand_type(&self, operand: &Operand) -> Option<&TypeDescriptor> {
+        let register = register_operand(operand).ok()?;
+        self.registers.get(&register)
+    }
+
+    fn set_operand_type(&mut self, operand: &Operand, type_: TypeDescriptor) {
+        self.set_optional_operand_type(operand, Some(type_));
+    }
+
+    fn set_optional_operand_type(&mut self, operand: &Operand, type_: Option<TypeDescriptor>) {
+        if let Ok(register) = register_operand(operand) {
+            if let Some(type_) = type_.as_ref().and_then(supported_type) {
+                self.registers.insert(register, type_);
+            } else {
+                self.registers.remove(&register);
+            }
+        }
+    }
+
+    fn clear_operand(&mut self, operand: &Operand) {
+        if let Ok(register) = register_operand(operand) {
+            self.registers.remove(&register);
+        }
+    }
+
+    fn copy(&mut self, source: &Operand, destination: &Operand) {
+        if let Some(type_) = self.operand_type(source).cloned() {
+            self.set_operand_type(destination, type_);
+        } else {
+            self.clear_operand(destination);
+        }
+    }
+
+    fn swap(&mut self, left: &Operand, right: &Operand) {
+        let Ok(left_register) = register_operand(left) else {
+            return;
+        };
+        let Ok(right_register) = register_operand(right) else {
+            return;
+        };
+        let left_type = self.registers.remove(&left_register);
+        let right_type = self.registers.remove(&right_register);
+        if let Some(type_) = right_type {
+            self.registers.insert(left_register, type_);
+        }
+        if let Some(type_) = left_type {
+            self.registers.insert(right_register, type_);
+        }
+    }
+
+    fn operands_are_int(&self, left: &Operand, right: &Operand) -> bool {
+        matches!(self.operand_type(left), Some(TypeDescriptor::Int))
+            && matches!(self.operand_type(right), Some(TypeDescriptor::Int))
+    }
+
+    fn can_write_typed(&self, operand: &Operand) -> bool {
+        register_operand(operand).is_ok()
+    }
+
+    fn list_type_from_head(&self, head: &Operand) -> Option<TypeDescriptor> {
+        self.operand_type(head)
+            .cloned()
+            .map(|head_type| TypeDescriptor::List(Box::new(head_type)))
+    }
+
+    fn list_head_type(&self, source: &Operand) -> Option<TypeDescriptor> {
+        if let Some(TypeDescriptor::List(inner)) = self.operand_type(source) {
+            Some(inner.as_ref().clone())
+        } else {
+            None
+        }
+    }
+
+    fn list_tail_type(&self, source: &Operand) -> Option<TypeDescriptor> {
+        if let Some(TypeDescriptor::List(inner)) = self.operand_type(source) {
+            Some(TypeDescriptor::List(inner.clone()))
+        } else {
+            None
+        }
+    }
+
+    fn tuple_type_from_elements(&self, elements: &Operand) -> Option<TypeDescriptor> {
+        let Operand::List(elements) = elements else {
+            return None;
+        };
+        elements
+            .iter()
+            .map(|element| self.operand_type(element).cloned())
+            .collect::<Option<Vec<_>>>()
+            .map(TypeDescriptor::Tuple)
+    }
+
+    fn tuple_element_type(&self, source: &Operand, index: usize) -> Option<TypeDescriptor> {
+        if let Some(TypeDescriptor::Tuple(elements)) = self.operand_type(source) {
+            elements.get(index).cloned()
+        } else {
+            None
+        }
+    }
+
+    fn mark_loaded_operand_type(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        register_file: cranelift_codegen::ir::Value,
+        operand: &Operand,
+        type_: Option<TypeDescriptor>,
+    ) {
+        let Ok(register) = register_operand(operand) else {
+            return;
+        };
+        let Some(type_) = type_.as_ref().and_then(supported_type) else {
+            self.registers.remove(&register);
+            return;
+        };
+        if matches!(type_, TypeDescriptor::Int) {
+            let tagged = read_register_term(builder, register_file, register);
+            let payload = builder.ins().sshr_imm(tagged, SMALL_INT_SHIFT);
+            write_register_term(builder, register_file, register, payload);
+        }
+        self.registers.insert(register, type_);
+    }
+}
+
+fn supported_type(type_: &TypeDescriptor) -> Option<TypeDescriptor> {
+    match type_ {
+        TypeDescriptor::Int | TypeDescriptor::Bool | TypeDescriptor::Atom | TypeDescriptor::Nil => {
+            Some(type_.clone())
+        }
+        TypeDescriptor::List(inner) => {
+            supported_type(inner).map(|inner| TypeDescriptor::List(Box::new(inner)))
+        }
+        TypeDescriptor::Tuple(elements) => elements
+            .iter()
+            .map(supported_type)
+            .collect::<Option<Vec<_>>>()
+            .map(TypeDescriptor::Tuple),
+        _ => None,
     }
 }
 

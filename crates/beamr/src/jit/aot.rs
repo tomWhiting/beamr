@@ -12,7 +12,10 @@ use super::compiler::{JitCompiler, JitError, JitSettings};
 use super::profiler::JitProfiler;
 use crate::atom::{Atom, AtomTable};
 use crate::error::LoadError;
-use crate::jit::aot_format::{DecodedBundle, write_atom, write_bytes, write_stack_maps, write_u32, write_u64};
+use crate::jit::aot_format::{
+    DecodedBundle, write_atom, write_bytes, write_stack_maps, write_u32, write_u64,
+};
+use crate::jit::type_info::{FunctionSignature, GleamTypeReader, TypeError};
 use crate::jit::types::StackMapEntry;
 use crate::loader::{ExportEntry, Instruction, ParsedModule, load_beam_chunks};
 use crate::module::Module;
@@ -29,6 +32,12 @@ pub(crate) const VERSION: u8 = 1;
 /// Host AOT compiler that reuses the normal untyped JIT pipeline.
 pub struct AotCompiler {
     compiler: JitCompiler,
+}
+
+/// Type-aware AOT lowering coordinator.
+pub struct TypedIrTranslator<'a> {
+    signature: FunctionSignature,
+    compiler: &'a JitCompiler,
 }
 
 /// Result of compiling exported functions from one BEAM module.
@@ -75,6 +84,30 @@ pub enum AotError {
     Malformed(String),
     /// The bundle references a function absent from its embedded BEAM bytes.
     MissingFunction { function: Atom, arity: u8 },
+    /// A `.gleam_types` companion exists but could not be decoded.
+    TypeInfo(TypeError),
+}
+
+impl<'a> TypedIrTranslator<'a> {
+    /// Creates a type-aware translator backed by the shared JIT compiler.
+    #[must_use]
+    pub const fn new(signature: FunctionSignature, compiler: &'a JitCompiler) -> Self {
+        Self {
+            signature,
+            compiler,
+        }
+    }
+
+    fn compile(
+        self,
+        instructions: &[Instruction],
+        module: Atom,
+        function: Atom,
+        arity: u8,
+    ) -> Result<NativeCode, JitError> {
+        self.compiler
+            .compile_typed(instructions, module, function, arity, self.signature)
+    }
 }
 
 impl AotCompiler {
@@ -91,10 +124,15 @@ impl AotCompiler {
             path: beam_path.to_path_buf(),
             source,
         })?;
-        self.compile_module_bytes(bytes)
+        let type_reader = load_type_reader(&beam_path.with_extension("gleam_types"))?;
+        self.compile_module_bytes(bytes, type_reader.as_ref())
     }
 
-    fn compile_module_bytes(&self, bytes: Vec<u8>) -> Result<AotResult, AotError> {
+    fn compile_module_bytes(
+        &self,
+        bytes: Vec<u8>,
+        type_reader: Option<&GleamTypeReader>,
+    ) -> Result<AotResult, AotError> {
         let atom_table = AtomTable::with_common_atoms();
         let parsed = load_beam_chunks(&bytes, &atom_table).map_err(AotError::Load)?;
         let mut compiled = Vec::new();
@@ -109,10 +147,22 @@ impl AotCompiler {
                 }
             };
 
-            match self
-                .compiler
-                .compile(instructions, parsed.name, export.function, export.arity)
-            {
+            let signature = atom_table
+                .resolve(export.function)
+                .and_then(|function| type_reader?.function_signature(function, export.arity));
+            let compiled_function = if let Some(signature) = signature {
+                TypedIrTranslator::new(signature, &self.compiler).compile(
+                    instructions,
+                    parsed.name,
+                    export.function,
+                    export.arity,
+                )
+            } else {
+                self.compiler
+                    .compile(instructions, parsed.name, export.function, export.arity)
+            };
+
+            match compiled_function {
                 Ok(native) => compiled.push((export.function, export.arity, native)),
                 Err(error) if is_skippable_jit_error(&error) => {
                     eprintln!(
@@ -270,6 +320,14 @@ pub fn target_hash(target: &str) -> u64 {
     fnv1a64(target.as_bytes())
 }
 
+fn load_type_reader(path: &Path) -> Result<Option<GleamTypeReader>, AotError> {
+    match GleamTypeReader::load(path) {
+        Ok(reader) => Ok(Some(reader)),
+        Err(TypeError::NotFound) => Ok(None),
+        Err(error) => Err(AotError::TypeInfo(error)),
+    }
+}
+
 fn recompile_entries(
     compiler: &JitCompiler,
     parsed: &ParsedModule,
@@ -380,6 +438,7 @@ impl fmt::Display for AotError {
                     "AOT bundle references missing function {function:?}/{arity}"
                 )
             }
+            Self::TypeInfo(error) => write!(formatter, "type info: {error}"),
         }
     }
 }
@@ -390,6 +449,7 @@ impl Error for AotError {
             Self::Io { source, .. } => Some(source),
             Self::Load(error) => Some(error),
             Self::Jit(error) => Some(error),
+            Self::TypeInfo(error) => Some(error),
             Self::InvalidMagic
             | Self::UnsupportedVersion(_)
             | Self::TargetMismatch { .. }
