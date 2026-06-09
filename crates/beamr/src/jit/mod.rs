@@ -8,6 +8,7 @@ pub mod compiler;
 pub(crate) mod ir_allocation;
 pub(crate) mod ir_arithmetic;
 pub(crate) mod ir_binary;
+pub(crate) mod ir_binary_lowering;
 pub(crate) mod ir_common;
 pub(crate) mod ir_control;
 pub(crate) mod ir_exceptions;
