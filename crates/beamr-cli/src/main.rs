@@ -551,7 +551,10 @@ fn parse_runtime_arg(arg: &str, _atom_table: &AtomTable) -> Result<Term, CliErro
 
 fn format_import_report(report: &UnresolvedImportReport, atom_table: &AtomTable) -> String {
     let mut output = String::new();
-    for import in report.imports() {
+    // Deferred imports are module dependencies resolved at call time; they
+    // must be loaded (e.g. via --dir) for the module to actually run, so
+    // hiding them here would overstate what runs standalone.
+    for import in report.imports().iter().chain(&report.deferred_imports()) {
         output.push_str(&format_term(Term::atom(import.module), atom_table));
         output.push(':');
         output.push_str(&format_term(Term::atom(import.function), atom_table));

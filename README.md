@@ -48,7 +48,7 @@ beamr my_app.beam --dir ./deps/gleam_stdlib/ebin --dir ./deps/gleam_otp/ebin
 beamr imports my_module.beam
 ```
 
-If `beamr imports` returns empty output, beamr can run the module natively. Any listed imports are BIFs or modules not yet stubbed.
+`beamr imports` lists everything the module needs that beamr does not provide natively — both unresolved BIFs and module dependencies that must be supplied with `--dir`. Empty output means all imports resolve to built-in functions, so the module runs standalone.
 
 ## Examples
 
@@ -157,15 +157,14 @@ The Meridian integration layer (`beamr-meridian`) lives in the [yggdrasil](https
 - **Supervision**: Start-link, restart-on-crash, exit signal propagation through supervision trees
 - **Mailboxes**: Lock-free process mailboxes with selective receive (the `select/1` pattern Gleam uses)
 - **200+ native BIFs**: Covering erlang, lists, maps, string, binary, io, math, unicode, rand, uri, and all Gleam stdlib FFI modules
-- **JSON bridge**: Bidirectional Term to `serde_json::Value` conversion (behind `json` feature flag)
+- **JSON**: Native OTP 27 `json` module (`decode/1`, `encode/1`, `encode_integer/1`, `encode_float/1`, `encode_binary/1`) so `gleam_json` works out of the box; Term to `serde_json::Value` bridging remains behind the `json` feature flag
 - **Async NIF support**: `wake_with_result` for suspending a BEAM process and delivering results from host-side async operations
 - **Zero unresolved imports**: All `gleam_otp` `.beam` modules load cleanly
 
 ## Testing
 
 ```bash
-cargo test --workspace                    # 620 tests
-cargo test --workspace --features json    # includes JSON bridge tests
+cargo test --workspace                    # 1,500+ tests
 ```
 
 ## Design decisions
