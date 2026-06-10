@@ -1,1 +1,1 @@
-Harden sandbox capability enforcement for spawn and supervision BIF metadata
+feat(beamr): audit native capability enforcement

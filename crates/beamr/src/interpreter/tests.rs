@@ -1,6 +1,6 @@
 use super::{ExecutionResult, NativeServices, run, run_with_native_services, run_with_registry};
 use crate::atom::{Atom, AtomTable};
-use crate::capability::Sandbox;
+use crate::capability::{CapabilityAuditEvent, CapabilityAuditSink, Sandbox, ViolationHandler};
 use crate::error::ExecError;
 use crate::jit::{JitCache, JitCacheKey, JitCompiler, JitSettings};
 use crate::loader::decode::BinaryOp;
@@ -14,7 +14,7 @@ use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Cons, Tuple};
 use crate::term::{Term, compare};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn module(name: Atom, code: Vec<Instruction>) -> Module {
     let label_index = code
@@ -51,7 +51,29 @@ fn heap_binary(process: &mut Process, bytes: &[u8]) -> Term {
     write_binary(heap, bytes).expect("test binary fits")
 }
 
-fn native_services_with_jit_cache(jit_cache: Arc<JitCache>) -> NativeServices {
+#[derive(Default)]
+struct CollectingAuditSink {
+    events: Mutex<Vec<CapabilityAuditEvent>>,
+}
+
+impl CapabilityAuditSink for CollectingAuditSink {
+    fn record(&self, event: CapabilityAuditEvent) {
+        self.events.lock().expect("collector lock").push(event);
+    }
+}
+
+#[derive(Default)]
+struct CollectingViolationHandler {
+    events: Mutex<Vec<CapabilityAuditEvent>>,
+}
+
+impl ViolationHandler for CollectingViolationHandler {
+    fn on_violation(&self, event: CapabilityAuditEvent) {
+        self.events.lock().expect("collector lock").push(event);
+    }
+}
+
+fn empty_native_services() -> NativeServices {
     NativeServices {
         atom_table: None,
         local_node: None,
@@ -75,8 +97,17 @@ fn native_services_with_jit_cache(jit_cache: Arc<JitCache>) -> NativeServices {
         io_message_facility: None,
         file_io_facility: None,
         tcp_io_facility: None,
-        jit_cache: Some(jit_cache),
+        jit_cache: None,
         replay_driver: None,
+        capability_audit_sink: None,
+        capability_violation_handler: None,
+    }
+}
+
+fn native_services_with_jit_cache(jit_cache: Arc<JitCache>) -> NativeServices {
+    NativeServices {
+        jit_cache: Some(jit_cache),
+        ..empty_native_services()
     }
 }
 
@@ -979,6 +1010,120 @@ fn native_import(function: crate::native::NativeFn) -> ResolvedImport {
 fn native_increment(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
     let value = args[0].as_small_int().unwrap_or(0);
     Ok(Term::small_int(value + 1))
+}
+
+fn native_increment_module(capability: Capability) -> Module {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(7),
+                destination: Operand::X(0),
+            },
+            Instruction::CallExt {
+                arity: Operand::Unsigned(1),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    module.resolved_imports.push(ResolvedImport {
+        module: Atom::OK,
+        function: Atom::OK,
+        arity: 1,
+        target: ResolvedImportTarget::Native(NativeEntry {
+            function: native_increment,
+            dirty_kind: None,
+            capability,
+        }),
+    });
+    module
+}
+
+#[test]
+fn audit_sink_receives_granted_native_call_event() {
+    let module = native_increment_module(Capability::Pure);
+    let registry = ModuleRegistry::new();
+    let mut process = Process::new(41, 32);
+    let sink = Arc::new(CollectingAuditSink::default());
+    let audit_sink: Arc<dyn CapabilityAuditSink> = sink.clone();
+    let services = NativeServices {
+        capability_audit_sink: Some(audit_sink),
+        ..empty_native_services()
+    };
+
+    assert_eq!(
+        run_with_native_services(&mut process, &module, &registry, &services),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let events = sink.events.lock().expect("collector lock");
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.pid, 41);
+    assert_eq!(event.capability, Capability::Pure);
+    assert_eq!(event.operation.module, Atom::OK);
+    assert_eq!(event.operation.function, Atom::OK);
+    assert_eq!(event.operation.arity, 1);
+    assert!(event.granted);
+    assert_eq!(event.process_capabilities, CapabilitySet::all());
+}
+
+#[test]
+fn audit_sink_receives_denied_native_call_event() {
+    let module = native_increment_module(Capability::ExternalIo);
+    let registry = ModuleRegistry::new();
+    let capabilities = CapabilitySet::from_slice(&[Capability::Pure, Capability::ProcessLocal]);
+    let mut process = Process::with_capabilities(42, 32, capabilities.clone());
+    let sink = Arc::new(CollectingAuditSink::default());
+    let audit_sink: Arc<dyn CapabilityAuditSink> = sink.clone();
+    let services = NativeServices {
+        capability_audit_sink: Some(audit_sink),
+        ..empty_native_services()
+    };
+
+    assert_eq!(
+        run_with_native_services(&mut process, &module, &registry, &services),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let events = sink.events.lock().expect("collector lock");
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.pid, 42);
+    assert_eq!(event.capability, Capability::ExternalIo);
+    assert_eq!(event.operation.module, Atom::OK);
+    assert_eq!(event.operation.function, Atom::OK);
+    assert_eq!(event.operation.arity, 1);
+    assert!(!event.granted);
+    assert_eq!(event.process_capabilities, capabilities);
+}
+
+#[test]
+fn custom_violation_handler_receives_denied_native_call_context() {
+    let module = native_increment_module(Capability::ExternalIo);
+    let registry = ModuleRegistry::new();
+    let capabilities = CapabilitySet::from_slice(&[Capability::Pure, Capability::ProcessLocal]);
+    let mut process = Process::with_capabilities(43, 32, capabilities.clone());
+    let handler = Arc::new(CollectingViolationHandler::default());
+    let violation_handler: Arc<dyn ViolationHandler> = handler.clone();
+    let services = NativeServices {
+        capability_violation_handler: Some(violation_handler),
+        ..empty_native_services()
+    };
+
+    assert_eq!(
+        run_with_native_services(&mut process, &module, &registry, &services),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let events = handler.events.lock().expect("collector lock");
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.pid, 43);
+    assert_eq!(event.capability, Capability::ExternalIo);
+    assert_eq!(event.operation.module, Atom::OK);
+    assert_eq!(event.operation.function, Atom::OK);
+    assert_eq!(event.operation.arity, 1);
+    assert!(!event.granted);
+    assert_eq!(event.process_capabilities, capabilities);
 }
 
 #[test]

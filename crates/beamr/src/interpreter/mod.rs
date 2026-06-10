@@ -9,6 +9,7 @@ pub mod pattern;
 use std::sync::{Arc, Mutex};
 
 use crate::atom::AtomTable;
+use crate::capability::{CapabilityAuditSink, ViolationHandler};
 use crate::distribution::control::DistributionSendFacility;
 use crate::distribution::remote_link::DistributionControlFacility;
 use crate::distribution::{NetKernel, Node};
@@ -82,6 +83,10 @@ pub struct NativeServices {
     pub jit_cache: Option<Arc<JitCache>>,
     /// Replay driver used to replace nondeterministic native decisions.
     pub replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
+    /// Optional sink for runtime native capability audit events.
+    pub capability_audit_sink: Option<Arc<dyn CapabilityAuditSink>>,
+    /// Optional handler invoked for denied runtime native capability checks.
+    pub capability_violation_handler: Option<Arc<dyn ViolationHandler>>,
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.
@@ -171,6 +176,8 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         tcp_io_facility: None,
         jit_cache: None,
         replay_driver: None,
+        capability_audit_sink: None,
+        capability_violation_handler: None,
     };
     run_loop(process, module, None, &empty)
 }
@@ -206,6 +213,8 @@ pub fn run_with_registry(
         tcp_io_facility: None,
         jit_cache: None,
         replay_driver: None,
+        capability_audit_sink: None,
+        capability_violation_handler: None,
     };
     run_loop(process, initial_module, Some(registry), &empty)
 }
@@ -241,6 +250,8 @@ pub fn run_with_timer_services(
         tcp_io_facility: None,
         jit_cache: None,
         replay_driver: None,
+        capability_audit_sink: None,
+        capability_violation_handler: None,
     };
     run_loop(process, initial_module, None, &services)
 }

@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::atom::{Atom, AtomTable};
+use crate::capability::{CapabilityAuditEvent, CapabilityOperation};
 use crate::error::ExecError;
 use crate::gc::{GcError, ensure_space};
 use crate::interpreter::InstructionOutcome;
@@ -510,7 +511,28 @@ fn call_external_target(
                 });
             }
 
-            if !process.capabilities().contains(entry.capability) {
+            let audit_event = CapabilityAuditEvent {
+                pid: process.pid(),
+                capability: entry.capability,
+                operation: CapabilityOperation {
+                    module: resolved.module,
+                    function: resolved.function,
+                    arity: resolved.arity,
+                },
+                granted: process.capabilities().contains(entry.capability),
+                process_capabilities: process.capabilities().clone(),
+            };
+            if let Some(svc) = ctx.services
+                && let Some(sink) = &svc.capability_audit_sink
+            {
+                sink.record(audit_event.clone());
+            }
+            if !audit_event.granted {
+                if let Some(svc) = ctx.services
+                    && let Some(handler) = &svc.capability_violation_handler
+                {
+                    handler.on_violation(audit_event);
+                }
                 let result = capability_denied_result(process)?;
                 return complete_native_value(process, result, save_return);
             }
