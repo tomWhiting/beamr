@@ -79,6 +79,14 @@ impl Atom {
     pub const ENOTCONN: Self = Self(65);
     pub const NOCONNECTION: Self = Self(66);
     pub const CAPABILITY_DENIED: Self = Self(67);
+    pub const BS_ENSURE_AT_LEAST: Self = Self(68);
+    pub const BS_ENSURE_EXACTLY: Self = Self(69);
+    pub const BS_INTEGER: Self = Self(70);
+    pub const BS_FLOAT: Self = Self(71);
+    pub const BS_BINARY: Self = Self(72);
+    pub const BS_SKIP: Self = Self(73);
+    pub const BS_GET_TAIL: Self = Self(74);
+    pub const BS_EQ_EXACT: Self = Self(75);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -158,6 +166,14 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("enotconn", Atom::ENOTCONN),
     ("noconnection", Atom::NOCONNECTION),
     ("capability_denied", Atom::CAPABILITY_DENIED),
+    ("ensure_at_least", Atom::BS_ENSURE_AT_LEAST),
+    ("ensure_exactly", Atom::BS_ENSURE_EXACTLY),
+    ("integer", Atom::BS_INTEGER),
+    ("float", Atom::BS_FLOAT),
+    ("binary", Atom::BS_BINARY),
+    ("skip", Atom::BS_SKIP),
+    ("get_tail", Atom::BS_GET_TAIL),
+    ("=:=", Atom::BS_EQ_EXACT),
 ];
 
 /// Concurrent intern table for atom strings.

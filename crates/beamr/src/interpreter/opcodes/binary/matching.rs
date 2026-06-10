@@ -1,5 +1,6 @@
 use super::super::core;
 use super::{MATCH_CONTEXT_WORDS, boxed_tag, heap_slice, jump_label, read_word, write_word};
+use crate::atom::Atom;
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::decode::Literal;
@@ -22,16 +23,35 @@ type GetOperands<'a> = (
 pub(super) fn bs_start_match(
     process: &mut Process,
     module: &Module,
+    op: super::BinaryOp,
     operands: &[Operand],
 ) -> Result<InstructionOutcome, ExecError> {
-    let (fail, source, destination) = match operands {
-        [fail, source, destination] => (fail, source, destination),
-        [fail, source, _live, destination] => (fail, source, destination),
+    let (fail, source, destination) = match (op, operands) {
+        // `{bs_start_match4, Fail, Live, Src, Dst}` puts Live before Src, and
+        // Fail may be the atom `no_fail` or `resume` when the compiler proved
+        // the operand is always matchable.
+        (super::BinaryOp::BsStartMatch4, [fail, _live, source, destination]) => {
+            (fail, source, destination)
+        }
+        (_, [fail, source, destination]) => (fail, source, destination),
+        (_, [fail, source, _live, destination]) => (fail, source, destination),
         _ => return Err(ExecError::InvalidOperand("bs_start_match operands")),
     };
     let source = core::read_term(process, module, source)?;
+    // `resume` hands back a term that already carries a match context.
+    if MatchContext::new(source).is_some() {
+        core::write_term(process, destination, source)?;
+        return Ok(InstructionOutcome::Continue);
+    }
     let Some(binary) = BinaryRef::new(source) else {
-        return jump_label(module, fail);
+        return match fail {
+            // With `no_fail`/`resume` there is no fail label to jump to.
+            Operand::Atom(Some(_)) => {
+                eprintln!("DEBUG bs_start_match atom-fail non-binary source: {source:?}");
+                Err(ExecError::Badarg)
+            }
+            _ => jump_label(module, fail),
+        };
     };
     let total_bits = binary
         .len()
@@ -188,9 +208,9 @@ pub(super) fn bs_get_tail(
     module: &Module,
     operands: &[Operand],
 ) -> Result<InstructionOutcome, ExecError> {
+    // `{bs_get_tail, Ctx, Dst, Live}` — no fail operand.
     let (context, destination) = match operands {
-        [_fail, context, _live, destination] => (context, destination),
-        [_fail, context, destination] => (context, destination),
+        [context, destination, _live] => (context, destination),
         _ => return Err(ExecError::InvalidOperand("bs_get_tail operands")),
     };
     let context = read_context(process, module, context)?;
@@ -315,7 +335,9 @@ fn run_flat_command(
     index: &mut usize,
 ) -> Result<bool, ExecError> {
     let arity = match tag {
-        "ensure" | "ensure_at_least" | "ensure_exactly" => 2,
+        "ensure" | "ensure_at_least" => 2,
+        // OTP encodes `{ensure_exactly, Stride}` — one argument.
+        "ensure_exactly" => 1,
         "integer" | "float" | "binary" => 5,
         "skip" => 1,
         "get_tail" => {
@@ -326,7 +348,10 @@ fn run_flat_command(
             }
         }
         "=:=" => 3,
-        _ => return Err(ExecError::InvalidOperand("bs_match command")),
+        other => {
+            eprintln!("DEBUG bs_match flat arity unmatched tag: {other:?}");
+            return Err(ExecError::InvalidOperand("bs_match command"));
+        }
     };
     let end = index
         .checked_add(arity)
@@ -345,10 +370,15 @@ fn run_command_args(
     args: &[Operand],
 ) -> Result<bool, ExecError> {
     match (tag, args) {
-        ("ensure" | "ensure_at_least", [_live, bits]) => {
-            Ok(context.has_bits(core::operand_usize(bits, "bs_match ensure bits")?))
+        // `{ensure_at_least, Size, Unit}` requires Size*Unit more bits.
+        ("ensure" | "ensure_at_least", [size, unit]) => {
+            Ok(context.has_bits(segment_bits(size, unit)?))
         }
         ("ensure_exactly", [stride, _unit]) => {
+            Ok(context.remaining_bits() == core::operand_usize(stride, "bs_match ensure exactly")?)
+        }
+        // OTP emits the nested form as `{ensure_exactly, Stride}` — one argument.
+        ("ensure_exactly", [stride]) => {
             Ok(context.remaining_bits() == core::operand_usize(stride, "bs_match ensure exactly")?)
         }
         ("integer", [_live, flags, size, unit, dst]) => {
@@ -414,7 +444,10 @@ fn run_command_args(
                 Ok(false)
             }
         }
-        _ => Err(ExecError::InvalidOperand("bs_match command")),
+        _ => {
+            eprintln!("DEBUG bs_match unmatched command tag={tag:?} args={args:?}");
+            Err(ExecError::InvalidOperand("bs_match command"))
+        }
     }
 }
 fn get_integer_value(
@@ -547,6 +580,16 @@ fn command_name(operand: &Operand) -> Result<&'static str, ExecError> {
         Operand::Unsigned(4) | Operand::Integer(4) => Ok("binary"),
         Operand::Unsigned(5) | Operand::Integer(5) => Ok("skip"),
         Operand::Unsigned(6) | Operand::Integer(6) => Ok("get_tail"),
+        // Loaders that keep the command tag as a named atom (the form OTP's
+        // assembler writes) resolve through the pre-interned common atoms.
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_ENSURE_AT_LEAST => Ok("ensure_at_least"),
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_ENSURE_EXACTLY => Ok("ensure_exactly"),
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_INTEGER => Ok("integer"),
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_FLOAT => Ok("float"),
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_BINARY => Ok("binary"),
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_SKIP => Ok("skip"),
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_GET_TAIL => Ok("get_tail"),
+        Operand::Atom(Some(atom)) if *atom == Atom::BS_EQ_EXACT => Ok("=:="),
         _ => Err(ExecError::InvalidOperand("bs_match command")),
     }
 }

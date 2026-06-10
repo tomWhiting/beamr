@@ -1,14 +1,13 @@
 //! OTP module stub BIFs for gleam_otp support.
 //!
-//! These stubs satisfy imports from gleam_otp's compiled .beam files that
-//! reference modules without corresponding .beam fixtures in the test suite.
-//!
-//! Gleam-level stubs (gleam@dynamic, gleam@string, etc.) are in the
-//! `gleam_stubs` submodule. Erlang stdlib stubs (os, io, application, etc.)
-//! are in the `erlang_stubs` submodule.
+//! These stubs satisfy imports from compiled .beam files that reference
+//! OTP modules with no .beam form (os, io, application, supervisor, code).
+//! Modules that ship as compiled bytecode in every Gleam build — gleam@*
+//! and the gleam_stdlib FFI — must NOT be stubbed here: native entries
+//! shadow loaded bytecode, and a stub that drifts from the real
+//! implementation breaks code that the real module would serve correctly.
 
 mod erlang_stubs;
-pub(crate) mod gleam_stubs;
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{
@@ -20,12 +19,6 @@ use erlang_stubs::{
     bif_code_priv_dir, bif_connect_node, bif_ensure_all_started, bif_os_getenv_0, bif_os_getenv_1,
     bif_os_putenv, bif_os_type, bif_os_unsetenv, bif_string_split,
 };
-use gleam_stubs::{
-    bif_dynamic_classify, bif_dynamic_int, bif_dynamic_string, bif_intensity_tracker_add_event,
-    bif_intensity_tracker_new, bif_option_map, bif_option_unwrap, bif_result_map_error,
-    bif_result_then, bif_string_append, bif_string_inspect,
-};
-
 type OtpBif = (&'static str, &'static str, u8, Capability, NativeFn);
 
 const OTP_STUBS: &[OtpBif] = &[
@@ -44,70 +37,6 @@ const OTP_STUBS: &[OtpBif] = &[
         2,
         Capability::Pure,
         bif_supervisor_start_link,
-    ),
-    // gleam@dynamic
-    (
-        "gleam@dynamic",
-        "classify",
-        1,
-        Capability::Pure,
-        bif_dynamic_classify,
-    ),
-    ("gleam@dynamic", "int", 1, Capability::Pure, bif_dynamic_int),
-    (
-        "gleam@dynamic",
-        "string",
-        1,
-        Capability::Pure,
-        bif_dynamic_string,
-    ),
-    // gleam@string
-    (
-        "gleam@string",
-        "inspect",
-        1,
-        Capability::Pure,
-        bif_string_inspect,
-    ),
-    (
-        "gleam@string",
-        "append",
-        2,
-        Capability::Pure,
-        bif_string_append,
-    ),
-    // gleam@option
-    ("gleam@option", "map", 2, Capability::Pure, bif_option_map),
-    (
-        "gleam@option",
-        "unwrap",
-        2,
-        Capability::Pure,
-        bif_option_unwrap,
-    ),
-    // gleam@result
-    (
-        "gleam@result",
-        "map_error",
-        2,
-        Capability::Pure,
-        bif_result_map_error,
-    ),
-    ("gleam@result", "then", 2, Capability::Pure, bif_result_then),
-    // gleam@otp@intensity_tracker
-    (
-        "gleam@otp@intensity_tracker",
-        "new",
-        2,
-        Capability::Pure,
-        bif_intensity_tracker_new,
-    ),
-    (
-        "gleam@otp@intensity_tracker",
-        "add_event",
-        1,
-        Capability::Pure,
-        bif_intensity_tracker_add_event,
     ),
     // application
     (
@@ -158,10 +87,9 @@ pub fn register_otp_stubs(
 
 /// Initializes sentinel atoms used by OTP stubs.
 ///
-/// Must be called before `register_otp_stubs` so that atoms like "None",
-/// OS identifiers, and OTP error reasons resolve correctly at runtime.
+/// Must be called before `register_otp_stubs` so that atoms like OS
+/// identifiers and OTP error reasons resolve correctly at runtime.
 pub fn init_otp_atoms(atom_table: &AtomTable) {
-    gleam_stubs::init_gleam_atoms(atom_table);
     erlang_stubs::init_erlang_atoms(atom_table);
 }
 

@@ -28,7 +28,7 @@ pub fn binary_op(
             construction::bs_init_or_create(process, module, operands)
         }
         BinaryOp::BsStartMatch3 | BinaryOp::BsStartMatch4 => {
-            matching::bs_start_match(process, module, operands)
+            matching::bs_start_match(process, module, op, operands)
         }
         BinaryOp::BsGetInteger2 => matching::bs_get_integer(process, module, operands),
         BinaryOp::BsGetFloat2 => matching::bs_get_float(process, module, operands),

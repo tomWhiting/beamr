@@ -17,7 +17,6 @@ use crate::io::{
     CompletionRing, IoCompletion, IoError, IoFacility, IoOp, IoSink, NullSink, ResultMode,
 };
 use crate::native::ets_bifs::EtsFoldlState;
-use crate::native::otp_stubs::gleam_stubs::{GleamOptionState, GleamResultState};
 use crate::native::stdlib_stubs::{
     lists_hof_bifs::ListsHofState,
     maps_bifs::{ContinuationStep, MapsHofState},
@@ -77,12 +76,6 @@ pub enum NativeContinuation {
     Lists(ListsHofState),
     /// Continuation for ets:foldl/3.
     EtsFoldl(EtsFoldlState),
-    /// Continuation for Gleam result.try/2 compatibility.
-    GleamResultTry,
-    /// Continuation for Gleam option higher-order BIFs.
-    GleamOption(GleamOptionState),
-    /// Continuation for Gleam result higher-order BIFs.
-    GleamResult(GleamResultState),
     /// Continuation for Aion with_timeout NIF trampoline.
     AionTimeout(AionTimeoutContinuation),
 }
@@ -122,9 +115,6 @@ impl NativeContinuation {
             Self::Maps(state) => state.for_each_term(f),
             Self::Lists(state) => state.for_each_term(f),
             Self::EtsFoldl(state) => state.for_each_term(f),
-            Self::GleamResultTry => {}
-            Self::GleamOption(state) => state.for_each_term(f),
-            Self::GleamResult(state) => state.for_each_term(f),
             Self::AionTimeout(_) => {}
         }
     }
@@ -136,9 +126,6 @@ impl NativeContinuation {
             Self::Maps(state) => state.for_each_term_mut(f),
             Self::Lists(state) => state.for_each_term_mut(f),
             Self::EtsFoldl(state) => state.for_each_term_mut(f),
-            Self::GleamResultTry => {}
-            Self::GleamOption(state) => state.for_each_term_mut(f),
-            Self::GleamResult(state) => state.for_each_term_mut(f),
             Self::AionTimeout(_) => {}
         }
     }

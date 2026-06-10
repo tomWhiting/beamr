@@ -4,8 +4,7 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::{Closure, Cons, Float, Map, Tuple};
-use crate::term::compare;
+use crate::term::boxed::{Cons, Float, Map};
 use crate::term::format::format_term;
 
 use super::encoding_bifs::{
@@ -13,78 +12,12 @@ use super::encoding_bifs::{
     bif_binary_decode_hex, bif_binary_encode_hex,
 };
 
-pub fn bif_classify_dynamic(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let [value] = args else {
-        return Err(badarg());
-    };
-    context.alloc_binary(classify(*value).as_bytes())
-}
-
-pub fn bif_dict(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let [pairs] = args else {
-        return Err(badarg());
-    };
-    let mut entries = Vec::new();
-    let mut current = *pairs;
-    while !current.is_nil() {
-        let cons = Cons::new(current).ok_or_else(badarg)?;
-        let pair = Tuple::new(cons.head()).ok_or_else(badarg)?;
-        if pair.arity() != 2 {
-            return Err(badarg());
-        }
-        set_entry(
-            &mut entries,
-            pair.get(0).ok_or_else(badarg)?,
-            pair.get(1).ok_or_else(badarg)?,
-        );
-        current = cons.tail();
-    }
-    make_sorted_map(&entries, context)
-}
-
-pub fn bif_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let [value] = args else {
-        return Err(badarg());
-    };
-    if let Some(integer) = value.as_small_int() {
-        return make_float(context, integer as f64);
-    }
-    if Float::new(*value).is_some() {
-        return Ok(*value);
-    }
-    Err(badarg())
-}
-
 pub fn bif_float_to_string(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [value] = args else {
         return Err(badarg());
     };
     let float = Float::new(*value).ok_or_else(badarg)?;
     context.alloc_binary(float.value().to_string().as_bytes())
-}
-
-pub fn bif_index(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
-    let [collection, index] = args else {
-        return Err(badarg());
-    };
-    let index = non_negative_usize(*index)?;
-    if let Some(tuple) = Tuple::new(*collection) {
-        return tuple.get(index).ok_or_else(badarg);
-    }
-    list_index(*collection, index)
-}
-
-pub fn bif_int(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
-    let [value] = args else {
-        return Err(badarg());
-    };
-    if value.as_small_int().is_some() {
-        Ok(*value)
-    } else {
-        Err(badarg())
-    }
 }
 
 pub fn bif_int_from_base_string(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -115,32 +48,6 @@ pub fn bif_parse_int(args: &[Term], context: &mut ProcessContext) -> Result<Term
         return Err(badarg());
     };
     result_tuple(context, parse_int_with_base(*string, 10))
-}
-
-pub fn bif_is_null(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
-    let [value] = args else {
-        return Err(badarg());
-    };
-    Ok(Term::atom(if value.is_nil() {
-        Atom::TRUE
-    } else {
-        Atom::FALSE
-    }))
-}
-
-pub fn bif_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
-    let [_decoder, _type_name, _path, value, _decode_errors] = args else {
-        return Err(badarg());
-    };
-    // Approximate gleam@dynamic@decode support: accept already-list values and
-    // return them unchanged until closure re-entry is available for full decode.
-    if value.is_nil() || Cons::new(*value).is_some() {
-        Ok(*value)
-    } else {
-        Err(badarg())
-    }
 }
 
 pub fn bif_map_get(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -213,15 +120,6 @@ pub fn bif_base16_decode(args: &[Term], context: &mut ProcessContext) -> Result<
 
 pub fn bif_base16_encode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     bif_binary_encode_hex(args, context)
-}
-
-pub fn bif_bit_array(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
-    let [value] = args else {
-        return Err(badarg());
-    };
-    BinaryRef::new(*value).ok_or_else(badarg)?;
-    Ok(*value)
 }
 
 pub fn bif_base64_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -297,67 +195,6 @@ pub fn bif_bit_array_to_int_and_size(
         .and_then(Term::try_small_int)
         .ok_or_else(badarg)?;
     context.alloc_tuple(&[value, size])
-}
-
-fn classify(value: Term) -> &'static str {
-    if value.is_atom() {
-        let atom = value.as_atom().unwrap_or(Atom::NIL);
-        if atom == Atom::TRUE || atom == Atom::FALSE {
-            return "Bool";
-        }
-        if atom == Atom::NIL {
-            return "Nil";
-        }
-        "Atom"
-    } else if value.is_small_int() {
-        "Int"
-    } else if BinaryRef::new(value).is_some() {
-        "String"
-    } else if value.is_nil() || Cons::new(value).is_some() {
-        "List"
-    } else if Float::new(value).is_some() {
-        "Float"
-    } else if Map::new(value).is_some() {
-        "Dict"
-    } else if Tuple::new(value).is_some() {
-        "Tuple"
-    } else if value.is_pid() {
-        "Pid"
-    } else if Closure::new(value).is_some() {
-        "Function"
-    } else {
-        "Unknown"
-    }
-}
-
-fn set_entry(entries: &mut Vec<(Term, Term)>, key: Term, value: Term) {
-    if let Some((_, existing_value)) = entries.iter_mut().find(|(entry_key, _)| *entry_key == key) {
-        *existing_value = value;
-    } else {
-        entries.push((key, value));
-    }
-}
-
-fn make_sorted_map(entries: &[(Term, Term)], context: &mut ProcessContext) -> Result<Term, Term> {
-    let atom_table = context.atom_table().ok_or_else(badarg)?;
-    let mut sorted = entries.to_vec();
-    sorted.sort_by(|(left, _), (right, _)| compare::cmp(*left, *right, atom_table));
-    let keys: Vec<_> = sorted.iter().map(|(key, _)| *key).collect();
-    let values: Vec<_> = sorted.iter().map(|(_, value)| *value).collect();
-    context.alloc_map(&keys, &values)
-}
-
-fn list_index(list: Term, index: usize) -> Result<Term, Term> {
-    let mut current = list;
-    let mut remaining = index;
-    loop {
-        let cons = Cons::new(current).ok_or_else(badarg)?;
-        if remaining == 0 {
-            return Ok(cons.head());
-        }
-        remaining -= 1;
-        current = cons.tail();
-    }
 }
 
 fn parse_int_with_base(binary: Term, base: u32) -> Result<Term, Term> {

@@ -11,9 +11,6 @@ use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::module::Module;
 use crate::native::ets_bifs::resume_ets_foldl;
-use crate::native::otp_stubs::gleam_stubs::{
-    resume_gleam_option_continuation, resume_gleam_result_continuation,
-};
 use crate::native::select::MailboxSnapshot;
 use crate::native::stdlib_stubs::lists_hof_bifs::resume_lists_continuation;
 use crate::native::stdlib_stubs::maps_bifs::{ContinuationStep, resume_maps_continuation};
@@ -170,13 +167,6 @@ pub fn handle_native_continuation(
             resume_lists_continuation(state, closure_result, &mut context)
         }
         NativeContinuation::EtsFoldl(state) => resume_ets_foldl(state, closure_result),
-        NativeContinuation::GleamResultTry => Ok(ContinuationStep::Done(closure_result)),
-        NativeContinuation::GleamOption(state) => {
-            resume_gleam_option_continuation(state, closure_result, &mut context)
-        }
-        NativeContinuation::GleamResult(state) => {
-            resume_gleam_result_continuation(state, closure_result, &mut context)
-        }
         NativeContinuation::AionTimeout(state) => (state.resume)(state, closure_result, &mut context),
     }
     .map_err(|_| ExecError::Badarg)?;

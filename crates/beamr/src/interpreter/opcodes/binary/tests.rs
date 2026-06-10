@@ -663,12 +663,7 @@ fn bs_get_tail_returns_remaining_or_empty_binary() {
         &mut process,
         &module,
         BinaryOp::BsGetTail,
-        &[
-            Operand::Label(9),
-            Operand::X(1),
-            Operand::Unsigned(0),
-            Operand::X(2),
-        ],
+        &[Operand::X(1), Operand::X(2), Operand::Unsigned(0)],
     )
     .expect("tail");
     assert_eq!(
@@ -680,12 +675,7 @@ fn bs_get_tail_returns_remaining_or_empty_binary() {
         &mut process,
         &module,
         BinaryOp::BsGetTail,
-        &[
-            Operand::Label(9),
-            Operand::X(1),
-            Operand::Unsigned(0),
-            Operand::X(3),
-        ],
+        &[Operand::X(1), Operand::X(3), Operand::Unsigned(0)],
     )
     .expect("empty tail");
     assert_eq!(Binary::new(process.x_reg(3)).expect("tail").as_bytes(), b"");
@@ -925,10 +915,10 @@ fn bs_match_runs_commands_and_rolls_back_position_on_failure() {
                 Operand::List(vec![
                     Operand::List(vec![Operand::Unsigned(5), Operand::Unsigned(8)]),
                     Operand::List(vec![
-                        Operand::Unsigned(0),
-                        Operand::Unsigned(0),
-                        Operand::Unsigned(64)
-                    ]),
+                Operand::Unsigned(0),
+                Operand::Unsigned(64),
+                Operand::Unsigned(1),
+            ]),
                 ])
             ]
         ),
