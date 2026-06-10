@@ -280,6 +280,7 @@ fn make_shared_state() -> Arc<SharedState> {
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
         dirty_results: DashMap::new(),
+        dirty_in_flight: DashSet::new(),
         file_io_ring: Arc::from(crate::io::create_ring(RingConfig::default())),
         file_io_pending: DashMap::new(),
         file_io_orphans: DashMap::new(),

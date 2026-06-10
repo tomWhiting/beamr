@@ -135,8 +135,15 @@ fn marker_delivered_while_executing_resumes_the_suspending_process() {
 /// Dirty-call phases: 0 = not started, 1 = dirty native running,
 /// 2 = test delivered an unrelated message, native may finish.
 static DIRTY_PHASE: AtomicUsize = AtomicUsize::new(0);
+/// How many times the dirty native ran. A premature wake re-executes the
+/// call instruction and submits the dirty call a second time, so the count
+/// is the observable difference between "delivered but parked" (one) and
+/// "delivered and wrongly resumed" (two) even when the duplicate happens to
+/// produce the same exit value.
+static DIRTY_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 fn dirty_await_release(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    DIRTY_INVOCATIONS.fetch_add(1, Ordering::AcqRel);
     DIRTY_PHASE.store(1, Ordering::Release);
     while DIRTY_PHASE.load(Ordering::Acquire) != 2 {
         std::thread::yield_now();
@@ -185,10 +192,19 @@ fn delivery_during_in_flight_dirty_call_does_not_resume_the_process() {
     while DIRTY_PHASE.load(Ordering::Acquire) != 1 {
         std::thread::yield_now();
     }
+    // Wait until the scheduler has stored the process back (the slot reads
+    // as Present, observable through trap_exit) and parked it: delivery into
+    // the still-Executing window takes the pending-merge path and never
+    // exercises the wake of a parked dirty-suspended process — the window
+    // where the premature resume lives.
+    while scheduler.trap_exit(pid).is_none() {
+        std::thread::yield_now();
+    }
+    std::thread::sleep(Duration::from_millis(100));
     // An unrelated mailbox message arrives while the dirty call is still in
     // flight. It must be delivered, but it must NOT resume the process — a
     // premature resume re-executes the dirty call instruction in an illegal
-    // state and kills the workflow.
+    // state and double-submits the dirty call.
     assert!(scheduler.enqueue_atom_message(pid, Atom::OK));
     std::thread::sleep(Duration::from_millis(100));
     DIRTY_PHASE.store(2, Ordering::Release);
@@ -204,5 +220,10 @@ fn delivery_during_in_flight_dirty_call_does_not_resume_the_process() {
         .expect("dirty call never completed");
     assert_eq!(reason, ExitReason::Normal);
     assert_eq!(result.root(), Term::small_int(7));
+    assert_eq!(
+        DIRTY_INVOCATIONS.load(Ordering::Acquire),
+        1,
+        "the delivery wake re-executed the dirty call instruction"
+    );
     waiter.join().expect("waiter thread panicked");
 }

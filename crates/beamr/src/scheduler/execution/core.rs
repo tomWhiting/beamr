@@ -807,42 +807,54 @@ fn submit_dirty_call(
     }
 
     let (result_sender, result_receiver) = oneshot::channel();
+    let pid = process.pid();
     let job = DirtyJob {
-        pid: process.pid(),
+        pid,
         function: entry.function,
         args,
         context,
         result_sender,
     };
-    match kind {
+    // Mark the call in flight before the pool can start it: while the mark is
+    // present without a result, `wake_process` leaves the process parked so a
+    // mailbox arrival cannot schedule a slice that re-executes the call
+    // instruction (and double-submits the dirty call).
+    shared.dirty_in_flight.insert(pid);
+    if match kind {
         DirtySchedulerKind::Cpu => shared.dirty_cpu.submit(job),
         DirtySchedulerKind::Io => shared.dirty_io.submit(job),
     }
-    .map_err(|_| DirtySubmissionError::PoolUnavailable)?;
+    .is_err()
+    {
+        shared.dirty_in_flight.remove(&pid);
+        return Err(DirtySubmissionError::PoolUnavailable);
+    }
 
     let shared_for_completion = Arc::clone(shared);
-    let pid = process.pid();
-    std::thread::Builder::new()
+    let bridge = std::thread::Builder::new()
         .name(format!("dirty-complete-{pid}"))
-        .spawn(move || match result_receiver.recv() {
-            Ok(result) => {
-                shared_for_completion.dirty_results.insert(pid, result);
-                let _resumed = timer_integration::resume_suspended(&shared_for_completion, pid);
-            }
-            Err(_closed) => {
-                shared_for_completion.dirty_results.insert(
-                    pid,
-                    DirtyResult {
-                        result: Err(Term::atom(Atom::ERROR)),
-                        owned_result: None,
-                        exception_class: ExceptionClass::Error,
-                        exception_stacktrace: Term::NIL,
-                    },
-                );
-                let _resumed = timer_integration::resume_suspended(&shared_for_completion, pid);
-            }
-        })
-        .map_err(|_| DirtySubmissionError::CompletionBridgeSpawn)?;
+        .spawn(move || {
+            let result = match result_receiver.recv() {
+                Ok(result) => result,
+                Err(_closed) => DirtyResult {
+                    result: Err(Term::atom(Atom::ERROR)),
+                    owned_result: None,
+                    exception_class: ExceptionClass::Error,
+                    exception_stacktrace: Term::NIL,
+                },
+            };
+            // The result must be visible before the in-flight mark clears: a
+            // `wake_process` that observes the cleared mark must find the
+            // result so the resumed slice applies it instead of re-executing
+            // the call instruction.
+            shared_for_completion.dirty_results.insert(pid, result);
+            shared_for_completion.dirty_in_flight.remove(&pid);
+            let _resumed = timer_integration::resume_suspended(&shared_for_completion, pid);
+        });
+    if bridge.is_err() {
+        shared.dirty_in_flight.remove(&pid);
+        return Err(DirtySubmissionError::CompletionBridgeSpawn);
+    }
     Ok(())
 }
 

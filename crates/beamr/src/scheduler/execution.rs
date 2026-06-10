@@ -205,6 +205,15 @@ pub(in crate::scheduler) use core::{
     take_runnable_process,
 };
 pub(in crate::scheduler) fn wake_process(shared: &SharedState, pid: u64) {
+    // A process parked for an in-flight dirty call must stay parked: waking
+    // it schedules a slice that re-executes the dirty call instruction. The
+    // delivery that prompted this wake is already queued; the dirty
+    // completion bridge resumes the process and the merged mailbox is
+    // observed then. Once the result is published the wake is safe (the
+    // resumed slice applies it) even if the in-flight mark is still set.
+    if shared.dirty_in_flight.contains(&pid) && !shared.dirty_results.contains_key(&pid) {
+        return;
+    }
     timer_integration::cancel_receive_timer(shared, pid);
     let mut wait_set = lock_or_recover(&shared.wait_set);
     if let Some(scheduler_index) = wait_set.waiting.remove(&pid) {
