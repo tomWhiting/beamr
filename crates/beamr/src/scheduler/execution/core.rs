@@ -13,6 +13,7 @@ use crate::scheduler::dirty::{DirtyJob, DirtyResult, DirtySchedulerKind, oneshot
 use crate::term::{Term, boxed::BoxedTag};
 use std::sync::Arc;
 
+use crate::replay::RecordedSchedule;
 use crate::scheduler::{
     DEFAULT_REDUCTION_BUDGET, ProcessMetadata, ProcessSlot, RunQueue, ScheduledProcess,
     SharedState, lock_or_recover, namespace_registry, supervision_integration, timer_integration,
@@ -34,7 +35,16 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
     let Some(mut process) = take_runnable_process(shared, pid) else {
         return;
     };
-    let outcome = execute_slice(shared, &mut process);
+    let outcome = if shared.replay_mode {
+        let Some(recorded_schedule) = take_replay_schedule(shared, pid, my_index) else {
+            store_runnable_process(shared, process);
+            cleanup_exited_process(shared, pid, ExitReason::Error);
+            return;
+        };
+        execute_slice_with_recorded_schedule(shared, &mut process, recorded_schedule)
+    } else {
+        execute_slice(shared, &mut process)
+    };
     if let Some(reason) = tombstone_reason(shared, pid) {
         store_runnable_process(shared, process);
         cleanup_exited_process(shared, pid, reason);
@@ -85,6 +95,61 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
     }
 }
 
+fn take_replay_schedule(
+    shared: &SharedState,
+    pid: u64,
+    scheduler_index: usize,
+) -> Option<RecordedSchedule> {
+    let replay_driver = shared.replay_driver.as_ref()?;
+    let mut guard = match replay_driver.lock() {
+        Ok(guard) => guard,
+        Err(error) => error.into_inner(),
+    };
+    let recorded = match guard.next_schedule(scheduler_index) {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            shared.exit_errors.insert(pid, error.into());
+            return None;
+        }
+    };
+    if recorded.pid == pid {
+        Some(recorded)
+    } else {
+        shared.exit_errors.insert(
+            pid,
+            crate::error::ExecError::ReplayMismatch(format!(
+                "schedule pid mismatch: expected pid {}, recorded pid {}",
+                pid, recorded.pid
+            )),
+        );
+        None
+    }
+}
+
+fn validate_replay_schedule_reductions(
+    shared: &SharedState,
+    recorded_schedule: Option<RecordedSchedule>,
+    reductions: u32,
+) -> Result<(), ()> {
+    let Some(recorded_schedule) = recorded_schedule else {
+        return Ok(());
+    };
+    let Some(replay_driver) = shared.replay_driver.as_ref() else {
+        return Ok(());
+    };
+    let guard = match replay_driver.lock() {
+        Ok(guard) => guard,
+        Err(error) => error.into_inner(),
+    };
+    guard
+        .validate_schedule_reductions(recorded_schedule, reductions)
+        .map_err(|error| {
+            shared
+                .exit_errors
+                .insert(recorded_schedule.pid, error.into());
+        })
+}
+
 pub(in crate::scheduler) fn take_runnable_process(
     shared: &SharedState,
     pid: u64,
@@ -107,6 +172,7 @@ pub(in crate::scheduler) fn take_runnable_process(
                 binary_heap_size: process.virtual_binary_heap(),
                 message_queue_len: process.mailbox().message_count(),
                 group_leader: process.group_leader(),
+                logical_clock: process.logical_clock(),
                 pending_exit_messages: Vec::new(),
                 pending_down_messages: Vec::new(),
                 pending_io_messages: Vec::new(),
@@ -131,6 +197,7 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
         let mut slot = lock_or_recover(&entry);
         if let ProcessSlot::Executing(metadata) = &mut *slot {
             process.set_group_leader(metadata.group_leader);
+            process.set_logical_clock(metadata.logical_clock);
             process.set_capabilities(metadata.capabilities.clone());
             for linked_pid in &metadata.links {
                 process.add_link(*linked_pid);
@@ -272,6 +339,22 @@ pub(in crate::scheduler) fn execute_slice(
     shared: &Arc<SharedState>,
     process: &mut Process,
 ) -> SliceOutcome {
+    execute_slice_with_budget(shared, process, None)
+}
+
+pub(in crate::scheduler) fn execute_slice_with_recorded_schedule(
+    shared: &Arc<SharedState>,
+    process: &mut Process,
+    recorded_schedule: RecordedSchedule,
+) -> SliceOutcome {
+    execute_slice_with_budget(shared, process, Some(recorded_schedule))
+}
+
+fn execute_slice_with_budget(
+    shared: &Arc<SharedState>,
+    process: &mut Process,
+    recorded_schedule: Option<RecordedSchedule>,
+) -> SliceOutcome {
     if !matches!(
         process.status(),
         ProcessStatus::New
@@ -327,7 +410,10 @@ pub(in crate::scheduler) fn execute_slice(
         process.set_x_reg(0, result_term);
         advance_past_current_instruction(process);
     }
-    process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
+    let reduction_budget = recorded_schedule.map_or(DEFAULT_REDUCTION_BUDGET, |recorded| {
+        recorded.reduction_budget
+    });
+    process.reset_reductions(reduction_budget);
     let module_atom = match process.code_position() {
         Some(position) => position.module,
         None => {
@@ -375,7 +461,19 @@ pub(in crate::scheduler) fn execute_slice(
     };
     let services = supervision_integration::build_native_services(shared, process.namespace_id());
     let result = interpreter::run_with_native_services(process, &module, &registry, &services);
-    let reductions = DEFAULT_REDUCTION_BUDGET.saturating_sub(process.reduction_counter());
+    let reductions = reduction_budget.saturating_sub(process.reduction_counter());
+    if validate_replay_schedule_reductions(shared, recorded_schedule, reductions).is_err() {
+        let outcome = exit_process(shared, process, ExitReason::Error);
+        #[cfg(feature = "telemetry")]
+        finish_slice_span(
+            shared,
+            process,
+            span,
+            reductions,
+            crate::telemetry::spans::SliceSpanOutcome::Exited,
+        );
+        return outcome;
+    }
     if matches!(
         result,
         Ok(ExecutionResult::Yielded) | Ok(ExecutionResult::Waiting)
@@ -395,7 +493,7 @@ pub(in crate::scheduler) fn execute_slice(
     match result {
         Ok(ExecutionResult::Yielded) => {
             let _t = process.transition_to(ProcessStatus::Yielded);
-            process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
+            process.reset_reductions(reduction_budget);
             #[cfg(feature = "telemetry")]
             finish_slice_span(
                 shared,

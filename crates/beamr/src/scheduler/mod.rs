@@ -24,7 +24,6 @@ pub use wasm::{WasmRunSummary, WasmScheduler};
 use crate::error::ExecError;
 use crate::ets::copy::OwnedTerm;
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
-pub use exit_capture::OwnedException;
 use crate::hook::Hook;
 use crate::io::{
     CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoOp,
@@ -47,6 +46,7 @@ use crate::term::Term;
 use crate::timer::TimerWheel;
 use crossbeam_queue::SegQueue;
 use dashmap::{DashMap, DashSet};
+pub use exit_capture::OwnedException;
 pub use module_management::{HotLoadResult, PurgeResult};
 use process_slot::{ProcessMetadata, ProcessSlot};
 use run_queue::{PriorityStealers, RunQueue};
@@ -484,7 +484,11 @@ impl Scheduler {
             ReplayMode::Replay(log) => Some(Arc::new(Mutex::new(ReplayDriver::new(log)))),
         };
         let replay_enabled = replay_driver.is_some();
-        let thread_count = configured_thread_count(config.thread_count);
+        let thread_count = if replay_enabled {
+            1
+        } else {
+            configured_thread_count(config.thread_count)
+        };
         let dirty_queue_depth = config
             .dirty_queue_depth
             .unwrap_or(dirty::DEFAULT_DIRTY_QUEUE_DEPTH);

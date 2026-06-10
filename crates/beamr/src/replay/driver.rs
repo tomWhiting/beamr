@@ -52,10 +52,59 @@ impl From<Vec<ReplayEvent>> for ReplayLog {
 pub enum ReplayEvent {
     /// A selective receive chose the message at `index`.
     Select(RecordedSelect),
+    /// A message became visible to a receiver mailbox.
+    MessageDelivery(RecordedMessageDelivery),
+    /// A scheduler time slice was selected for execution.
+    Schedule(RecordedSchedule),
     /// Timers expired when the clock was observed at `now`.
     TimerExpiry(RecordedTimerExpiry),
     /// A native call returned without being re-executed.
     NativeCall(RecordedNativeCall),
+}
+
+/// Kind of causal delivery recorded in the single-node replay log.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum RecordedDeliveryKind {
+    /// Ordinary process-to-process message delivery.
+    Message,
+    /// Trapped exit signal delivered as an `EXIT` tuple.
+    ExitSignal,
+    /// Monitor notification delivered as a `DOWN` tuple.
+    DownMessage,
+    /// Runtime-owned I/O/group-leader message delivery.
+    RuntimeMessage,
+}
+
+/// Recorded mailbox delivery with both total-order and per-process clock data.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RecordedMessageDelivery {
+    /// Monotonic total-order delivery index assigned during recording.
+    pub order: u64,
+    /// Delivery class.
+    pub kind: RecordedDeliveryKind,
+    /// Local sender process when the delivery has one.
+    pub sender_pid: Option<u64>,
+    /// Receiver process whose mailbox observed the message.
+    pub receiver_pid: u64,
+    /// Sender logical clock after the send event, or zero for runtime-originated messages.
+    pub sender_clock: u64,
+    /// Receiver logical clock after delivery.
+    pub receiver_clock: u64,
+    /// Delivered message term as visible in the receiver heap/mailbox.
+    pub message: Term,
+}
+
+/// Recorded scheduler slice boundary.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RecordedSchedule {
+    /// Process chosen by the recorded scheduler.
+    pub pid: u64,
+    /// Scheduler worker index that ran the slice during recording.
+    pub scheduler_index: usize,
+    /// Reduction budget assigned at the start of the slice.
+    pub reduction_budget: u32,
+    /// Reductions consumed before the context switch.
+    pub reductions_consumed: u32,
 }
 
 /// Recorded selective receive result.
@@ -188,6 +237,83 @@ impl ReplayDriver {
                 "event kind mismatch at select decision: recorded {:?}",
                 other
             ))),
+        }
+    }
+
+    /// Consume a recorded mailbox delivery in total causal order.
+    pub fn next_message_delivery(
+        &mut self,
+        kind: RecordedDeliveryKind,
+        sender_pid: Option<u64>,
+        receiver_pid: u64,
+        message: Term,
+    ) -> Result<RecordedMessageDelivery, ReplayMismatch> {
+        let event = self.peek_event("message delivery")?;
+        match event.clone() {
+            ReplayEvent::MessageDelivery(recorded)
+                if recorded.kind == kind
+                    && recorded.sender_pid == sender_pid
+                    && recorded.receiver_pid == receiver_pid
+                    && recorded.message == message =>
+            {
+                self.advance_cursor();
+                Ok(recorded)
+            }
+            ReplayEvent::MessageDelivery(recorded) => Err(self.mismatch(format!(
+                "message delivery mismatch: expected kind/sender/receiver/message ({kind:?}, {sender_pid:?}, {receiver_pid}, {message:?}), recorded ({:?}, {:?}, {}, {:?})",
+                recorded.kind, recorded.sender_pid, recorded.receiver_pid, recorded.message
+            ))),
+            other => Err(self.mismatch(format!(
+                "event kind mismatch at message delivery: recorded {:?}",
+                other
+            ))),
+        }
+    }
+
+    /// Inspect the next recorded scheduler slice without consuming it.
+    #[must_use]
+    pub fn peek_schedule(&self) -> Option<RecordedSchedule> {
+        match self.log.get(self.cursor) {
+            Some(ReplayEvent::Schedule(recorded)) => Some(*recorded),
+            _ => None,
+        }
+    }
+
+    /// Consume a recorded scheduler slice selection.
+    pub fn next_schedule(
+        &mut self,
+        scheduler_index: usize,
+    ) -> Result<RecordedSchedule, ReplayMismatch> {
+        let event = self.peek_event("schedule")?;
+        match event.clone() {
+            ReplayEvent::Schedule(recorded) if recorded.scheduler_index == scheduler_index => {
+                self.advance_cursor();
+                Ok(recorded)
+            }
+            ReplayEvent::Schedule(recorded) => Err(self.mismatch(format!(
+                "schedule worker mismatch: expected scheduler {}, recorded scheduler {} for pid {}",
+                scheduler_index, recorded.scheduler_index, recorded.pid
+            ))),
+            other => Err(self.mismatch(format!(
+                "event kind mismatch at schedule decision: recorded {:?}",
+                other
+            ))),
+        }
+    }
+
+    /// Validate the reductions consumed by a slice selected from the replay log.
+    pub fn validate_schedule_reductions(
+        &self,
+        recorded: RecordedSchedule,
+        actual_reductions: u32,
+    ) -> Result<(), ReplayMismatch> {
+        if recorded.reductions_consumed == actual_reductions {
+            Ok(())
+        } else {
+            Err(self.mismatch(format!(
+                "schedule reduction mismatch for pid {}: expected {}, actual {}",
+                recorded.pid, recorded.reductions_consumed, actual_reductions
+            )))
         }
     }
 
@@ -367,6 +493,130 @@ mod tests {
         assert_eq!(facility.peek_message(3), Some(Term::small_int(99)));
         facility.remove_message(3);
         assert_eq!(facility.removed_index(), Some(3));
+    }
+
+    #[test]
+    fn driver_consumes_message_deliveries_in_total_order() {
+        let log = ReplayLog::new(vec![
+            ReplayEvent::MessageDelivery(RecordedMessageDelivery {
+                order: 0,
+                kind: RecordedDeliveryKind::Message,
+                sender_pid: Some(1),
+                receiver_pid: 2,
+                sender_clock: 1,
+                receiver_clock: 2,
+                message: Term::small_int(10),
+            }),
+            ReplayEvent::MessageDelivery(RecordedMessageDelivery {
+                order: 1,
+                kind: RecordedDeliveryKind::Message,
+                sender_pid: Some(2),
+                receiver_pid: 1,
+                sender_clock: 3,
+                receiver_clock: 4,
+                message: Term::small_int(20),
+            }),
+        ]);
+        let mut driver = ReplayDriver::new(log);
+
+        let first = driver
+            .next_message_delivery(
+                RecordedDeliveryKind::Message,
+                Some(1),
+                2,
+                Term::small_int(10),
+            )
+            .unwrap_or_else(|error| panic!("unexpected replay mismatch: {error}"));
+        let second = driver
+            .next_message_delivery(
+                RecordedDeliveryKind::Message,
+                Some(2),
+                1,
+                Term::small_int(20),
+            )
+            .unwrap_or_else(|error| panic!("unexpected replay mismatch: {error}"));
+
+        assert_eq!(first.order, 0);
+        assert_eq!(second.order, 1);
+        assert_eq!(second.receiver_clock, 4);
+        assert!(driver.is_complete());
+    }
+
+    #[test]
+    fn driver_consumes_schedule_and_validates_reductions() {
+        let log = ReplayLog::new(vec![ReplayEvent::Schedule(RecordedSchedule {
+            pid: 3,
+            scheduler_index: 0,
+            reduction_budget: 17,
+            reductions_consumed: 9,
+        })]);
+        let mut driver = ReplayDriver::new(log);
+
+        assert_eq!(driver.peek_schedule().map(|recorded| recorded.pid), Some(3));
+        let recorded = driver
+            .next_schedule(0)
+            .unwrap_or_else(|error| panic!("unexpected replay mismatch: {error}"));
+        assert_eq!(recorded.reduction_budget, 17);
+        assert!(driver.validate_schedule_reductions(recorded, 9).is_ok());
+        assert!(driver.validate_schedule_reductions(recorded, 8).is_err());
+    }
+
+    #[test]
+    fn driver_reports_log_exhaustion_for_schedule_without_advancing() {
+        let mut driver = ReplayDriver::new(ReplayLog::default());
+
+        let error = driver
+            .next_schedule(0)
+            .expect_err("empty log must report exhaustion");
+
+        assert!(error.to_string().contains("replay log exhausted"));
+        assert_eq!(driver.cursor(), 0);
+    }
+
+    #[test]
+    fn driver_reports_schedule_worker_mismatch_without_advancing() {
+        let mut driver = ReplayDriver::new(ReplayLog::new(vec![ReplayEvent::Schedule(
+            RecordedSchedule {
+                pid: 3,
+                scheduler_index: 1,
+                reduction_budget: 17,
+                reductions_consumed: 9,
+            },
+        )]));
+
+        let error = driver
+            .next_schedule(0)
+            .expect_err("wrong worker must mismatch");
+
+        assert!(error.to_string().contains("schedule worker mismatch"));
+        assert_eq!(driver.cursor(), 0);
+    }
+
+    #[test]
+    fn driver_reports_message_delivery_mismatch_without_advancing() {
+        let mut driver = ReplayDriver::new(ReplayLog::new(vec![ReplayEvent::MessageDelivery(
+            RecordedMessageDelivery {
+                order: 0,
+                kind: RecordedDeliveryKind::Message,
+                sender_pid: Some(1),
+                receiver_pid: 2,
+                sender_clock: 1,
+                receiver_clock: 2,
+                message: Term::small_int(10),
+            },
+        )]));
+
+        let error = driver
+            .next_message_delivery(
+                RecordedDeliveryKind::Message,
+                Some(2),
+                1,
+                Term::small_int(10),
+            )
+            .expect_err("wrong endpoints must mismatch");
+
+        assert!(error.to_string().contains("message delivery mismatch"));
+        assert_eq!(driver.cursor(), 0);
     }
 
     #[test]

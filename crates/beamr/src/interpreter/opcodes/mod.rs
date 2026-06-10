@@ -316,6 +316,8 @@ fn dispatch_common(
             ctx.receiver,
             ctx.services
                 .and_then(|services| services.distribution_send.as_deref()),
+            ctx.services
+                .and_then(|services| services.replay_driver.as_ref()),
         ),
         Instruction::LoopRec { fail, destination } => {
             messaging::loop_rec(process, module, fail, destination)

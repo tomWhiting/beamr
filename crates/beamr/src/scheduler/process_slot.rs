@@ -52,6 +52,7 @@ pub(super) struct ProcessMetadata {
     pub(super) binary_heap_size: usize,
     pub(super) message_queue_len: usize,
     pub(super) group_leader: Term,
+    pub(super) logical_clock: u64,
     pub(super) pending_exit_messages: Vec<(PendingExitSource, ExitReason)>,
     pub(super) pending_down_messages: Vec<(u64, u64, ExitReason)>,
     pub(super) pending_io_messages: Vec<Term>,

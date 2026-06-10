@@ -1,1 +1,1 @@
-test(beamr): harden telemetry metric coverage
+Harden deterministic replay delivery validation and test coverage

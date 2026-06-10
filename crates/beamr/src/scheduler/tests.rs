@@ -33,6 +33,7 @@ use crate::native::{Capability, CapabilitySet, SpawnFacility, SpawnOptions};
 use crate::process::heap::{DEFAULT_HEAP_SIZE, Heap};
 use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, ExitReason, Priority};
+use crate::replay::{RecordedSchedule, ReplayEvent, ReplayLog};
 use crate::scheduler::execution::{
     SliceOutcome, cleanup_if_tombstoned_after_store, execute_slice, store_runnable_process,
     take_runnable_process,
@@ -44,6 +45,69 @@ use crate::timer::TimerWheel;
 
 fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
     EtsTableMetadata::new(name, 0, EtsTableType::Set, Protection::Protected, owner)
+}
+
+#[test]
+fn replay_scheduler_forces_single_worker_even_with_thread_override() {
+    let scheduler = Scheduler::new_replay(
+        SchedulerConfig {
+            thread_count: Some(3),
+            ..SchedulerConfig::default()
+        },
+        ReplayLog::default(),
+    )
+    .unwrap_or_else(|error| panic!("replay scheduler starts: {error}"));
+
+    assert_eq!(scheduler.thread_count(), 1);
+    scheduler.shutdown();
+}
+
+#[test]
+fn replay_driver_exposes_recorded_schedule_order_without_run_queue_pop() {
+    let scheduler = Scheduler::new_replay(
+        SchedulerConfig::default(),
+        ReplayLog::new(vec![
+            ReplayEvent::Schedule(RecordedSchedule {
+                pid: 3,
+                scheduler_index: 0,
+                reduction_budget: 11,
+                reductions_consumed: 5,
+            }),
+            ReplayEvent::Schedule(RecordedSchedule {
+                pid: 1,
+                scheduler_index: 0,
+                reduction_budget: 7,
+                reductions_consumed: 2,
+            }),
+        ]),
+    )
+    .unwrap_or_else(|error| panic!("replay scheduler starts: {error}"));
+
+    let driver = scheduler
+        .shared
+        .replay_driver
+        .as_ref()
+        .expect("replay driver installed");
+    let mut guard = driver.lock().expect("replay driver lock");
+    assert_eq!(guard.peek_schedule().map(|event| event.pid), Some(3));
+    assert_eq!(
+        guard
+            .next_schedule(0)
+            .unwrap_or_else(|error| panic!("first schedule: {error}"))
+            .pid,
+        3
+    );
+    assert_eq!(guard.peek_schedule().map(|event| event.pid), Some(1));
+    assert_eq!(
+        guard
+            .next_schedule(0)
+            .unwrap_or_else(|error| panic!("second schedule: {error}"))
+            .pid,
+        1
+    );
+    assert!(guard.is_complete());
+    drop(guard);
+    scheduler.shutdown();
 }
 
 struct NoopWake;
@@ -1435,6 +1499,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
             binary_heap_size: 0,
             message_queue_len: 0,
             group_leader: process.group_leader(),
+            logical_clock: process.logical_clock(),
             pending_exit_messages: Vec::new(),
             pending_down_messages: Vec::new(),
             pending_io_messages: Vec::new(),

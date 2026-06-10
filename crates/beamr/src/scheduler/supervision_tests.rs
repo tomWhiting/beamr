@@ -146,6 +146,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
                 binary_heap_size: process.virtual_binary_heap(),
                 message_queue_len: process.mailbox().message_count(),
                 group_leader: process.group_leader(),
+                logical_clock: process.logical_clock(),
                 capabilities: process.capabilities().clone(),
                 pending_exit_messages: Vec::new(),
                 pending_down_messages: Vec::new(),

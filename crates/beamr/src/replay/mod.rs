@@ -5,12 +5,15 @@
 
 mod debugger;
 mod driver;
+mod recorder;
 
 pub use debugger::{
     FunctionInspection, HeapInspection, MailboxInspection, ProcessSnapshot, RegisterInspection,
     RegisterKind, ReplayDebugger, ReplayStepOutcome, StackFrameInspection,
 };
 pub use driver::{
-    NativeOutcome, RecordedNativeCall, RecordedSelect, RecordedTimerExpiry, ReplayDriver,
-    ReplayEvent, ReplayLog, ReplayMismatch,
+    NativeOutcome, RecordedDeliveryKind, RecordedMessageDelivery, RecordedNativeCall,
+    RecordedSchedule, RecordedSelect, RecordedTimerExpiry, ReplayDriver, ReplayEvent, ReplayLog,
+    ReplayMismatch,
 };
+pub use recorder::ReplayRecorder;

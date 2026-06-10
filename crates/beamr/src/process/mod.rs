@@ -69,6 +69,7 @@ pub struct Process {
     native_roots: Vec<Term>,
     raw_stacktrace: Vec<RawStackEntry>,
     reduction_counter: u32,
+    logical_clock: u64,
     namespace_id: NamespaceId,
     code_position: Option<CodePosition>,
     current_module: Option<Arc<Module>>,
@@ -111,6 +112,7 @@ impl Clone for Process {
             native_roots: self.native_roots.clone(),
             raw_stacktrace: self.raw_stacktrace.clone(),
             reduction_counter: self.reduction_counter,
+            logical_clock: self.logical_clock,
             namespace_id: self.namespace_id,
             code_position: self.code_position,
             current_module: self.current_module.clone(),
@@ -168,6 +170,7 @@ impl Process {
             native_roots: Vec::new(),
             raw_stacktrace: Vec::new(),
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
+            logical_clock: 0,
             namespace_id: NamespaceId::DEFAULT,
             code_position: None,
             current_module: None,
@@ -710,6 +713,29 @@ impl Process {
     /// Reset the reduction counter for a new scheduler time slice.
     pub const fn reset_reductions(&mut self, budget: u32) {
         self.reduction_counter = budget;
+    }
+
+    /// Current per-process logical clock used by deterministic replay.
+    #[must_use]
+    pub const fn logical_clock(&self) -> u64 {
+        self.logical_clock
+    }
+
+    /// Advance the logical clock for a local causal event.
+    pub fn tick_logical_clock(&mut self) -> u64 {
+        self.logical_clock = self.logical_clock.saturating_add(1);
+        self.logical_clock
+    }
+
+    /// Merge a sender clock into this process and advance for message delivery.
+    pub fn observe_message_clock(&mut self, sender_clock: u64) -> u64 {
+        self.logical_clock = self.logical_clock.max(sender_clock).saturating_add(1);
+        self.logical_clock
+    }
+
+    /// Set the logical clock from a recorded replay delivery.
+    pub const fn set_logical_clock(&mut self, clock: u64) {
+        self.logical_clock = clock;
     }
 
     /// Namespace whose module registry this process executes against.

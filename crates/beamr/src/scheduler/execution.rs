@@ -138,23 +138,33 @@ pub(in crate::scheduler) fn scheduler_loop(
             }
         }
         drain_woken(shared, queue, my_index);
-        let pid = match queue.pop() {
-            Some(pid) => pid,
-            None => {
-                let (result, next_victim) =
-                    steal::try_steal(queue, my_index, stealers, last_victim);
-                last_victim = next_victim;
-                match result {
-                    steal::StealResult::Stolen { .. } => match queue.pop() {
-                        Some(pid) => pid,
-                        None => {
+        let pid = if shared.replay_mode {
+            match next_replay_pid(shared, my_index) {
+                Some(pid) => pid,
+                None => {
+                    park_thread(shared);
+                    continue;
+                }
+            }
+        } else {
+            match queue.pop() {
+                Some(pid) => pid,
+                None => {
+                    let (result, next_victim) =
+                        steal::try_steal(queue, my_index, stealers, last_victim);
+                    last_victim = next_victim;
+                    match result {
+                        steal::StealResult::Stolen { .. } => match queue.pop() {
+                            Some(pid) => pid,
+                            None => {
+                                park_thread(shared);
+                                continue;
+                            }
+                        },
+                        steal::StealResult::Empty => {
                             park_thread(shared);
                             continue;
                         }
-                    },
-                    steal::StealResult::Empty => {
-                        park_thread(shared);
-                        continue;
                     }
                 }
             }
@@ -500,6 +510,19 @@ pub(in crate::scheduler) fn build_udp_active_message_for_process(
         .alloc_slice(1 + message_terms.len())
         .ok()?;
     write_tuple(heap, &message_terms)
+}
+
+fn next_replay_pid(shared: &SharedState, my_index: usize) -> Option<u64> {
+    let replay_driver = shared.replay_driver.as_ref()?;
+    let guard = match replay_driver.lock() {
+        Ok(guard) => guard,
+        Err(error) => error.into_inner(),
+    };
+    let event = guard.peek_schedule()?;
+    if event.scheduler_index != my_index || shared.process_table.get(event.pid).is_none() {
+        return None;
+    }
+    Some(event.pid)
 }
 
 fn drain_woken(shared: &SharedState, queue: &RunQueue, my_index: usize) {
