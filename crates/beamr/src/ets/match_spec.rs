@@ -8,6 +8,7 @@
 use std::cmp::Ordering;
 
 use crate::atom::AtomTable;
+use crate::ets::MatchArena;
 use crate::native::ProcessContext;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{BigInt, Cons, Tuple};
@@ -102,7 +103,7 @@ pub enum MatchSpecError {
     UnknownGuard,
 }
 
-trait TermAllocator {
+pub(crate) trait TermAllocator {
     fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term>;
     fn alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term>;
 }
@@ -118,27 +119,6 @@ impl TermAllocator for ProcessAllocator<'_, '_> {
 
     fn alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term> {
         self.context.alloc_list(elements)
-    }
-}
-
-struct LeakingAllocator;
-
-impl TermAllocator for LeakingAllocator {
-    fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> {
-        let leaked = Box::leak(vec![0_u64; 1 + elements.len()].into_boxed_slice());
-        crate::term::boxed::write_tuple(leaked, elements)
-            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
-    }
-
-    fn alloc_list(&mut self, elements: &[Term]) -> Result<Term, Term> {
-        let mut tail = Term::NIL;
-        for element in elements.iter().rev().copied() {
-            let mut words = vec![0_u64; 2].into_boxed_slice();
-            tail = crate::term::boxed::write_cons(&mut words, element, tail)
-                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
-            let _leaked: &'static mut [u64] = Box::leak(words);
-        }
-        Ok(tail)
     }
 }
 
@@ -163,18 +143,58 @@ impl CompiledMatchSpec {
         self.eval_with_allocator(tuple, atom_table.as_ref(), &mut allocator)
     }
 
-    /// Evaluate against one object using a permanent fallback heap for constructed results.
+    /// Evaluate against one object, allocating constructed body terms in `arena`.
     ///
-    /// Production callers should prefer [`Self::eval_with_context`] so newly
-    /// constructed terms live on the calling process heap. This convenience API
-    /// exists for direct compiler tests and for bodies that return existing terms.
+    /// Any returned term that was constructed from the match-spec body remains
+    /// valid only while `arena` is alive. Callers returning results to a process
+    /// must deep-copy the result into that process heap before dropping `arena`.
+    pub fn eval_with_arena(
+        &self,
+        tuple: Term,
+        atom_table: &AtomTable,
+        arena: &mut MatchArena,
+    ) -> Result<Option<Term>, Term> {
+        self.eval_with_allocator(tuple, atom_table, arena)
+    }
+
+    /// Run this match spec with a caller-owned arena allocator.
+    pub fn run(
+        &self,
+        tuple: Term,
+        atom_table: &AtomTable,
+        arena: &mut MatchArena,
+    ) -> Result<Option<Term>, Term> {
+        self.eval_with_arena(tuple, atom_table, arena)
+    }
+
+    /// Evaluate against one object for bodies that return existing terms.
+    ///
+    /// This convenience method never returns terms constructed in a temporary
+    /// arena. Callers that need constructed body results must use
+    /// [`Self::eval_with_arena`] or [`Self::eval_with_context`] and keep/copy the
+    /// allocation owner for as long as the result is used.
     #[must_use]
     pub fn eval(&self, tuple: Term) -> Option<Term> {
         let atom_table = AtomTable::with_common_atoms();
-        let mut allocator = LeakingAllocator;
-        self.eval_with_allocator(tuple, &atom_table, &mut allocator)
-            .ok()
-            .flatten()
+        let mut arena = MatchArena::new();
+        for clause in &self.spec.clauses {
+            let mut bindings = vec![None; clause.max_variable.saturating_add(1)];
+            if !clause.matches_head(tuple, &mut bindings) {
+                continue;
+            }
+            if !clause
+                .guards
+                .iter()
+                .all(|guard| guard.eval(&bindings, &atom_table))
+            {
+                continue;
+            }
+            if clause.body.last().is_some_and(BodyExpr::allocates_result) {
+                return None;
+            }
+            return clause.eval_body(tuple, &bindings, &mut arena).ok();
+        }
+        None
     }
 
     fn eval_with_allocator(
@@ -371,6 +391,13 @@ impl BodyExpr {
                 }
                 allocator.alloc_list(&values)
             }
+        }
+    }
+
+    fn allocates_result(&self) -> bool {
+        match self {
+            Self::Tuple(_) | Self::List(_) | Self::ReturnBindings => true,
+            Self::Variable(_) | Self::Literal(_) | Self::ReturnObject => false,
         }
     }
 }
@@ -797,7 +824,11 @@ mod tests {
         let spec = heap.list(&[clause]);
         let compiled = CompiledMatchSpec::compile(spec, &table).expect("spec compiles");
         let object = heap.tuple(&[atom(&table, "two"), atom(&table, "one")]);
-        let result = compiled.eval(object).expect("object matches");
+        let mut arena = MatchArena::new();
+        let result = compiled
+            .eval_with_arena(object, &table, &mut arena)
+            .expect("evaluation does not raise")
+            .expect("object matches");
         let values = proper_list(result).expect("result is proper list");
 
         assert_eq!(values, vec![atom(&table, "one"), atom(&table, "two")]);
