@@ -497,8 +497,12 @@ fn rebase_heap_block_terms(block: &mut [u64], mappings: &[(*const u64, *const u6
             | BoxedTag::FdResource
             | BoxedTag::ExternalPid
             | BoxedTag::ExternalReference,
-        )
-        | None => {}
+        ) => {}
+        None if block.len() >= 2 => {
+            rebase_term_word(&mut block[0], mappings);
+            rebase_term_word(&mut block[1], mappings);
+        }
+        None => {}
     }
 }
 

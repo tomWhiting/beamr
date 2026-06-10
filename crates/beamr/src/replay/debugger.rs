@@ -521,7 +521,7 @@ mod tests {
     use crate::loader::Instruction;
     use crate::loader::decode::Operand;
     use crate::module::ModuleOrigin;
-    use crate::term::boxed;
+    use crate::term::boxed::{Cons, Tuple};
 
     fn module(code: Vec<Instruction>) -> Arc<Module> {
         Arc::new(Module {
@@ -651,15 +651,54 @@ mod tests {
         assert!(debugger.step_forward().is_ok());
         let tuple = debugger.process().x_reg(0);
         assert_eq!(
-            boxed::Tuple::new(tuple).and_then(|tuple| tuple.get(0)),
+            Tuple::new(tuple).and_then(|tuple| tuple.get(0)),
             Some(Term::small_int(1))
         );
         assert!(debugger.step_forward().is_ok());
         assert!(debugger.step_backward().is_ok());
         let restored = debugger.process().x_reg(0);
         assert_eq!(
-            boxed::Tuple::new(restored).and_then(|tuple| tuple.get(0)),
+            Tuple::new(restored).and_then(|tuple| tuple.get(0)),
             Some(Term::small_int(1))
         );
+    }
+
+    #[test]
+    fn backward_restores_cons_cells_with_rebased_tail_terms() {
+        let module = module(vec![
+            Instruction::PutList {
+                head: Operand::Integer(2),
+                tail: Operand::Atom(None),
+                destination: Operand::X(0),
+            },
+            Instruction::PutList {
+                head: Operand::Integer(1),
+                tail: Operand::X(0),
+                destination: Operand::X(0),
+            },
+            Instruction::Move {
+                source: Operand::Integer(3),
+                destination: Operand::X(0),
+            },
+        ]);
+        let process = Process::new(1, 233);
+        let mut debugger = ReplayDebugger::new(process, module);
+        assert!(debugger.step_forward().is_ok());
+        assert!(debugger.step_forward().is_ok());
+        let list = debugger.process().x_reg(0);
+        let cons = Cons::new(list).expect("outer cons");
+        assert_eq!(cons.head(), Term::small_int(1));
+        let tail = Cons::new(cons.tail()).expect("inner cons");
+        assert_eq!(tail.head(), Term::small_int(2));
+        assert_eq!(tail.tail(), Term::NIL);
+
+        assert!(debugger.step_forward().is_ok());
+        assert!(debugger.step_backward().is_ok());
+        let restored = debugger.process().x_reg(0);
+        let cons = Cons::new(restored).expect("restored outer cons");
+        assert_eq!(cons.head(), Term::small_int(1));
+        let tail = Cons::new(cons.tail()).expect("restored inner cons");
+        assert_eq!(tail.head(), Term::small_int(2));
+        assert_eq!(tail.tail(), Term::NIL);
     }
 }
