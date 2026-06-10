@@ -739,6 +739,12 @@ fn execute_slice_emits_vm_health_and_process_metrics() {
 
     crate::telemetry::metrics::record_gc_collection("minor", std::time::Duration::from_micros(50));
     crate::telemetry::metrics::record_message_sent();
+    crate::telemetry::metrics::record_workflow_started("workflow-123");
+    crate::telemetry::metrics::record_workflow_step_completed(
+        "workflow-123",
+        "function",
+        std::time::Duration::from_millis(25),
+    );
     provider.force_flush().expect("metrics flush");
     let metrics = exporter.get_finished_metrics().expect("finished metrics");
 
@@ -781,24 +787,6 @@ fn execute_slice_emits_vm_health_and_process_metrics() {
         5
     ));
 
-    provider.shutdown().expect("provider shutdown");
-}
-
-#[cfg(feature = "telemetry")]
-#[test]
-fn workflow_metric_helpers_emit_instance_and_step_attributes() {
-    let (exporter, provider) = install_metric_test_provider();
-
-    crate::telemetry::metrics::record_workflow_started("workflow-123");
-    crate::telemetry::metrics::record_workflow_step_completed(
-        "workflow-123",
-        "function",
-        std::time::Duration::from_millis(25),
-    );
-    crate::telemetry::metrics::record_workflow_finished("workflow-123");
-    provider.force_flush().expect("metrics flush");
-    let metrics = exporter.get_finished_metrics().expect("finished metrics");
-
     assert!(metric_has_u64_sum_at_least(
         &metrics,
         "beamr.workflow.steps_completed",
@@ -828,6 +816,11 @@ fn workflow_metric_helpers_emit_instance_and_step_attributes() {
         "workflow_id",
         "workflow-123"
     ));
+
+    crate::telemetry::metrics::record_workflow_finished("workflow-123");
+    provider
+        .force_flush()
+        .expect("metrics flush after workflow finish");
 
     provider.shutdown().expect("provider shutdown");
 }
