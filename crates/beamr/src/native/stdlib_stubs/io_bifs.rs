@@ -89,7 +89,7 @@ fn format_bytes(format: Term, arguments: Term, context: &ProcessContext) -> Resu
         match directive {
             b's' => {
                 let arg = next_arg(&arguments, &mut arg_index)?;
-                out.extend_from_slice(binary_bytes(arg)?);
+                out.extend_from_slice(&binary_bytes(arg)?);
             }
             b'p' | b'w' => {
                 let arg = next_arg(&arguments, &mut arg_index)?;
@@ -164,9 +164,9 @@ fn render_term(term: Term, context: &ProcessContext) -> String {
     format_term(term, atom_table)
 }
 
-fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
+fn binary_bytes(term: Term) -> Result<Vec<u8>, Term> {
     BinaryRef::new(term)
-        .map(|binary| binary.as_bytes())
+        .map(|binary| binary.as_bytes().to_vec())
         .ok_or_else(badarg)
 }
 
@@ -200,11 +200,12 @@ fn send_io_request_and_wait(
         .atom_table()
         .ok_or_else(badarg)?
         .intern("io_request");
-    let reply_ref = context.alloc_reference(reply_ref_id(caller_pid))?;
+    context.ensure_heap_space(2 + 5)?;
+    let reply_ref = context.alloc_reference_prereserved(reply_ref_id(caller_pid))?;
     if let Some(result) = take_io_reply(reply_ref, context)? {
         return Ok(result);
     }
-    let message = context.alloc_tuple(&[
+    let message = context.alloc_tuple_prereserved(&[
         Term::atom(io_request_atom),
         Term::pid(caller_pid),
         reply_ref,

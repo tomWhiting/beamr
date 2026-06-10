@@ -323,13 +323,19 @@ pub fn bif_map_get(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     if let Some(value) = map.get(*key_term) {
         Ok(value)
     } else {
-        Err(badkey(context, *key_term)?)
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(0, *key_term);
+        }
+        context.ensure_heap_space(3)?;
+        let key = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+        Err(badkey_prereserved(context, key)?)
     }
 }
 
-/// Builds a `{badkey, Key}` error tuple on the process heap.
-fn badkey(context: &mut ProcessContext, key: Term) -> Result<Term, Term> {
-    context.alloc_tuple(&[Term::atom(Atom::BADKEY), key])
+/// Builds a `{badkey, Key}` error tuple using pre-reserved heap space.
+fn badkey_prereserved(context: &mut ProcessContext, key: Term) -> Result<Term, Term> {
+    context.alloc_tuple_prereserved(&[Term::atom(Atom::BADKEY), key])
 }
 
 fn badarg() -> Term {

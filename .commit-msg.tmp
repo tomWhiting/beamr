@@ -1,1 +1,1 @@
-Harden ETS match arena review coverage
+Harden GC rooting in stdlib list/map helper allocations

@@ -343,13 +343,15 @@ fn remote_spawn_impl(
     if result.node != node {
         return Err(badarg());
     }
-    let pid_term = context.alloc_external_pid(node, result.pid_number, result.serial)?;
     if kind == RemoteSpawnKind::Monitor {
         let reference = result.monitor_reference.ok_or_else(badarg)?;
-        let reference_term = context.alloc_external_reference(node, reference)?;
-        context.alloc_tuple(&[pid_term, reference_term])
+        context.ensure_heap_space(4 + 3 + 3)?;
+        let pid_term =
+            context.alloc_external_pid_prereserved(node, result.pid_number, result.serial)?;
+        let reference_term = context.alloc_external_reference_prereserved(node, reference)?;
+        context.alloc_tuple_prereserved(&[pid_term, reference_term])
     } else {
-        Ok(pid_term)
+        context.alloc_external_pid(node, result.pid_number, result.serial)
     }
 }
 
@@ -439,8 +441,9 @@ fn spawn_monitor_tuple(
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
     let pid_term = Term::try_pid(child_pid).ok_or_else(badarg)?;
-    let reference_term = context.alloc_reference(reference)?;
-    context.alloc_tuple(&[pid_term, reference_term])
+    context.ensure_heap_space(2 + 3)?;
+    let reference_term = context.alloc_reference_prereserved(reference)?;
+    context.alloc_tuple_prereserved(&[pid_term, reference_term])
 }
 
 fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {

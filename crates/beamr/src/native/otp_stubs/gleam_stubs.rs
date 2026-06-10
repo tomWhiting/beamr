@@ -73,7 +73,13 @@ pub fn bif_dynamic_int(args: &[Term], context: &mut ProcessContext) -> Result<Te
         return Err(badarg());
     };
     if term.as_small_int().is_some() {
-        context.alloc_tuple(&[Term::atom(Atom::OK), *term])
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(0, *term);
+        }
+        context.ensure_heap_space(3)?;
+        let term = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+        context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), term])
     } else {
         context.alloc_tuple(&[Term::atom(Atom::ERROR), Term::NIL])
     }
@@ -85,7 +91,13 @@ pub fn bif_dynamic_string(args: &[Term], context: &mut ProcessContext) -> Result
         return Err(badarg());
     };
     if crate::term::binary::Binary::new(*term).is_some() {
-        context.alloc_tuple(&[Term::atom(Atom::OK), *term])
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(0, *term);
+        }
+        context.ensure_heap_space(3)?;
+        let term = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+        context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), term])
     } else {
         context.alloc_tuple(&[Term::atom(Atom::ERROR), Term::NIL])
     }
@@ -231,13 +243,27 @@ pub fn bif_intensity_tracker_add_event(
         .get(1)
         .and_then(Term::as_small_int)
         .ok_or_else(badarg)?;
-    let period = tuple.get(2).ok_or_else(badarg)?;
-    let events = tuple.get(3).ok_or_else(badarg)?;
+    let _period = tuple.get(2).ok_or_else(badarg)?;
+    let _events = tuple.get(3).ok_or_else(badarg)?;
     let new_count = count.checked_add(1).ok_or_else(badarg)?;
     let new_count_term = Term::try_small_int(new_count).ok_or_else(badarg)?;
-    let updated = context.alloc_tuple(&[new_count_term, Term::small_int(limit), period, events])?;
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *tracker);
+    }
+    context.ensure_heap_space(5 + 3)?;
+    let tracker = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+    let tuple = Tuple::new(tracker).ok_or_else(badarg)?;
+    let period = tuple.get(2).ok_or_else(badarg)?;
+    let events = tuple.get(3).ok_or_else(badarg)?;
+    let updated = context.alloc_tuple_prereserved(&[
+        new_count_term,
+        Term::small_int(limit),
+        period,
+        events,
+    ])?;
     let status = if count < limit { Atom::OK } else { Atom::ERROR };
-    context.alloc_tuple(&[Term::atom(status), updated])
+    context.alloc_tuple_prereserved(&[Term::atom(status), updated])
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -248,9 +274,12 @@ pub fn resume_gleam_option_continuation(
     context: &mut ProcessContext,
 ) -> Result<ContinuationStep, Term> {
     match state {
-        GleamOptionState::Map { some_tag } => Ok(ContinuationStep::Done(
-            context.alloc_tuple(&[Term::atom(some_tag), closure_result])?,
-        )),
+        GleamOptionState::Map { some_tag } => {
+            context.ensure_heap_space(3)?;
+            Ok(ContinuationStep::Done(context.alloc_tuple_prereserved(
+                &[Term::atom(some_tag), closure_result],
+            )?))
+        }
     }
 }
 
@@ -260,9 +289,12 @@ pub fn resume_gleam_result_continuation(
     context: &mut ProcessContext,
 ) -> Result<ContinuationStep, Term> {
     match state {
-        GleamResultState::MapError => Ok(ContinuationStep::Done(
-            context.alloc_tuple(&[Term::atom(Atom::ERROR), closure_result])?,
-        )),
+        GleamResultState::MapError => {
+            context.ensure_heap_space(3)?;
+            Ok(ContinuationStep::Done(context.alloc_tuple_prereserved(
+                &[Term::atom(Atom::ERROR), closure_result],
+            )?))
+        }
         GleamResultState::Then => Ok(ContinuationStep::Done(closure_result)),
     }
 }

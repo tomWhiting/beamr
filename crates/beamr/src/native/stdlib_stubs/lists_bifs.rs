@@ -25,10 +25,23 @@ pub fn bif_lists_append_2(args: &[Term], context: &mut ProcessContext) -> Result
     let [left, right] = args else {
         return Err(badarg());
     };
-    let elements = list_to_vec(*left)?;
-    let mut tail = *right;
+    let count = list_length(*left)?;
+    if count == 0 {
+        return Ok(*right);
+    }
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *left);
+        process.set_x_reg(1, *right);
+    }
+    context.ensure_heap_space(count * 2)?;
+    let (left, mut tail) = {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        (process.x_reg(0), process.x_reg(1))
+    };
+    let elements = list_to_vec(left)?;
     for element in elements.iter().rev() {
-        tail = context.alloc_cons(*element, tail)?;
+        tail = context.alloc_cons_prereserved(*element, tail)?;
     }
     Ok(tail)
 }
@@ -124,11 +137,27 @@ pub fn bif_lists_zip(args: &[Term], context: &mut ProcessContext) -> Result<Term
     if left_elements.len() != right_elements.len() {
         return Err(badarg());
     }
-    let mut pairs = Vec::with_capacity(left_elements.len());
-    for (left_element, right_element) in left_elements.iter().zip(right_elements.iter()) {
-        pairs.push(context.alloc_tuple(&[*left_element, *right_element])?);
+    if left_elements.is_empty() {
+        return Ok(Term::NIL);
     }
-    list_from_vec(&pairs, context)
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *left);
+        process.set_x_reg(1, *right);
+    }
+    context.ensure_heap_space(left_elements.len() * 5)?;
+    let (left, right) = {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        (process.x_reg(0), process.x_reg(1))
+    };
+    let left_elements = list_to_vec(left)?;
+    let right_elements = list_to_vec(right)?;
+    let mut tail = Term::NIL;
+    for (left_element, right_element) in left_elements.iter().zip(right_elements.iter()).rev() {
+        let pair = context.alloc_tuple_prereserved(&[*left_element, *right_element])?;
+        tail = context.alloc_cons_prereserved(pair, tail)?;
+    }
+    Ok(tail)
 }
 
 pub fn bif_lists_unzip(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -136,19 +165,33 @@ pub fn bif_lists_unzip(args: &[Term], context: &mut ProcessContext) -> Result<Te
         return Err(badarg());
     };
     let elements = list_to_vec(*list)?;
-    let mut left = Vec::with_capacity(elements.len());
-    let mut right = Vec::with_capacity(elements.len());
-    for element in elements {
-        let tuple = Tuple::new(element).ok_or_else(badarg)?;
+    for element in &elements {
+        let tuple = Tuple::new(*element).ok_or_else(badarg)?;
         if tuple.arity() != 2 {
             return Err(badarg());
         }
-        left.push(tuple.get(0).ok_or_else(badarg)?);
-        right.push(tuple.get(1).ok_or_else(badarg)?);
+        let _ = tuple.get(0).ok_or_else(badarg)?;
+        let _ = tuple.get(1).ok_or_else(badarg)?;
     }
-    let left_list = list_from_vec(&left, context)?;
-    let right_list = list_from_vec(&right, context)?;
-    context.alloc_tuple(&[left_list, right_list])
+    if elements.is_empty() {
+        return context.alloc_tuple(&[Term::NIL, Term::NIL]);
+    }
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *list);
+    }
+    context.ensure_heap_space(elements.len() * 4 + 3)?;
+    let list = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+    let elements = list_to_vec(list)?;
+    let mut left_tail = Term::NIL;
+    let mut right_tail = Term::NIL;
+    for element in elements.iter().rev() {
+        let tuple = Tuple::new(*element).ok_or_else(badarg)?;
+        left_tail = context.alloc_cons_prereserved(tuple.get(0).ok_or_else(badarg)?, left_tail)?;
+        right_tail =
+            context.alloc_cons_prereserved(tuple.get(1).ok_or_else(badarg)?, right_tail)?;
+    }
+    context.alloc_tuple_prereserved(&[left_tail, right_tail])
 }
 
 pub fn bif_lists_reverse_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -314,10 +357,19 @@ pub(super) fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
 }
 
 pub(super) fn list_from_vec(elements: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        for (index, element) in elements.iter().enumerate() {
+            let register = u16::try_from(index).map_err(|_| badarg())?;
+            process.set_x_reg(register, *element);
+        }
+    }
     context.ensure_heap_space(elements.len() * 2)?;
     let mut tail = Term::NIL;
-    for element in elements.iter().rev() {
-        tail = context.alloc_cons_prereserved(*element, tail)?;
+    for index in (0..elements.len()).rev() {
+        let register = u16::try_from(index).map_err(|_| badarg())?;
+        let element = context.process_mut().ok_or_else(badarg)?.x_reg(register);
+        tail = context.alloc_cons_prereserved(element, tail)?;
     }
     Ok(tail)
 }

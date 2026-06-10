@@ -1163,9 +1163,24 @@ impl<'process> ProcessContext<'process> {
         write_tuple(heap, elements).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
+    /// Allocate a tuple using pre-reserved heap space (no GC trigger).
+    /// Caller must have called `ensure_heap_space` for the total budget.
+    pub fn alloc_tuple_prereserved(&mut self, elements: &[Term]) -> Result<Term, Term> {
+        let words = 1 + elements.len();
+        let heap = self.alloc_words_prereserved(words)?;
+        write_tuple(heap, elements).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
     /// Allocate a reference on the calling process heap.
     pub fn alloc_reference(&mut self, id: u64) -> Result<Term, Term> {
         let heap = self.alloc_words(2)?;
+        write_reference(heap, id).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a reference using pre-reserved heap space (no GC trigger).
+    /// Caller must have called `ensure_heap_space` for the total budget.
+    pub fn alloc_reference_prereserved(&mut self, id: u64) -> Result<Term, Term> {
+        let heap = self.alloc_words_prereserved(2)?;
         write_reference(heap, id).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
@@ -1181,6 +1196,19 @@ impl<'process> ProcessContext<'process> {
             .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
+    /// Allocate a remote PID using pre-reserved heap space (no GC trigger).
+    /// Caller must have called `ensure_heap_space` for the total budget.
+    pub fn alloc_external_pid_prereserved(
+        &mut self,
+        node: crate::atom::Atom,
+        pid_number: u64,
+        serial: u64,
+    ) -> Result<Term, Term> {
+        let heap = self.alloc_words_prereserved(4)?;
+        write_external_pid(heap, node, pid_number, serial)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
     /// Allocate a remote reference on the calling process heap.
     pub fn alloc_external_reference(
         &mut self,
@@ -1188,6 +1216,18 @@ impl<'process> ProcessContext<'process> {
         id: u64,
     ) -> Result<Term, Term> {
         let heap = self.alloc_words(3)?;
+        write_external_reference(heap, node, id)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a remote reference using pre-reserved heap space (no GC trigger).
+    /// Caller must have called `ensure_heap_space` for the total budget.
+    pub fn alloc_external_reference_prereserved(
+        &mut self,
+        node: crate::atom::Atom,
+        id: u64,
+    ) -> Result<Term, Term> {
+        let heap = self.alloc_words_prereserved(3)?;
         write_external_reference(heap, node, id)
             .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
@@ -1261,6 +1301,14 @@ impl<'process> ProcessContext<'process> {
     pub fn alloc_map(&mut self, keys: &[Term], values: &[Term]) -> Result<Term, Term> {
         let words = 2 + keys.len() + values.len();
         let heap = self.alloc_words(words)?;
+        write_map(heap, keys, values).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Allocate a flatmap using pre-reserved heap space (no GC trigger).
+    /// Caller must have called `ensure_heap_space` for the total budget.
+    pub fn alloc_map_prereserved(&mut self, keys: &[Term], values: &[Term]) -> Result<Term, Term> {
+        let words = 2 + keys.len() + values.len();
+        let heap = self.alloc_words_prereserved(words)?;
         write_map(heap, keys, values).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 }

@@ -82,7 +82,8 @@ pub fn bif_binary_part(args: &[Term], context: &mut ProcessContext) -> Result<Te
     if end > bytes.len() {
         return Err(badarg());
     }
-    context.alloc_binary(&bytes[offset..end])
+    let bytes = bytes[offset..end].to_vec();
+    context.alloc_binary(&bytes)
 }
 
 /// erlang:bit_size/1 — returns the bit length of a binary.
