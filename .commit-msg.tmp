@@ -1,1 +1,1 @@
-Harden GC rooting in stdlib list/map helper allocations
+harden(beamr): bound bigint left-shift allocation

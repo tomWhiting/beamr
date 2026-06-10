@@ -30,6 +30,18 @@ fn exact_equality_compares_immediates_and_distinguishes_numeric_types() {
 }
 
 #[test]
+fn numeric_equality_compares_bigints_by_value() {
+    let mut small_heap = [0_u64; 4];
+    let mut same_heap = [0_u64; 4];
+    let small_bigint = write_bigint(&mut small_heap, false, &[42]).unwrap();
+    let same_bigint = write_bigint(&mut same_heap, false, &[42]).unwrap();
+
+    assert!(numeric_eq(Term::small_int(42), small_bigint));
+    assert!(numeric_eq(small_bigint, same_bigint));
+    assert!(!exact_eq(Term::small_int(42), small_bigint));
+}
+
+#[test]
 fn exact_equality_compares_boxed_terms_structurally() {
     let mut left_heap = [0_u64; 3];
     let mut right_heap = [0_u64; 3];

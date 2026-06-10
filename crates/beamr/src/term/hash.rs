@@ -8,6 +8,7 @@ use std::hash::{Hash, Hasher};
 
 use super::{
     Term,
+    bigint_math::BigIntValue,
     binary_ref::BinaryRef,
     boxed::{BigInt, Closure, Cons, Float, Map, Tuple},
     compare,
@@ -177,23 +178,18 @@ fn hash_tuple(tuple: Tuple, state: &mut StableHasher) {
 }
 
 fn hash_bigint(bigint: BigInt, state: &mut StableHasher) {
+    let value = BigIntValue::from_bigint(bigint);
+    if let Some(small) = value.to_small_i64().and_then(Term::try_small_int) {
+        hash_term(small, state);
+        return;
+    }
+
     hash_kind(HashKind::BigInt, state);
-    let limbs = normalized_limbs(bigint);
-    let negative = bigint.is_negative() && !limbs.is_empty();
-    state.write_u8(u8::from(negative));
-    state.write_usize(limbs.len());
-    for limb in limbs {
+    state.write_u8(u8::from(value.is_negative()));
+    state.write_usize(value.limbs().len());
+    for limb in value.limbs() {
         state.write_u64(*limb);
     }
-}
-
-fn normalized_limbs(bigint: BigInt) -> &'static [u64] {
-    let limbs = bigint.limbs();
-    let significant_len = limbs
-        .iter()
-        .rposition(|limb| *limb != 0)
-        .map_or(0, |index| index + 1);
-    &limbs[..significant_len]
 }
 
 fn hash_closure(closure: Closure, state: &mut StableHasher) {
@@ -370,6 +366,23 @@ mod tests {
         let float = boxed::write_float(&mut heap, 1.0).expect("float fits");
         assert_ne!(Term::small_int(1), float);
         assert_ne!(term_hash(Term::small_int(1)), term_hash(float));
+    }
+
+    #[test]
+    fn bigint_hash_canonicalizes_small_integer_values() {
+        let mut small_heap = [0_u64; 4];
+        let mut large_heap = [0_u64; 5];
+        let mut different_heap = [0_u64; 5];
+        let small_bigint = boxed::write_bigint(&mut small_heap, false, &[42]).expect("bigint fits");
+        let large_bigint =
+            boxed::write_bigint(&mut large_heap, false, &[0, 1]).expect("bigint fits");
+        let different_bigint =
+            boxed::write_bigint(&mut different_heap, false, &[1, 1]).expect("bigint fits");
+
+        assert_eq!(term_hash(small_bigint), term_hash(Term::small_int(42)));
+        assert_ne!(term_hash(large_bigint), 0);
+        assert_eq!(term_hash(large_bigint), term_hash(large_bigint));
+        assert_ne!(term_hash(large_bigint), term_hash(different_bigint));
     }
 
     #[test]

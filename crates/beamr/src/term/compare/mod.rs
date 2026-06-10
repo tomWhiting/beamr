@@ -8,6 +8,7 @@ use super::pid_ref::PidRef;
 use super::reference_ref::ReferenceRef;
 use super::{
     Term,
+    bigint_math::BigIntValue,
     binary_ref::BinaryRef,
     boxed::{BigInt, Closure, Cons, Float, Map, Tuple},
 };
@@ -40,6 +41,14 @@ pub fn numeric_eq(left: Term, right: Term) -> bool {
         }
         (Some(NumberValue::SmallInt(left)), Some(NumberValue::SmallInt(right))) => left == right,
         (Some(NumberValue::Float(left)), Some(NumberValue::Float(right))) => left == right,
+        (Some(NumberValue::SmallInt(left_value)), None) => BigIntValue::from_term(right)
+            .is_some_and(|right_value| BigIntValue::from_i64(left_value) == right_value),
+        (None, Some(NumberValue::SmallInt(right_value))) => BigIntValue::from_term(left)
+            .is_some_and(|left_value| left_value == BigIntValue::from_i64(right_value)),
+        (None, None) => match (BigIntValue::from_term(left), BigIntValue::from_term(right)) {
+            (Some(left_value), Some(right_value)) => left_value == right_value,
+            _ => exact_eq(left, right),
+        },
         _ => exact_eq(left, right),
     }
 }
