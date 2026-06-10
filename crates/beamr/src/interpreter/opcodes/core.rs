@@ -622,9 +622,12 @@ fn call_external_target(
 }
 
 fn capability_denied_result(process: &mut Process) -> Result<Term, ExecError> {
-    ensure_space(process, 3, 0).map_err(|_| ExecError::Badarg)?;
+    let words = 3;
+    ensure_space(process, words, 0).map_err(|_| ExecError::Badarg)?;
+    let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
+    let heap = heap_slice(ptr, words);
     write_tuple(
-        process.heap_mut(),
+        heap,
         &[Term::atom(Atom::ERROR), Term::atom(Atom::CAPABILITY_DENIED)],
     )
     .ok_or(ExecError::Badarg)
