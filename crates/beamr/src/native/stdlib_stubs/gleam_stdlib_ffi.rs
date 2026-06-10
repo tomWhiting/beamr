@@ -1,10 +1,11 @@
 //! Gleam stdlib native stubs used by generated Gleam modules.
 
-use crate::atom::Atom;
+use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::Cons;
+use crate::term::format::format_term;
 
 pub fn bif_string_replace(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let _ = context;
@@ -143,18 +144,11 @@ pub fn bif_inspect(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     if let Some(binary) = BinaryRef::new(*value) {
         return context.alloc_binary(binary.as_bytes());
     }
-    if let Some(integer) = value.as_small_int() {
-        return context.alloc_binary(integer.to_string().as_bytes());
-    }
-    if let Some(atom) = value.as_atom() {
-        if let Some(table) = context.atom_table_arc()
-            && let Some(name) = table.resolve(atom)
-        {
-            return context.alloc_binary(name.as_bytes());
-        }
-        return context.alloc_binary(format!("Atom({atom:?})").as_bytes());
-    }
-    context.alloc_binary(format!("{value:?}").as_bytes())
+
+    let fallback = AtomTable::with_common_atoms();
+    let atom_table = context.atom_table().unwrap_or(&fallback);
+    let rendered = format_term(*value, atom_table);
+    context.alloc_binary(rendered.as_bytes())
 }
 
 pub fn bif_string_remove_prefix(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {

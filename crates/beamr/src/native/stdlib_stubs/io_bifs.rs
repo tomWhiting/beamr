@@ -1,11 +1,12 @@
 //! I/O native stubs for `io` and `io_lib` modules.
 
-use crate::atom::Atom;
+use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::{Cons, Tuple};
+use crate::term::boxed::Cons;
 use crate::term::compare;
+use crate::term::format::format_term;
 
 pub fn bif_io_put_chars_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [chars] = args else {
@@ -158,38 +159,9 @@ fn list_terms(term: Term) -> Result<Vec<Term>, Term> {
 }
 
 fn render_term(term: Term, context: &ProcessContext) -> String {
-    if let Some(integer) = term.as_small_int() {
-        return integer.to_string();
-    }
-    if let Some(atom) = term.as_atom() {
-        return context
-            .atom_table()
-            .and_then(|table| table.resolve(atom))
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("Atom({atom:?})"));
-    }
-    if term.is_nil() {
-        return "[]".to_owned();
-    }
-    if let Some(pid) = term.as_pid() {
-        return format!("<0.{pid}.0>");
-    }
-    if let Some(binary) = BinaryRef::new(term) {
-        return match std::str::from_utf8(binary.as_bytes()) {
-            Ok(text) => format!("<<\"{text}\">>"),
-            Err(_) => format!("<<{} bytes>>", binary.len()),
-        };
-    }
-    if let Some(tuple) = Tuple::new(term) {
-        let mut elements = Vec::with_capacity(tuple.arity());
-        for index in 0..tuple.arity() {
-            if let Some(element) = tuple.get(index) {
-                elements.push(render_term(element, context));
-            }
-        }
-        return format!("{{{}}}", elements.join(", "));
-    }
-    format!("{term:?}")
+    let fallback = AtomTable::with_common_atoms();
+    let atom_table = context.atom_table().unwrap_or(&fallback);
+    format_term(term, atom_table)
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
