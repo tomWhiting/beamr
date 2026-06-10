@@ -10,7 +10,7 @@ use crate::native::spawn::{
 use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
-use crate::native::{BifRegistryImpl, ProcessContext};
+use crate::native::{BifRegistryImpl, Capability, ProcessContext};
 use crate::process::ExitReason;
 use crate::process::Process;
 use crate::term::Term;
@@ -905,6 +905,13 @@ fn register_gate3_bifs_registers_all() {
             reg.lookup(erlang, at.intern(name), arity).is_some(),
             "missing erlang:{name}/{arity}"
         );
+    }
+
+    for (name, arity) in [("spawn", 1), ("spawn_link", 1)] {
+        let entry = reg
+            .lookup(erlang, at.intern(name), arity)
+            .unwrap_or_else(|| panic!("missing erlang:{name}/{arity}"));
+        assert_eq!(entry.capability, Capability::Spawn);
     }
 }
 

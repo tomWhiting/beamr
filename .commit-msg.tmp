@@ -1,1 +1,1 @@
-feat(beamr): add sandbox capability profiles and spawn API
+Harden sandbox capability enforcement for spawn and supervision BIF metadata

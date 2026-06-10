@@ -61,8 +61,8 @@ const GATE3_BIFS: &[Gate3Bif] = &[
         Capability::Pure,
         bif_is_process_alive,
     ),
-    ("spawn", 1, Capability::Pure, bif_spawn_1),
-    ("spawn_link", 1, Capability::Pure, bif_spawn_link_1),
+    ("spawn", 1, Capability::Spawn, bif_spawn_1),
+    ("spawn_link", 1, Capability::Spawn, bif_spawn_link_1),
     // Type conversion BIFs (R1)
     ("list_to_atom", 1, Capability::Pure, bif_list_to_atom),
     ("atom_to_list", 1, Capability::Pure, bif_atom_to_list),

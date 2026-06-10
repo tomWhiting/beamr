@@ -1238,17 +1238,26 @@ fn remote_spawn_arities_are_registered() {
     let atoms = AtomTable::with_common_atoms();
     register_gate2_bifs(&registry, &atoms).expect("register gate2 bifs");
     let erlang = atoms.intern("erlang");
-    assert!(registry.lookup(erlang, atoms.intern("spawn"), 4).is_some());
-    assert!(
-        registry
-            .lookup(erlang, atoms.intern("spawn_link"), 4)
-            .is_some()
-    );
-    assert!(
-        registry
-            .lookup(erlang, atoms.intern("spawn_monitor"), 4)
-            .is_some()
-    );
+    for (name, arity, expected_capability) in [
+        ("spawn", 3, Capability::Spawn),
+        ("spawn", 4, Capability::Spawn),
+        ("spawn_link", 3, Capability::Spawn),
+        ("spawn_link", 4, Capability::Spawn),
+        ("spawn_monitor", 1, Capability::Spawn),
+        ("spawn_monitor", 3, Capability::Spawn),
+        ("spawn_monitor", 4, Capability::Spawn),
+        ("spawn_opt", 2, Capability::Spawn),
+        ("spawn_opt", 4, Capability::Spawn),
+        ("link", 1, Capability::ProcessLocal),
+        ("unlink", 1, Capability::ProcessLocal),
+        ("monitor", 2, Capability::ProcessLocal),
+        ("demonitor", 1, Capability::ProcessLocal),
+    ] {
+        let entry = registry
+            .lookup(erlang, atoms.intern(name), arity)
+            .unwrap_or_else(|| panic!("missing erlang:{name}/{arity}"));
+        assert_eq!(entry.capability, expected_capability);
+    }
 }
 
 #[test]
