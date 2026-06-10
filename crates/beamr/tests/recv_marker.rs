@@ -85,7 +85,7 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
         tcp_io_facility: None,
         jit_cache: None,
         replay_driver: None,
-    };
+    };
 
     assert_eq!(
         run_with_native_services(&mut process, module, &ModuleRegistry::new(), &services),

@@ -47,7 +47,7 @@ fn bif_and_literal_heavy_workload_does_not_grow_monotonically() {
         tcp_io_facility: None,
         jit_cache: None,
         replay_driver: None,
-    };
+    };
     let mut process = Process::new(1, 512);
     process.reset_reductions(500_000);
     process.heap_mut().set_max_capacity(64 * 1024);

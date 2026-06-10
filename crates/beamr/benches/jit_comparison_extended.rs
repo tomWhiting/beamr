@@ -171,7 +171,7 @@ fn native_services(jit_cache: Option<Arc<JitCache>>) -> NativeServices {
         tcp_io_facility: None,
         jit_cache,
         replay_driver: None,
-    }
+    }
 }
 
 fn compile_fixture(fixture: &WorkloadFixture) -> Arc<JitCache> {

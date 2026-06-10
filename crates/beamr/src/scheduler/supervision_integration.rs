@@ -610,6 +610,8 @@ pub(super) fn build_native_services(
         }),
         jit_cache: Some(Arc::clone(&shared.jit_cache)),
         replay_driver: shared.replay_driver.clone(),
+        capability_audit_sink: None,
+        capability_violation_handler: None,
     }
 }
 
