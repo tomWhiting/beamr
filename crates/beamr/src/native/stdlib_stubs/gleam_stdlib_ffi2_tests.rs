@@ -212,19 +212,12 @@ fn register_stdlib_stubs_includes_gleam_stdlib_ffi2_bifs() {
     register_stdlib_stubs(&registry, &atom_table).expect("registration");
 
     let expected = [
-        ("classify_dynamic", 1),
-        ("dict", 1),
-        ("is_null", 1),
-        ("list", 5),
         ("map_get", 2),
         ("print", 1),
         ("print_error", 1),
         ("println", 1),
         ("println_error", 1),
-        ("float", 1),
         ("float_to_string", 1),
-        ("index", 2),
-        ("int", 1),
         ("int_from_base_string", 2),
         ("parse_float", 1),
         ("parse_int", 1),
@@ -233,7 +226,6 @@ fn register_stdlib_stubs_includes_gleam_stdlib_ffi2_bifs() {
         ("base16_encode", 1),
         ("base64_decode", 1),
         ("base64_encode", 2),
-        ("bit_array", 1),
         ("bit_array_concat", 1),
         ("bit_array_pad_to_bytes", 1),
         ("bit_array_slice", 3),
@@ -245,6 +237,27 @@ fn register_stdlib_stubs_includes_gleam_stdlib_ffi2_bifs() {
         assert!(
             registry.lookup(module, function, arity).is_some(),
             "missing gleam_stdlib:{name}/{arity}"
+        );
+    }
+
+    // The dynamic-decode FFI ships as compiled bytecode in gleam_stdlib.beam
+    // and must NOT be shadowed: a native entry would override the loaded
+    // module and any contract drift breaks gleam/dynamic/decode.
+    let removed = [
+        ("classify_dynamic", 1),
+        ("dict", 1),
+        ("is_null", 1),
+        ("list", 5),
+        ("float", 1),
+        ("index", 2),
+        ("int", 1),
+        ("bit_array", 1),
+    ];
+    for (name, arity) in removed {
+        let function = atom_table.intern(name);
+        assert!(
+            registry.lookup(module, function, arity).is_none(),
+            "gleam_stdlib:{name}/{arity} must come from loaded bytecode, not a stub"
         );
     }
 }

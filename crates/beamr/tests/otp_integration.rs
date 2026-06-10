@@ -367,23 +367,36 @@ fn otp_external_application_stopped_returns_ok() {
     assert_eq!(result, Ok(Term::atom(Atom::OK)));
 }
 
-/// gleam@string:inspect/1 returns a binary with a debug representation.
+/// gleam@* modules ship as compiled bytecode in every Gleam build and must
+/// never be shadowed by native stubs: a native entry overrides the loaded
+/// module, so any drift from the real implementation silently corrupts
+/// behaviour that the real module would serve correctly.
 #[test]
-fn gleam_string_inspect_returns_binary() {
+fn gleam_modules_are_not_shadowed_by_native_stubs() {
     let atom_table = AtomTable::with_common_atoms();
     let bif_registry = full_bif_registry(&atom_table);
 
-    let module = atom_table.intern("gleam@string");
-    let function = atom_table.intern("inspect");
-    let entry = bif_registry
-        .lookup(module, function, 1)
-        .expect("gleam@string:inspect/1 should be registered");
-
-    let process = Box::leak(Box::new(Process::new(1, 256)));
-    let mut context = ProcessContext::new();
-    context.attach_process(process, 0);
-    let result = (entry.function)(&[Term::small_int(42)], &mut context);
-    assert!(result.is_ok(), "inspect should return a binary term");
+    let forbidden = [
+        ("gleam@dynamic", "classify", 1u8),
+        ("gleam@dynamic", "int", 1),
+        ("gleam@dynamic", "string", 1),
+        ("gleam@string", "inspect", 1),
+        ("gleam@string", "append", 2),
+        ("gleam@option", "map", 2),
+        ("gleam@option", "unwrap", 2),
+        ("gleam@result", "map_error", 2),
+        ("gleam@result", "then", 2),
+        ("gleam@otp@intensity_tracker", "new", 2),
+        ("gleam@otp@intensity_tracker", "add_event", 1),
+    ];
+    for (module_name, function_name, arity) in &forbidden {
+        let module = atom_table.intern(module_name);
+        let function = atom_table.intern(function_name);
+        assert!(
+            bif_registry.lookup(module, function, *arity).is_none(),
+            "{module_name}:{function_name}/{arity} must come from loaded bytecode, not a stub"
+        );
+    }
 }
 
 /// The complete BIF coverage check: every import that the CLI would need
@@ -426,8 +439,6 @@ fn bif_registry_covers_all_non_module_level_otp_imports() {
         ("erlang", "pid_to_list", 1),
         ("erlang", "++", 2),
         ("supervisor", "start_link", 2),
-        // From gleam_erlang_ffi.beam
-        ("gleam@dynamic", "classify", 1),
         ("os", "getenv", 0),
         ("os", "getenv", 1),
         ("os", "putenv", 2),
@@ -438,19 +449,6 @@ fn bif_registry_covers_all_non_module_level_otp_imports() {
         ("code", "priv_dir", 1),
         ("net_kernel", "connect_node", 1),
         ("string", "split", 2),
-        // From gleam@erlang@process.beam
-        ("gleam@dynamic", "int", 1),
-        ("gleam@dynamic", "string", 1),
-        ("gleam@string", "inspect", 1),
-        // From gleam@otp@actor.beam
-        ("gleam@option", "map", 2),
-        ("gleam@option", "unwrap", 2),
-        // From gleam@otp@supervisor.beam
-        ("gleam@result", "map_error", 2),
-        ("gleam@result", "then", 2),
-        ("gleam@otp@intensity_tracker", "new", 2),
-        ("gleam@otp@intensity_tracker", "add_event", 1),
-        ("gleam@string", "append", 2),
         ("gleam_otp_external", "application_stopped", 0),
     ];
 

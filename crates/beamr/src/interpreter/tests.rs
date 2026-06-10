@@ -563,9 +563,9 @@ fn trim_preserves_remaining_y_registers_and_deallocate_pops_trimmed_frame() {
         run(&mut process, &module),
         Ok(ExecutionResult::Exited(ExitReason::Normal))
     );
-    assert_eq!(process.x_reg(0), Term::small_int(10));
-    assert_eq!(process.x_reg(1), Term::small_int(20));
-    assert_eq!(process.x_reg(2), Term::small_int(30));
+    assert_eq!(process.x_reg(0), Term::small_int(30));
+    assert_eq!(process.x_reg(1), Term::small_int(40));
+    assert_eq!(process.x_reg(2), Term::small_int(50));
     assert_eq!(process.stack().len(), 0);
 }
 

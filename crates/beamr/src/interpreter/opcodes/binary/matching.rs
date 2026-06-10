@@ -46,10 +46,7 @@ pub(super) fn bs_start_match(
     let Some(binary) = BinaryRef::new(source) else {
         return match fail {
             // With `no_fail`/`resume` there is no fail label to jump to.
-            Operand::Atom(Some(_)) => {
-                eprintln!("DEBUG bs_start_match atom-fail non-binary source: {source:?}");
-                Err(ExecError::Badarg)
-            }
+            Operand::Atom(Some(_)) => Err(ExecError::Badarg),
             _ => jump_label(module, fail),
         };
     };
@@ -348,10 +345,7 @@ fn run_flat_command(
             }
         }
         "=:=" => 3,
-        other => {
-            eprintln!("DEBUG bs_match flat arity unmatched tag: {other:?}");
-            return Err(ExecError::InvalidOperand("bs_match command"));
-        }
+        _ => return Err(ExecError::InvalidOperand("bs_match command")),
     };
     let end = index
         .checked_add(arity)
@@ -444,10 +438,7 @@ fn run_command_args(
                 Ok(false)
             }
         }
-        _ => {
-            eprintln!("DEBUG bs_match unmatched command tag={tag:?} args={args:?}");
-            Err(ExecError::InvalidOperand("bs_match command"))
-        }
+        _ => Err(ExecError::InvalidOperand("bs_match command")),
     }
 }
 fn get_integer_value(

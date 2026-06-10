@@ -915,10 +915,10 @@ fn bs_match_runs_commands_and_rolls_back_position_on_failure() {
                 Operand::List(vec![
                     Operand::List(vec![Operand::Unsigned(5), Operand::Unsigned(8)]),
                     Operand::List(vec![
-                Operand::Unsigned(0),
-                Operand::Unsigned(64),
-                Operand::Unsigned(1),
-            ]),
+                        Operand::Unsigned(0),
+                        Operand::Unsigned(64),
+                        Operand::Unsigned(1),
+                    ]),
                 ])
             ]
         ),

@@ -761,10 +761,7 @@ pub(crate) fn operand_label(operand: &Operand) -> Result<u32, ExecError> {
         Operand::Integer(value) => {
             u32::try_from(*value).map_err(|_| ExecError::InvalidOperand("label"))
         }
-        other => {
-            eprintln!("DEBUG label operand unmatched: {other:?}");
-            Err(ExecError::InvalidOperand("label"))
-        }
+        _ => Err(ExecError::InvalidOperand("label")),
     }
 }
 

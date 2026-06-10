@@ -4,7 +4,9 @@
 //! output of a `gleam new` project (gleam 1.17.0, stdlib 1.0.3,
 //! gleam_json 3.x) whose `main/0` exercises list.map/filter/fold,
 //! int.to_string passed as a function value (an export fun),
-//! string.join/uppercase, JSON encoding, and io.println. It runs in the
+//! string.join/uppercase, JSON encoding and parsing through
+//! gleam/dynamic/decode (field/string/int decoders over the compiled
+//! gleam_stdlib FFI), and io.println. It runs in the
 //! default `cargo test` so a regression in any of those paths fails the
 //! suite, not just a manual CLI run.
 
@@ -28,7 +30,7 @@ use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::term::binary_ref::BinaryRef;
 
 const EXPECTED_PAYLOAD: &str =
-    r#"{"doubled":"2,4,6,8,10,12","evens":"2,4,6","total":21,"label":"GATE"}"#;
+    r#"{"doubled":"2,4,6,8,10,12","evens":"2,4,6","total":21,"label":"GATE","decoded":"gate:3"}"#;
 
 fn full_bif_registry(atom_table: &AtomTable) -> BifRegistryImpl {
     let registry = BifRegistryImpl::new();
@@ -63,7 +65,10 @@ fn fresh_gleam_project_runs_end_to_end() {
         .filter(|path| path.extension().is_some_and(|ext| ext == "beam"))
         .collect();
     paths.sort();
-    assert!(!paths.is_empty(), "fixture directory contains no .beam files");
+    assert!(
+        !paths.is_empty(),
+        "fixture directory contains no .beam files"
+    );
     for path in paths {
         let bytes = std::fs::read(&path).expect("read fixture beam");
         load_module(&bytes, &atom_table, &module_registry, &*bif_registry)
