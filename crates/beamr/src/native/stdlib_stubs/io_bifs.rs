@@ -4,7 +4,7 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::Cons;
+use crate::term::boxed::{Cons, Tuple};
 use crate::term::compare;
 use crate::term::format::format_term;
 
