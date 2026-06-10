@@ -370,6 +370,22 @@ mod tests {
         Arc::new(AtomTable::with_common_atoms())
     }
 
+    fn binary_context_key(context: &mut ProcessContext<'_>, text: &str) -> Term {
+        context
+            .alloc_binary(text.as_bytes())
+            .expect("test key binary allocation succeeds")
+    }
+
+    fn list_to_vec(mut term: Term) -> Vec<Term> {
+        let mut values = Vec::new();
+        while !term.is_nil() {
+            let cons = Cons::new(term).expect("converted JavaScript array is a proper list");
+            values.push(cons.head());
+            term = cons.tail();
+        }
+        values
+    }
+
     #[wasm_bindgen_test]
     fn converts_complex_nested_js_object_to_term() {
         let table = atom_table();
@@ -390,11 +406,36 @@ mod tests {
         );
         assert!(Reflect::set(&input, &JsValue::from_str("nested"), &nested).is_ok());
 
-        let owned = js_value_to_owned_term(input.into(), &table);
-        assert!(owned.is_ok());
-        let term = owned.map(|owned| owned.root()).unwrap_or(Term::NIL);
-        let map = Map::new(term);
-        assert!(map.is_some());
+        let owned = js_value_to_owned_term(input.into(), &table)
+            .expect("complex JavaScript object converts to an owned term");
+        let term = owned.root();
+        let map = Map::new(term).expect("top-level object converts to map");
+        assert_eq!(map.len(), 2);
+
+        let mut key_context = ProcessContext::new();
+        let name = map
+            .get(binary_context_key(&mut key_context, "name"))
+            .expect("name key is present");
+        let name_binary = Binary::new(name).expect("string value converts to binary");
+        assert_eq!(name_binary.as_bytes(), b"beamr");
+
+        let nested = map
+            .get(binary_context_key(&mut key_context, "nested"))
+            .expect("nested key is present");
+        let nested_map = Map::new(nested).expect("nested object converts to map");
+        assert_eq!(nested_map.len(), 2);
+        assert_eq!(
+            nested_map.get(binary_context_key(&mut key_context, "missing")),
+            Some(Term::atom(Atom::NIL))
+        );
+
+        let items = nested_map
+            .get(binary_context_key(&mut key_context, "items"))
+            .expect("array-valued key is present");
+        let items = list_to_vec(items);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], Term::small_int(1));
+        assert_eq!(items[1], Term::atom(Atom::TRUE));
     }
 
     #[wasm_bindgen_test]
@@ -419,22 +460,40 @@ mod tests {
 
         let utf8_js = term_to_js_value(utf8, table.as_ref()).unwrap_or(JsValue::UNDEFINED);
         assert_eq!(utf8_js.as_string().as_deref(), Some("hello"));
+
         let bytes_js = term_to_js_value(bytes, table.as_ref()).unwrap_or(JsValue::UNDEFINED);
         assert!(bytes_js.is_instance_of::<Uint8Array>());
+        let bytes_array = Uint8Array::from(bytes_js);
+        assert_eq!(bytes_array.length(), 2);
+        assert_eq!(bytes_array.get_index(0), 0xff);
+        assert_eq!(bytes_array.get_index(1), 0x00);
+
         let list_js = term_to_js_value(list, table.as_ref()).unwrap_or(JsValue::UNDEFINED);
         assert!(Array::is_array(&list_js));
-        let map_js = term_to_js_value(map, table.as_ref()).unwrap_or(JsValue::UNDEFINED);
-        let tuple_js =
-            Reflect::get(&map_js, &JsValue::from_str("tuple")).unwrap_or(JsValue::UNDEFINED);
+        let list_array = Array::from(&list_js);
+        assert_eq!(list_array.length(), 2);
+        assert_eq!(list_array.get(0).as_f64(), Some(7.0));
+        assert_eq!(list_array.get(1).as_string().as_deref(), Some("true"));
+
+        let tuple_js = term_to_js_value(tuple, table.as_ref()).unwrap_or(JsValue::UNDEFINED);
         assert!(Array::is_array(&tuple_js));
+        let tuple_array = Array::from(&tuple_js);
+        assert_eq!(tuple_array.length(), 2);
+        assert_eq!(tuple_array.get(0).as_string().as_deref(), Some("hello"));
+        assert_eq!(tuple_array.get(1).as_f64(), Some(9.0));
+
+        let map_js = term_to_js_value(map, table.as_ref()).unwrap_or(JsValue::UNDEFINED);
+        let nested_tuple_js =
+            Reflect::get(&map_js, &JsValue::from_str("tuple")).unwrap_or(JsValue::UNDEFINED);
+        assert!(Array::is_array(&nested_tuple_js));
     }
 
     #[wasm_bindgen_test]
     fn documents_boolean_atom_round_trip_as_atom_names() {
         let table = atom_table();
-        let owned = js_value_to_owned_term(JsValue::from_bool(true), &table);
-        assert!(owned.is_ok());
-        let term = owned.map(|owned| owned.root()).unwrap_or(Term::NIL);
+        let owned = js_value_to_owned_term(JsValue::from_bool(true), &table)
+            .expect("boolean converts to an owned atom term");
+        let term = owned.root();
         assert_eq!(term, Term::atom(Atom::TRUE));
         let js = term_to_js_value(term, table.as_ref()).unwrap_or(JsValue::UNDEFINED);
         assert_eq!(js.as_string().as_deref(), Some("true"));

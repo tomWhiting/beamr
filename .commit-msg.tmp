@@ -1,1 +1,1 @@
-feat(wasm): add direct JS term conversion
+review: harden wasm JS term conversion

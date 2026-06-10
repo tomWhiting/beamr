@@ -251,10 +251,10 @@ impl WasmAsyncNifFacility for HostAsyncNifs {
         let Some(callback) = self.callbacks.borrow().get(&mfa).cloned() else {
             return Err(Term::atom(beamr::atom::Atom::UNDEF));
         };
-        let args_json = terms_to_js_array(args, self.atom_table.as_ref())
+        let args_array = terms_to_js_array(args, self.atom_table.as_ref())
             .map_err(|_| Term::atom(beamr::atom::Atom::BADARG))?;
         let promise_value = callback
-            .call1(&JsValue::UNDEFINED, &args_json)
+            .call1(&JsValue::UNDEFINED, &args_array)
             .map_err(|_| Term::atom(beamr::atom::Atom::BADARG))?;
         let promise = Promise::resolve(&promise_value);
         let scheduler = self.scheduler.clone();
