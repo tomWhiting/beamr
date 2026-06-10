@@ -27,7 +27,6 @@ struct WorkloadFixture {
     registry: Arc<ModuleRegistry>,
     function: Atom,
     arity: u8,
-    entry_ip: usize,
     heap_words: usize,
     setup: fn(&mut Process),
 }
@@ -133,7 +132,6 @@ fn fixture(
     let registry = ModuleRegistry::new();
     let module = registry.insert(module_data);
     WorkloadFixture {
-        entry_ip: module.label_index[&label],
         module,
         registry: Arc::new(registry),
         function,

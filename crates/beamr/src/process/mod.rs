@@ -1538,9 +1538,9 @@ mod tests {
         assert_eq!(process.get_float_reg(0), Ok(0.0));
         assert_eq!(process.get_float_reg(15), Ok(0.0));
         process.set_x_reg(0, Term::small_int(314));
-        assert_eq!(process.set_float_reg(0, 3.14), Ok(()));
+        assert_eq!(process.set_float_reg(0, 2.75), Ok(()));
 
-        assert_eq!(process.get_float_reg(0), Ok(3.14));
+        assert_eq!(process.get_float_reg(0), Ok(2.75));
         assert_eq!(process.get_float_reg(1), Ok(0.0));
         assert_eq!(process.x_reg(0), Term::small_int(314));
     }
@@ -1562,7 +1562,7 @@ mod tests {
     #[test]
     fn terminate_clears_float_registers() {
         let mut process = Process::new(0, 233);
-        assert_eq!(process.set_float_reg(0, 3.14), Ok(()));
+        assert_eq!(process.set_float_reg(0, 2.75), Ok(()));
 
         process.terminate(ExitReason::Normal);
 

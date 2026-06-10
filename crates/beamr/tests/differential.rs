@@ -87,7 +87,7 @@ pub enum DifferentialResult {
         args: Vec<Term>,
         interpreted: RunOutcome,
         compiled: RunOutcome,
-        report: DivergenceReport,
+        report: Box<DivergenceReport>,
     },
     CompilationSkipped {
         reason: String,
@@ -328,7 +328,7 @@ impl<E: CompiledExecutor> DifferentialRunner<E> {
                     args: args.to_vec(),
                     interpreted: interpreted.outcome,
                     compiled: compiled.outcome,
-                    report,
+                    report: Box::new(report),
                 }
             }
         }

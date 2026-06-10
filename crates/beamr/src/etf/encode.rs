@@ -656,9 +656,9 @@ mod tests {
     #[test]
     fn encode_float_uses_new_float_ext() {
         let mut heap = [0_u64; 2];
-        let term = write_float(&mut heap, 3.14).expect("float fits");
+        let term = write_float(&mut heap, 2.75).expect("float fits");
         let mut expected = vec![tags::VERSION, tags::NEW_FLOAT_EXT];
-        expected.extend_from_slice(&3.14_f64.to_bits().to_be_bytes());
+        expected.extend_from_slice(&2.75_f64.to_bits().to_be_bytes());
         assert_eq!(encode_term(term, &atoms()), Ok(expected));
     }
 

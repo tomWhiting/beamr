@@ -586,8 +586,8 @@ fn make_map_from_entries(
         let mut keys = Vec::with_capacity(entries.len());
         let mut values = Vec::with_capacity(entries.len());
         for index in 0..entries.len() {
-            keys.push(context.rooted(&roots, index * 2)?);
-            values.push(context.rooted(&roots, index * 2 + 1)?);
+            keys.push(context.rooted(roots, index * 2)?);
+            values.push(context.rooted(roots, index * 2 + 1)?);
         }
         context.alloc_map_prereserved(&keys, &values)
     })

@@ -634,13 +634,13 @@ fn compiled_fconv_accepts_boxed_float() {
         .unwrap();
 
     let mut process = Process::new(0, 233);
-    let input = heap_float(&mut process, 3.14);
+    let input = heap_float(&mut process, 2.75);
     let mut registers = vec![input.raw()];
     let returned = call_native_with_process(&native, &mut registers, &mut process);
 
     assert_eq!(returned, registers[0]);
     let float = Float::new(Term::from_raw(registers[0])).expect("boxed float");
-    assert_eq!(float.value(), 3.14);
+    assert_eq!(float.value(), 2.75);
 }
 
 #[test]
@@ -928,13 +928,13 @@ fn compiled_fnegate_negates_float_register() {
         .unwrap();
 
     let mut process = Process::new(0, 233);
-    let input = heap_float(&mut process, -3.14);
+    let input = heap_float(&mut process, -2.75);
     let mut registers = vec![input.raw()];
     let returned = call_native_with_process(&native, &mut registers, &mut process);
 
     assert_eq!(returned, registers[0]);
     let float = Float::new(Term::from_raw(registers[0])).expect("boxed float");
-    assert_eq!(float.value(), 3.14);
+    assert_eq!(float.value(), 2.75);
 }
 
 #[test]

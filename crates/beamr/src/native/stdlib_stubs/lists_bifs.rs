@@ -366,7 +366,7 @@ pub(super) fn list_from_vec(elements: &[Term], context: &mut ProcessContext) -> 
         context.ensure_heap_space(elements.len() * 2)?;
         let mut tail = Term::NIL;
         for index in (0..elements.len()).rev() {
-            let element = context.rooted(&roots, index)?;
+            let element = context.rooted(roots, index)?;
             tail = context.alloc_cons_prereserved(element, tail)?;
         }
         Ok(tail)

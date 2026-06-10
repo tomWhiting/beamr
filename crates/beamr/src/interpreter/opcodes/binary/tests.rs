@@ -606,7 +606,7 @@ fn bs_test_unit_fails_for_non_divisible_remainder() {
 #[test]
 fn bs_get_float_extracts_64_and_32_bit_values() {
     let mut process = Process::new(1, 64);
-    let (module, _) = start_context(&mut process, &3.14_f64.to_be_bytes());
+    let (module, _) = start_context(&mut process, &2.75_f64.to_be_bytes());
     binary_op(
         &mut process,
         &module,
@@ -621,7 +621,7 @@ fn bs_get_float_extracts_64_and_32_bit_values() {
         ],
     )
     .expect("float64");
-    assert!((Float::new(process.x_reg(2)).expect("float").value() - 3.14).abs() < f64::EPSILON);
+    assert!((Float::new(process.x_reg(2)).expect("float").value() - 2.75).abs() < f64::EPSILON);
 
     let mut process = Process::new(1, 64);
     let (module, _) = start_context(&mut process, &1.5_f32.to_be_bytes());

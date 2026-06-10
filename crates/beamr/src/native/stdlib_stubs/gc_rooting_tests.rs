@@ -5,7 +5,7 @@
 //! rooted-scope mechanism existed: x-registers above the BIF arity were not
 //! GC roots, and accumulated `Vec<Term>` state was never traced.
 
-use crate::atom::{Atom, AtomTable};
+use crate::atom::AtomTable;
 use crate::native::{NativeContinuation, ProcessContext};
 use crate::process::Process;
 use crate::term::Term;

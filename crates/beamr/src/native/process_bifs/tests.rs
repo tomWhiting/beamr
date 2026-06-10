@@ -1820,15 +1820,15 @@ fn remote_spawn_ctx(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DistributionRecord {
-    LinkRemote {
+    Link {
         caller_pid: u64,
         target: RemotePid,
     },
-    UnlinkRemote {
+    Unlink {
         caller_pid: u64,
         target: RemotePid,
     },
-    ExitRemote {
+    Exit {
         caller_pid: u64,
         target: RemotePid,
         reason: ExitReason,
@@ -1859,7 +1859,7 @@ impl DistributionControlFacility for MockDistributionControlFacility {
         self.records
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .push(DistributionRecord::LinkRemote { caller_pid, target });
+            .push(DistributionRecord::Link { caller_pid, target });
         Ok(())
     }
 
@@ -1867,7 +1867,7 @@ impl DistributionControlFacility for MockDistributionControlFacility {
         self.records
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .push(DistributionRecord::UnlinkRemote { caller_pid, target });
+            .push(DistributionRecord::Unlink { caller_pid, target });
         Ok(())
     }
 
@@ -1880,7 +1880,7 @@ impl DistributionControlFacility for MockDistributionControlFacility {
         self.records
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .push(DistributionRecord::ExitRemote {
+            .push(DistributionRecord::Exit {
                 caller_pid,
                 target,
                 reason,
@@ -1916,7 +1916,7 @@ fn link_remote_pid_routes_through_distribution_control() {
 
     assert_eq!(
         f.records(),
-        vec![DistributionRecord::LinkRemote {
+        vec![DistributionRecord::Link {
             caller_pid: 1,
             target: RemotePid {
                 node: Atom::OK,
@@ -1936,7 +1936,7 @@ fn unlink_remote_pid_routes_through_distribution_control() {
 
     assert_eq!(
         f.records(),
-        vec![DistributionRecord::UnlinkRemote {
+        vec![DistributionRecord::Unlink {
             caller_pid: 1,
             target: RemotePid {
                 node: Atom::OK,

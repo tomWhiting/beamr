@@ -610,9 +610,11 @@ mod tests {
     use crate::native::spawn::{SpawnMonitorResult, SpawnOptionsResult};
     use crate::term::boxed::{write_cons, write_external_pid, write_tuple};
 
+    type SpawnRecord = (u64, Atom, Atom, Vec<Term>, SpawnOptions);
+
     struct MockSpawnFacility {
         next_pid: u64,
-        records: Mutex<Vec<(u64, Atom, Atom, Vec<Term>, SpawnOptions)>>,
+        records: Mutex<Vec<SpawnRecord>>,
     }
 
     impl MockSpawnFacility {

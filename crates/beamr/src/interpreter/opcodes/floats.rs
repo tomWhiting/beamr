@@ -238,7 +238,7 @@ mod tests {
     fn fmove_moves_boxed_float_to_float_register() {
         let module = module();
         let mut process = Process::new(0, 16);
-        set_x_float(&mut process, 0, 3.14);
+        set_x_float(&mut process, 0, 2.75);
 
         assert_eq!(
             fmove(
@@ -249,14 +249,14 @@ mod tests {
             ),
             Ok(InstructionOutcome::Continue)
         );
-        assert_eq!(process.get_float_reg(0), Ok(3.14));
+        assert_eq!(process.get_float_reg(0), Ok(2.75));
     }
 
     #[test]
     fn fmove_moves_float_register_to_boxed_float_term() {
         let module = module();
         let mut process = Process::new(0, 16);
-        assert_eq!(process.set_float_reg(0, 3.14), Ok(()));
+        assert_eq!(process.set_float_reg(0, 2.75), Ok(()));
 
         assert_eq!(
             fmove(
@@ -269,7 +269,7 @@ mod tests {
         );
 
         let float = Float::new(process.x_reg(0)).expect("boxed float");
-        assert_eq!(float.value(), 3.14);
+        assert_eq!(float.value(), 2.75);
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
         let mut process = Process::new(0, 16);
         assert_eq!(process.set_float_reg(0, 10.0), Ok(()));
         assert_eq!(process.set_float_reg(1, 2.0), Ok(()));
-        assert_eq!(process.set_float_reg(3, 3.14), Ok(()));
+        assert_eq!(process.set_float_reg(3, 2.75), Ok(()));
 
         assert_eq!(
             fdiv(
@@ -401,7 +401,7 @@ mod tests {
             ),
             Ok(InstructionOutcome::Continue)
         );
-        assert_eq!(process.get_float_reg(4), Ok(-3.14));
+        assert_eq!(process.get_float_reg(4), Ok(-2.75));
     }
 
     #[test]
