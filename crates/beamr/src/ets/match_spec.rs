@@ -354,13 +354,6 @@ impl Guard {
             }
         }
     }
-
-    fn allocates_result(&self) -> bool {
-        match self {
-            Self::Tuple(_) | Self::List(_) | Self::ReturnBindings => true,
-            Self::Variable(_) | Self::Literal(_) | Self::ReturnObject => false,
-        }
-    }
 }
 
 impl GuardExpr {
@@ -398,6 +391,13 @@ impl BodyExpr {
                 }
                 allocator.alloc_list(&values)
             }
+        }
+    }
+
+    fn allocates_result(&self) -> bool {
+        match self {
+            Self::Tuple(_) | Self::List(_) | Self::ReturnBindings => true,
+            Self::Variable(_) | Self::Literal(_) | Self::ReturnObject => false,
         }
     }
 }
