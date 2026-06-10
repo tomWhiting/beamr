@@ -13,6 +13,7 @@ use crate::native::{
     BifRegistryImpl, Capability, ExceptionClass, NativeFn, NativeRegistrationError, ProcessContext,
 };
 use crate::term::Term;
+use crate::term::bigint_math::BigIntValue;
 use crate::term::compare;
 use crate::timer::TimerRef;
 
@@ -73,29 +74,29 @@ pub fn register_gate1_bifs(
     Ok(())
 }
 
-/// erlang:+/2 for small integers.
-pub fn add(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    arithmetic(args, i64::checked_add)
+/// erlang:+/2 for integers.
+pub fn add(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    arithmetic(args, context, i64::checked_add, BigIntValue::add)
 }
 
-/// erlang:-/2 for small integers.
-pub fn subtract(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    arithmetic(args, i64::checked_sub)
+/// erlang:-/2 for integers.
+pub fn subtract(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    arithmetic(args, context, i64::checked_sub, BigIntValue::sub)
 }
 
-/// erlang:*/2 for small integers.
-pub fn multiply(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    arithmetic(args, i64::checked_mul)
+/// erlang:*/2 for integers.
+pub fn multiply(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    arithmetic(args, context, i64::checked_mul, BigIntValue::mul)
 }
 
-/// erlang:div/2 for small integers.
-pub fn div(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    arithmetic(args, i64::checked_div)
+/// erlang:div/2 for integers.
+pub fn div(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    div_rem(args, context, true)
 }
 
-/// erlang:rem/2 for small integers.
-pub fn rem(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    arithmetic(args, i64::checked_rem)
+/// erlang:rem/2 for integers.
+pub fn rem(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    div_rem(args, context, false)
 }
 
 /// erlang:</2 over the full BEAM term order.
@@ -287,10 +288,64 @@ pub fn cancel_timer(args: &[Term], context: &mut ProcessContext) -> Result<Term,
     }
 }
 
-fn arithmetic(args: &[Term], operation: fn(i64, i64) -> Option<i64>) -> Result<Term, Term> {
-    let (left, right) = two_small_ints(args)?;
-    let result = operation(left, right).ok_or_else(badarith)?;
-    Term::try_small_int(result).ok_or_else(badarith)
+fn arithmetic(
+    args: &[Term],
+    context: &mut ProcessContext,
+    small_operation: fn(i64, i64) -> Option<i64>,
+    big_operation: fn(&BigIntValue, &BigIntValue) -> BigIntValue,
+) -> Result<Term, Term> {
+    let (left, right) = two_integer_values(args)?;
+    if let (Some(left_small), Some(right_small)) = (left.to_small_i64(), right.to_small_i64())
+        && let Some(result) = small_operation(left_small, right_small).and_then(Term::try_small_int)
+    {
+        return Ok(result);
+    }
+    integer_result(big_operation(&left, &right), context)
+}
+
+fn div_rem(args: &[Term], context: &mut ProcessContext, quotient: bool) -> Result<Term, Term> {
+    let (left, right) = two_integer_values(args)?;
+    if right.is_zero() {
+        return Err(badarith());
+    }
+    if let (Some(left_small), Some(right_small)) = (left.to_small_i64(), right.to_small_i64()) {
+        let small = if quotient {
+            left_small.checked_div(right_small)
+        } else {
+            left_small.checked_rem(right_small)
+        };
+        if let Some(result) = small.and_then(Term::try_small_int) {
+            return Ok(result);
+        }
+    }
+    let Some((big_quotient, big_remainder)) = left.divmod(&right) else {
+        return Err(badarith());
+    };
+    integer_result(
+        if quotient {
+            big_quotient
+        } else {
+            big_remainder
+        },
+        context,
+    )
+}
+
+fn two_integer_values(args: &[Term]) -> Result<(BigIntValue, BigIntValue), Term> {
+    let [left, right] = args else {
+        return Err(badarith());
+    };
+    let left = BigIntValue::from_term(*left).ok_or_else(badarith)?;
+    let right = BigIntValue::from_term(*right).ok_or_else(badarith)?;
+    Ok((left, right))
+}
+
+fn integer_result(value: BigIntValue, context: &mut ProcessContext) -> Result<Term, Term> {
+    if let Some(value) = value.to_small_i64().and_then(Term::try_small_int) {
+        Ok(value)
+    } else {
+        context.alloc_bigint(value.is_negative(), value.limbs())
+    }
 }
 
 /// Extracts exactly two operands for a total-order comparison BIF.
@@ -302,17 +357,6 @@ fn two_terms(args: &[Term]) -> Result<(Term, Term), Term> {
         return Err(badarg());
     };
     Ok((*left, *right))
-}
-
-fn two_small_ints(args: &[Term]) -> Result<(i64, i64), Term> {
-    let [left, right] = args else {
-        return Err(badarith());
-    };
-
-    match (left.as_small_int(), right.as_small_int()) {
-        (Some(left), Some(right)) => Ok((left, right)),
-        _ => Err(badarith()),
-    }
 }
 
 fn duration_from_term(term: Term) -> Result<Duration, Term> {
@@ -371,7 +415,7 @@ mod tests {
     use crate::process::Process;
     use crate::scheduler::{HotLoadResult, PurgeResult};
     use crate::term::Term;
-    use crate::term::boxed::{Tuple, write_cons, write_float, write_map, write_tuple};
+    use crate::term::boxed::{BigInt, Tuple, write_cons, write_float, write_map, write_tuple};
     use crate::timer::TimerWheel;
     use std::cmp::Ordering;
     use std::sync::{Arc, Mutex};
@@ -473,30 +517,46 @@ mod tests {
         );
         assert_eq!(add(&[small_int(1)], &mut context), Err(badarith()));
         assert_eq!(
-            add(
-                &[small_int(Term::SMALL_INT_MAX), small_int(1)],
-                &mut context
-            ),
-            Err(badarith())
-        );
-        assert_eq!(
-            subtract(
-                &[small_int(Term::SMALL_INT_MIN), small_int(1)],
-                &mut context
-            ),
-            Err(badarith())
-        );
-        assert_eq!(
-            multiply(
-                &[small_int(Term::SMALL_INT_MAX), small_int(2)],
-                &mut context
-            ),
-            Err(badarith())
-        );
-        assert_eq!(
             rem(&[small_int(7), small_int(0)], &mut context),
             Err(badarith())
         );
+    }
+
+    #[test]
+    fn arithmetic_overflow_promotes_to_bigint_and_demotes_small_results() {
+        let mut process = Process::new(1, 256);
+        let mut context = context(&mut process);
+
+        let added = add(
+            &[small_int(Term::SMALL_INT_MAX), small_int(1)],
+            &mut context,
+        )
+        .expect("addition should promote");
+        let added = BigInt::new(added).expect("addition result should be BigInt");
+        assert_eq!(added.limbs(), &[(Term::SMALL_INT_MAX as u64) + 1]);
+
+        let subtracted = subtract(
+            &[small_int(Term::SMALL_INT_MIN), small_int(1)],
+            &mut context,
+        )
+        .expect("subtraction should promote");
+        let subtracted = BigInt::new(subtracted).expect("subtraction result should be BigInt");
+        assert!(subtracted.is_negative());
+        assert_eq!(
+            subtracted.limbs(),
+            &[Term::SMALL_INT_MIN.unsigned_abs() + 1]
+        );
+
+        let multiplied = multiply(
+            &[small_int(Term::SMALL_INT_MAX), small_int(2)],
+            &mut context,
+        )
+        .expect("multiplication should promote");
+        assert!(BigInt::new(multiplied).is_some());
+
+        let demoted = subtract(&[multiplied, multiplied], &mut context)
+            .expect("BigInt arithmetic should demote zero");
+        assert_eq!(demoted, small_int(0));
     }
 
     #[test]

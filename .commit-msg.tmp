@@ -1,1 +1,1 @@
-chore(release): harden 0.4.0 release prep
+feat(beamr): promote integer overflow to bigint

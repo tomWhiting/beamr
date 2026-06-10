@@ -2,6 +2,7 @@ use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::process::Process;
 use crate::term::Term;
+use crate::term::boxed::BigInt;
 
 use super::bitwise_bifs::*;
 
@@ -13,6 +14,11 @@ fn context(process: &mut Process) -> ProcessContext<'_> {
 
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
+}
+
+fn bigint_limb(term: Term) -> u64 {
+    let bigint = BigInt::new(term).expect("expected BigInt term");
+    bigint.limbs()[0]
 }
 
 #[test]
@@ -43,6 +49,28 @@ fn bitwise_acceptance_values_match_erlang() {
         bif_bnot(&[Term::small_int(0)], &mut context),
         Ok(Term::small_int(-1))
     );
+}
+
+#[test]
+fn bitwise_bigint_values_use_twos_complement_and_demote() {
+    let mut process = Process::new(1, 256);
+    let mut context = context(&mut process);
+
+    let large = bif_bsl(&[Term::small_int(1), Term::small_int(70)], &mut context)
+        .expect("large shift should allocate BigInt");
+    assert_eq!(bigint_limb(large), 0);
+
+    let masked = bif_band(&[large, large], &mut context).expect("BigInt band should work");
+    assert!(BigInt::new(masked).is_some());
+
+    assert_eq!(
+        bif_bsr(&[large, Term::small_int(70)], &mut context),
+        Ok(Term::small_int(1))
+    );
+
+    let negative = bif_bnot(&[large], &mut context).expect("BigInt bnot should work");
+    let negative = BigInt::new(negative).expect("bnot of large positive should be BigInt");
+    assert!(negative.is_negative());
 }
 
 #[test]

@@ -5,6 +5,7 @@
 //! the word. Boxed values (tuples, lists, binaries, floats, big
 //! integers, closures, maps, references) are tagged pointers into
 //! the process-local heap.
+pub mod bigint_math;
 pub mod binary;
 pub mod binary_ref;
 pub mod boxed;

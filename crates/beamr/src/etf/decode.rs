@@ -370,18 +370,29 @@ fn decode_big_integer(
     };
     let bytes = cursor.read_bytes(len)?;
     if len <= std::mem::size_of::<i64>() {
-        let mut value: i128 = 0;
+        let mut value: u128 = 0;
         for (shift, byte) in bytes.iter().enumerate() {
-            value += i128::from(*byte) << (shift * u8::BITS as usize);
+            value += u128::from(*byte) << (shift * u8::BITS as usize);
         }
-        let signed = if negative { -value } else { value };
-        let integer = i64::try_from(signed).map_err(|_| DecodeError::IntegerOutOfRange)?;
-        if let Some(term) = Term::try_small_int(integer) {
-            Ok(term)
-        } else {
-            let magnitude = integer.unsigned_abs();
+        if value <= i64::MAX as u128 {
+            let integer = value as i64;
+            let integer = if negative { -integer } else { integer };
+            if let Some(term) = Term::try_small_int(integer) {
+                Ok(term)
+            } else {
+                let magnitude = integer.unsigned_abs();
+                context
+                    .alloc_bigint(integer.is_negative(), &[magnitude])
+                    .map_err(|_| DecodeError::HeapAllocationFailed)
+            }
+        } else if negative && value == (i64::MAX as u128) + 1 {
             context
-                .alloc_bigint(integer.is_negative(), &[magnitude])
+                .alloc_bigint(true, &[i64::MIN.unsigned_abs()])
+                .map_err(|_| DecodeError::HeapAllocationFailed)
+        } else {
+            let limb = u64::try_from(value).map_err(|_| DecodeError::IntegerOutOfRange)?;
+            context
+                .alloc_bigint(negative, &[limb])
                 .map_err(|_| DecodeError::HeapAllocationFailed)
         }
     } else {
@@ -514,7 +525,7 @@ mod tests {
     use crate::etf::encode::{EncodeOptions, encode_term, encode_term_with_options};
     use crate::process::Process;
     use crate::term::binary::Binary;
-    use crate::term::boxed::{Tuple, write_closure, write_tuple};
+    use crate::term::boxed::{BigInt, Tuple, write_closure, write_tuple};
 
     fn context(process: &mut Process) -> ProcessContext<'_> {
         let mut context = ProcessContext::new();
@@ -590,6 +601,32 @@ mod tests {
             ),
             Err(DecodeError::UnsafeAtom("novel".to_owned()))
         );
+    }
+
+    #[test]
+    fn small_big_ext_positive_above_i64_max_decodes_to_bigint() {
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+        let bytes = [
+            tags::VERSION,
+            tags::SMALL_BIG_EXT,
+            8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x80,
+        ];
+
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode bigint");
+        let bigint = BigInt::new(decoded).expect("decoded term should be BigInt");
+        assert!(!bigint.is_negative());
+        assert_eq!(bigint.limbs(), &[(i64::MAX as u64) + 1]);
     }
 
     #[test]

@@ -962,6 +962,19 @@ mod tests {
     }
 
     #[test]
+    fn encode_bigint_uses_large_big_ext_for_large_magnitudes() {
+        let limbs = vec![u64::MAX; 33];
+        let mut heap = vec![0_u64; 3 + limbs.len()];
+        let bigint = write_bigint(&mut heap, false, &limbs).expect("bigint");
+        let encoded = encode_term(bigint, &atoms()).expect("encoded");
+
+        assert_eq!(encoded.first(), Some(&tags::VERSION));
+        assert_eq!(encoded.get(1), Some(&tags::LARGE_BIG_EXT));
+        assert_eq!(&encoded[2..6], &(264_u32.to_be_bytes()));
+        assert_eq!(encoded.get(6), Some(&0));
+    }
+
+    #[test]
     fn deeply_nested_terms_return_too_deep() {
         let mut tuples = vec![[0_u64; 2]; MAX_ETF_DEPTH + 2];
         let mut term = Term::NIL;
