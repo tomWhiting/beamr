@@ -1,1 +1,1 @@
-feat(beamr): add deterministic replay causal ordering
+Harden deterministic replay delivery validation and test coverage

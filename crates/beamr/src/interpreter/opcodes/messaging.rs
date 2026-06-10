@@ -6,7 +6,10 @@ use crate::interpreter::InstructionOutcome;
 use crate::interpreter::opcodes::core;
 use crate::loader::decode::compact::Operand;
 use crate::module::Module;
+use std::sync::{Arc, Mutex};
+
 use crate::process::{CodePosition, Process, ProcessStatus, ReceiveTimeout};
+use crate::replay::{RecordedDeliveryKind, ReplayDriver};
 use crate::term::pid_ref::PidRef;
 
 /// Send x(1) to the process identified by x(0) when the caller supplies a receiver.
@@ -14,6 +17,7 @@ pub fn send(
     process: &mut Process,
     receiver: Option<&mut Process>,
     distribution: Option<&dyn DistributionSendFacility>,
+    replay_driver: Option<&Arc<Mutex<ReplayDriver>>>,
 ) -> Result<InstructionOutcome, ExecError> {
     let target_term = process.x_reg(0);
     let target = PidRef::new(target_term).ok_or(ExecError::Badarg)?;
@@ -30,8 +34,37 @@ pub fn send(
     }
     let target_pid = target.pid_number();
     if let Some(receiver) = receiver.filter(|receiver| receiver.pid() == target_pid) {
+        let previous_sender_clock = process.logical_clock();
+        let previous_receiver_clock = receiver.logical_clock();
         let sender_clock = process.tick_logical_clock();
-        receiver.observe_message_clock(sender_clock);
+        let receiver_clock = receiver.observe_message_clock(sender_clock);
+        if let Some(driver) = replay_driver {
+            let mut guard = match driver.lock() {
+                Ok(guard) => guard,
+                Err(error) => error.into_inner(),
+            };
+            let recorded = match guard.next_message_delivery(
+                RecordedDeliveryKind::Message,
+                Some(process.pid()),
+                target_pid,
+                message,
+            ) {
+                Ok(recorded) => recorded,
+                Err(error) => {
+                    process.set_logical_clock(previous_sender_clock);
+                    receiver.set_logical_clock(previous_receiver_clock);
+                    return Err(error.into());
+                }
+            };
+            if recorded.sender_clock != sender_clock || recorded.receiver_clock != receiver_clock {
+                process.set_logical_clock(previous_sender_clock);
+                receiver.set_logical_clock(previous_receiver_clock);
+                return Err(ExecError::ReplayMismatch(format!(
+                    "message delivery clock mismatch: expected sender/receiver clocks ({}, {}), recorded ({}, {})",
+                    sender_clock, receiver_clock, recorded.sender_clock, recorded.receiver_clock
+                )));
+            }
+        }
         #[cfg(feature = "telemetry")]
         receiver
             .mailbox()
@@ -204,6 +237,7 @@ mod tests {
     use crate::loader::Instruction;
     use crate::module::ModuleOrigin;
     use crate::process::{ExitReason, Process};
+    use crate::replay::{RecordedMessageDelivery, ReplayEvent, ReplayLog};
     use crate::term::Term;
     use crate::term::boxed::write_external_pid;
     use std::collections::HashMap;
@@ -244,12 +278,70 @@ mod tests {
         sender.set_x_reg(1, message);
 
         assert_eq!(
-            send(&mut sender, Some(&mut receiver), None),
+            send(&mut sender, Some(&mut receiver), None, None),
             Ok(InstructionOutcome::Continue)
         );
 
         assert_eq!(sender.x_reg(0), message);
         assert_eq!(receiver.mailbox_mut().current_message(), Some(message));
+    }
+
+    #[test]
+    fn replay_send_consumes_recorded_delivery_before_mailbox_visibility() {
+        let mut sender = Process::new(0, 32);
+        let mut receiver = Process::new(1, 32);
+        let message = Term::atom(Atom::OK);
+        sender.set_x_reg(0, Term::pid(1));
+        sender.set_x_reg(1, message);
+        let replay_driver = Arc::new(Mutex::new(ReplayDriver::new(ReplayLog::new(vec![
+            ReplayEvent::MessageDelivery(RecordedMessageDelivery {
+                order: 0,
+                kind: RecordedDeliveryKind::Message,
+                sender_pid: Some(0),
+                receiver_pid: 1,
+                sender_clock: 1,
+                receiver_clock: 2,
+                message,
+            }),
+        ]))));
+
+        assert_eq!(
+            send(&mut sender, Some(&mut receiver), None, Some(&replay_driver),),
+            Ok(InstructionOutcome::Continue)
+        );
+
+        assert_eq!(receiver.mailbox_mut().current_message(), Some(message));
+        assert!(replay_driver.lock().expect("driver lock").is_complete());
+    }
+
+    #[test]
+    fn replay_send_mismatch_does_not_enqueue_message() {
+        let mut sender = Process::new(0, 32);
+        let mut receiver = Process::new(1, 32);
+        let message = Term::atom(Atom::OK);
+        sender.set_x_reg(0, Term::pid(1));
+        sender.set_x_reg(1, message);
+        let replay_driver = Arc::new(Mutex::new(ReplayDriver::new(ReplayLog::new(vec![
+            ReplayEvent::MessageDelivery(RecordedMessageDelivery {
+                order: 0,
+                kind: RecordedDeliveryKind::Message,
+                sender_pid: Some(99),
+                receiver_pid: 1,
+                sender_clock: 1,
+                receiver_clock: 2,
+                message,
+            }),
+        ]))));
+
+        assert!(matches!(
+            send(&mut sender, Some(&mut receiver), None, Some(&replay_driver),),
+            Err(ExecError::ReplayMismatch(_))
+        ));
+
+        assert!(receiver.mailbox().is_empty());
+        assert_eq!(sender.logical_clock(), 0);
+        assert_eq!(receiver.logical_clock(), 0);
+        assert_eq!(replay_driver.lock().expect("driver lock").cursor(), 0);
     }
 
     #[test]
@@ -259,7 +351,7 @@ mod tests {
         sender.set_x_reg(1, Term::atom(Atom::OK));
 
         assert_eq!(
-            send(&mut sender, None, None),
+            send(&mut sender, None, None, None),
             Ok(InstructionOutcome::Continue)
         );
         assert_eq!(sender.x_reg(0), Term::atom(Atom::OK));
@@ -273,7 +365,10 @@ mod tests {
         sender.set_x_reg(0, remote);
         sender.set_x_reg(1, Term::atom(Atom::OK));
 
-        assert_eq!(send(&mut sender, None, None), Err(ExecError::NoConnection));
+        assert_eq!(
+            send(&mut sender, None, None, None),
+            Err(ExecError::NoConnection)
+        );
     }
 
     #[test]
@@ -417,7 +512,7 @@ mod tests {
         sender.set_x_reg(1, Term::atom(Atom::OK));
 
         assert_eq!(
-            send(&mut sender, Some(&mut receiver), None),
+            send(&mut sender, Some(&mut receiver), None, None),
             Ok(InstructionOutcome::Continue)
         );
         assert_eq!(receiver.status(), ProcessStatus::Running);

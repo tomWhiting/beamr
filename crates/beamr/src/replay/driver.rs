@@ -562,6 +562,64 @@ mod tests {
     }
 
     #[test]
+    fn driver_reports_log_exhaustion_for_schedule_without_advancing() {
+        let mut driver = ReplayDriver::new(ReplayLog::default());
+
+        let error = driver
+            .next_schedule(0)
+            .expect_err("empty log must report exhaustion");
+
+        assert!(error.to_string().contains("replay log exhausted"));
+        assert_eq!(driver.cursor(), 0);
+    }
+
+    #[test]
+    fn driver_reports_schedule_worker_mismatch_without_advancing() {
+        let mut driver = ReplayDriver::new(ReplayLog::new(vec![ReplayEvent::Schedule(
+            RecordedSchedule {
+                pid: 3,
+                scheduler_index: 1,
+                reduction_budget: 17,
+                reductions_consumed: 9,
+            },
+        )]));
+
+        let error = driver
+            .next_schedule(0)
+            .expect_err("wrong worker must mismatch");
+
+        assert!(error.to_string().contains("schedule worker mismatch"));
+        assert_eq!(driver.cursor(), 0);
+    }
+
+    #[test]
+    fn driver_reports_message_delivery_mismatch_without_advancing() {
+        let mut driver = ReplayDriver::new(ReplayLog::new(vec![ReplayEvent::MessageDelivery(
+            RecordedMessageDelivery {
+                order: 0,
+                kind: RecordedDeliveryKind::Message,
+                sender_pid: Some(1),
+                receiver_pid: 2,
+                sender_clock: 1,
+                receiver_clock: 2,
+                message: Term::small_int(10),
+            },
+        )]));
+
+        let error = driver
+            .next_message_delivery(
+                RecordedDeliveryKind::Message,
+                Some(2),
+                1,
+                Term::small_int(10),
+            )
+            .expect_err("wrong endpoints must mismatch");
+
+        assert!(error.to_string().contains("message delivery mismatch"));
+        assert_eq!(driver.cursor(), 0);
+    }
+
+    #[test]
     fn driver_reports_mismatch_without_advancing_log_mutation() {
         let log = ReplayLog::new(vec![ReplayEvent::NativeCall(RecordedNativeCall {
             pid: 1,
