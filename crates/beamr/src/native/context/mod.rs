@@ -329,6 +329,7 @@ pub struct ProcessContext<'process> {
     suspend: Option<SuspendRequest>,
     replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
     wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
+    nif_private_data: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl fmt::Debug for ProcessContext<'_> {
@@ -417,6 +418,10 @@ impl fmt::Debug for ProcessContext<'_> {
                 "wasm_async_nif_facility",
                 &self.wasm_async_nif_facility.as_ref().map(|_| ".."),
             )
+            .field(
+                "nif_private_data",
+                &self.nif_private_data.as_ref().map(|_| ".."),
+            )
             .finish()
     }
 }
@@ -468,6 +473,7 @@ impl<'process> ProcessContext<'process> {
             shutdown_requested: false,
             replay_driver: None,
             wasm_async_nif_facility: None,
+            nif_private_data: None,
         }
     }
 
@@ -511,7 +517,24 @@ impl<'process> ProcessContext<'process> {
             shutdown_requested: false,
             replay_driver: None,
             wasm_async_nif_facility: None,
+            nif_private_data: None,
         }
+    }
+
+    /// Return the embedder-supplied NIF private data for this runtime.
+    ///
+    /// This is the moral equivalent of ERTS `enif_priv_data`: one opaque
+    /// value installed per scheduler (per embedded runtime instance) that
+    /// every native call can recover, so embedders never need process-wide
+    /// globals — which break when multiple runtimes share an OS process.
+    #[must_use]
+    pub fn nif_private_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        self.nif_private_data.as_ref()
+    }
+
+    /// Set the embedder-supplied NIF private data for this runtime.
+    pub fn set_nif_private_data(&mut self, data: Option<Arc<dyn std::any::Any + Send + Sync>>) {
+        self.nif_private_data = data;
     }
 
     /// Return the replay driver when running under deterministic replay.

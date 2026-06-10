@@ -609,6 +609,7 @@ pub(super) fn build_native_services(
         jit_cache: Some(Arc::clone(&shared.jit_cache)),
         replay_driver: shared.replay_driver.clone(),
         bif_registry: Some(Arc::clone(&shared.bif_registry)),
+        nif_private_data: shared.nif_private_data.clone(),
         ..crate::interpreter::NativeServices::default()
     }
 }

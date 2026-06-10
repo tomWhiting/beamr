@@ -93,6 +93,9 @@ pub struct NativeServices {
     pub bif_registry: Option<Arc<crate::native::BifRegistryImpl>>,
     /// Single-threaded WASM async NIF bridge used by Promise-backed host NIFs.
     pub wasm_async_nif_facility: Option<Rc<dyn crate::native::WasmAsyncNifFacility>>,
+    /// Embedder-supplied private data recoverable from every native call
+    /// (the ERTS `enif_priv_data` equivalent, scoped to one runtime instance).
+    pub nif_private_data: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.

@@ -795,6 +795,7 @@ fn submit_dirty_call(
     context.set_code_management_facility(services.code_management_facility);
     context.set_system_info_facility(services.system_info_facility);
     context.set_replay_driver(services.replay_driver);
+    context.set_nif_private_data(services.nif_private_data);
     if let Some(sink) = services.io_sink {
         context.set_io_sink(sink);
     }

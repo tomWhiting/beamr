@@ -297,6 +297,7 @@ fn make_shared_state() -> Arc<SharedState> {
         jit_cache: Arc::new(crate::jit::JitCache::new()),
         replay_driver: None,
         replay_mode: false,
+        nif_private_data: None,
     })
 }
 

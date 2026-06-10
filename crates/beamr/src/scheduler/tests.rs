@@ -1123,6 +1123,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         jit_cache: Arc::new(crate::jit::JitCache::new()),
         replay_driver: None,
         replay_mode: false,
+        nif_private_data: None,
     });
     let mut process = Process::new(1, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
@@ -1480,6 +1481,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         jit_cache: Arc::new(crate::jit::JitCache::new()),
         replay_driver: None,
         replay_mode: false,
+        nif_private_data: None,
     });
     let pid = 1;
     shared.process_table.spawn_with_pid(pid);

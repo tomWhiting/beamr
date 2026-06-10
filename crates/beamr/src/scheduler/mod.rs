@@ -84,7 +84,7 @@ impl CompletionRing for ReplayDisabledRing {
     fn shutdown(&self) {}
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct SchedulerConfig {
     pub thread_count: Option<usize>,
     pub dirty_cpu_threads: Option<usize>,
@@ -97,6 +97,33 @@ pub struct SchedulerConfig {
     pub jit_threshold: Option<u32>,
     /// Minimum interval between per-process telemetry samples at scheduler slice boundaries.
     pub telemetry_sample_interval: Option<Duration>,
+    /// Embedder-supplied private data handed to every native call via
+    /// [`crate::native::ProcessContext::nif_private_data`] — the ERTS
+    /// `enif_priv_data` equivalent, scoped to this scheduler instance so
+    /// embedders hosting several runtimes in one OS process never need
+    /// process-wide globals.
+    pub nif_private_data: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+impl std::fmt::Debug for SchedulerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchedulerConfig")
+            .field("thread_count", &self.thread_count)
+            .field("dirty_cpu_threads", &self.dirty_cpu_threads)
+            .field("dirty_io_threads", &self.dirty_io_threads)
+            .field("dirty_queue_depth", &self.dirty_queue_depth)
+            .field("io", &self.io)
+            .field("node_name", &self.node_name)
+            .field("creation", &self.creation)
+            .field("distribution", &self.distribution)
+            .field("jit_threshold", &self.jit_threshold)
+            .field("telemetry_sample_interval", &self.telemetry_sample_interval)
+            .field(
+                "nif_private_data",
+                &self.nif_private_data.as_ref().map(|_| ".."),
+            )
+            .finish()
+    }
 }
 pub(super) struct SharedState {
     shutdown: AtomicBool,
@@ -148,6 +175,7 @@ pub(super) struct SharedState {
     standard_io_pid: u64,
     replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
     replay_mode: bool,
+    pub(super) nif_private_data: Option<Arc<dyn std::any::Any + Send + Sync>>,
     #[cfg(feature = "telemetry")]
     telemetry_metrics: TelemetryMetricState,
 
@@ -608,6 +636,7 @@ impl Scheduler {
             standard_io_pid,
             replay_driver,
             replay_mode: replay_enabled,
+            nif_private_data: config.nif_private_data,
             #[cfg(feature = "telemetry")]
             telemetry_metrics: TelemetryMetricState::new(telemetry_sample_interval),
             _standard_io_server: standard_io_server,
