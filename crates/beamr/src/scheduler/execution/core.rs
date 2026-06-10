@@ -274,21 +274,37 @@ pub(in crate::scheduler) fn execute_slice(
             | ProcessStatus::Waiting
             | ProcessStatus::Suspended
     ) {
+        #[cfg(feature = "telemetry")]
+        let span = start_slice_span(shared, process);
+        #[cfg(feature = "telemetry")]
+        finish_slice_span(span, 0, crate::telemetry::spans::SliceSpanOutcome::Exited);
         return SliceOutcome::Exited(exit_reason_from_status(process.status()), process.x_reg(0));
     }
     if process.transition_to(ProcessStatus::Running).is_err() {
+        #[cfg(feature = "telemetry")]
+        let span = start_slice_span(shared, process);
+        #[cfg(feature = "telemetry")]
+        finish_slice_span(span, 0, crate::telemetry::spans::SliceSpanOutcome::Exited);
         return SliceOutcome::Exited(exit_reason_from_status(process.status()), process.x_reg(0));
     }
+    #[cfg(feature = "telemetry")]
+    let span = start_slice_span(shared, process);
     if let Some((_, dirty_result)) = shared.dirty_results.remove(&process.pid()) {
         match apply_dirty_result(process, dirty_result) {
             Ok(InstructionOutcomeAfterDirty::Continue) => {}
             Ok(InstructionOutcomeAfterDirty::Exit(reason)) => {
-                return exit_process(shared, process, reason);
+                let outcome = exit_process(shared, process, reason);
+                #[cfg(feature = "telemetry")]
+                finish_slice_span(span, 0, crate::telemetry::spans::SliceSpanOutcome::Exited);
+                return outcome;
             }
             Err(error) => {
                 let pid = process.pid();
                 shared.exit_errors.insert(pid, error);
-                return exit_process(shared, process, ExitReason::Error);
+                let outcome = exit_process(shared, process, ExitReason::Error);
+                #[cfg(feature = "telemetry")]
+                finish_slice_span(span, 0, crate::telemetry::spans::SliceSpanOutcome::Exited);
+                return outcome;
             }
         }
     }
@@ -299,7 +315,12 @@ pub(in crate::scheduler) fn execute_slice(
     process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
     let module_atom = match process.code_position() {
         Some(position) => position.module,
-        None => return exit_process(shared, process, ExitReason::Normal),
+        None => {
+            let outcome = exit_process(shared, process, ExitReason::Normal);
+            #[cfg(feature = "telemetry")]
+            finish_slice_span(span, 0, crate::telemetry::spans::SliceSpanOutcome::Exited);
+            return outcome;
+        }
     };
     let registry = namespace_registry(shared, process.namespace_id())
         .unwrap_or_else(|| Arc::clone(&shared.module_registry));
@@ -317,7 +338,10 @@ pub(in crate::scheduler) fn execute_slice(
         Arc::clone(current)
     } else {
         let Some(module) = registry.lookup(module_atom) else {
-            return exit_process(shared, process, ExitReason::Error);
+            let outcome = exit_process(shared, process, ExitReason::Error);
+            #[cfg(feature = "telemetry")]
+            finish_slice_span(span, 0, crate::telemetry::spans::SliceSpanOutcome::Exited);
+            return outcome;
         };
         process.set_current_module(Arc::clone(&module));
         module
@@ -331,33 +355,101 @@ pub(in crate::scheduler) fn execute_slice(
     ) && timer_integration::invoke_hook(shared, process, reductions) == HookDecision::Suspend
     {
         let _t = process.transition_to(ProcessStatus::Suspended);
-        return SliceOutcome::Suspended(take_process(process));
+        let outcome = SliceOutcome::Suspended(take_process(process));
+        #[cfg(feature = "telemetry")]
+        finish_slice_span(
+            span,
+            reductions,
+            crate::telemetry::spans::SliceSpanOutcome::Waiting,
+        );
+        return outcome;
     }
     match result {
         Ok(ExecutionResult::Yielded) => {
             let _t = process.transition_to(ProcessStatus::Yielded);
             process.reset_reductions(DEFAULT_REDUCTION_BUDGET);
-            SliceOutcome::Requeue(take_process(process))
+            let outcome = SliceOutcome::Requeue(take_process(process));
+            #[cfg(feature = "telemetry")]
+            finish_slice_span(
+                span,
+                reductions,
+                crate::telemetry::spans::SliceSpanOutcome::Yielded,
+            );
+            outcome
         }
         Ok(ExecutionResult::Waiting) => {
             let _t = process.transition_to(ProcessStatus::Waiting);
-            SliceOutcome::Wait(take_process(process))
+            let outcome = SliceOutcome::Wait(take_process(process));
+            #[cfg(feature = "telemetry")]
+            finish_slice_span(
+                span,
+                reductions,
+                crate::telemetry::spans::SliceSpanOutcome::Waiting,
+            );
+            outcome
         }
         Ok(ExecutionResult::DirtyCall { entry, args, kind }) => {
             if let Err(error) = submit_dirty_call(shared, process, entry, args, kind) {
                 shared.exit_errors.insert(process.pid(), error.into());
-                return exit_process(shared, process, ExitReason::Error);
+                let outcome = exit_process(shared, process, ExitReason::Error);
+                #[cfg(feature = "telemetry")]
+                finish_slice_span(
+                    span,
+                    reductions,
+                    crate::telemetry::spans::SliceSpanOutcome::Exited,
+                );
+                return outcome;
             }
             let _t = process.transition_to(ProcessStatus::Suspended);
-            SliceOutcome::Suspended(take_process(process))
+            let outcome = SliceOutcome::Suspended(take_process(process));
+            #[cfg(feature = "telemetry")]
+            finish_slice_span(
+                span,
+                reductions,
+                crate::telemetry::spans::SliceSpanOutcome::Waiting,
+            );
+            outcome
         }
-        Ok(ExecutionResult::Exited(reason)) => exit_process(shared, process, reason),
+        Ok(ExecutionResult::Exited(reason)) => {
+            let outcome = exit_process(shared, process, reason);
+            #[cfg(feature = "telemetry")]
+            finish_slice_span(
+                span,
+                reductions,
+                crate::telemetry::spans::SliceSpanOutcome::Exited,
+            );
+            outcome
+        }
         Err(error) => {
             let pid = process.pid();
             shared.exit_errors.insert(pid, error);
-            exit_process(shared, process, ExitReason::Error)
+            let outcome = exit_process(shared, process, ExitReason::Error);
+            #[cfg(feature = "telemetry")]
+            finish_slice_span(
+                span,
+                reductions,
+                crate::telemetry::spans::SliceSpanOutcome::Exited,
+            );
+            outcome
         }
     }
+}
+
+#[cfg(feature = "telemetry")]
+fn start_slice_span(
+    shared: &SharedState,
+    process: &Process,
+) -> crate::telemetry::spans::ExecutionSliceSpan {
+    crate::telemetry::spans::ExecutionSliceSpan::start(&shared.atom_table, process)
+}
+
+#[cfg(feature = "telemetry")]
+fn finish_slice_span(
+    span: crate::telemetry::spans::ExecutionSliceSpan,
+    reductions_consumed: u32,
+    outcome: crate::telemetry::spans::SliceSpanOutcome,
+) {
+    span.finish(reductions_consumed, outcome);
 }
 
 fn exit_process(shared: &SharedState, process: &mut Process, reason: ExitReason) -> SliceOutcome {

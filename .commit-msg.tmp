@@ -1,1 +1,1 @@
-harden(beamr): bound bigint left-shift allocation
+feat(beamr): add feature-gated OpenTelemetry spans

@@ -28,6 +28,21 @@ pub fn send(
     }
     let target_pid = target.pid_number();
     if let Some(receiver) = receiver.filter(|receiver| receiver.pid() == target_pid) {
+        #[cfg(feature = "telemetry")]
+        receiver
+            .mailbox()
+            .sender()
+            .send_with_trace_context(
+                message,
+                receiver.heap_mut(),
+                crate::telemetry::spans::record_message_send_context(
+                    process.pid(),
+                    target_pid,
+                    message,
+                ),
+            )
+            .map_err(send_error)?;
+        #[cfg(not(feature = "telemetry"))]
         receiver
             .mailbox()
             .sender()
@@ -74,7 +89,20 @@ pub fn loop_rec_end(
 }
 
 pub fn remove_message(process: &mut Process) -> Result<InstructionOutcome, ExecError> {
+    #[cfg(feature = "telemetry")]
+    let removed = process.mailbox_mut().remove_current_message_with_trace();
+    #[cfg(not(feature = "telemetry"))]
     let _ = process.mailbox_mut().remove_current_message();
+    #[cfg(feature = "telemetry")]
+    if let Some((_message, trace_context)) = removed {
+        let wait_duration = process.take_receive_wait_duration();
+        crate::telemetry::spans::record_message_receive(
+            process.pid(),
+            wait_duration,
+            true,
+            trace_context.as_ref(),
+        );
+    }
     process.set_receive_timeout(None);
     process.set_receive_timer_ref(None);
     Ok(InstructionOutcome::Continue)
@@ -144,7 +172,10 @@ fn transition_to_waiting(process: &mut Process) -> Result<(), ExecError> {
     }
     process
         .transition_to(ProcessStatus::Waiting)
-        .map_err(|_| ExecError::Badarg)
+        .map_err(|_| ExecError::Badarg)?;
+    #[cfg(feature = "telemetry")]
+    process.mark_receive_wait_started();
+    Ok(())
 }
 
 fn timeout_milliseconds(

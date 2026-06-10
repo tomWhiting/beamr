@@ -432,6 +432,8 @@ pub struct Process {
     current_mfa: Option<(Atom, Atom, u8)>,
     jit_runtime_context: Option<JitRuntimeContext>,
     jit_status: Option<JitStatus>,
+    #[cfg(feature = "telemetry")]
+    receive_wait_started: Option<crate::telemetry::spans::ReceiveWaitStarted>,
     links: Vec<u64>,
     remote_links: Vec<RemotePid>,
     monitors: Vec<Monitor>,
@@ -469,6 +471,8 @@ impl Process {
             current_mfa: None,
             jit_runtime_context: None,
             jit_status: None,
+            #[cfg(feature = "telemetry")]
+            receive_wait_started: None,
             links: Vec::new(),
             remote_links: Vec::new(),
             monitors: Vec::new(),
@@ -800,6 +804,20 @@ impl Process {
     #[must_use]
     pub const fn receive_timer_ref(&self) -> Option<u64> {
         self.receive_timer_ref
+    }
+
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn mark_receive_wait_started(&mut self) {
+        if self.receive_wait_started.is_none() {
+            self.receive_wait_started = Some(crate::telemetry::spans::receive_wait_started_now());
+        }
+    }
+
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn take_receive_wait_duration(&mut self) -> Option<std::time::Duration> {
+        self.receive_wait_started
+            .take()
+            .map(|started| started.elapsed())
     }
 
     /// Read X register `n`.

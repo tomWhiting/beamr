@@ -23,5 +23,7 @@ pub mod native;
 pub mod process;
 pub mod scheduler;
 pub mod supervision;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
 pub mod term;
 pub mod timer;
