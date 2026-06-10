@@ -770,7 +770,8 @@ impl Process {
             .current_exception
             .into_iter()
             .flat_map(|exception| [exception.reason, exception.stacktrace]);
-        self.x_regs
+        let mut roots: Vec<Term> = self
+            .x_regs
             .iter()
             .take(live_x)
             .chain(self.stack.y_regs())
@@ -783,7 +784,12 @@ impl Process {
                     .flat_map(|(key, value)| [*key, *value]),
             )
             .chain(std::iter::once(self.group_leader))
-            .collect()
+            .collect();
+        roots.extend(self.native_roots.iter().copied());
+        if let Some(continuation) = &self.native_continuation {
+            continuation.for_each_term(&mut |term| roots.push(term));
+        }
+        roots
     }
 
     /// Replace every GC root with the next term yielded by `roots`, in the same
@@ -837,6 +843,21 @@ impl Process {
         }
         if let Some(root) = roots.get(index).copied() {
             self.group_leader = root;
+        }
+        index += 1;
+        for root in &mut self.native_roots {
+            if let Some(value) = roots.get(index).copied() {
+                *root = value;
+            }
+            index += 1;
+        }
+        if let Some(continuation) = &mut self.native_continuation {
+            continuation.for_each_term_mut(&mut |term| {
+                if let Some(value) = roots.get(index).copied() {
+                    *term = value;
+                }
+                index += 1;
+            });
         }
     }
 
@@ -968,6 +989,37 @@ impl Process {
     /// Take native continuation state after a closure returns.
     pub fn take_native_continuation(&mut self) -> Option<NativeContinuation> {
         self.native_continuation.take()
+    }
+
+    /// Register `term` as an explicit GC root, returning its stack index.
+    ///
+    /// The root is traced and forwarded by every collection until removed
+    /// with [`Process::truncate_native_roots`].
+    pub(crate) fn push_native_root(&mut self, term: Term) -> usize {
+        self.native_roots.push(term);
+        self.native_roots.len() - 1
+    }
+
+    /// Read the current (post-GC) value of the native root at `index`.
+    pub(crate) fn native_root(&self, index: usize) -> Option<Term> {
+        self.native_roots.get(index).copied()
+    }
+
+    /// Overwrite the native root at `index` with a new term.
+    pub(crate) fn set_native_root(&mut self, index: usize, term: Term) {
+        if let Some(slot) = self.native_roots.get_mut(index) {
+            *slot = term;
+        }
+    }
+
+    /// Number of registered native roots.
+    pub(crate) fn native_root_depth(&self) -> usize {
+        self.native_roots.len()
+    }
+
+    /// Drop native roots registered after `depth`.
+    pub(crate) fn truncate_native_roots(&mut self, depth: usize) {
+        self.native_roots.truncate(depth);
     }
 
     /// Check whether a native continuation is pending.
@@ -1199,6 +1251,8 @@ impl Process {
         self.receive_timer_ref = None;
         self.x_regs = [Term::NIL; 1024];
         self.float_regs = [0.0; 16];
+        self.native_continuation = None;
+        self.native_roots.clear();
         self.reduction_counter = 0;
         self.code_position = None;
         self.current_module = None;

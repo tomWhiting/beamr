@@ -33,6 +33,80 @@ pub enum ListsHofState {
     },
 }
 
+impl ListsHofState {
+    /// Visit every held term, for GC root snapshots.
+    pub(crate) fn for_each_term(&self, f: &mut dyn FnMut(Term)) {
+        match self {
+            Self::Map {
+                fun,
+                remaining,
+                results,
+            } => {
+                f(*fun);
+                remaining.iter().copied().for_each(&mut *f);
+                results.iter().copied().for_each(&mut *f);
+            }
+            Self::Filter {
+                fun,
+                current,
+                remaining,
+                results,
+            }
+            | Self::FilterMap {
+                fun,
+                current,
+                remaining,
+                results,
+            } => {
+                f(*fun);
+                f(*current);
+                remaining.iter().copied().for_each(&mut *f);
+                results.iter().copied().for_each(&mut *f);
+            }
+            Self::Foreach { fun, remaining } => {
+                f(*fun);
+                remaining.iter().copied().for_each(&mut *f);
+            }
+        }
+    }
+
+    /// Visit every held term mutably, so GC can forward moved terms.
+    pub(crate) fn for_each_term_mut(&mut self, f: &mut dyn FnMut(&mut Term)) {
+        match self {
+            Self::Map {
+                fun,
+                remaining,
+                results,
+            } => {
+                f(fun);
+                remaining.iter_mut().for_each(&mut *f);
+                results.iter_mut().for_each(&mut *f);
+            }
+            Self::Filter {
+                fun,
+                current,
+                remaining,
+                results,
+            }
+            | Self::FilterMap {
+                fun,
+                current,
+                remaining,
+                results,
+            } => {
+                f(fun);
+                f(current);
+                remaining.iter_mut().for_each(&mut *f);
+                results.iter_mut().for_each(&mut *f);
+            }
+            Self::Foreach { fun, remaining } => {
+                f(fun);
+                remaining.iter_mut().for_each(&mut *f);
+            }
+        }
+    }
+}
+
 pub fn bif_lists_filter(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [fun, list] = args else {
         return Err(badarg());

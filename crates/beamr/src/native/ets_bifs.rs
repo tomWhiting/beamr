@@ -158,6 +158,20 @@ pub struct EtsFoldlState {
     index: usize,
 }
 
+impl EtsFoldlState {
+    /// Visit every held term, for GC root snapshots.
+    pub(crate) fn for_each_term(&self, f: &mut dyn FnMut(Term)) {
+        f(self.fun);
+        self.entries.iter().copied().for_each(f);
+    }
+
+    /// Visit every held term mutably, so GC can forward moved terms.
+    pub(crate) fn for_each_term_mut(&mut self, f: &mut dyn FnMut(&mut Term)) {
+        f(&mut self.fun);
+        self.entries.iter_mut().for_each(f);
+    }
+}
+
 /// Registers all ETS BIFs under the `ets` module.
 pub fn register_ets_bifs(
     registry: &BifRegistryImpl,
@@ -734,17 +748,26 @@ fn collect_match_results(
     mode: MatchResultMode,
     context: &mut ProcessContext,
 ) -> Result<Vec<Term>, Term> {
-    let mut results = Vec::new();
-    for object in table.tab2list() {
-        let Some(bindings) = ets_pattern_match(pattern, object, context)? else {
-            continue;
-        };
-        match mode {
-            MatchResultMode::Bindings => results.push(alloc_bindings_list(&bindings, context)?),
-            MatchResultMode::Object => results.push(object),
+    // Accumulated results live on the process heap; each iteration's
+    // allocation may collect, so every result is held in the rooted scope
+    // and re-read at the end. Table objects themselves are ETS-owned and
+    // stable across process collections.
+    context.with_rooted(&[pattern], |context, roots| {
+        for object in table.tab2list() {
+            let pattern = context.rooted(roots, 0)?;
+            let Some(bindings) = ets_pattern_match(pattern, object, context)? else {
+                continue;
+            };
+            let result = match mode {
+                MatchResultMode::Bindings => alloc_bindings_list(&bindings, context)?,
+                MatchResultMode::Object => object,
+            };
+            context.rooted_push(roots, result)?;
         }
-    }
-    Ok(results)
+        (1..context.rooted_len(roots))
+            .map(|index| context.rooted(roots, index))
+            .collect()
+    })
 }
 
 fn collect_match_page(
@@ -772,23 +795,30 @@ fn collect_match_paged_results(
     limit: usize,
     context: &mut ProcessContext,
 ) -> Result<PagedResults, Term> {
-    let snapshot = table.tab2list();
-    let mut results = Vec::new();
-    for (position, object) in snapshot.into_iter().enumerate().skip(start_position) {
-        let Some(bindings) = ets_pattern_match(pattern, object, context)? else {
-            continue;
-        };
-        if results.len() == limit {
-            return Ok(PagedResults {
-                results,
-                next_position: Some(position),
-            });
+    // See collect_match_results: results are rooted across per-item
+    // allocations and re-read once accumulation finishes.
+    context.with_rooted(&[pattern], |context, roots| {
+        let snapshot = table.tab2list();
+        let mut next_position = None;
+        for (position, object) in snapshot.into_iter().enumerate().skip(start_position) {
+            let pattern = context.rooted(roots, 0)?;
+            let Some(bindings) = ets_pattern_match(pattern, object, context)? else {
+                continue;
+            };
+            if context.rooted_len(roots) - 1 == limit {
+                next_position = Some(position);
+                break;
+            }
+            let result = alloc_bindings_list(&bindings, context)?;
+            context.rooted_push(roots, result)?;
         }
-        results.push(alloc_bindings_list(&bindings, context)?);
-    }
-    Ok(PagedResults {
-        results,
-        next_position: None,
+        let results = (1..context.rooted_len(roots))
+            .map(|index| context.rooted(roots, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PagedResults {
+            results,
+            next_position,
+        })
     })
 }
 
@@ -803,25 +833,30 @@ fn collect_select_results(
     let compiled = CompiledMatchSpec::compile(spec, atom_table.as_ref()).map_err(|_| badarg())?;
     let snapshot = table.tab2list();
     let mut arena = MatchArena::new();
-    let mut results = Vec::new();
-    for (position, object) in snapshot.into_iter().enumerate().skip(start_position) {
-        if limit.is_some_and(|limit| results.len() == limit) {
-            return Ok(PagedResults {
-                results,
-                next_position: Some(position),
-            });
+    // Copied results live on the process heap; root each one so later
+    // per-item copies can collect safely.
+    context.with_rooted(&[], |context, roots| {
+        let mut next_position = None;
+        for (position, object) in snapshot.into_iter().enumerate().skip(start_position) {
+            if limit.is_some_and(|limit| context.rooted_len(roots) == limit) {
+                next_position = Some(position);
+                break;
+            }
+            if let Some(arena_result) = compiled
+                .run(object, atom_table.as_ref(), &mut arena)
+                .map_err(|_| badarg())?
+            {
+                let result = copy_term_to_process(arena_result, context)?;
+                context.rooted_push(roots, result)?;
+            }
         }
-        if let Some(arena_result) = compiled
-            .run(object, atom_table.as_ref(), &mut arena)
-            .map_err(|_| badarg())?
-        {
-            let result = copy_term_to_process(arena_result, context)?;
-            results.push(result);
-        }
-    }
-    Ok(PagedResults {
-        results,
-        next_position: None,
+        let results = (0..context.rooted_len(roots))
+            .map(|index| context.rooted(roots, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PagedResults {
+            results,
+            next_position,
+        })
     })
 }
 
@@ -854,19 +889,26 @@ fn finish_paged_results(
     if page.results.is_empty() && page.next_position.is_none() {
         return end_of_table_atom(context);
     }
-    let results = context.alloc_list(&page.results)?;
-    let continuation = match page.next_position {
-        Some(next_position) => alloc_match_continuation(
-            kind,
-            table_id,
-            next_position,
-            limit,
-            pattern_or_spec,
-            context,
-        )?,
-        None => end_of_table_atom(context)?,
-    };
-    context.alloc_tuple(&[results, continuation])
+    // The continuation allocation may collect after the results list is
+    // built; keep both it and the pattern rooted across the sequence.
+    context.with_rooted(&[pattern_or_spec], |context, roots| {
+        let results = context.alloc_list(&page.results)?;
+        context.rooted_push(roots, results)?;
+        let pattern_or_spec = context.rooted(roots, 0)?;
+        let continuation = match page.next_position {
+            Some(next_position) => alloc_match_continuation(
+                kind,
+                table_id,
+                next_position,
+                limit,
+                pattern_or_spec,
+                context,
+            )?,
+            None => end_of_table_atom(context)?,
+        };
+        let results = context.rooted(roots, 1)?;
+        context.alloc_tuple(&[results, continuation])
+    })
 }
 
 fn alloc_match_continuation(

@@ -115,14 +115,22 @@ fn segments_to_iolist(
     segments: Vec<IoSegment>,
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
-    let mut terms = Vec::with_capacity(segments.len());
-    for segment in segments {
-        terms.push(match segment {
-            IoSegment::Owned(bytes) => context.alloc_binary(&bytes)?,
-            IoSegment::Reference(binary_term) => binary_term,
-        });
-    }
-    context.alloc_list(&terms)
+    // Each owned-segment allocation may collect; keep every accumulated
+    // term (including pre-existing references) rooted until the final list
+    // is built.
+    context.with_rooted(&[], |context, roots| {
+        for segment in segments {
+            let term = match segment {
+                IoSegment::Owned(bytes) => context.alloc_binary(&bytes)?,
+                IoSegment::Reference(binary_term) => binary_term,
+            };
+            context.rooted_push(roots, term)?;
+        }
+        let terms = (0..context.rooted_len(roots))
+            .map(|index| context.rooted(roots, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        context.alloc_list(&terms)
+    })
 }
 
 fn parse_encode_options(options: Term, atom_table: &AtomTable) -> Result<EncodeOptions, Term> {

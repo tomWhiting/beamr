@@ -109,22 +109,17 @@ pub fn bif_string_pop_grapheme(args: &[Term], context: &mut ProcessContext) -> R
         .unwrap_or(1);
     let head_bytes = bytes[..first_len].to_vec();
     let rest_bytes = bytes[first_len..].to_vec();
-    let head = context.alloc_binary(&head_bytes)?;
-    {
-        let process = context.process_mut().ok_or_else(badarg)?;
-        process.set_x_reg(0, head);
-    }
-    let rest = context.alloc_binary(&rest_bytes)?;
-    {
-        let process = context.process_mut().ok_or_else(badarg)?;
-        process.set_x_reg(1, rest);
-    }
-    context.ensure_heap_space(4)?;
-    let (head, rest) = {
-        let process = context.process_mut().ok_or_else(badarg)?;
-        (process.x_reg(0), process.x_reg(1))
-    };
-    context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), head, rest])
+    // Each allocation below may collect; keep earlier results rooted.
+    context.with_rooted(&[], |context, roots| {
+        let head = context.alloc_binary(&head_bytes)?;
+        context.rooted_push(roots, head)?;
+        let rest = context.alloc_binary(&rest_bytes)?;
+        context.rooted_push(roots, rest)?;
+        context.ensure_heap_space(4)?;
+        let head = context.rooted(roots, 0)?;
+        let rest = context.rooted(roots, 1)?;
+        context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), head, rest])
+    })
 }
 
 pub fn bif_utf_codepoint_list_to_string(

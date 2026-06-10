@@ -31,6 +31,38 @@ pub enum GleamResultState {
     Then,
 }
 
+impl GleamOptionState {
+    /// Visit every held term, for GC root snapshots. Holds only atoms.
+    pub(crate) fn for_each_term(&self, _f: &mut dyn FnMut(Term)) {
+        match self {
+            Self::Map { .. } => {}
+        }
+    }
+
+    /// Visit every held term mutably. Holds only atoms.
+    pub(crate) fn for_each_term_mut(&mut self, _f: &mut dyn FnMut(&mut Term)) {
+        match self {
+            Self::Map { .. } => {}
+        }
+    }
+}
+
+impl GleamResultState {
+    /// Visit every held term, for GC root snapshots. Holds no terms.
+    pub(crate) fn for_each_term(&self, _f: &mut dyn FnMut(Term)) {
+        match self {
+            Self::MapError | Self::Then => {}
+        }
+    }
+
+    /// Visit every held term mutably. Holds no terms.
+    pub(crate) fn for_each_term_mut(&mut self, _f: &mut dyn FnMut(&mut Term)) {
+        match self {
+            Self::MapError | Self::Then => {}
+        }
+    }
+}
+
 pub fn init_gleam_atoms(atom_table: &AtomTable) {
     let _ = NONE_ATOM.set(atom_table.intern("None"));
     let _ = SOME_ATOM.set(atom_table.intern("Some"));

@@ -42,10 +42,17 @@ use super::spawn::SpawnFacility;
 use super::supervision::SupervisionFacility;
 use super::system_info_bifs::SystemInfoFacility;
 
-/// Minimal process-facing context exposed to native code.
+/// Handle to a contiguous run of terms registered as GC roots by
+/// [`ProcessContext::with_rooted`].
 ///
-/// Native functions deliberately receive this allocation subset instead of the
-/// full process so they cannot inspect scheduler, mailbox, or process internals.
+/// Indices are relative to the handle (`0..len`), not to the process root
+/// stack, so nested `with_rooted` scopes compose.
+#[derive(Clone, Copy, Debug)]
+pub struct RootedTerms {
+    base: usize,
+    len: usize,
+}
+
 /// Trampoline request from a BIF that needs interpreter re-entry.
 ///
 /// When a BIF returns normally but needs the interpreter to call a BEAM
@@ -77,6 +84,39 @@ pub enum NativeContinuation {
     GleamOption(GleamOptionState),
     /// Continuation for Gleam result higher-order BIFs.
     GleamResult(GleamResultState),
+}
+
+impl NativeContinuation {
+    /// Visit every term held by this continuation, for GC root snapshots.
+    ///
+    /// Continuation state survives across closure trampolines and therefore
+    /// across collections; any variant that stores terms MUST visit all of
+    /// them here and in [`NativeContinuation::for_each_term_mut`], or those
+    /// terms dangle after a GC. The matches are exhaustive on purpose so a
+    /// new variant fails to compile until it declares its roots.
+    pub(crate) fn for_each_term(&self, f: &mut dyn FnMut(Term)) {
+        match self {
+            Self::Maps(state) => state.for_each_term(f),
+            Self::Lists(state) => state.for_each_term(f),
+            Self::EtsFoldl(state) => state.for_each_term(f),
+            Self::GleamResultTry => {}
+            Self::GleamOption(state) => state.for_each_term(f),
+            Self::GleamResult(state) => state.for_each_term(f),
+        }
+    }
+
+    /// Visit every term held by this continuation mutably, so GC can forward
+    /// moved terms in place.
+    pub(crate) fn for_each_term_mut(&mut self, f: &mut dyn FnMut(&mut Term)) {
+        match self {
+            Self::Maps(state) => state.for_each_term_mut(f),
+            Self::Lists(state) => state.for_each_term_mut(f),
+            Self::EtsFoldl(state) => state.for_each_term_mut(f),
+            Self::GleamResultTry => {}
+            Self::GleamOption(state) => state.for_each_term_mut(f),
+            Self::GleamResult(state) => state.for_each_term_mut(f),
+        }
+    }
 }
 
 /// File I/O continuation data used when a suspended file BIF resumes.
@@ -562,6 +602,101 @@ impl<'process> ProcessContext<'process> {
         };
         crate::gc::ensure_space(process, words, self.live_x)
             .map_err(|_| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Run `body` with `terms` registered as GC roots.
+    ///
+    /// This is the safe way for a BIF to keep heap terms alive across
+    /// allocations: any collection triggered inside `body` traces and forwards
+    /// the registered roots, and `body` reads their current values through the
+    /// [`RootedTerms`] handle. The roots are removed when `body` returns,
+    /// on both success and error paths.
+    ///
+    /// Returns `badarg` when no process is attached, matching the allocation
+    /// helpers.
+    pub fn with_rooted<R>(
+        &mut self,
+        terms: &[Term],
+        body: impl FnOnce(&mut Self, &mut RootedTerms) -> Result<R, Term>,
+    ) -> Result<R, Term> {
+        let depth = {
+            let process = self
+                .process
+                .as_deref_mut()
+                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+            let depth = process.native_root_depth();
+            for term in terms {
+                process.push_native_root(*term);
+            }
+            depth
+        };
+        let mut handle = RootedTerms {
+            base: depth,
+            len: terms.len(),
+        };
+        let result = body(self, &mut handle);
+        if let Some(process) = self.process.as_deref_mut() {
+            process.truncate_native_roots(depth);
+        }
+        result
+    }
+
+    /// Append a term to a rooted scope, growing it.
+    ///
+    /// Only valid for the innermost active `with_rooted` scope; pushing
+    /// through an outer scope's handle would corrupt inner indices, so it is
+    /// rejected with `badarg`. Use this for loop accumulators whose length is
+    /// not known up front.
+    pub fn rooted_push(&mut self, handle: &mut RootedTerms, term: Term) -> Result<(), Term> {
+        let process = self
+            .process
+            .as_deref_mut()
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+        if handle.base + handle.len != process.native_root_depth() {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        }
+        process.push_native_root(term);
+        handle.len += 1;
+        Ok(())
+    }
+
+    /// Number of terms currently held by a rooted scope.
+    #[must_use]
+    pub fn rooted_len(&self, handle: &RootedTerms) -> usize {
+        handle.len
+    }
+
+    /// Read the current (post-GC) value of a rooted term.
+    ///
+    /// Returns `badarg` when the handle is stale or no process is attached;
+    /// both indicate a bug in the calling BIF rather than user error.
+    pub fn rooted(&self, handle: &RootedTerms, index: usize) -> Result<Term, Term> {
+        let process = self
+            .process
+            .as_deref()
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+        if index >= handle.len {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        }
+        process
+            .native_root(handle.base + index)
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+    }
+
+    /// Overwrite a rooted slot with a new term, keeping it traced.
+    ///
+    /// Use this for loop accumulators: re-root the updated value after each
+    /// allocation so the next collection forwards it.
+    pub fn set_rooted(&mut self, handle: &RootedTerms, index: usize, term: Term) -> Result<(), Term> {
+        let process = self
+            .process
+            .as_deref_mut()
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+        if index >= handle.len {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        }
+        process.set_native_root(handle.base + index, term);
+        Ok(())
     }
 
     /// Return the spawn facility, if one has been configured.
@@ -1204,8 +1339,21 @@ impl<'process> ProcessContext<'process> {
     /// Allocate a tuple on the calling process heap.
     pub fn alloc_tuple(&mut self, elements: &[Term]) -> Result<Term, Term> {
         let words = 1 + elements.len();
-        let heap = self.alloc_words(words)?;
-        write_tuple(heap, elements).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        if self.process.is_none() {
+            // Detached contexts allocate owned blocks and never collect.
+            let heap = self.alloc_words(words)?;
+            return write_tuple(heap, elements).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
+        }
+        // Root the inputs: the reserve below may collect and move them.
+        self.with_rooted(elements, |context, roots| {
+            context.ensure_heap_space(words)?;
+            let mut current = Vec::with_capacity(roots.len);
+            for index in 0..roots.len {
+                current.push(context.rooted(roots, index)?);
+            }
+            let heap = context.alloc_words_prereserved(words)?;
+            write_tuple(heap, &current).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        })
     }
 
     /// Allocate a tuple using pre-reserved heap space (no GC trigger).
@@ -1279,8 +1427,19 @@ impl<'process> ProcessContext<'process> {
 
     /// Allocate a cons cell on the calling process heap.
     pub fn alloc_cons(&mut self, head: Term, tail: Term) -> Result<Term, Term> {
-        let heap = self.alloc_words(2)?;
-        write_cons(heap, head, tail).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        if self.process.is_none() {
+            // Detached contexts allocate owned blocks and never collect.
+            let heap = self.alloc_words(2)?;
+            return write_cons(heap, head, tail).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
+        }
+        // Root the inputs: the reserve below may collect and move them.
+        self.with_rooted(&[head, tail], |context, roots| {
+            context.ensure_heap_space(2)?;
+            let head = context.rooted(roots, 0)?;
+            let tail = context.rooted(roots, 1)?;
+            let heap = context.alloc_words_prereserved(2)?;
+            write_cons(heap, head, tail).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        })
     }
 
     /// Allocate a float on the calling process heap.
@@ -1316,23 +1475,34 @@ impl<'process> ProcessContext<'process> {
 
     /// Allocate list cells for `elements`, ending in `tail`.
     ///
-    /// SAFETY NOTE: `ensure_heap_space` at the start may trigger GC which
-    /// moves heap objects. If `elements` contains boxed Terms (heap pointers),
-    /// they become stale after GC. Callers with boxed Terms MUST save them to
-    /// x-registers before calling this method and re-read after GC. For
-    /// immediate-only Terms (atoms, small ints, pids), this is safe as-is.
-    pub fn alloc_list_with_tail(
-        &mut self,
-        elements: &[Term],
-        mut tail: Term,
-    ) -> Result<Term, Term> {
-        self.ensure_heap_space(elements.len() * 2)?;
-        for element in elements.iter().rev().copied() {
-            let heap = self.alloc_words_prereserved(2)?;
-            tail = write_cons(heap, element, tail)
-                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+    /// The inputs are registered as GC roots for the duration of the call, so
+    /// boxed terms stay valid across the collection the initial reserve may
+    /// trigger.
+    pub fn alloc_list_with_tail(&mut self, elements: &[Term], tail: Term) -> Result<Term, Term> {
+        if self.process.is_none() {
+            // Detached contexts allocate owned blocks and never collect.
+            let mut tail = tail;
+            for element in elements.iter().rev().copied() {
+                let heap = self.alloc_words_prereserved(2)?;
+                tail = write_cons(heap, element, tail)
+                    .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+            }
+            return Ok(tail);
         }
-        Ok(tail)
+        let mut rooted = Vec::with_capacity(elements.len() + 1);
+        rooted.extend_from_slice(elements);
+        rooted.push(tail);
+        self.with_rooted(&rooted, |context, roots| {
+            context.ensure_heap_space(elements.len() * 2)?;
+            let mut tail = context.rooted(roots, elements.len())?;
+            for index in (0..elements.len()).rev() {
+                let element = context.rooted(roots, index)?;
+                let heap = context.alloc_words_prereserved(2)?;
+                tail = write_cons(heap, element, tail)
+                    .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+            }
+            Ok(tail)
+        })
     }
 
     /// Allocate a cons cell using pre-reserved heap space (no GC trigger).
@@ -1343,10 +1513,33 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Allocate a flatmap on the calling process heap.
+    ///
+    /// Keys and values are registered as GC roots for the duration of the
+    /// call.
     pub fn alloc_map(&mut self, keys: &[Term], values: &[Term]) -> Result<Term, Term> {
         let words = 2 + keys.len() + values.len();
-        let heap = self.alloc_words(words)?;
-        write_map(heap, keys, values).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        if self.process.is_none() {
+            // Detached contexts allocate owned blocks and never collect.
+            let heap = self.alloc_words(words)?;
+            return write_map(heap, keys, values).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
+        }
+        let mut rooted = Vec::with_capacity(keys.len() + values.len());
+        rooted.extend_from_slice(keys);
+        rooted.extend_from_slice(values);
+        self.with_rooted(&rooted, |context, roots| {
+            context.ensure_heap_space(words)?;
+            let mut current_keys = Vec::with_capacity(keys.len());
+            let mut current_values = Vec::with_capacity(values.len());
+            for index in 0..keys.len() {
+                current_keys.push(context.rooted(roots, index)?);
+            }
+            for index in 0..values.len() {
+                current_values.push(context.rooted(roots, keys.len() + index)?);
+            }
+            let heap = context.alloc_words_prereserved(words)?;
+            write_map(heap, &current_keys, &current_values)
+                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
+        })
     }
 
     /// Allocate a flatmap using pre-reserved heap space (no GC trigger).

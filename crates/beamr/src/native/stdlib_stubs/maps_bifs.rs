@@ -2,6 +2,8 @@
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{NativeContinuation, ProcessContext};
+
+use super::lists_bifs::list_from_vec;
 use crate::term::Term;
 use crate::term::boxed::{Closure, Cons, Map};
 use crate::term::compare;
@@ -37,6 +39,110 @@ pub enum MapsHofState {
     },
 }
 
+impl MapsHofState {
+    /// Visit every held term, for GC root snapshots.
+    pub(crate) fn for_each_term(&self, f: &mut dyn FnMut(Term)) {
+        let visit_pairs = |pairs: &[(Term, Term)], f: &mut dyn FnMut(Term)| {
+            for (key, value) in pairs {
+                f(*key);
+                f(*value);
+            }
+        };
+        match self {
+            Self::Fold { fun, entries, .. } => {
+                f(*fun);
+                visit_pairs(entries, f);
+            }
+            Self::Filter {
+                fun, entries, kept, ..
+            } => {
+                f(*fun);
+                visit_pairs(entries, f);
+                visit_pairs(kept, f);
+            }
+            Self::Map {
+                fun,
+                entries,
+                mapped,
+                ..
+            } => {
+                f(*fun);
+                visit_pairs(entries, f);
+                visit_pairs(mapped, f);
+            }
+            Self::MergeWith {
+                fun,
+                pending,
+                entries,
+                ..
+            } => {
+                f(*fun);
+                for (key, left, right) in pending {
+                    f(*key);
+                    f(*left);
+                    f(*right);
+                }
+                visit_pairs(entries, f);
+            }
+            Self::UpdateWith { remaining, updated } => {
+                visit_pairs(remaining, f);
+                visit_pairs(updated, f);
+            }
+        }
+    }
+
+    /// Visit every held term mutably, so GC can forward moved terms.
+    pub(crate) fn for_each_term_mut(&mut self, f: &mut dyn FnMut(&mut Term)) {
+        let visit_pairs = |pairs: &mut [(Term, Term)], f: &mut dyn FnMut(&mut Term)| {
+            for (key, value) in pairs {
+                f(key);
+                f(value);
+            }
+        };
+        match self {
+            Self::Fold { fun, entries, .. } => {
+                f(fun);
+                visit_pairs(entries, f);
+            }
+            Self::Filter {
+                fun, entries, kept, ..
+            } => {
+                f(fun);
+                visit_pairs(entries, f);
+                visit_pairs(kept, f);
+            }
+            Self::Map {
+                fun,
+                entries,
+                mapped,
+                ..
+            } => {
+                f(fun);
+                visit_pairs(entries, f);
+                visit_pairs(mapped, f);
+            }
+            Self::MergeWith {
+                fun,
+                pending,
+                entries,
+                ..
+            } => {
+                f(fun);
+                for (key, left, right) in pending {
+                    f(key);
+                    f(left);
+                    f(right);
+                }
+                visit_pairs(entries, f);
+            }
+            Self::UpdateWith { remaining, updated } => {
+                visit_pairs(remaining, f);
+                visit_pairs(updated, f);
+            }
+        }
+    }
+}
+
 pub fn bif_maps_put(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [key, value, map_term] = args else {
         return Err(badarg());
@@ -52,20 +158,18 @@ pub fn bif_maps_find(args: &[Term], context: &mut ProcessContext) -> Result<Term
         return Err(badarg());
     };
     let map = Map::new(*map_term).ok_or_else(badarg)?;
-    match map.get(*key) {
-        Some(_) => {
-            context
-                .process_mut()
-                .ok_or_else(badarg)?
-                .set_x_reg(1, *map_term);
-            context.ensure_heap_space(3)?;
-            let map_term = context.process_mut().ok_or_else(badarg)?.x_reg(1);
-            let map = Map::new(map_term).ok_or_else(badarg)?;
-            let value = map.get(*key).ok_or_else(badarg)?;
-            context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), value])
-        }
-        None => Ok(Term::atom(Atom::ERROR)),
+    if map.get(*key).is_none() {
+        return Ok(Term::atom(Atom::ERROR));
     }
+    // Root both the key and the map: the reserve may collect and move either.
+    context.with_rooted(&[*key, *map_term], |context, roots| {
+        context.ensure_heap_space(3)?;
+        let key = context.rooted(roots, 0)?;
+        let map_term = context.rooted(roots, 1)?;
+        let map = Map::new(map_term).ok_or_else(badarg)?;
+        let value = map.get(key).ok_or_else(badarg)?;
+        context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), value])
+    })
 }
 
 pub fn bif_maps_keys(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -472,28 +576,21 @@ fn make_map_from_entries(
     context: &mut ProcessContext,
     entries: &[(Term, Term)],
 ) -> Result<Term, Term> {
-    {
-        let process = context.process_mut().ok_or_else(badarg)?;
-        for (index, (key, value)) in entries.iter().enumerate() {
-            let key_register =
-                u16::try_from(index.checked_mul(2).ok_or_else(badarg)?).map_err(|_| badarg())?;
-            let value_register = key_register.checked_add(1).ok_or_else(badarg)?;
-            process.set_x_reg(key_register, *key);
-            process.set_x_reg(value_register, *value);
+    let mut flat = Vec::with_capacity(entries.len() * 2);
+    for (key, value) in entries {
+        flat.push(*key);
+        flat.push(*value);
+    }
+    context.with_rooted(&flat, |context, roots| {
+        context.ensure_heap_space(2 + entries.len() * 2)?;
+        let mut keys = Vec::with_capacity(entries.len());
+        let mut values = Vec::with_capacity(entries.len());
+        for index in 0..entries.len() {
+            keys.push(context.rooted(&roots, index * 2)?);
+            values.push(context.rooted(&roots, index * 2 + 1)?);
         }
-    }
-    context.ensure_heap_space(2 + entries.len() * 2)?;
-    let mut keys = Vec::with_capacity(entries.len());
-    let mut values = Vec::with_capacity(entries.len());
-    for index in 0..entries.len() {
-        let key_register =
-            u16::try_from(index.checked_mul(2).ok_or_else(badarg)?).map_err(|_| badarg())?;
-        let value_register = key_register.checked_add(1).ok_or_else(badarg)?;
-        let process = context.process_mut().ok_or_else(badarg)?;
-        keys.push(process.x_reg(key_register));
-        values.push(process.x_reg(value_register));
-    }
-    context.alloc_map_prereserved(&keys, &values)
+        context.alloc_map_prereserved(&keys, &values)
+    })
 }
 
 fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
@@ -505,24 +602,6 @@ fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
         current = cons.tail();
     }
     Ok(elements)
-}
-
-fn list_from_vec(elements: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    {
-        let process = context.process_mut().ok_or_else(badarg)?;
-        for (index, element) in elements.iter().enumerate() {
-            let register = u16::try_from(index).map_err(|_| badarg())?;
-            process.set_x_reg(register, *element);
-        }
-    }
-    context.ensure_heap_space(elements.len() * 2)?;
-    let mut tail = Term::NIL;
-    for index in (0..elements.len()).rev() {
-        let register = u16::try_from(index).map_err(|_| badarg())?;
-        let element = context.process_mut().ok_or_else(badarg)?.x_reg(register);
-        tail = context.alloc_cons_prereserved(element, tail)?;
-    }
-    Ok(tail)
 }
 
 fn badarg() -> Term {

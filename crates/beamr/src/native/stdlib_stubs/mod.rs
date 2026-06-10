@@ -1271,6 +1271,8 @@ mod b127_tests;
 mod bitwise_bifs_tests;
 #[cfg(test)]
 mod collection_bifs_tests;
+#[cfg(test)]
+mod gc_rooting_tests;
 #[cfg(feature = "json")]
 fn bif_json_decode(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {

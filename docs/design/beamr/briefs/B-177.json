@@ -1,101 +1,100 @@
 {
-  "id": "B-177",
-  "cluster": "beamr",
-  "title": "Per-BIF x-register save audit — complete GC root hardening",
-  "depends_on": [],
-  "blocked_by": [],
-  "checklist": [],
-  "stories": [],
-  "purpose": "The infrastructure GC hardening (alloc_words_prereserved / alloc_cons_prereserved) eliminated mid-loop GC in list/map allocation helpers. However, individual BIFs that call ensure_heap_space still need to save their input arguments to x-registers before that call, because ensure_heap_space may trigger GC which moves heap objects. Any BIF that holds a reference to a heap-allocated Term (list, tuple, map, binary, closure) in a Rust local variable across an ensure_heap_space call has a stale-pointer bug. lists:reverse was the first fix (landed in 0.4.1). This brief audits every BIF and fixes all remaining sites.",
-  "task": "Audit every BIF function that calls ensure_heap_space (or any allocation method that may trigger GC) while holding heap-term references in Rust locals. For each site: save args to x-registers before ensure_heap_space, re-read from x-registers after. Document the audit as a checklist so future BIFs follow the pattern.",
-  "requirements": [
-    {
-      "id": "R1",
-      "title": "Audit all stdlib_stubs BIFs",
-      "spec": "Audit every function in crates/beamr/src/native/stdlib_stubs/ that takes &[Term] args and calls ensure_heap_space, alloc_cons, alloc_tuple, alloc_map, alloc_binary, or any other allocation method. For each: if args contain heap-allocated terms and the function calls an allocating method, save args to x-registers before the first allocation, re-read after.",
-      "acceptance": [
-        "Every BIF in collection_bifs.rs saves heap-term args to x-registers before allocation",
-        "Every BIF in lists_bifs.rs saves heap-term args to x-registers before allocation",
-        "Every BIF in maps_bifs.rs saves heap-term args to x-registers before allocation",
-        "Every BIF in io_bifs.rs saves heap-term args to x-registers before allocation",
-        "Every BIF in gleam_stdlib_ffi.rs saves heap-term args to x-registers before allocation",
-        "No BIF holds a heap-term Rust local across an ensure_heap_space call"
-      ],
-      "files": {
-        "modify": [
-          "crates/beamr/src/native/stdlib_stubs/collection_bifs.rs",
-          "crates/beamr/src/native/stdlib_stubs/lists_bifs.rs",
-          "crates/beamr/src/native/stdlib_stubs/maps_bifs.rs",
-          "crates/beamr/src/native/stdlib_stubs/io_bifs.rs",
-          "crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi.rs"
-        ]
-      },
-      "checklist": [],
-      "stories": []
-    },
-    {
-      "id": "R2",
-      "title": "Audit gate1/gate2/gate3 BIFs",
-      "spec": "Audit BIFs in bifs.rs, process_bifs.rs, and gate3_bifs/ for the same pattern. Arithmetic BIFs that allocate BigInt (after B-173) are especially important — they receive numeric args that may be heap-allocated BigInts.",
-      "acceptance": [
-        "Every BIF in bifs.rs that allocates saves heap-term args first",
-        "Every BIF in process_bifs.rs that allocates saves heap-term args first",
-        "Every BIF in gate3_bifs/ that allocates saves heap-term args first",
-        "No BIF holds a heap-term Rust local across an allocation call"
-      ],
-      "files": {
-        "modify": [
-          "crates/beamr/src/native/bifs.rs",
-          "crates/beamr/src/native/process_bifs.rs"
-        ]
-      },
-      "checklist": [],
-      "stories": []
-    },
-    {
-      "id": "R3",
-      "title": "Audit OTP stubs and Gleam FFI BIFs",
-      "spec": "Audit BIFs in otp_stubs/ and gleam_ffi.rs for the same pattern. These BIFs often receive complex terms (tuples, lists, binaries) and allocate result terms.",
-      "acceptance": [
-        "Every BIF in otp_stubs/ that allocates saves heap-term args first",
-        "Every BIF in gleam_ffi.rs that allocates saves heap-term args first",
-        "Every BIF in selector_ffi.rs that allocates saves heap-term args first"
-      ],
-      "files": {
-        "modify": [
-          "crates/beamr/src/native/gleam_ffi.rs",
-          "crates/beamr/src/native/selector_ffi.rs"
-        ]
-      },
-      "checklist": [],
-      "stories": []
-    },
-    {
-      "id": "R4",
-      "title": "Document the GC-safe BIF pattern",
-      "spec": "Add a module-level doc comment to crates/beamr/src/native/mod.rs documenting the x-register save pattern for BIF authors. Include: when it's needed (any BIF that holds heap-term args and allocates), how to do it (save to x-regs, ensure_heap_space, re-read), and the reference implementation (bif_lists_reverse in collection_bifs.rs).",
-      "acceptance": [
-        "Module doc in native/mod.rs describes the GC-safe BIF pattern",
-        "Pattern includes save-to-x-regs, ensure_heap_space, re-read sequence",
-        "References bif_lists_reverse as the canonical example"
-      ],
-      "files": {
-        "modify": ["crates/beamr/src/native/mod.rs"]
-      },
-      "checklist": [],
-      "stories": []
-    }
-  ],
-  "boundaries": [
-    "BIFs that only work with small_int or atom args (immediate values, not heap pointers) do not need x-register saves",
-    "BIFs that never allocate (pure reads, comparisons) do not need x-register saves",
-    "The audit covers existing BIFs only — future BIFs follow the documented pattern",
-    "OUT OF SCOPE: Automated compile-time enforcement of the pattern (would require a custom lint)",
-    "OUT OF SCOPE: Changing the BIF calling convention to auto-save args"
-  ],
-  "verification": [
-    "cargo test -p beamr --lib passes",
-    "grep -n 'ensure_heap_space' across all BIF files confirms every call is preceded by x-register saves for heap-term args",
-    "No BIF function holds heap-term locals (list, tuple, map, binary, closure Terms) across allocation calls"
-  ]
+ "id": "B-177",
+ "cluster": "beamr",
+ "title": "Native GC rooting audit \u2014 migrate remaining sites to rooted scopes",
+ "depends_on": [],
+ "blocked_by": [],
+ "checklist": [],
+ "stories": [],
+ "purpose": "SUPERSEDED PRESCRIPTION (2026-06-10): the originally prescribed pattern \u2014 save args to x-registers before ensure_heap_space and re-read after \u2014 is UNSAFE and must not be used. GC only traces x[0..live_x] where live_x is the BIF arity at dispatch, so any term saved to a register at or above the arity is NOT a root and still corrupts under heap pressure (demonstrated with lists:flatten on boxed floats). The structural mechanism landed instead: (1) GC-triggering allocators (alloc_tuple, alloc_list, alloc_list_with_tail, alloc_map, alloc_cons) now root their own term arguments internally, so single-allocation BIFs are safe with no caller action; (2) BIFs holding terms across MULTIPLE allocations or accumulating in loops must use ProcessContext::with_rooted / rooted_push / rooted, which registers terms on the process native-root stack that every collection traces and forwards; (3) NativeContinuation state is now traced via for_each_term/for_each_term_mut \u2014 any new continuation variant must implement both (the exhaustive match enforces this at compile time). Remaining work for this brief: audit BIFs not yet converted that still use the x-register save convention WITHIN arity (currently correct but deprecated) and migrate them to rooted scopes for uniformity; verify no new BIF holds heap terms in Rust locals across allocating calls without rooting.",
+ "task": "Audit every BIF that holds heap-term references in Rust locals across allocating calls. Single allocations taking the terms as direct arguments are safe (self-rooting allocators). Multi-allocation sequences and accumulation loops must use context.with_rooted(...) and re-read via context.rooted(handle, i) after any potentially-collecting call, pushing loop accumulators with context.rooted_push. NEVER use the x-register save pattern: registers at or above the BIF arity are not GC roots. See crates/beamr/src/native/stdlib_stubs/gc_rooting_tests.rs for the regression harness and crates/beamr/src/native/context.rs (with_rooted) for the API.",
+ "requirements": [
+  {
+   "id": "R1",
+   "title": "Audit all stdlib_stubs BIFs for unrooted terms across allocations",
+   "spec": "Audit every function in crates/beamr/src/native/stdlib_stubs/ that takes &[Term] args and performs more than one allocating call (or allocates in a loop) while holding heap terms in Rust locals. Convert each to context.with_rooted scopes with rooted/rooted_push. Single direct allocator calls need no change. Remove remaining x-register save sites as they are encountered.",
+   "acceptance": [
+    "No BIF saves heap-term args to x-registers as a GC-rooting mechanism",
+    "Every multi-allocation BIF in stdlib_stubs uses with_rooted scopes",
+    "gc_rooting_tests pass under forced heap pressure"
+   ],
+   "files": {
+    "modify": [
+     "crates/beamr/src/native/stdlib_stubs/collection_bifs.rs",
+     "crates/beamr/src/native/stdlib_stubs/lists_bifs.rs",
+     "crates/beamr/src/native/stdlib_stubs/maps_bifs.rs",
+     "crates/beamr/src/native/stdlib_stubs/io_bifs.rs",
+     "crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi.rs"
+    ]
+   },
+   "checklist": [],
+   "stories": []
+  },
+  {
+   "id": "R2",
+   "title": "Audit gate1/gate2/gate3 BIFs",
+   "spec": "Audit BIFs in bifs.rs, process_bifs.rs, and gate3_bifs/ for the same pattern. Arithmetic BIFs that allocate BigInt (after B-173) are especially important \u2014 they receive numeric args that may be heap-allocated BigInts.",
+   "acceptance": [
+    "Every BIF in bifs.rs that allocates saves heap-term args first",
+    "Every BIF in process_bifs.rs that allocates saves heap-term args first",
+    "Every BIF in gate3_bifs/ that allocates saves heap-term args first",
+    "No BIF holds a heap-term Rust local across an allocation call"
+   ],
+   "files": {
+    "modify": [
+     "crates/beamr/src/native/bifs.rs",
+     "crates/beamr/src/native/process_bifs.rs"
+    ]
+   },
+   "checklist": [],
+   "stories": []
+  },
+  {
+   "id": "R3",
+   "title": "Audit OTP stubs and Gleam FFI BIFs",
+   "spec": "Audit BIFs in otp_stubs/ and gleam_ffi.rs for the same pattern. These BIFs often receive complex terms (tuples, lists, binaries) and allocate result terms.",
+   "acceptance": [
+    "Every BIF in otp_stubs/ that allocates saves heap-term args first",
+    "Every BIF in gleam_ffi.rs that allocates saves heap-term args first",
+    "Every BIF in selector_ffi.rs that allocates saves heap-term args first"
+   ],
+   "files": {
+    "modify": [
+     "crates/beamr/src/native/gleam_ffi.rs",
+     "crates/beamr/src/native/selector_ffi.rs"
+    ]
+   },
+   "checklist": [],
+   "stories": []
+  },
+  {
+   "id": "R4",
+   "title": "Document the GC-safe BIF pattern",
+   "spec": "Add a module-level doc comment to crates/beamr/src/native/mod.rs documenting the x-register save pattern for BIF authors. Include: when it's needed (any BIF that holds heap-term args and allocates), how to do it (save to x-regs, ensure_heap_space, re-read), and the reference implementation (bif_lists_reverse in collection_bifs.rs).",
+   "acceptance": [
+    "Module doc in native/mod.rs describes the GC-safe BIF pattern",
+    "Pattern includes save-to-x-regs, ensure_heap_space, re-read sequence",
+    "References bif_lists_reverse as the canonical example"
+   ],
+   "files": {
+    "modify": [
+     "crates/beamr/src/native/mod.rs"
+    ]
+   },
+   "checklist": [],
+   "stories": []
+  }
+ ],
+ "boundaries": [
+  "BIFs that only work with small_int or atom args (immediate values, not heap pointers) do not need x-register saves",
+  "BIFs that never allocate (pure reads, comparisons) do not need x-register saves",
+  "The audit covers existing BIFs only \u2014 future BIFs follow the documented pattern",
+  "OUT OF SCOPE: Automated compile-time enforcement of the pattern (would require a custom lint)",
+  "OUT OF SCOPE: Changing the BIF calling convention to auto-save args"
+ ],
+ "verification": [
+  "cargo test -p beamr --lib passes",
+  "grep -n 'ensure_heap_space' across all BIF files confirms every call is preceded by x-register saves for heap-term args",
+  "No BIF function holds heap-term locals (list, tuple, map, binary, closure Terms) across allocation calls"
+ ]
 }
