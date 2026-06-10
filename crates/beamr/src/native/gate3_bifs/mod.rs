@@ -333,17 +333,23 @@ fn phash2(term: Term, range: u64) -> Result<Term, Term> {
 }
 
 /// erlang:monotonic_time/0 — returns elapsed VM-local native time units.
-pub fn bif_monotonic_time_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_monotonic_time_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     if !args.is_empty() {
         return Err(badarg());
+    }
+    if let Some(value) = replay_native_result(context, "monotonic_time", 0)? {
+        return Ok(value);
     }
     native_time_term(monotonic_time_native()?)
 }
 
 /// erlang:system_time/0 — returns wall-clock native time units since UNIX epoch.
-pub fn bif_system_time_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_system_time_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     if !args.is_empty() {
         return Err(badarg());
+    }
+    if let Some(value) = replay_native_result(context, "system_time", 0)? {
+        return Ok(value);
     }
     native_time_term(system_time_native()?)
 }
@@ -354,6 +360,9 @@ pub fn bif_monotonic_time_1(args: &[Term], context: &mut ProcessContext) -> Resu
         return Err(badarg());
     };
     let unit = parse_time_unit(*unit_term, context)?;
+    if let Some(value) = replay_native_result(context, "monotonic_time", 1)? {
+        return Ok(value);
+    }
     native_time_term(convert_native_time(monotonic_time_native()?, unit)?)
 }
 
@@ -363,13 +372,19 @@ pub fn bif_system_time_1(args: &[Term], context: &mut ProcessContext) -> Result<
         return Err(badarg());
     };
     let unit = parse_time_unit(*unit_term, context)?;
+    if let Some(value) = replay_native_result(context, "system_time", 1)? {
+        return Ok(value);
+    }
     native_time_term(convert_native_time(system_time_native()?, unit)?)
 }
 
 /// erlang:time_offset/0 — returns system_time(native) - monotonic_time(native).
-pub fn bif_time_offset_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_time_offset_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     if !args.is_empty() {
         return Err(badarg());
+    }
+    if let Some(value) = replay_native_result(context, "time_offset", 0)? {
+        return Ok(value);
     }
     let offset = i128::from(system_time_native()?) - i128::from(monotonic_time_native()?);
     i64::try_from(offset)
@@ -379,9 +394,12 @@ pub fn bif_time_offset_0(args: &[Term], _context: &mut ProcessContext) -> Result
 }
 
 /// erlang:unique_integer/0 — returns a globally unique integer.
-pub fn bif_unique_integer_0(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_unique_integer_0(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     if !args.is_empty() {
         return Err(badarg());
+    }
+    if let Some(value) = replay_native_result(context, "unique_integer", 0)? {
+        return Ok(value);
     }
     next_unique_integer()
 }
@@ -392,6 +410,9 @@ pub fn bif_unique_integer_1(args: &[Term], context: &mut ProcessContext) -> Resu
         return Err(badarg());
     };
     parse_unique_integer_options(*options_term, context)?;
+    if let Some(value) = replay_native_result(context, "unique_integer", 1)? {
+        return Ok(value);
+    }
     next_unique_integer()
 }
 
@@ -446,6 +467,35 @@ enum TimeUnit {
     Microsecond,
     Millisecond,
     Second,
+}
+
+fn replay_native_result(
+    context: &mut ProcessContext,
+    function_name: &str,
+    arity: u8,
+) -> Result<Option<Term>, Term> {
+    let Some(driver) = context.replay_driver().cloned() else {
+        return Ok(None);
+    };
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    let module = atom_table.intern("erlang");
+    let function = atom_table.intern(function_name);
+    let pid = context.pid().ok_or_else(badarg)?;
+    let recorded = match driver.lock() {
+        Ok(mut guard) => guard.next_native_call(pid, module, function, arity),
+        Err(error) => error
+            .into_inner()
+            .next_native_call(pid, module, function, arity),
+    }
+    .map_err(|_| badarg())?;
+    match recorded.outcome.result {
+        Ok(value) => Ok(Some(value)),
+        Err(reason) => {
+            context.set_exception_class(recorded.outcome.exception_class);
+            context.set_exception_stacktrace(recorded.outcome.exception_stacktrace);
+            Err(reason)
+        }
+    }
 }
 
 fn monotonic_time_native() -> Result<i64, Term> {

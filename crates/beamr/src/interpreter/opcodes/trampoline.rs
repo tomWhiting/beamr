@@ -41,14 +41,19 @@ pub fn build_mailbox_snapshot(process: &mut Process) -> Option<Arc<MailboxSnapsh
 /// Apply a mailbox removal recorded by the select facility.
 pub fn apply_mailbox_removal(process: &mut Process, snapshot: &MailboxSnapshot) {
     if let Some(index) = snapshot.removed_index() {
-        // The snapshot was built from the scan list starting at position 0.
-        // We need to set the save pointer to the target index, then remove.
-        process.mailbox_mut().reset_save_pointer();
+        apply_mailbox_removal_at(process, Some(index));
+    }
+}
+
+/// Apply a mailbox removal by deterministic index from the current scan list.
+pub fn apply_mailbox_removal_at(process: &mut Process, index: Option<usize>) {
+    process.mailbox_mut().reset_save_pointer();
+    if let Some(index) = index {
         for _ in 0..index {
             process.mailbox_mut().advance_save_pointer();
         }
-        let _ = process.mailbox_mut().remove_current_message();
     }
+    let _ = process.mailbox_mut().remove_current_message();
 }
 
 /// Handle a trampoline request by setting up a closure call.

@@ -27,6 +27,7 @@ use crate::native::supervision::SupervisionFacility;
 use crate::native::system_info_bifs::SystemInfoFacility;
 use crate::native::{FileIoFacility, NativeEntry, RemoteSpawnFacility, TcpIoFacility};
 use crate::process::{CodePosition, ExitReason, Process};
+use crate::replay::ReplayDriver;
 use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::Term;
 use crate::timer::TimerWheel;
@@ -79,6 +80,8 @@ pub struct NativeServices {
     pub tcp_io_facility: Option<Arc<dyn TcpIoFacility>>,
     /// Shared JIT cache used for mixed interpreter/native dispatch.
     pub jit_cache: Option<Arc<JitCache>>,
+    /// Replay driver used to replace nondeterministic native decisions.
+    pub replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.
@@ -96,6 +99,12 @@ pub enum ExecutionResult {
         entry: NativeEntry,
         /// Arguments copied from x registers at the call boundary.
         args: Vec<Term>,
+        /// Native module atom.
+        module: crate::atom::Atom,
+        /// Native function atom.
+        function: crate::atom::Atom,
+        /// Native arity.
+        arity: u8,
         /// Dirty scheduler pool that must execute the call.
         kind: DirtySchedulerKind,
     },
@@ -124,6 +133,12 @@ pub enum InstructionOutcome {
         entry: NativeEntry,
         /// Arguments copied from x registers at the call boundary.
         args: Vec<Term>,
+        /// Native module atom.
+        module: crate::atom::Atom,
+        /// Native function atom.
+        function: crate::atom::Atom,
+        /// Native arity.
+        arity: u8,
         /// Dirty scheduler pool that must execute the call.
         kind: DirtySchedulerKind,
     },
@@ -155,6 +170,7 @@ pub fn run(process: &mut Process, module: &Module) -> Result<ExecutionResult, Ex
         file_io_facility: None,
         tcp_io_facility: None,
         jit_cache: None,
+        replay_driver: None,
     };
     run_loop(process, module, None, &empty)
 }
@@ -189,6 +205,7 @@ pub fn run_with_registry(
         file_io_facility: None,
         tcp_io_facility: None,
         jit_cache: None,
+        replay_driver: None,
     };
     run_loop(process, initial_module, Some(registry), &empty)
 }
@@ -223,6 +240,7 @@ pub fn run_with_timer_services(
         file_io_facility: None,
         tcp_io_facility: None,
         jit_cache: None,
+        replay_driver: None,
     };
     run_loop(process, initial_module, None, &services)
 }
@@ -314,8 +332,22 @@ fn run_loop(
                 process.clear_current_module();
                 return Ok(ExecutionResult::Exited(ExitReason::Normal));
             }
-            InstructionOutcome::DirtyCall { entry, args, kind } => {
-                return Ok(ExecutionResult::DirtyCall { entry, args, kind });
+            InstructionOutcome::DirtyCall {
+                entry,
+                args,
+                module,
+                function,
+                arity,
+                kind,
+            } => {
+                return Ok(ExecutionResult::DirtyCall {
+                    entry,
+                    args,
+                    module,
+                    function,
+                    arity,
+                    kind,
+                });
             }
         }
     }

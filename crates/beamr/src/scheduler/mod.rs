@@ -22,8 +22,8 @@ use crate::error::ExecError;
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::hook::Hook;
 use crate::io::{
-    CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoSink,
-    IoWakeTarget, NullSink, PendingIoRegistry, RingConfig, StandardIoServer, create_ring,
+    CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoOp,
+    IoSink, IoWakeTarget, NullSink, PendingIoRegistry, RingConfig, StandardIoServer, create_ring,
 };
 use crate::jit::{DEFAULT_JIT_THRESHOLD, JitCache, JitProfiler};
 use crate::module::ModuleRegistry;
@@ -34,6 +34,7 @@ use crate::native::{
 };
 use crate::process::registry::ProcessTable;
 use crate::process::{ExitReason, Process, ProcessStatus};
+use crate::replay::{ReplayDriver, ReplayLog};
 use crate::scheduler::dirty::DirtyResult;
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
@@ -47,7 +48,35 @@ use run_queue::{PriorityStealers, RunQueue};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 pub const DEFAULT_REDUCTION_BUDGET: u32 = crate::process::DEFAULT_REDUCTION_BUDGET;
+
+enum ReplayMode {
+    Live,
+    Replay(ReplayLog),
+}
+
+#[derive(Default)]
+struct ReplayDisabledRing {
+    next_op_id: AtomicU64,
+}
+
+impl CompletionRing for ReplayDisabledRing {
+    fn submit(&self, _op: IoOp) -> u64 {
+        self.next_op_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn poll_completions(&self, _timeout: Duration) -> Vec<IoCompletion> {
+        Vec::new()
+    }
+
+    fn pending_count(&self) -> usize {
+        0
+    }
+
+    fn shutdown(&self) {}
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SchedulerConfig {
     pub thread_count: Option<usize>,
@@ -108,6 +137,8 @@ pub(super) struct SharedState {
     io_bridge: Mutex<Option<IoCompletionBridge>>,
     io_facility: Option<Arc<dyn IoFacility>>,
     standard_io_pid: u64,
+    replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
+    replay_mode: bool,
 
     // Kept for ownership: dropping SharedState must also stop the backing standard I/O server.
     #[allow(dead_code)]
@@ -265,6 +296,21 @@ impl Scheduler {
             Arc::new(BifRegistryImpl::new()),
         )
     }
+
+    /// Create a scheduler in deterministic replay mode over `log`.
+    pub fn new_replay(config: SchedulerConfig, log: ReplayLog) -> Result<Self, String> {
+        Self::new_replay_with_registry(config, Arc::new(ModuleRegistry::new()), log)
+    }
+
+    /// Create a replay scheduler using an explicit module registry.
+    pub fn new_replay_with_registry(
+        config: SchedulerConfig,
+        module_registry: Arc<ModuleRegistry>,
+        log: ReplayLog,
+    ) -> Result<Self, String> {
+        Self::construct(config, module_registry, ReplayMode::Replay(log))
+    }
+
     pub fn with_code_server(
         config: SchedulerConfig,
         module_registry: Arc<ModuleRegistry>,
@@ -286,6 +332,44 @@ impl Scheduler {
         bif_registry: Arc<BifRegistryImpl>,
         capability_policy: Arc<dyn CapabilityPolicy>,
     ) -> Result<Self, String> {
+        Self::construct_with_services(
+            config,
+            module_registry,
+            atom_table,
+            bif_registry,
+            capability_policy,
+            ReplayMode::Live,
+        )
+    }
+
+    fn construct(
+        config: SchedulerConfig,
+        module_registry: Arc<ModuleRegistry>,
+        replay_mode: ReplayMode,
+    ) -> Result<Self, String> {
+        Self::construct_with_services(
+            config,
+            module_registry,
+            Arc::new(AtomTable::with_common_atoms()),
+            Arc::new(BifRegistryImpl::new()),
+            Arc::new(AllCapabilitiesPolicy),
+            replay_mode,
+        )
+    }
+
+    fn construct_with_services(
+        config: SchedulerConfig,
+        module_registry: Arc<ModuleRegistry>,
+        atom_table: Arc<AtomTable>,
+        bif_registry: Arc<BifRegistryImpl>,
+        capability_policy: Arc<dyn CapabilityPolicy>,
+        replay_mode: ReplayMode,
+    ) -> Result<Self, String> {
+        let replay_driver = match replay_mode {
+            ReplayMode::Live => None,
+            ReplayMode::Replay(log) => Some(Arc::new(Mutex::new(ReplayDriver::new(log)))),
+        };
+        let replay_enabled = replay_driver.is_some();
         let thread_count = configured_thread_count(config.thread_count);
         let dirty_queue_depth = config
             .dirty_queue_depth
@@ -306,15 +390,19 @@ impl Scheduler {
             config.jit_threshold.unwrap_or(DEFAULT_JIT_THRESHOLD),
         ));
         let jit_cache = Arc::new(JitCache::new());
-        let io_runtime = config.io.map(|ring_config| {
-            let ring: Arc<dyn CompletionRing> = Arc::from(create_ring(ring_config));
-            let registry = Arc::new(PendingIoRegistry::default());
-            let facility: Arc<dyn IoFacility> = Arc::new(CompletionRingIoFacility::new(
-                Arc::clone(&ring),
-                Arc::clone(&registry),
-            ));
-            (ring, registry, facility)
-        });
+        let io_runtime = if replay_enabled {
+            None
+        } else {
+            config.io.map(|ring_config| {
+                let ring: Arc<dyn CompletionRing> = Arc::from(create_ring(ring_config));
+                let registry = Arc::new(PendingIoRegistry::default());
+                let facility: Arc<dyn IoFacility> = Arc::new(CompletionRingIoFacility::new(
+                    Arc::clone(&ring),
+                    Arc::clone(&registry),
+                ));
+                (ring, registry, facility)
+            })
+        };
         let (io_ring, io_registry, io_facility) = match io_runtime {
             Some((ring, registry, facility)) => (Some(ring), Some(registry), Some(facility)),
             None => (None, None, None),
@@ -324,10 +412,16 @@ impl Scheduler {
             ConnectionManager::new(Arc::clone(&atom_table), Arc::clone(&distribution.resolver));
         let namespace_store = DashMap::new();
         namespace_store.insert(NamespaceId::DEFAULT, Arc::clone(&module_registry));
-        let file_io_ring: Arc<dyn CompletionRing> =
-            Arc::from(crate::io::create_ring(RingConfig::default()));
-        let standard_io_ring: Arc<dyn CompletionRing> =
-            Arc::from(crate::io::create_ring(RingConfig::default()));
+        let file_io_ring: Arc<dyn CompletionRing> = if replay_enabled {
+            Arc::new(ReplayDisabledRing::default())
+        } else {
+            Arc::from(crate::io::create_ring(RingConfig::default()))
+        };
+        let standard_io_ring: Arc<dyn CompletionRing> = if replay_enabled {
+            Arc::new(ReplayDisabledRing::default())
+        } else {
+            Arc::from(crate::io::create_ring(RingConfig::default()))
+        };
         let standard_io_pid = 0u64;
         let local_node_name = config.node_name.as_deref().unwrap_or(DEFAULT_NODE_NAME);
         let local_node = Node::new(
@@ -388,20 +482,26 @@ impl Scheduler {
             io_bridge: Mutex::new(None),
             io_facility,
             standard_io_pid,
+            replay_driver,
+            replay_mode: replay_enabled,
             _standard_io_server: standard_io_server,
             #[cfg(test)]
             idle_parks: AtomicUsize::new(0),
         });
-        let standard_io_pid = shared._standard_io_server.pid();
-        shared.process_table.spawn_with_pid(standard_io_pid);
-        shared.process_bodies.insert(
-            standard_io_pid,
-            Mutex::new(ProcessSlot::Present(ScheduledProcess(
-                StandardIoServer::process(standard_io_pid),
-            ))),
-        );
+        if !shared.replay_mode {
+            let standard_io_pid = shared._standard_io_server.pid();
+            shared.process_table.spawn_with_pid(standard_io_pid);
+            shared.process_bodies.insert(
+                standard_io_pid,
+                Mutex::new(ProcessSlot::Present(ScheduledProcess(
+                    StandardIoServer::process(standard_io_pid),
+                ))),
+            );
+        }
         supervision_integration::register_distribution_control_handler(&shared);
-        if let (Some(ring), Some(registry)) = (&shared.io_ring, &shared.io_registry) {
+        if !shared.replay_mode
+            && let (Some(ring), Some(registry)) = (&shared.io_ring, &shared.io_registry)
+        {
             let target: Arc<dyn IoWakeTarget> = shared.clone();
             let bridge = IoCompletionBridge::start(Arc::clone(ring), Arc::clone(registry), target)
                 .map_err(|error| format!("failed to spawn beamr-io-completion thread: {error}"))?;

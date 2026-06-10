@@ -21,6 +21,7 @@ pub mod module;
 pub mod namespace;
 pub mod native;
 pub mod process;
+pub mod replay;
 pub mod scheduler;
 pub mod supervision;
 pub mod term;

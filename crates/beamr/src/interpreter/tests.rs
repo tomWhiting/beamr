@@ -75,6 +75,7 @@ fn native_services_with_jit_cache(jit_cache: Arc<JitCache>) -> NativeServices {
         file_io_facility: None,
         tcp_io_facility: None,
         jit_cache: Some(jit_cache),
+        replay_driver: None,
     }
 }
 
@@ -1009,7 +1010,10 @@ fn dirty_native_returns_dirty_call_without_inline_execution() {
     let mut process = Process::new(1, 32);
 
     let result = run(&mut process, &module).expect("dirty native yields");
-    let ExecutionResult::DirtyCall { entry, args, kind } = result else {
+    let ExecutionResult::DirtyCall {
+        entry, args, kind, ..
+    } = result
+    else {
         panic!("expected dirty call, got {result:?}");
     };
     assert_eq!(entry.dirty_kind, Some(DirtySchedulerKind::Cpu));

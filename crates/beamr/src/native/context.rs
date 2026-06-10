@@ -19,6 +19,7 @@ use crate::native::ets_bifs::EtsFoldlState;
 use crate::native::otp_stubs::gleam_stubs::{GleamOptionState, GleamResultState};
 use crate::native::stdlib_stubs::{lists_hof_bifs::ListsHofState, maps_bifs::MapsHofState};
 use crate::process::{Priority, Process};
+use crate::replay::ReplayDriver;
 use crate::term::Term;
 use crate::term::boxed::{
     write_bigint, write_cons, write_external_pid, write_external_reference, write_float, write_map,
@@ -258,6 +259,7 @@ pub struct ProcessContext<'process> {
     shutdown_requested: bool,
     trampoline: Option<TrampolineRequest>,
     suspend: Option<SuspendRequest>,
+    replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
 }
 
 impl fmt::Debug for ProcessContext<'_> {
@@ -340,6 +342,7 @@ impl fmt::Debug for ProcessContext<'_> {
             .field("trampoline", &self.trampoline)
             .field("suspend", &self.suspend)
             .field("exception_stacktrace", &self.exception_stacktrace)
+            .field("replay_driver", &self.replay_driver.as_ref().map(|_| ".."))
             .finish()
     }
 }
@@ -388,6 +391,7 @@ impl<'process> ProcessContext<'process> {
             trampoline: None,
             suspend: None,
             shutdown_requested: false,
+            replay_driver: None,
         }
     }
 
@@ -428,7 +432,19 @@ impl<'process> ProcessContext<'process> {
             trampoline: None,
             suspend: None,
             shutdown_requested: false,
+            replay_driver: None,
         }
+    }
+
+    /// Return the replay driver when running under deterministic replay.
+    #[must_use]
+    pub fn replay_driver(&self) -> Option<&Arc<Mutex<ReplayDriver>>> {
+        self.replay_driver.as_ref()
+    }
+
+    /// Set the replay driver for native BIFs that consume recorded decisions.
+    pub fn set_replay_driver(&mut self, driver: Option<Arc<Mutex<ReplayDriver>>>) {
+        self.replay_driver = driver;
     }
 
     /// Return the calling process id when provided by the runtime.

@@ -120,8 +120,12 @@ pub(in crate::scheduler) fn scheduler_loop(
         }
         drain_injected(shared, queue, inject);
         if my_index == 0 {
-            timer_integration::tick_timers(shared);
-            drain_file_io_completions(shared);
+            if shared.replay_mode {
+                timer_integration::tick_replay_timers(shared);
+            } else {
+                timer_integration::tick_timers(shared);
+                drain_file_io_completions(shared);
+            }
         }
         drain_woken(shared, queue, my_index);
         let pid = match queue.pop() {
@@ -340,12 +344,8 @@ fn deliver_tcp_active_data(
     let mut slot = super::lock_or_recover(&entry);
     match &mut *slot {
         ProcessSlot::Present(ScheduledProcess(process)) => {
-            let message = build_tcp_active_message_for_process(
-                &shared.atom_table,
-                process,
-                fd,
-                data,
-            )?;
+            let message =
+                build_tcp_active_message_for_process(&shared.atom_table, process, fd, data)?;
             process.mailbox_mut().push_owned(message);
         }
         ProcessSlot::Executing(metadata) => {
@@ -363,20 +363,13 @@ fn deliver_tcp_active_data(
     Some(Term::atom(crate::atom::Atom::OK))
 }
 
-fn deliver_tcp_closed(
-    shared: &SharedState,
-    fd: &std::sync::Arc<FdInner>,
-) -> Option<Term> {
+fn deliver_tcp_closed(shared: &SharedState, fd: &std::sync::Arc<FdInner>) -> Option<Term> {
     let target = fd.controlling_process();
     let entry = shared.process_bodies.get(&target)?;
     let mut slot = super::lock_or_recover(&entry);
     match &mut *slot {
         ProcessSlot::Present(ScheduledProcess(process)) => {
-            let message = build_tcp_closed_message_for_process(
-                &shared.atom_table,
-                process,
-                fd,
-            )?;
+            let message = build_tcp_closed_message_for_process(&shared.atom_table, process, fd)?;
             process.mailbox_mut().push_owned(message);
         }
         ProcessSlot::Executing(metadata) => {

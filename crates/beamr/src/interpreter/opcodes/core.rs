@@ -520,7 +520,34 @@ fn call_external_target(
                 args.push(process.x_reg(register.into()));
             }
             if let Some(kind) = entry.dirty_kind {
-                return Ok(InstructionOutcome::DirtyCall { entry, args, kind });
+                return Ok(InstructionOutcome::DirtyCall {
+                    entry,
+                    args,
+                    module: resolved.module,
+                    function: resolved.function,
+                    arity: resolved.arity,
+                    kind,
+                });
+            }
+            if matches!(
+                entry.capability,
+                crate::native::Capability::ExternalIo | crate::native::Capability::Entropy
+            ) && let Some(svc) = ctx.services
+                && let Some(driver) = &svc.replay_driver
+            {
+                let mut driver = match driver.lock() {
+                    Ok(guard) => guard,
+                    Err(error) => error.into_inner(),
+                };
+                let recorded = driver
+                    .next_native_call(
+                        process.pid(),
+                        resolved.module,
+                        resolved.function,
+                        resolved.arity,
+                    )
+                    .map_err(ExecError::from)?;
+                return apply_replayed_native_result(process, recorded.outcome, save_return);
             }
             let mut context = match ctx.timers {
                 Some(timers) => {
@@ -553,18 +580,38 @@ fn call_external_target(
                 context.set_io_message_facility(svc.io_message_facility.clone());
                 context.set_file_io_facility(svc.file_io_facility.clone());
                 context.set_tcp_io_facility(svc.tcp_io_facility.clone());
+                context.set_replay_driver(svc.replay_driver.clone());
                 if let Some(sink) = &svc.io_sink {
                     context.set_io_sink(Arc::clone(sink));
                 }
             }
 
             // Provide mailbox access for select BIFs before borrowing the process for heap allocation.
-            let snapshot = trampoline::build_mailbox_snapshot(process);
-            context.set_select_facility(
-                snapshot
-                    .clone()
-                    .map(|s| s as Arc<dyn crate::native::SelectFacility>),
-            );
+            let mut replay_select = None;
+            let snapshot =
+                if should_replay_select(ctx, resolved.module, resolved.function, resolved.arity) {
+                    let driver = ctx
+                        .services
+                        .and_then(|svc| svc.replay_driver.as_ref())
+                        .ok_or(ExecError::InvalidOperand("replay select driver"))?;
+                    let facility = crate::replay::ReplayDriver::select_facility(
+                        Arc::clone(driver),
+                        process.pid(),
+                    )
+                    .map_err(ExecError::from)?;
+                    let select_facility: Arc<dyn crate::native::SelectFacility> = facility.clone();
+                    context.set_select_facility(Some(select_facility));
+                    replay_select = Some(facility);
+                    None
+                } else {
+                    let snapshot = trampoline::build_mailbox_snapshot(process);
+                    context.set_select_facility(
+                        snapshot
+                            .clone()
+                            .map(|s| s as Arc<dyn crate::native::SelectFacility>),
+                    );
+                    snapshot
+                };
             context.attach_process(process, usize::from(arity));
 
             let call_result = (entry.function)(&args, &mut context);
@@ -587,7 +634,11 @@ fn call_external_target(
             };
 
             // Handle mailbox removal if the select facility recorded one.
-            if let Some(snapshot) = snapshot {
+            if let Some(facility) = replay_select {
+                if let Some(index) = facility.removed_index() {
+                    trampoline::apply_mailbox_removal_at(process, Some(index));
+                }
+            } else if let Some(snapshot) = snapshot {
                 trampoline::apply_mailbox_removal(process, &snapshot);
             }
 
@@ -644,6 +695,48 @@ fn complete_native_value(
         Ok(InstructionOutcome::Continue)
     } else {
         return_(process)
+    }
+}
+
+fn should_replay_select(ctx: &ExtCallContext<'_>, module: Atom, function: Atom, arity: u8) -> bool {
+    let Some(services) = ctx.services else {
+        return false;
+    };
+    if services.replay_driver.is_none() || function != services.atom_table.intern("select") {
+        return false;
+    }
+    let Some(module_name) = services.atom_table.resolve(module) else {
+        return false;
+    };
+    matches!(
+        (module_name, arity),
+        ("gleam_erlang_ffi", 1 | 2) | ("erlang", 1 | 2)
+    )
+}
+
+fn apply_replayed_native_result(
+    process: &mut Process,
+    outcome: crate::replay::NativeOutcome,
+    save_return: bool,
+) -> Result<InstructionOutcome, ExecError> {
+    match outcome.result {
+        Ok(value) => {
+            process.set_x_reg(0, value);
+            charge_reduction(process)?;
+            if save_return {
+                Ok(InstructionOutcome::Continue)
+            } else {
+                return_(process)
+            }
+        }
+        Err(reason) => {
+            let exception = crate::process::Exception {
+                class: Term::atom(exception_class_atom(outcome.exception_class)),
+                reason,
+                stacktrace: outcome.exception_stacktrace,
+            };
+            super::exceptions::raise_exception(process, exception)
+        }
     }
 }
 

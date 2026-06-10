@@ -594,15 +594,22 @@ pub(super) fn build_native_services(
         io_sink: Some(Arc::clone(&lock_or_recover(&shared.output_sink))),
         code_management_facility: Some(code_management),
         system_info_facility: Some(system_info),
-        io_facility: shared.io_facility.clone(),
+        io_facility: if shared.replay_mode {
+            None
+        } else {
+            shared.io_facility.clone()
+        },
         io_message_facility: Some(Arc::new(SchedulerIoMessageFacility {
             shared: Arc::clone(shared),
         })),
-        file_io_facility: Some(file_io_facility),
-        tcp_io_facility: Some(Arc::new(SchedulerTcpIoFacility {
-            shared: Arc::clone(shared),
-        })),
+        file_io_facility: (!shared.replay_mode).then_some(file_io_facility),
+        tcp_io_facility: (!shared.replay_mode).then(|| {
+            Arc::new(SchedulerTcpIoFacility {
+                shared: Arc::clone(shared),
+            }) as Arc<dyn crate::native::TcpIoFacility>
+        }),
         jit_cache: Some(Arc::clone(&shared.jit_cache)),
+        replay_driver: shared.replay_driver.clone(),
     }
 }
 

@@ -100,6 +100,8 @@ pub enum ExecError {
     HeapFull { requested: usize, available: usize },
     /// A distributed send could not reach the target node.
     NoConnection,
+    /// Replay mode reached a decision point that does not match the recorded log.
+    ReplayMismatch(String),
 }
 
 impl fmt::Display for ExecError {
@@ -168,6 +170,7 @@ impl fmt::Display for ExecError {
                 "heap full: requested {requested} words with {available} available"
             ),
             Self::NoConnection => formatter.write_str("distributed send failed: noconnection"),
+            Self::ReplayMismatch(message) => write!(formatter, "replay mismatch: {message}"),
         }
     }
 }
@@ -209,6 +212,12 @@ impl ExecError {
 }
 
 impl Error for ExecError {}
+
+impl From<crate::replay::ReplayMismatch> for ExecError {
+    fn from(error: crate::replay::ReplayMismatch) -> Self {
+        Self::ReplayMismatch(error.to_string())
+    }
+}
 
 impl From<crate::process::stack::StackError> for ExecError {
     fn from(error: crate::process::stack::StackError) -> Self {
