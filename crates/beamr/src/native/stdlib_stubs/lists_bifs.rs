@@ -25,6 +25,9 @@ pub fn bif_lists_append_2(args: &[Term], context: &mut ProcessContext) -> Result
     let [left, right] = args else {
         return Err(badarg());
     };
+    if right.is_nil() && Cons::new(*left).is_none() {
+        return Ok(*left);
+    }
     let elements = list_to_vec(*left)?;
     let mut tail = *right;
     for element in elements.iter().rev() {

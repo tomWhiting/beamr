@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::ets::OwnedTerm;
 use crate::native::{ExceptionClass, NativeFn, ProcessContext};
 use crate::scheduler::lock_or_recover;
 use crate::term::Term;
@@ -71,10 +72,13 @@ pub mod oneshot {
 }
 
 /// Result of a native function invocation completed on a dirty scheduler thread.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct DirtyResult {
     /// Native function return value or error reason.
     pub result: Result<Term, Term>,
+    /// Owns boxed/list allocations reachable from `result` until the process
+    /// resumes and copies the dirty native return value onto its own heap.
+    pub owned_result: Option<OwnedTerm>,
     /// Exception class requested by the dirty native if it returned `Err`.
     pub exception_class: ExceptionClass,
     /// Stacktrace requested by the dirty native if it returned `Err`.
@@ -283,10 +287,23 @@ fn worker_loop(receiver: Receiver<DirtyMessage>) {
             DirtyMessage::RunNative(mut job) => {
                 let _pid = job.pid;
                 let result = (job.function)(&job.args, &mut job.context);
+                let raw_result = match &result {
+                    Ok(value) | Err(value) => *value,
+                };
+                let owned_result = if raw_result.is_list() || raw_result.is_boxed() {
+                    crate::ets::copy_term_to_ets(raw_result).ok()
+                } else {
+                    None
+                };
+                let result = match owned_result.as_ref() {
+                    Some(owned) => result.map(|_| owned.root()).map_err(|_| owned.root()),
+                    None => result,
+                };
                 let exception_class = job.context.take_exception_class();
                 let exception_stacktrace = job.context.take_exception_stacktrace();
                 let _ = job.result_sender.send(DirtyResult {
                     result,
+                    owned_result,
                     exception_class,
                     exception_stacktrace,
                 });
@@ -301,7 +318,7 @@ fn worker_loop(receiver: Receiver<DirtyMessage>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirtyJob, DirtyPool, DirtyResult, DirtySchedulerKind, oneshot};
+    use super::{DirtyJob, DirtyPool, DirtySchedulerKind, oneshot};
     use crate::native::{ExceptionClass, ProcessContext};
     use crate::term::Term;
 
@@ -346,14 +363,11 @@ mod tests {
             Ok(())
         );
 
-        assert_eq!(
-            result_receiver.recv(),
-            Ok(DirtyResult {
-                result: Ok(Term::small_int(42)),
-                exception_class: ExceptionClass::Error,
-                exception_stacktrace: Term::NIL,
-            })
-        );
+        let result = result_receiver.recv().expect("dirty result");
+        assert_eq!(result.result, Ok(Term::small_int(42)));
+        assert!(result.owned_result.is_none());
+        assert_eq!(result.exception_class, ExceptionClass::Error);
+        assert_eq!(result.exception_stacktrace, Term::NIL);
         pool.shutdown();
     }
 

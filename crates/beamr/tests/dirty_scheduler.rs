@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use beamr::atom::Atom;
@@ -13,9 +13,67 @@ use beamr::scheduler::dirty::DirtySchedulerKind;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::term::Term;
 
-static DIRTY_STARTED: AtomicBool = AtomicBool::new(false);
-static DIRTY_FINISHED: AtomicBool = AtomicBool::new(false);
 static NORMAL_PROGRESS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Default)]
+struct DirtyLifecycleState {
+    generation: u64,
+    started: bool,
+    finished: bool,
+}
+
+struct DirtyLifecycle {
+    state: Mutex<DirtyLifecycleState>,
+    condvar: Condvar,
+}
+
+static DIRTY_LIFECYCLE: OnceLock<DirtyLifecycle> = OnceLock::new();
+
+fn dirty_lifecycle() -> &'static DirtyLifecycle {
+    DIRTY_LIFECYCLE.get_or_init(|| DirtyLifecycle {
+        state: Mutex::new(DirtyLifecycleState::default()),
+        condvar: Condvar::new(),
+    })
+}
+
+fn reset_dirty_lifecycle() -> u64 {
+    let lifecycle = dirty_lifecycle();
+    let mut state = lifecycle.state.lock().expect("dirty lifecycle lock");
+    state.generation = state.generation.saturating_add(1);
+    state.started = false;
+    state.finished = false;
+    state.generation
+}
+
+fn signal_dirty_started() {
+    let lifecycle = dirty_lifecycle();
+    let mut state = lifecycle.state.lock().expect("dirty lifecycle lock");
+    state.started = true;
+    lifecycle.condvar.notify_all();
+}
+
+fn signal_dirty_finished() {
+    let lifecycle = dirty_lifecycle();
+    let mut state = lifecycle.state.lock().expect("dirty lifecycle lock");
+    state.finished = true;
+    lifecycle.condvar.notify_all();
+}
+
+fn wait_for_dirty_started(generation: u64) {
+    let lifecycle = dirty_lifecycle();
+    let mut state = lifecycle.state.lock().expect("dirty lifecycle lock");
+    while state.generation == generation && !state.started {
+        state = lifecycle.condvar.wait(state).expect("dirty lifecycle wait");
+    }
+    assert_eq!(state.generation, generation);
+    assert!(state.started);
+}
+
+fn dirty_finished_for_generation(generation: u64) -> bool {
+    let lifecycle = dirty_lifecycle();
+    let state = lifecycle.state.lock().expect("dirty lifecycle lock");
+    state.generation == generation && state.finished
+}
 
 fn module(name: Atom, code: Vec<Instruction>) -> Module {
     let label_index = code
@@ -45,9 +103,9 @@ fn module(name: Atom, code: Vec<Instruction>) -> Module {
 }
 
 fn dirty_sleep_value(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    DIRTY_STARTED.store(true, Ordering::Release);
+    signal_dirty_started();
     std::thread::sleep(Duration::from_millis(200));
-    DIRTY_FINISHED.store(true, Ordering::Release);
+    signal_dirty_finished();
     Ok(Term::small_int(42))
 }
 
@@ -91,20 +149,9 @@ fn call_native_module(name: Atom, import: ResolvedImport) -> Module {
     m
 }
 
-fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if condition() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    false
-}
-
 #[test]
 fn dirty_nif_round_trip_does_not_block_normal_scheduler() {
-    DIRTY_STARTED.store(false, Ordering::Release);
-    DIRTY_FINISHED.store(false, Ordering::Release);
+    let generation = reset_dirty_lifecycle();
     NORMAL_PROGRESS.store(0, Ordering::Release);
 
     let registry = Arc::new(ModuleRegistry::new());
@@ -134,20 +181,20 @@ fn dirty_nif_round_trip_does_not_block_normal_scheduler() {
     .expect("scheduler starts");
 
     let dirty_pid = scheduler.spawn_process(&dirty_module);
-    assert!(wait_until(|| DIRTY_STARTED.load(Ordering::Acquire)));
-    assert!(!DIRTY_FINISHED.load(Ordering::Acquire));
+    wait_for_dirty_started(generation);
+    assert!(!dirty_finished_for_generation(generation));
 
     let normal_pid = scheduler.spawn_process(&normal_module);
     let (normal_reason, normal_result) = scheduler.run_until_exit(normal_pid);
     assert_eq!(normal_reason, ExitReason::Normal);
     assert_eq!(normal_result, Term::small_int(7));
     assert_eq!(NORMAL_PROGRESS.load(Ordering::Acquire), 1);
-    assert!(!DIRTY_FINISHED.load(Ordering::Acquire));
+    assert!(!dirty_finished_for_generation(generation));
 
     let (dirty_reason, dirty_result) = scheduler.run_until_exit(dirty_pid);
     assert_eq!(dirty_reason, ExitReason::Normal);
     assert_eq!(dirty_result, Term::small_int(42));
-    assert!(DIRTY_FINISHED.load(Ordering::Acquire));
+    assert!(dirty_finished_for_generation(generation));
 
     scheduler.shutdown();
 }

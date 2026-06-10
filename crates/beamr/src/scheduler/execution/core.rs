@@ -379,13 +379,26 @@ fn apply_dirty_result(
     process: &mut Process,
     dirty_result: DirtyResult,
 ) -> Result<InstructionOutcomeAfterDirty, crate::error::ExecError> {
+    let owned_result = dirty_result.owned_result;
     match dirty_result.result {
         Ok(value) => {
+            let value = match owned_result.as_ref() {
+                Some(owned) => owned
+                    .copy_to_heap(process.heap_mut())
+                    .map_err(|_| crate::error::ExecError::Badarg)?,
+                None => value,
+            };
             process.set_x_reg(0, value);
             advance_past_current_instruction(process);
             Ok(InstructionOutcomeAfterDirty::Continue)
         }
         Err(reason) => {
+            let reason = match owned_result.as_ref() {
+                Some(owned) => owned
+                    .copy_to_heap(process.heap_mut())
+                    .map_err(|_| crate::error::ExecError::Badarg)?,
+                None => reason,
+            };
             let exception = crate::process::Exception {
                 class: Term::atom(exception_class_atom(dirty_result.exception_class)),
                 reason,
@@ -483,6 +496,7 @@ fn submit_dirty_call(
                     pid,
                     DirtyResult {
                         result: Err(Term::atom(Atom::ERROR)),
+                        owned_result: None,
                         exception_class: ExceptionClass::Error,
                         exception_stacktrace: Term::NIL,
                     },

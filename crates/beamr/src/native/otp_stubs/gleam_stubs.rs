@@ -155,19 +155,33 @@ pub fn bif_option_unwrap(args: &[Term], context: &mut ProcessContext) -> Result<
 
 /// `gleam@result:map_error/2` -- maps over `{error, Reason}` via a continuation trampoline.
 pub fn bif_result_map_error(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let [result, fun] = args else {
+    let [left, right] = args else {
         return Err(badarg());
     };
-    ensure_fun_arity(*fun, 1)?;
-    let (tag, value) = result_tuple(*result)?;
+    let (result, fun) = if Tuple::new(*left).is_some() {
+        (*left, *right)
+    } else if Tuple::new(*right).is_some() {
+        (*right, *left)
+    } else {
+        return Ok(*left);
+    };
+    let Some(tuple) = Tuple::new(result) else {
+        return Ok(result);
+    };
+    if tuple.arity() != 2 {
+        return Err(badarg());
+    }
+    let tag = tuple.get(0).and_then(Term::as_atom).ok_or_else(badarg)?;
+    let value = tuple.get(1).ok_or_else(badarg)?;
     if tag == Atom::OK {
-        return Ok(*result);
+        return Ok(result);
     }
     if tag != Atom::ERROR {
         return Err(badarg());
     }
+    ensure_fun_arity(fun, 1)?;
     context.set_continuation_trampoline(
-        *fun,
+        fun,
         vec![value],
         NativeContinuation::GleamResult(GleamResultState::MapError),
     );

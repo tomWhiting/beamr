@@ -230,6 +230,7 @@ pub struct ProcessContext<'process> {
     net_kernel: Option<Arc<crate::distribution::NetKernel>>,
     distribution_send: Option<Arc<dyn DistributionSendFacility>>,
     process: Option<&'process mut Process>,
+    detached_allocations: Vec<Box<[u64]>>,
     live_x: usize,
     timers: Option<Arc<Mutex<TimerWheel>>>,
     atom_table: Option<Arc<AtomTable>>,
@@ -359,6 +360,7 @@ impl<'process> ProcessContext<'process> {
             net_kernel: None,
             distribution_send: None,
             process: None,
+            detached_allocations: Vec::new(),
             live_x: 256,
             timers: None,
             atom_table: None,
@@ -398,6 +400,7 @@ impl<'process> ProcessContext<'process> {
             net_kernel: None,
             distribution_send: None,
             process: None,
+            detached_allocations: Vec::new(),
             live_x: 256,
             timers: Some(timers),
             atom_table: None,
@@ -536,7 +539,8 @@ impl<'process> ProcessContext<'process> {
     /// Ensure the calling process has at least `words` nursery words available.
     pub fn ensure_heap_space(&mut self, words: usize) -> Result<(), Term> {
         let Some(process) = self.process.as_deref_mut() else {
-            return Err(Term::atom(crate::atom::Atom::BADARG));
+            let _ = words;
+            return Ok(());
         };
         crate::gc::ensure_space(process, words, self.live_x)
             .map_err(|_| Term::atom(crate::atom::Atom::BADARG))
@@ -1147,13 +1151,19 @@ impl<'process> ProcessContext<'process> {
     /// called `ensure_heap_space` for the total allocation budget. Panics
     /// (via alloc_slice error) if insufficient space remains.
     fn alloc_words_prereserved(&mut self, words: usize) -> Result<&mut [u64], Term> {
-        let Some(process) = self.process.as_deref_mut() else {
-            return Err(Term::atom(crate::atom::Atom::BADARG));
-        };
-        process
-            .heap_mut()
-            .alloc_slice(words)
-            .map_err(|_| Term::atom(crate::atom::Atom::BADARG))
+        if let Some(process) = self.process.as_deref_mut() {
+            return process
+                .heap_mut()
+                .alloc_slice(words)
+                .map_err(|_| Term::atom(crate::atom::Atom::BADARG));
+        }
+
+        self.detached_allocations
+            .push(vec![0; words].into_boxed_slice());
+        self.detached_allocations
+            .last_mut()
+            .map(|words| words.as_mut())
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
     /// Allocate a tuple on the calling process heap.

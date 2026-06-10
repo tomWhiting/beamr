@@ -20,6 +20,7 @@ use crate::native::{
 };
 use crate::term::Term;
 use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Float, Tuple};
 use crate::term::pid_ref::PidRef;
 use crate::term::reference_ref::ReferenceRef;
@@ -718,6 +719,15 @@ pub fn bif_list_append(args: &[Term], context: &mut ProcessContext) -> Result<Te
     // If ListA is empty, return ListB directly.
     if list_a.is_nil() {
         return Ok(*list_b);
+    }
+
+    if list_b.is_nil() {
+        if let Some(binary) = BinaryRef::new(*list_a) {
+            return context.alloc_binary(binary.as_bytes());
+        }
+        if Cons::new(*list_a).is_none() {
+            return Ok(*list_a);
+        }
     }
 
     // Collect all elements from ListA.

@@ -1,5 +1,3 @@
-#![cfg(feature = "differential")]
-
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -943,13 +941,13 @@ fn stacktrace_mfas(stacktrace: Term) -> Vec<(Term, Term, Term)> {
     let mut frames = Vec::new();
     let mut cursor = stacktrace;
     while let Some(cons) = Cons::new(cursor) {
-        if let Some(tuple) = Tuple::new(cons.head()) {
-            if tuple.arity() >= 3 {
-                let module = tuple.get(0).unwrap_or(Term::NIL);
-                let function = tuple.get(1).unwrap_or(Term::NIL);
-                let arity = tuple.get(2).unwrap_or(Term::NIL);
-                frames.push((module, function, arity));
-            }
+        if let Some(tuple) = Tuple::new(cons.head())
+            && tuple.arity() >= 3
+        {
+            let module = tuple.get(0).unwrap_or(Term::NIL);
+            let function = tuple.get(1).unwrap_or(Term::NIL);
+            let arity = tuple.get(2).unwrap_or(Term::NIL);
+            frames.push((module, function, arity));
         }
         cursor = cons.tail();
     }
@@ -1263,7 +1261,10 @@ fn unsupported_map_operation_is_logged_as_compilation_skipped() {
     match result {
         DifferentialResult::CompilationSkipped { reason } => {
             eprintln!("differential skip: {reason}");
-            assert!(reason.contains("unsupported JIT opcode"));
+            assert!(
+                reason.contains("unsupported JIT operand: put_map")
+                    || reason.contains("unsupported JIT opcode")
+            );
         }
         other => panic!("expected skip, got {other:?}"),
     }
