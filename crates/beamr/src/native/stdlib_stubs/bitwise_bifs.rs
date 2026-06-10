@@ -30,6 +30,7 @@ pub fn bif_bsl(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term
         .as_small_int()
         .and_then(|value| usize::try_from(value).ok())
         .ok_or_else(badarg)?;
+    ensure_shifted_result_fits_context(&value, shift, context)?;
     integer_result(value.shl_bits(shift), context)
 }
 
@@ -71,6 +72,26 @@ fn two_ints(
         ));
     }
     integer_result(from_twos_complement(&out, width), context)
+}
+
+fn ensure_shifted_result_fits_context(
+    value: &BigIntValue,
+    shift: usize,
+    context: &ProcessContext<'_>,
+) -> Result<(), Term> {
+    if value.is_zero() {
+        return Ok(());
+    }
+    let bit_len = value.bit_length().checked_add(shift).ok_or_else(badarg)?;
+    let limb_count = bit_len.div_ceil(u64::BITS as usize);
+    let words = limb_count.checked_add(3).ok_or_else(badarg)?;
+    let Some(heap) = context.process_heap() else {
+        return Ok(());
+    };
+    if words > heap.max_capacity() {
+        return Err(badarg());
+    }
+    Ok(())
 }
 
 fn arithmetic_shift_right(value: &BigIntValue, shift: usize) -> BigIntValue {

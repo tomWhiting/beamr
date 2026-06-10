@@ -76,6 +76,7 @@ fn bitwise_bigint_values_use_twos_complement_and_demote() {
 #[test]
 fn bitwise_rejects_non_integer_arguments() {
     let mut process = Process::new(1, 64);
+    process.heap_mut().set_max_capacity(128);
     let mut context = context(&mut process);
     assert_eq!(
         bif_band(&[Term::atom(Atom::OK), Term::small_int(1)], &mut context),
@@ -95,6 +96,13 @@ fn bitwise_rejects_non_integer_arguments() {
     );
     assert_eq!(
         bif_bsr(&[Term::small_int(1), Term::small_int(-1)], &mut context),
+        Err(badarg())
+    );
+    assert_eq!(
+        bif_bsl(
+            &[Term::small_int(1), Term::small_int(10_000_000)],
+            &mut context
+        ),
         Err(badarg())
     );
     assert_eq!(
