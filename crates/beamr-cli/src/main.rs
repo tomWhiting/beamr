@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::{env, fmt};
 
 use beamr::atom::AtomTable;
-use beamr::error::{ExecError, LoadError};
+use beamr::error::LoadError;
 use beamr::io::StdoutSink;
 use beamr::jit::{AotCompiler, AotError, NativeCodeBundle};
 use beamr::loader::{UnresolvedImportReport, embedded_module_bytes, load_module_with_origin};
@@ -79,7 +79,8 @@ enum CliError {
     },
     Load(LoadError),
     Aot(AotError),
-    Exec(ExecError),
+    Exec(String),
+    Scheduler(String),
     NativeRegistration(NativeRegistrationError),
     UnresolvedImports(String),
     ArityMismatch {
@@ -396,12 +397,12 @@ fn run_module(
         },
         Arc::clone(&registry),
     )
-    .map_err(|msg| CliError::Exec(ExecError::InvalidOperand(Box::leak(msg.into_boxed_str()))))?;
+    .map_err(CliError::Scheduler)?;
     scheduler.set_output_sink(Arc::new(StdoutSink));
 
     let pid = scheduler
         .spawn(module_atom, function_atom, args)
-        .map_err(CliError::Exec)?;
+        .map_err(|error| CliError::Exec(error.format_with_atoms(&atom_table)))?;
     let (reason, result) = scheduler.run_until_exit(pid);
     let exit_exception = scheduler.take_exit_exception(pid);
     let exit_error = scheduler.take_exit_error(pid);
@@ -556,7 +557,7 @@ fn format_import_report(report: &UnresolvedImportReport, atom_table: &AtomTable)
 impl CliError {
     const fn exit_code(&self) -> u8 {
         match self {
-            Self::Load(_) | Self::Aot(_) | Self::Io { .. } => 2,
+            Self::Load(_) | Self::Aot(_) | Self::Io { .. } | Self::Scheduler(_) => 2,
             Self::Usage(_)
             | Self::UnknownFlag(_)
             | Self::InvalidBeamPath(_)
@@ -591,7 +592,8 @@ impl fmt::Display for CliError {
             }
             Self::Load(error) => write!(formatter, "load: {error}"),
             Self::Aot(error) => write!(formatter, "aot: {error}"),
-            Self::Exec(error) => write!(formatter, "exec: {error}"),
+            Self::Exec(detail) => write!(formatter, "exec: {detail}"),
+            Self::Scheduler(message) => write!(formatter, "scheduler: {message}"),
             Self::NativeRegistration(error) => write!(formatter, "native registration: {error}"),
             Self::UnresolvedImports(report) => {
                 formatter.write_str("unresolved imports")?;
@@ -790,7 +792,7 @@ mod tests {
         assert_eq!(load_error.to_string(), "load: invalid BEAM file format");
         assert_eq!(load_error.exit_code(), 2);
 
-        let exec_error = CliError::Exec(ExecError::Badarith);
+        let exec_error = CliError::Exec(ExecError::Badarith.to_string());
         assert_eq!(exec_error.to_string(), "exec: arithmetic operation failed");
         assert_eq!(exec_error.exit_code(), 1);
     }
