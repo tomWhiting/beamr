@@ -623,7 +623,7 @@ fn call_external_target(
 
 fn capability_denied_result(process: &mut Process) -> Result<Term, ExecError> {
     let words = 3;
-    ensure_space(process, words, 0).map_err(|_| ExecError::Badarg)?;
+    ensure_space(process, words, 0).map_err(gc_error_to_exec)?;
     let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
     let heap = heap_slice(ptr, words);
     write_tuple(

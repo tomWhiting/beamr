@@ -17,7 +17,7 @@ use crate::loader::Instruction;
 use crate::loader::decode::compact::Operand;
 use crate::mailbox::Mailbox;
 use crate::module::{Module, ModuleOrigin};
-use crate::native::{SpawnFacility, SpawnOptions};
+use crate::native::{Capability, CapabilitySet, SpawnFacility, SpawnOptions};
 use crate::process::heap::{DEFAULT_HEAP_SIZE, Heap};
 use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, Priority};
@@ -737,6 +737,61 @@ fn spawn_facility_options_apply_link_monitor_priority_and_heap_before_wake() {
             .any(|monitor| monitor.reference() == reference
                 && monitor.watcher() == parent
                 && monitor.target() == result.pid)
+    );
+}
+
+#[test]
+fn spawn_facility_restricts_child_to_explicit_capabilities() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("spawn_opt_capability_scheduler");
+    let function = atoms.intern("main");
+    let mut module = test_module(module_name, vec![Instruction::Label { label: 7 }]);
+    module.exports.insert((function, 0), 7);
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = registry.insert(module);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    scheduler.shutdown();
+    let parent = scheduler.spawn_test_process_in(NamespaceId::DEFAULT, Arc::clone(&module));
+    let facility = supervision_integration::SchedulerSpawnFacility {
+        shared: Arc::clone(&scheduler.shared),
+        namespace_id: NamespaceId::DEFAULT,
+    };
+    let restricted = CapabilitySet::from_slice(&[Capability::Pure, Capability::ProcessLocal]);
+
+    let result = facility
+        .spawn_with_options(
+            parent,
+            module_name,
+            function,
+            Vec::new(),
+            SpawnOptions {
+                capabilities: Some(restricted.clone()),
+                ..SpawnOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("spawn_with_options succeeds: {error:?}"));
+
+    let child_entry = scheduler
+        .shared
+        .process_bodies
+        .get(&result.pid)
+        .unwrap_or_else(|| panic!("child body exists"));
+    let child_slot = lock_or_recover(&child_entry);
+    let ProcessSlot::Present(ScheduledProcess(child_process)) = &*child_slot else {
+        panic!("child process should be present");
+    };
+    assert_eq!(child_process.capabilities(), &restricted);
+    assert!(
+        !child_process
+            .capabilities()
+            .contains(Capability::ExternalIo)
     );
 }
 
