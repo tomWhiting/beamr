@@ -472,9 +472,27 @@ fn make_map_from_entries(
     context: &mut ProcessContext,
     entries: &[(Term, Term)],
 ) -> Result<Term, Term> {
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        for (index, (key, value)) in entries.iter().enumerate() {
+            let key_register =
+                u16::try_from(index.checked_mul(2).ok_or_else(badarg)?).map_err(|_| badarg())?;
+            let value_register = key_register.checked_add(1).ok_or_else(badarg)?;
+            process.set_x_reg(key_register, *key);
+            process.set_x_reg(value_register, *value);
+        }
+    }
     context.ensure_heap_space(2 + entries.len() * 2)?;
-    let keys: Vec<_> = entries.iter().map(|(key, _)| *key).collect();
-    let values: Vec<_> = entries.iter().map(|(_, value)| *value).collect();
+    let mut keys = Vec::with_capacity(entries.len());
+    let mut values = Vec::with_capacity(entries.len());
+    for index in 0..entries.len() {
+        let key_register =
+            u16::try_from(index.checked_mul(2).ok_or_else(badarg)?).map_err(|_| badarg())?;
+        let value_register = key_register.checked_add(1).ok_or_else(badarg)?;
+        let process = context.process_mut().ok_or_else(badarg)?;
+        keys.push(process.x_reg(key_register));
+        values.push(process.x_reg(value_register));
+    }
     context.alloc_map_prereserved(&keys, &values)
 }
 
@@ -490,10 +508,19 @@ fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
 }
 
 fn list_from_vec(elements: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        for (index, element) in elements.iter().enumerate() {
+            let register = u16::try_from(index).map_err(|_| badarg())?;
+            process.set_x_reg(register, *element);
+        }
+    }
     context.ensure_heap_space(elements.len() * 2)?;
     let mut tail = Term::NIL;
-    for element in elements.iter().rev() {
-        tail = context.alloc_cons_prereserved(*element, tail)?;
+    for index in (0..elements.len()).rev() {
+        let register = u16::try_from(index).map_err(|_| badarg())?;
+        let element = context.process_mut().ok_or_else(badarg)?.x_reg(register);
+        tail = context.alloc_cons_prereserved(element, tail)?;
     }
     Ok(tail)
 }

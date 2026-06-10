@@ -1,1 +1,1 @@
-fix(beamr): root heap terms across BIF allocations
+Harden GC rooting in stdlib list/map helper allocations

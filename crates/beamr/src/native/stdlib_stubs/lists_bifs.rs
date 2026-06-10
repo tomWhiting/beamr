@@ -357,10 +357,19 @@ pub(super) fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {
 }
 
 pub(super) fn list_from_vec(elements: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        for (index, element) in elements.iter().enumerate() {
+            let register = u16::try_from(index).map_err(|_| badarg())?;
+            process.set_x_reg(register, *element);
+        }
+    }
     context.ensure_heap_space(elements.len() * 2)?;
     let mut tail = Term::NIL;
-    for element in elements.iter().rev() {
-        tail = context.alloc_cons_prereserved(*element, tail)?;
+    for index in (0..elements.len()).rev() {
+        let register = u16::try_from(index).map_err(|_| badarg())?;
+        let element = context.process_mut().ok_or_else(badarg)?.x_reg(register);
+        tail = context.alloc_cons_prereserved(element, tail)?;
     }
     Ok(tail)
 }
