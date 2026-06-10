@@ -6,13 +6,51 @@ use std::time::Instant;
 
 use crate::atom::Atom;
 use crate::native::ExceptionClass;
+use crate::process::heap::Heap;
 use crate::term::Term;
 use crate::timer::{ExpiredTimer, TimerRef};
 
 /// Immutable event log consumed by [`ReplayDriver`].
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct ReplayLog {
     events: Arc<[ReplayEvent]>,
+    decoded_heaps: Arc<[Heap]>,
+    cli_result: Option<CliReplayResult>,
+}
+
+impl PartialEq for ReplayLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.events == other.events && self.cli_result == other.cli_result
+    }
+}
+
+impl Eq for ReplayLog {}
+
+/// Optional CLI transcript metadata stored in replay log files.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CliReplayResult {
+    output: String,
+    exit_code: u8,
+}
+
+impl CliReplayResult {
+    /// Build CLI replay metadata from the original run output and exit code.
+    #[must_use]
+    pub const fn new(output: String, exit_code: u8) -> Self {
+        Self { output, exit_code }
+    }
+
+    /// Captured command output.
+    #[must_use]
+    pub fn output(&self) -> &str {
+        &self.output
+    }
+
+    /// Original process exit code.
+    #[must_use]
+    pub const fn exit_code(&self) -> u8 {
+        self.exit_code
+    }
 }
 
 impl ReplayLog {
@@ -21,7 +59,49 @@ impl ReplayLog {
     pub fn new(events: Vec<ReplayEvent>) -> Self {
         Self {
             events: Arc::from(events),
+            decoded_heaps: Arc::from(Vec::new()),
+            cli_result: None,
         }
+    }
+
+    /// Build a replay log with optional CLI transcript metadata.
+    #[must_use]
+    pub fn with_cli_result(events: Vec<ReplayEvent>, output: String, exit_code: u8) -> Self {
+        Self {
+            events: Arc::from(events),
+            decoded_heaps: Arc::from(Vec::new()),
+            cli_result: Some(CliReplayResult::new(output, exit_code)),
+        }
+    }
+
+    pub(crate) fn from_parts(
+        events: Vec<ReplayEvent>,
+        decoded_heaps: Arc<[Heap]>,
+        cli_result: Option<CliReplayResult>,
+    ) -> Self {
+        Self {
+            events: Arc::from(events),
+            decoded_heaps,
+            cli_result,
+        }
+    }
+
+    /// Borrow the recorded events in deterministic replay order.
+    #[must_use]
+    pub fn events(&self) -> &[ReplayEvent] {
+        &self.events
+    }
+
+    /// Return optional CLI transcript metadata captured by `beamr record`.
+    #[must_use]
+    pub const fn cli_result(&self) -> Option<&CliReplayResult> {
+        self.cli_result.as_ref()
+    }
+
+    /// Return the number of decoded heaps retained for boxed terms.
+    #[must_use]
+    pub fn decoded_heap_count(&self) -> usize {
+        self.decoded_heaps.len()
     }
 
     /// Return the number of recorded events.

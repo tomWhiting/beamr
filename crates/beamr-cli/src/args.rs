@@ -19,9 +19,10 @@ where
         None => (args, Vec::new()),
     };
 
-    // Extract --dir values first, collecting into dirs and building
-    // a filtered list of remaining args.
+    // Extract --dir and --log values first, collecting into command metadata and
+    // building a filtered list of remaining args.
     let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut log: Option<PathBuf> = None;
     let mut filtered_args: Vec<String> = Vec::new();
     let mut iter = command_args.iter();
     while let Some(arg) = iter.next() {
@@ -30,9 +31,24 @@ where
                 CliError::MissingDirValue("--dir requires a directory path".into())
             })?;
             dirs.push(PathBuf::from(value));
+        } else if arg == "--log" {
+            let value = iter
+                .next()
+                .ok_or_else(|| CliError::MissingLogValue("--log requires an output path".into()))?;
+            log = Some(PathBuf::from(value));
         } else {
             filtered_args.push(arg.clone());
         }
+    }
+
+    if log.is_some()
+        && filtered_args
+            .first()
+            .is_none_or(|command| command != "record")
+    {
+        return Err(CliError::Usage(format!(
+            "--log is only supported with record\n{USAGE}"
+        )));
     }
 
     for (index, arg) in filtered_args.iter().enumerate() {
@@ -44,7 +60,14 @@ where
                 "--version" | "-V" if filtered_args.len() == 1 && runtime_args.is_empty() => {
                     return Ok(Command::Version);
                 }
-                "--entry" if index == 1 => continue,
+                "--entry"
+                    if index == 1
+                        || filtered_args
+                            .first()
+                            .is_some_and(|command| command == "record") =>
+                {
+                    continue;
+                }
                 "--verbose"
                     if filtered_args
                         .first()
@@ -70,6 +93,12 @@ where
         [command] if command == "compile" => Err(CliError::Usage(format!(
             "compile requires a directory\n{USAGE}"
         ))),
+        [command] if command == "replay" => Err(CliError::Usage(format!(
+            "replay requires a log file\n{USAGE}"
+        ))),
+        [command] if command == "record" => Err(CliError::Usage(format!(
+            "record requires a .beam file\n{USAGE}"
+        ))),
         [file] => {
             validate_beam_path(file)?;
             Ok(Command::Run {
@@ -85,6 +114,9 @@ where
                 path: PathBuf::from(file),
             })
         }
+        [command, log_file] if command == "replay" => Ok(Command::Replay {
+            log: PathBuf::from(log_file),
+        }),
         [command, dir] if command == "compile" => Ok(Command::Compile {
             dir: PathBuf::from(dir),
             verbose: false,
@@ -115,6 +147,19 @@ where
             Ok(Command::Run {
                 path: PathBuf::from(file),
                 entry: Some(parse_entry(entry)?),
+                args: runtime_args,
+                dirs,
+            })
+        }
+        [command, file, flag, entry] if command == "record" && flag == "--entry" => {
+            validate_beam_path(file)?;
+            let log = log.ok_or_else(|| {
+                CliError::Usage(format!("record requires --log <output>\n{USAGE}"))
+            })?;
+            Ok(Command::Record {
+                path: PathBuf::from(file),
+                entry: parse_entry(entry)?,
+                log,
                 args: runtime_args,
                 dirs,
             })

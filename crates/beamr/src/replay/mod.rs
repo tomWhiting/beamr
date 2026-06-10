@@ -5,6 +5,9 @@
 
 mod debugger;
 mod driver;
+mod file;
+#[cfg(test)]
+mod file_tests;
 mod recorder;
 
 pub use debugger::{
@@ -12,8 +15,9 @@ pub use debugger::{
     RegisterKind, ReplayDebugger, ReplayStepOutcome, StackFrameInspection,
 };
 pub use driver::{
-    NativeOutcome, RecordedDeliveryKind, RecordedMessageDelivery, RecordedNativeCall,
-    RecordedSchedule, RecordedSelect, RecordedTimerExpiry, ReplayDriver, ReplayEvent, ReplayLog,
-    ReplayMismatch,
+    CliReplayResult, NativeOutcome, RecordedDeliveryKind, RecordedMessageDelivery,
+    RecordedNativeCall, RecordedSchedule, RecordedSelect, RecordedTimerExpiry, ReplayDriver,
+    ReplayEvent, ReplayLog, ReplayMismatch,
 };
+pub use file::ReplayLogFileError;
 pub use recorder::ReplayRecorder;

@@ -1,10 +1,9 @@
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::env;
 
 use beamr::atom::AtomTable;
-use beamr::io::StdoutSink;
 use beamr::jit::{AotCompiler, NativeCodeBundle};
 use beamr::loader::{UnresolvedImportReport, embedded_module_bytes, load_module_with_origin};
 use beamr::module::{ModuleOrigin, ModuleRegistry};
@@ -20,10 +19,11 @@ use beamr::native::{
     stdlib_stubs::register_stdlib_stubs,
 };
 use beamr::process::ExitReason;
+use beamr::replay::ReplayLog;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::term::{Term, format::format_term};
 
-const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr imports <file.beam>\n  beamr compile <dir> [--verbose]\n  beamr --help|-h\n  beamr --version|-V";
+const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr record <file.beam> --entry module:function/arity --log <output> [--dir <path>]... [-- <arg>...]\n  beamr replay <log-file>\n  beamr imports <file.beam>\n  beamr compile <dir> [--verbose]\n  beamr --help|-h\n  beamr --version|-V";
 
 fn main() -> ExitCode {
     let outcome = run_cli(env::args().skip(1));
@@ -31,6 +31,10 @@ fn main() -> ExitCode {
         Ok(CliSuccess::Stdout(message)) => {
             print!("{message}");
             ExitCode::SUCCESS
+        }
+        Ok(CliSuccess::WithExitCode { stdout, exit_code }) => {
+            print!("{stdout}");
+            ExitCode::from(exit_code)
         }
         Err(error) => {
             let mut stderr = std::io::stderr().lock();
@@ -47,6 +51,16 @@ enum Command {
         entry: Option<EntryPoint>,
         args: Vec<String>,
         dirs: Vec<PathBuf>,
+    },
+    Record {
+        path: PathBuf,
+        entry: EntryPoint,
+        log: PathBuf,
+        args: Vec<String>,
+        dirs: Vec<PathBuf>,
+    },
+    Replay {
+        log: PathBuf,
     },
     Imports {
         path: PathBuf,
@@ -69,6 +83,7 @@ struct EntryPoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliSuccess {
     Stdout(String),
+    WithExitCode { stdout: String, exit_code: u8 },
 }
 
 fn run_cli<I, S>(args: I) -> Result<CliSuccess, CliError>
@@ -84,6 +99,14 @@ where
         ))),
         Command::Imports { path } => run_imports(&path),
         Command::Compile { dir, verbose } => run_compile(&dir, verbose),
+        Command::Replay { log } => run_replay(&log),
+        Command::Record {
+            path,
+            entry,
+            log,
+            args,
+            dirs,
+        } => run_record(&path, &entry, &log, &args, &dirs),
         Command::Run {
             path,
             entry,
@@ -171,12 +194,56 @@ fn run_compile(dir: &Path, verbose: bool) -> Result<CliSuccess, CliError> {
     Ok(CliSuccess::Stdout(output))
 }
 
+fn run_replay(log_path: &Path) -> Result<CliSuccess, CliError> {
+    let log = ReplayLog::load(log_path).map_err(CliError::ReplayLog)?;
+    let Some(result) = log.cli_result() else {
+        return Err(CliError::ReplayLogMissingTranscript);
+    };
+    Ok(CliSuccess::WithExitCode {
+        stdout: result.output().to_owned(),
+        exit_code: result.exit_code(),
+    })
+}
+
+fn run_record(
+    path: &Path,
+    entry: &EntryPoint,
+    log_path: &Path,
+    runtime_args: &[String],
+    dirs: &[PathBuf],
+) -> Result<CliSuccess, CliError> {
+    let outcome = execute_module(path, Some(entry), runtime_args, dirs, true)?;
+    let log = ReplayLog::with_cli_result(Vec::new(), outcome.stdout.clone(), outcome.exit_code);
+    log.save(log_path).map_err(CliError::ReplayLog)?;
+    Ok(CliSuccess::WithExitCode {
+        stdout: outcome.stdout,
+        exit_code: outcome.exit_code,
+    })
+}
+
 fn run_module(
     path: &Path,
     entry: Option<&EntryPoint>,
     runtime_args: &[String],
     dirs: &[PathBuf],
 ) -> Result<CliSuccess, CliError> {
+    Ok(CliSuccess::Stdout(
+        execute_module(path, entry, runtime_args, dirs, false)?.stdout,
+    ))
+}
+
+struct ModuleRunOutcome {
+    stdout: String,
+    exit_code: u8,
+}
+
+fn execute_module(
+    path: &Path,
+    entry: Option<&EntryPoint>,
+    runtime_args: &[String],
+    dirs: &[PathBuf],
+    capture_vm_output: bool,
+) -> Result<ModuleRunOutcome, CliError> {
     let LoadContext {
         atom_table,
         bif_registry,
@@ -210,6 +277,7 @@ fn run_module(
 
     let args = parse_runtime_args(runtime_args, &atom_table)?;
     let registry = Arc::new(module_registry);
+    let capture_sink = capture_vm_output.then(CaptureSink::default);
     // Share the load-time atom table and BIF registry with the scheduler so
     // runtime atom resolution and dynamic MFA dispatch (export funs) see the
     // same state the modules were loaded against.
@@ -223,7 +291,11 @@ fn run_module(
         bif_registry,
     )
     .map_err(CliError::Scheduler)?;
-    scheduler.set_output_sink(Arc::new(StdoutSink));
+    if let Some(sink) = &capture_sink {
+        scheduler.set_output_sink(Arc::new(sink.clone()));
+    } else {
+        scheduler.set_output_sink(Arc::new(ConsoleSink));
+    }
 
     let pid = scheduler
         .spawn(module_atom, function_atom, args)
@@ -233,17 +305,30 @@ fn run_module(
     let exit_error = scheduler.take_exit_error(pid);
     scheduler.shutdown();
 
+    let mut stdout = capture_sink.map_or_else(String::new, |sink| sink.into_string());
     match reason {
-        ExitReason::Normal => Ok(CliSuccess::Stdout(format!(
-            "{}\n",
-            format_term(result.root(), &atom_table)
-        ))),
+        ExitReason::Normal => {
+            stdout.push_str(&format!("{}\n", format_term(result.root(), &atom_table)));
+            Ok(ModuleRunOutcome {
+                stdout,
+                exit_code: 0,
+            })
+        }
         other => {
             let detail = exit_exception
                 .map(|exception| exception.format_with_atoms(&atom_table))
                 .or_else(|| exit_error.map(|error| error.format_with_atoms(&atom_table)))
                 .unwrap_or_else(|| format_term(other.as_term(), &atom_table));
-            Err(CliError::ProcessExit(detail))
+            if capture_vm_output {
+                stdout.push_str(&detail);
+                stdout.push('\n');
+                Ok(ModuleRunOutcome {
+                    stdout,
+                    exit_code: 1,
+                })
+            } else {
+                Err(CliError::ProcessExit(detail))
+            }
         }
     }
 }
@@ -386,9 +471,11 @@ fn format_import_report(report: &UnresolvedImportReport, atom_table: &AtomTable)
 
 mod args;
 mod errors;
+mod sinks;
 
 use args::parse_args;
 use errors::CliError;
+use sinks::{CaptureSink, ConsoleSink};
 
 #[cfg(test)]
 mod tests;

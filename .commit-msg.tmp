@@ -1,1 +1,1 @@
-Harden B-145 WASM timer/async bridge and add targeted scheduler tests
+fix(replay): harden replay log validation and CLI record flags

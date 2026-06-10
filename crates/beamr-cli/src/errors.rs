@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use beamr::error::LoadError;
 use beamr::jit::AotError;
 use beamr::native::NativeRegistrationError;
+use beamr::replay::ReplayLogFileError;
 
 #[derive(Debug)]
 pub enum CliError {
@@ -30,12 +31,19 @@ pub enum CliError {
     InvalidTerm(String),
     ProcessExit(String),
     MissingDirValue(String),
+    MissingLogValue(String),
+    ReplayLog(ReplayLogFileError),
+    ReplayLogMissingTranscript,
 }
 
 impl CliError {
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Load(_) | Self::Aot(_) | Self::Io { .. } | Self::Scheduler(_) => 2,
+            Self::Load(_)
+            | Self::Aot(_)
+            | Self::Io { .. }
+            | Self::Scheduler(_)
+            | Self::ReplayLog(_) => 2,
             Self::Usage(_)
             | Self::UnknownFlag(_)
             | Self::InvalidBeamPath(_)
@@ -46,7 +54,9 @@ impl CliError {
             | Self::ArityMismatch { .. }
             | Self::InvalidTerm(_)
             | Self::ProcessExit(_)
-            | Self::MissingDirValue(_) => 1,
+            | Self::MissingDirValue(_)
+            | Self::MissingLogValue(_)
+            | Self::ReplayLogMissingTranscript => 1,
         }
     }
 }
@@ -87,7 +97,13 @@ impl fmt::Display for CliError {
             ),
             Self::InvalidTerm(term) => write!(formatter, "invalid term literal '{term}'"),
             Self::ProcessExit(detail) => formatter.write_str(detail),
-            Self::MissingDirValue(message) => formatter.write_str(message),
+            Self::MissingDirValue(message) | Self::MissingLogValue(message) => {
+                formatter.write_str(message)
+            }
+            Self::ReplayLog(error) => write!(formatter, "replay log: {error}"),
+            Self::ReplayLogMissingTranscript => formatter.write_str(
+                "replay log does not contain a recorded CLI transcript; use beamr record to create replayable logs",
+            ),
         }
     }
 }

@@ -70,6 +70,66 @@ fn parses_entry_flag_and_runtime_args() {
 }
 
 #[test]
+fn parses_record_command_with_log_and_runtime_args() {
+    assert_eq!(
+        parse_args([
+            "record",
+            "hello.beam",
+            "--entry",
+            "hello:add/2",
+            "--log",
+            "run.rlog",
+            "--",
+            "17",
+            "25"
+        ])
+        .expect("record parses"),
+        Command::Record {
+            path: "hello.beam".into(),
+            entry: EntryPoint {
+                module: "hello".into(),
+                function: "add".into(),
+                arity: 2,
+            },
+            log: "run.rlog".into(),
+            args: vec!["17".into(), "25".into()],
+            dirs: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn parses_replay_command() {
+    assert_eq!(
+        parse_args(["replay", "run.rlog"]).expect("replay parses"),
+        Command::Replay {
+            log: "run.rlog".into(),
+        }
+    );
+}
+
+#[test]
+fn rejects_log_flag_outside_record_command() {
+    let error =
+        parse_args(["hello.beam", "--log", "run.rlog"]).expect_err("--log should be record-only");
+
+    assert!(matches!(error, CliError::Usage(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("--log is only supported with record")
+    );
+}
+
+#[test]
+fn rejects_record_log_without_value() {
+    let error = parse_args(["record", "hello.beam", "--entry", "hello:main/0", "--log"])
+        .expect_err("--log without value should fail");
+
+    assert!(matches!(error, CliError::MissingLogValue(_)));
+}
+
+#[test]
 fn parses_imports_command() {
     assert_eq!(
         parse_args(["imports", "hello.beam"]).expect("imports parses"),
@@ -193,6 +253,35 @@ fn malformed_beam_bytes_return_load_error_without_panicking() {
 }
 
 #[test]
+fn record_then_replay_fixture_preserves_stdout_and_exit_code() {
+    let fixture = fixture_path("hello.beam");
+    let log = temp_replay_log_path("success");
+
+    let recorded = run_cli([
+        "record".to_owned(),
+        fixture.to_string_lossy().into_owned(),
+        "--entry".to_owned(),
+        "hello:main/0".to_owned(),
+        "--log".to_owned(),
+        log.to_string_lossy().into_owned(),
+    ])
+    .expect("record fixture run");
+
+    let replayed = run_cli(["replay".to_owned(), log.to_string_lossy().into_owned()])
+        .expect("replay fixture run");
+    let _ = std::fs::remove_file(log);
+
+    assert_eq!(replayed, recorded);
+    assert!(matches!(
+        replayed,
+        CliSuccess::WithExitCode {
+            ref stdout,
+            exit_code: 0
+        } if !stdout.is_empty()
+    ));
+}
+
+#[test]
 fn imports_report_for_fixture_is_informational_and_omits_gate1_bifs() {
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../beamr/tests/fixtures/hello.beam")
@@ -201,7 +290,9 @@ fn imports_report_for_fixture_is_informational_and_omits_gate1_bifs() {
     let result =
         run_cli(["imports", fixture.as_str()]).expect("imports report should be informational");
 
-    let CliSuccess::Stdout(output) = result;
+    let CliSuccess::Stdout(output) = result else {
+        panic!("imports should return stdout-only success");
+    };
     assert!(!output.contains("erlang:get_module_info/1"));
     assert!(!output.contains("erlang:get_module_info/2"));
     assert!(!output.contains("erlang:display/1"));
@@ -253,10 +344,28 @@ fn parses_multiple_dir_flags() {
 
 #[test]
 fn rejects_dir_without_value() {
-    let error =
-        parse_args(["hello.beam", "--dir"]).expect_err("--dir without value should fail");
+    let error = parse_args(["hello.beam", "--dir"]).expect_err("--dir without value should fail");
 
     assert!(matches!(error, CliError::MissingDirValue(_)));
+}
+
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../beamr/tests/fixtures")
+        .join(name)
+}
+
+fn temp_replay_log_path(label: &str) -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_nanos();
+    path.push(format!(
+        "beamr-cli-replay-{label}-{}-{nanos}.rlog",
+        std::process::id()
+    ));
+    path
 }
 
 fn write_temp_beam(contents: &str) -> std::path::PathBuf {
