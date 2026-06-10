@@ -286,6 +286,8 @@ impl WasmScheduler {
             tcp_io_facility: None,
             jit_cache: None,
             replay_driver: None,
+            capability_audit_sink: None,
+            capability_violation_handler: None,
         }
     }
 }
