@@ -12,9 +12,9 @@ use super::*;
 use crate::atom::Atom;
 use crate::ets::{EtsTableMetadata, EtsTableType, Protection};
 use crate::io::RingConfig;
-use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, write_fd_resource};
-use crate::process::{ProcessStatus, RemotePid};
+use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, FdState, write_fd_resource};
 use crate::process::registry::ProcessTable;
+use crate::process::{ProcessStatus, RemotePid};
 use crate::scheduler::execution::{
     cleanup_exited_process, cleanup_if_tombstoned_after_store, store_runnable_process,
 };
@@ -300,12 +300,12 @@ fn make_shared_state() -> Arc<SharedState> {
 fn cleanup_exited_process_closes_fd_resources_owned_by_process() {
     let shared = make_shared_state();
     let pid = insert_process(&shared, 1);
-    let fd = pipe_read_fd();
-    let fd = allocate_fd_resource_for_process(&shared, pid, Arc::new(FdInner::new(fd, pid)));
+    let inner = Arc::new(FdInner::new(pipe_read_fd(), pid));
+    allocate_fd_resource_for_process(&shared, pid, Arc::clone(&inner));
 
     cleanup_exited_process(&shared, pid, ExitReason::Normal);
 
-    assert!(fd_is_closed(fd));
+    assert_eq!(inner.state(), FdState::Closed);
 }
 
 #[test]
@@ -803,15 +803,12 @@ fn remote_exit_to_trapping_process_enqueues_remote_exit_tuple() {
     add_remote_link(&shared, target, remote);
     set_trap_exit(&shared, target, true);
 
-    supervision_integration::process_remote_exit_signal(
-        &shared, remote, target, ExitReason::Error,
-    );
+    supervision_integration::process_remote_exit_signal(&shared, remote, target, ExitReason::Error);
 
     let tuple = read_mailbox_tuple(&shared, target).expect("remote EXIT message");
     assert_eq!(tuple.len(), 3);
     assert_eq!(tuple[0], Term::atom(Atom::EXIT));
-    let source =
-        crate::term::boxed::ExternalPid::new(tuple[1]).expect("remote source pid");
+    let source = crate::term::boxed::ExternalPid::new(tuple[1]).expect("remote source pid");
     assert_eq!(source.node(), Some(remote.node));
     assert_eq!(source.pid_number(), remote.pid_number);
     assert_eq!(source.serial(), remote.serial);

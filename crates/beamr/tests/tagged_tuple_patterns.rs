@@ -143,7 +143,7 @@ fn compiled_record_pattern_fixture_uses_is_tagged_tuple() {
 
 #[test]
 fn compiled_record_pattern_branches_execute_correctly() {
-    let atoms = AtomTable::new();
+    let atoms = AtomTable::with_common_atoms();
     let module = load_fixture(&atoms);
     let mut ok_words = [0_u64; 3];
     let mut error_words = [0_u64; 3];
@@ -161,7 +161,7 @@ fn compiled_record_pattern_branches_execute_correctly() {
 
 #[test]
 fn compiled_nested_record_patterns_execute_correctly() {
-    let atoms = AtomTable::new();
+    let atoms = AtomTable::with_common_atoms();
     let module = load_fixture(&atoms);
     let mut inner_ok_words = [0_u64; 3];
     let mut outer_ok_words = [0_u64; 3];

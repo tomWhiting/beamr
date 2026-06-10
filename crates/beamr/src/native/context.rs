@@ -230,6 +230,7 @@ pub struct ProcessContext<'process> {
     net_kernel: Option<Arc<crate::distribution::NetKernel>>,
     distribution_send: Option<Arc<dyn DistributionSendFacility>>,
     process: Option<&'process mut Process>,
+    detached_allocations: Vec<Box<[u64]>>,
     live_x: usize,
     timers: Option<Arc<Mutex<TimerWheel>>>,
     atom_table: Option<Arc<AtomTable>>,
@@ -359,6 +360,7 @@ impl<'process> ProcessContext<'process> {
             net_kernel: None,
             distribution_send: None,
             process: None,
+            detached_allocations: Vec::new(),
             live_x: 256,
             timers: None,
             atom_table: None,
@@ -398,6 +400,7 @@ impl<'process> ProcessContext<'process> {
             net_kernel: None,
             distribution_send: None,
             process: None,
+            detached_allocations: Vec::new(),
             live_x: 256,
             timers: Some(timers),
             atom_table: None,
@@ -536,7 +539,8 @@ impl<'process> ProcessContext<'process> {
     /// Ensure the calling process has at least `words` nursery words available.
     pub fn ensure_heap_space(&mut self, words: usize) -> Result<(), Term> {
         let Some(process) = self.process.as_deref_mut() else {
-            return Err(Term::atom(crate::atom::Atom::BADARG));
+            let _ = words;
+            return Ok(());
         };
         crate::gc::ensure_space(process, words, self.live_x)
             .map_err(|_| Term::atom(crate::atom::Atom::BADARG))
@@ -1143,17 +1147,40 @@ impl<'process> ProcessContext<'process> {
         self.alloc_words_prereserved(words)
     }
 
+    /// Keep detached allocations alive by moving them into an owned term.
+    ///
+    /// Dirty native calls run without an attached process heap. Terms allocated
+    /// in that detached context point into `detached_allocations`, so the dirty
+    /// completion path must preserve those allocations until it can copy the
+    /// returned term onto the resuming process heap.
+    pub fn take_detached_result(&mut self, root: Term) -> Option<crate::ets::OwnedTerm> {
+        if self.detached_allocations.is_empty() {
+            None
+        } else {
+            Some(crate::ets::OwnedTerm::from_allocations(
+                root,
+                std::mem::take(&mut self.detached_allocations),
+            ))
+        }
+    }
+
     /// Allocate heap words WITHOUT triggering GC. Caller must have already
     /// called `ensure_heap_space` for the total allocation budget. Panics
     /// (via alloc_slice error) if insufficient space remains.
     fn alloc_words_prereserved(&mut self, words: usize) -> Result<&mut [u64], Term> {
-        let Some(process) = self.process.as_deref_mut() else {
-            return Err(Term::atom(crate::atom::Atom::BADARG));
-        };
-        process
-            .heap_mut()
-            .alloc_slice(words)
-            .map_err(|_| Term::atom(crate::atom::Atom::BADARG))
+        if let Some(process) = self.process.as_deref_mut() {
+            return process
+                .heap_mut()
+                .alloc_slice(words)
+                .map_err(|_| Term::atom(crate::atom::Atom::BADARG));
+        }
+
+        self.detached_allocations
+            .push(vec![0; words].into_boxed_slice());
+        self.detached_allocations
+            .last_mut()
+            .map(|words| words.as_mut())
+            .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))
     }
 
     /// Allocate a tuple on the calling process heap.
@@ -1376,12 +1403,18 @@ mod tests {
     }
 
     #[test]
-    fn helpers_fail_without_attached_process() {
+    fn detached_context_allocations_are_owned_until_taken() {
         let mut context = ProcessContext::new();
-        assert_eq!(
-            context.alloc_tuple(&[Term::atom(Atom::OK)]),
-            Err(Term::atom(Atom::BADARG))
-        );
+        let tuple = context
+            .alloc_tuple(&[Term::atom(Atom::OK)])
+            .expect("detached tuple allocation");
+        assert_eq!(Tuple::new(tuple).expect("tuple accessor").arity(), 1);
+
+        let owned = context
+            .take_detached_result(tuple)
+            .expect("detached allocation ownership");
+        assert_eq!(owned.allocation_count(), 1);
+        assert!(context.take_detached_result(Term::NIL).is_none());
     }
 
     #[test]

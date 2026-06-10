@@ -20,6 +20,15 @@ pub struct OwnedTerm {
 }
 
 impl OwnedTerm {
+    /// Build an owned term from already-detached heap allocations.
+    ///
+    /// This is used by dirty native calls whose `ProcessContext` allocated
+    /// return terms without an attached process heap. The caller must provide a
+    /// root term that points only into these allocations or is immediate.
+    pub(crate) fn from_allocations(root: Term, allocations: Vec<Box<[u64]>>) -> Self {
+        Self { root, allocations }
+    }
+
     /// Root term value for table-side comparisons and traversal.
     #[must_use]
     pub const fn root(&self) -> Term {

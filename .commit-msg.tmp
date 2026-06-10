@@ -1,1 +1,1 @@
-harden(beamr): bound bigint left-shift allocation
+Harden B-176 test reliability fixes: enable differential tests, repair sample workflow runtime path, and stabilize flaky cleanup/dirty tests

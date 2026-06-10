@@ -31,13 +31,19 @@ pub fn make_fun(
         return Err(ExecError::InvalidOperand("make_fun num_free"));
     }
 
-    let mut free_vars = Vec::with_capacity(num_free);
-    for register in 0..num_free {
-        let register =
-            u16::try_from(register).map_err(|_| ExecError::InvalidOperand("X register"))?;
-        free_vars.push(process.x_reg(register));
-    }
+    let free_vars = make_fun_free_vars(process, module, operands, num_free)?;
 
+    let closure_arity = if has_explicit_free_vars(operands) {
+        lambda
+            .arity
+            .checked_sub(
+                u8::try_from(num_free)
+                    .map_err(|_| ExecError::InvalidOperand("make_fun num_free"))?,
+            )
+            .ok_or(ExecError::InvalidOperand("make_fun arity"))?
+    } else {
+        lambda.arity
+    };
     let words = 7usize
         .checked_add(free_vars.len())
         .ok_or(ExecError::InvalidOperand("closure size"))?;
@@ -49,13 +55,13 @@ pub fn make_fun(
         heap,
         module.name,
         function_index,
-        lambda.arity,
+        closure_arity,
         module.generation(),
         lambda.unique_id,
         &free_vars,
     )
     .ok_or(ExecError::Badarg)?;
-    process.set_x_reg(0, term);
+    write_make_fun_result(process, operands, term)?;
     Ok(InstructionOutcome::Continue)
 }
 
@@ -443,8 +449,69 @@ fn jump_label(module: &Module, label: &Operand) -> Result<InstructionOutcome, Ex
 fn make_fun_lambda_index(operands: &[Operand]) -> Result<usize, ExecError> {
     match operands {
         [index] => core::operand_usize(index, "make_fun lambda index"),
+        [index, _destination, Operand::List(_)] => {
+            core::operand_usize(index, "make_fun lambda index")
+        }
         [index, _uniq, _old_index] => core::operand_usize(index, "make_fun lambda index"),
+        [index, _uniq, _old_index, _destination, _free_vars] => {
+            core::operand_usize(index, "make_fun lambda index")
+        }
         _ => Err(ExecError::InvalidOperand("make_fun operands")),
+    }
+}
+
+fn has_explicit_free_vars(operands: &[Operand]) -> bool {
+    matches!(
+        operands,
+        [_, _, Operand::List(_)] | [_, _, _, _, Operand::List(_)]
+    )
+}
+
+fn write_make_fun_result(
+    process: &mut Process,
+    operands: &[Operand],
+    term: Term,
+) -> Result<(), ExecError> {
+    match operands {
+        [_, destination, Operand::List(_)] | [_, _, _, destination, _] => {
+            core::write_term(process, destination, term)
+        }
+        _ => {
+            process.set_x_reg(0, term);
+            Ok(())
+        }
+    }
+}
+
+fn make_fun_free_vars(
+    process: &Process,
+    module: &Module,
+    operands: &[Operand],
+    num_free: usize,
+) -> Result<Vec<Term>, ExecError> {
+    let explicit_free_vars = match operands {
+        [_, _, Operand::List(values)] | [_, _, _, _, Operand::List(values)] => {
+            Some(values.as_slice())
+        }
+        _ => None,
+    };
+
+    if let Some(values) = explicit_free_vars {
+        if values.len() != num_free {
+            return Err(ExecError::InvalidOperand("make_fun free variable count"));
+        }
+        values
+            .iter()
+            .map(|operand| core::read_term(process, module, operand))
+            .collect()
+    } else {
+        (0..num_free)
+            .map(|register| {
+                let register =
+                    u16::try_from(register).map_err(|_| ExecError::InvalidOperand("X register"))?;
+                Ok(process.x_reg(register))
+            })
+            .collect()
     }
 }
 

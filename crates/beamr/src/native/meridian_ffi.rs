@@ -8,6 +8,7 @@ use crate::native::{BifRegistryImpl, Capability, NativeRegistrationError, Proces
 use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::binary::Binary;
+use crate::term::boxed::{Cons, ProcBin, SubBinary};
 
 pub fn register_meridian_ffi(
     registry: &BifRegistryImpl,
@@ -77,8 +78,40 @@ fn ok_nil(ctx: &mut ProcessContext) -> Result<Term, Term> {
 }
 
 fn extract_string(term: Term) -> Result<String, Term> {
-    let binary = Binary::new(term).ok_or(Term::atom(Atom::BADARG))?;
-    String::from_utf8(binary.as_bytes().to_vec()).map_err(|_| Term::atom(Atom::BADARG))
+    let mut bytes = Vec::new();
+    collect_bytes(term, &mut bytes)?;
+    String::from_utf8(bytes).map_err(|_| Term::atom(Atom::BADARG))
+}
+
+fn collect_bytes(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
+    if let Some(binary) = Binary::new(term) {
+        bytes.extend_from_slice(binary.as_bytes());
+        return Ok(());
+    }
+    if let Some(proc_bin) = ProcBin::new(term) {
+        bytes.extend_from_slice(proc_bin.as_bytes());
+        return Ok(());
+    }
+    if let Some(sub_binary) = SubBinary::new(term) {
+        bytes.extend_from_slice(sub_binary.as_bytes());
+        return Ok(());
+    }
+    if term.is_nil() {
+        return Ok(());
+    }
+    if let Some(cons) = Cons::new(term) {
+        collect_bytes(cons.head(), bytes)?;
+        collect_bytes(cons.tail(), bytes)?;
+        return Ok(());
+    }
+    if let Some(byte) = term
+        .as_small_int()
+        .and_then(|value| u8::try_from(value).ok())
+    {
+        bytes.push(byte);
+        return Ok(());
+    }
+    Err(Term::atom(Atom::BADARG))
 }
 
 fn badarg() -> Term {

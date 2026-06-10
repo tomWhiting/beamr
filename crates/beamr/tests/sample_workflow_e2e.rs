@@ -66,6 +66,7 @@ fn sample_workflow_run_completes_end_to_end() {
     let scheduler = Scheduler::new(
         SchedulerConfig {
             thread_count: Some(1),
+            jit_threshold: None,
             ..SchedulerConfig::default()
         },
         Arc::clone(&module_registry),
@@ -80,11 +81,17 @@ fn sample_workflow_run_completes_end_to_end() {
         )
         .expect("spawn sample_workflow:run/1");
     let (reason, result) = scheduler.run_until_exit(pid);
+    let exit_error = scheduler.take_exit_error(pid);
+    let exit_exception = scheduler.take_exit_exception(pid);
     scheduler.shutdown();
 
     let _ = std::fs::remove_file(&input_path);
 
-    assert_eq!(reason, ExitReason::Normal, "result: {result:?}");
+    assert_eq!(
+        reason,
+        ExitReason::Normal,
+        "result: {result:?}, exit_error: {exit_error:?}, exit_exception: {exit_exception:?}"
+    );
     assert!(output_path.exists(), "workflow should write output to /tmp");
     let _ = std::fs::remove_file(output_path);
 }

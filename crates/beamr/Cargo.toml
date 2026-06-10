@@ -46,7 +46,6 @@ name = "jit_comparison_extended"
 harness = false
 
 [features]
-differential = []
 json = ["dep:base64", "dep:serde_json"]
 test-support = []
 

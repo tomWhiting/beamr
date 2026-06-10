@@ -1,10 +1,9 @@
 //! Small compatibility BIFs needed by bundled sample workflow fixtures.
 
 use crate::atom::Atom;
-use crate::native::{NativeContinuation, ProcessContext};
+use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::{Closure, Tuple};
 
 use super::gleam_stdlib_ffi::bif_string_replace;
 use super::lists_hof_bifs::bif_lists_map;
@@ -56,39 +55,6 @@ pub fn bif_gleeunit_main(args: &[Term], context: &mut ProcessContext) -> Result<
         Ok(Term::atom(Atom::OK))
     } else {
         Err(badarg())
-    }
-}
-
-pub fn bif_gleam_result_try(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let [left, right] = args else {
-        return Err(badarg());
-    };
-    let (fun, result) = if Closure::new(*left).is_some() {
-        (*left, *right)
-    } else if Closure::new(*right).is_some() {
-        (*right, *left)
-    } else {
-        return Err(badarg());
-    };
-    let tuple = match Tuple::new(result) {
-        Some(tuple) => tuple,
-        None => return Ok(result),
-    };
-    if tuple.arity() != 2 {
-        return Err(badarg());
-    }
-    match tuple.get(0) {
-        Some(tag) if tag == Term::atom(Atom::OK) => {
-            let value = tuple.get(1).ok_or_else(badarg)?;
-            context.set_continuation_trampoline(
-                fun,
-                vec![value],
-                NativeContinuation::GleamResultTry,
-            );
-            Ok(Term::NIL)
-        }
-        Some(tag) if tag == Term::atom(Atom::ERROR) => Ok(result),
-        _ => Err(badarg()),
     }
 }
 

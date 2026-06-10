@@ -77,7 +77,7 @@ use maps_bifs::{
 };
 use math_bifs::{bif_ceil, bif_exp, bif_floor, bif_log, bif_pow};
 use sample_support_bifs::{
-    bif_gleam_list_map, bif_gleam_result_try, bif_gleam_string_repeat, bif_gleam_string_replace,
+    bif_gleam_list_map, bif_gleam_string_repeat, bif_gleam_string_replace,
     bif_gleam_string_tree_split, bif_gleeunit_main,
 };
 use string_bifs::{
@@ -979,14 +979,6 @@ const STDLIB_STUBS: &[StubBif] = &[
         Capability::Pure,
         None,
         bif_gleam_string_tree_split,
-    ),
-    (
-        "gleam@result",
-        "try",
-        2,
-        Capability::Pure,
-        None,
-        bif_gleam_result_try,
     ),
     (
         "gleeunit",
