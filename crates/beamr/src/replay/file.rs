@@ -42,8 +42,8 @@ impl fmt::Display for ReplayLogFileError {
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported replay log format version {version}")
             }
-            Self::EncodeTerm(error) => write!(formatter, "encode term: {error}"),
-            Self::DecodeTerm(error) => write!(formatter, "decode term: {error}"),
+            Self::EncodeTerm(error) => write!(formatter, "encode term: {error:?}"),
+            Self::DecodeTerm(error) => write!(formatter, "decode term: {error:?}"),
             Self::Compression(error) => write!(formatter, "compression: {error}"),
         }
     }

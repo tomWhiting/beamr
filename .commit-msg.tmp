@@ -1,1 +1,1 @@
-feat(replay): persist replay logs and add record/replay CLI
+fix(replay): format ETF codec errors with debug output
