@@ -5,6 +5,11 @@ use std::sync::{
 };
 use std::task::{Context, Poll, Wake, Waker};
 
+#[cfg(feature = "telemetry")]
+use opentelemetry::Key;
+#[cfg(feature = "telemetry")]
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
 use dashmap::{DashMap, DashSet};
 
 use super::*;
@@ -152,6 +157,36 @@ fn wait_until(deadline_ms: u64, mut predicate: impl FnMut() -> bool) {
         assert!(std::time::Instant::now() <= deadline, "condition timed out");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+#[cfg(feature = "telemetry")]
+fn install_telemetry_test_provider() -> (InMemorySpanExporter, SdkTracerProvider) {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    opentelemetry::global::set_tracer_provider(provider.clone());
+    (exporter, provider)
+}
+
+#[cfg(feature = "telemetry")]
+fn span_attr_i64(span: &opentelemetry_sdk::trace::SpanData, key: &'static str) -> Option<i64> {
+    span.attributes.iter().find_map(|attribute| {
+        (attribute.key == Key::from_static_str(key)).then(|| match &attribute.value {
+            opentelemetry::Value::I64(value) => Some(*value),
+            _ => None,
+        })?
+    })
+}
+
+#[cfg(feature = "telemetry")]
+fn span_attr_str(span: &opentelemetry_sdk::trace::SpanData, key: &'static str) -> Option<String> {
+    span.attributes.iter().find_map(|attribute| {
+        (attribute.key == Key::from_static_str(key)).then(|| match &attribute.value {
+            opentelemetry::Value::String(value) => Some(value.to_string()),
+            _ => None,
+        })?
+    })
 }
 
 #[test]
@@ -333,6 +368,77 @@ fn hook_records_reduction_yield_metadata_and_can_suspend_then_resume() {
     assert_eq!(first.reductions_consumed, DEFAULT_REDUCTION_BUDGET);
     drop(events);
     scheduler.shutdown();
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn execute_slice_emits_telemetry_span_with_mfa_reductions_and_outcome() {
+    let (exporter, provider) = install_telemetry_test_provider();
+    let atoms = Arc::new(AtomTable::new());
+    let module_name = atoms.intern("telemetry_slice");
+    let function = atoms.intern("main");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = registry.insert(test_module(
+        module_name,
+        vec![
+            Instruction::FuncInfo {
+                module: Operand::Atom(Some(module_name)),
+                function: Operand::Atom(Some(function)),
+                arity: Operand::Unsigned(0),
+            },
+            Instruction::Label { label: 1 },
+            Instruction::CallOnly {
+                arity: Operand::Unsigned(0),
+                label: Operand::Label(1),
+            },
+        ],
+    ));
+    let scheduler = Scheduler::with_code_server(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        Arc::clone(&registry),
+        Arc::clone(&atoms),
+        Arc::new(BifRegistryImpl::new()),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    scheduler.shutdown();
+
+    let mut process = Process::new(44, DEFAULT_HEAP_SIZE);
+    process.set_code_position(Some(CodePosition {
+        module: module_name,
+        instruction_pointer: 0,
+    }));
+    process.set_current_module(Arc::clone(&module));
+
+    let SliceOutcome::Requeue(_) = execute_slice(&scheduler.shared, &mut process) else {
+        panic!("looping process should yield after consuming its slice");
+    };
+    provider.force_flush().expect("spans flush");
+    let spans = exporter.get_finished_spans().expect("finished spans");
+    let span = spans
+        .iter()
+        .find(|span| span.name.as_ref() == "beamr.scheduler.execute_slice")
+        .expect("execution-slice span emitted");
+
+    assert_eq!(span_attr_i64(span, "process.pid"), Some(44));
+    assert_eq!(
+        span_attr_str(span, "code.module").as_deref(),
+        Some("telemetry_slice")
+    );
+    assert_eq!(
+        span_attr_str(span, "code.function").as_deref(),
+        Some("main")
+    );
+    assert_eq!(span_attr_i64(span, "code.arity"), Some(0));
+    assert_eq!(
+        span_attr_i64(span, "reductions.consumed"),
+        Some(i64::from(DEFAULT_REDUCTION_BUDGET))
+    );
+    assert_eq!(span_attr_str(span, "outcome").as_deref(), Some("yielded"));
+
+    provider.shutdown().expect("provider shutdown");
 }
 
 #[test]
@@ -857,12 +963,6 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         Arc::clone(&atom_table),
         Arc::clone(&distribution.resolver),
     );
-    let net_kernel = Arc::new(crate::distribution::NetKernel::new(
-        crate::distribution::connection::ConnectionManager::new(
-            Arc::clone(&atom_table),
-            distribution.resolver.clone(),
-        ),
-    ));
     let shared = Arc::new(SharedState {
         shutdown: AtomicBool::new(false),
         process_table: ProcessTable::new(),

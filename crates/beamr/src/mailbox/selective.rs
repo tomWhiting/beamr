@@ -18,11 +18,11 @@ pub fn receive(mailbox: &mut Mailbox, mut matches: impl FnMut(Term) -> bool) -> 
 
     let mut index = mailbox.save_pointer.min(mailbox.scan_list.len());
     while index < mailbox.scan_list.len() {
-        let message = mailbox.scan_list[index];
+        let message = mailbox.scan_list[index].term;
         if matches(message) {
             let matched = mailbox.scan_list.remove(index)?;
             mailbox.save_pointer = 0;
-            return Some(matched);
+            return Some(matched.term);
         }
         index += 1;
     }
@@ -169,7 +169,7 @@ mod tests {
         mailbox
             .scan_list
             .iter()
-            .copied()
+            .map(|message| message.term)
             .map(value)
             .collect::<Vec<_>>()
     }

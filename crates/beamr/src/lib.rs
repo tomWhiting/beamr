@@ -24,5 +24,7 @@ pub mod process;
 pub mod replay;
 pub mod scheduler;
 pub mod supervision;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
 pub mod term;
 pub mod timer;

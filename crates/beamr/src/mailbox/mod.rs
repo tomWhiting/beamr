@@ -47,10 +47,27 @@ impl From<HeapFull> for SendError {
 /// The receiving side of a process mailbox.
 #[derive(Debug, Default)]
 pub struct Mailbox {
-    arrival: Arc<SegQueue<Term>>,
-    scan_list: VecDeque<Term>,
+    arrival: Arc<SegQueue<MailboxMessage>>,
+    scan_list: VecDeque<MailboxMessage>,
     save_pointer: usize,
-    recv_marker: Option<(Term, usize)>,
+    recv_marker: Option<(MailboxMessage, usize)>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MailboxMessage {
+    pub(super) term: Term,
+    #[cfg(feature = "telemetry")]
+    trace_context: Option<crate::telemetry::spans::MessageTraceContext>,
+}
+
+impl MailboxMessage {
+    const fn owned(term: Term) -> Self {
+        Self {
+            term,
+            #[cfg(feature = "telemetry")]
+            trace_context: None,
+        }
+    }
 }
 
 impl Mailbox {
@@ -91,7 +108,9 @@ impl Mailbox {
     /// Drain arrivals and return the message at the current selective-receive save pointer.
     pub(crate) fn current_message(&mut self) -> Option<Term> {
         self.drain_arrival();
-        self.scan_list.get(self.save_pointer).copied()
+        self.scan_list
+            .get(self.save_pointer)
+            .map(|message| message.term)
     }
 
     /// Advance the selective-receive save pointer past the current message.
@@ -107,7 +126,18 @@ impl Mailbox {
         self.drain_arrival();
         let matched = self.scan_list.remove(self.save_pointer)?;
         self.save_pointer = 0;
-        Some(matched)
+        Some(matched.term)
+    }
+
+    /// Remove the current matched message with its trace carrier and reset scanning.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn remove_current_message_with_trace(
+        &mut self,
+    ) -> Option<(Term, Option<crate::telemetry::spans::MessageTraceContext>)> {
+        self.drain_arrival();
+        let matched = self.scan_list.remove(self.save_pointer)?;
+        self.save_pointer = 0;
+        Some((matched.term, matched.trace_context))
     }
 
     /// Reset selective receive state after a timeout or successful match.
@@ -136,18 +166,18 @@ impl Mailbox {
     /// Bind an OTP receive marker key to a saved mailbox position.
     pub(crate) fn bind_recv_marker(&mut self, key: Term, marker: usize) {
         self.drain_arrival();
-        self.recv_marker = Some((key, marker.min(self.scan_list.len())));
+        self.recv_marker = Some((MailboxMessage::owned(key), marker.min(self.scan_list.len())));
     }
 
     /// Use a bound OTP receive marker key, returning whether it was found.
     pub(crate) fn use_recv_marker(&mut self, key: Term) -> bool {
-        let Some((bound_key, marker)) = self.recv_marker else {
+        let Some((bound_key, marker)) = self.recv_marker.as_ref() else {
             return false;
         };
-        if bound_key != key {
+        if bound_key.term != key {
             return false;
         }
-        self.set_save_pointer(marker);
+        self.set_save_pointer(*marker);
         true
     }
 
@@ -155,7 +185,8 @@ impl Mailbox {
     pub(crate) fn clear_recv_marker(&mut self, key: Term) {
         if self
             .recv_marker
-            .is_some_and(|(bound_key, _)| bound_key == key)
+            .as_ref()
+            .is_some_and(|(bound_key, _)| bound_key.term == key)
         {
             self.recv_marker = None;
         }
@@ -163,7 +194,7 @@ impl Mailbox {
 
     /// Enqueue a term already owned by this process.
     pub(crate) fn push_owned(&mut self, message: Term) {
-        self.scan_list.push_back(message);
+        self.scan_list.push_back(MailboxMessage::owned(message));
     }
 
     /// Test/GC helper: enqueue a term already owned by this process.
@@ -175,17 +206,17 @@ impl Mailbox {
     /// Test helper: inspect the first scan-buffered message.
     #[cfg(test)]
     pub(crate) fn front_for_test(&self) -> Option<Term> {
-        self.scan_list.front().copied()
+        self.scan_list.front().map(|message| message.term)
     }
 
     /// Iterate over queued owner-side messages for GC roots and tests.
     pub(crate) fn scan_iter(&self) -> impl Iterator<Item = &Term> {
-        self.scan_list.iter()
+        self.scan_list.iter().map(|message| &message.term)
     }
 
     /// Mutably iterate over owner-side queued messages for GC root rewriting.
     pub(crate) fn scan_iter_mut(&mut self) -> impl Iterator<Item = &mut Term> {
-        self.scan_list.iter_mut()
+        self.scan_list.iter_mut().map(|message| &mut message.term)
     }
 
     #[cfg(test)]
@@ -202,7 +233,7 @@ impl Mailbox {
 /// Cloneable handle used by other processes to enqueue copied messages.
 #[derive(Clone)]
 pub struct MailboxSender {
-    arrival: Arc<SegQueue<Term>>,
+    arrival: Arc<SegQueue<MailboxMessage>>,
     wake: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
 }
 
@@ -234,11 +265,44 @@ impl MailboxSender {
     /// lock, or mutate the receiver's private scan list.
     pub fn send(&self, message: Term, receiver_heap: &mut Heap) -> Result<(), SendError> {
         let copied = copy_term(message, receiver_heap)?;
-        self.arrival.push(copied);
+        self.enqueue_copied(
+            copied,
+            #[cfg(feature = "telemetry")]
+            None,
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn send_traced(
+        &self,
+        sender_pid: u64,
+        receiver_pid: u64,
+        message: Term,
+        receiver_heap: &mut Heap,
+    ) -> Result<(), SendError> {
+        let copied = copy_term(message, receiver_heap)?;
+        let trace_context =
+            crate::telemetry::spans::record_message_send_context(sender_pid, receiver_pid, message);
+        self.enqueue_copied(copied, Some(trace_context));
+        Ok(())
+    }
+
+    fn enqueue_copied(
+        &self,
+        term: Term,
+        #[cfg(feature = "telemetry")] trace_context: Option<
+            crate::telemetry::spans::MessageTraceContext,
+        >,
+    ) {
+        self.arrival.push(MailboxMessage {
+            term,
+            #[cfg(feature = "telemetry")]
+            trace_context,
+        });
         if let Some(wake) = &self.wake {
             wake();
         }
-        Ok(())
     }
 
     /// Enqueue an already-owned term.
@@ -248,7 +312,7 @@ impl MailboxSender {
     /// so boxed terms never alias the sender heap.
     #[cfg(test)]
     pub(crate) fn enqueue_owned(&self, message: Term) {
-        self.arrival.push(message);
+        self.arrival.push(MailboxMessage::owned(message));
     }
 }
 
@@ -416,7 +480,10 @@ mod tests {
 
         mailbox.drain_arrival();
         assert_eq!(mailbox.message_count(), 1);
-        assert_eq!(mailbox.scan_list.pop_front(), Some(Term::small_int(42)));
+        assert_eq!(
+            mailbox.scan_list.pop_front().map(|message| message.term),
+            Some(Term::small_int(42))
+        );
     }
 
     #[test]
@@ -450,7 +517,11 @@ mod tests {
             .send(tuple, &mut receiver_heap)
             .expect("tuple copy should fit");
         mailbox.drain_arrival();
-        let copied = mailbox.scan_list.pop_front().expect("copied tuple");
+        let copied = mailbox
+            .scan_list
+            .pop_front()
+            .map(|message| message.term)
+            .expect("copied tuple");
 
         assert_eq!(copied, tuple);
         assert_ne!(copied.heap_ptr(), tuple.heap_ptr());
@@ -471,7 +542,11 @@ mod tests {
             .send(list, &mut receiver_heap)
             .expect("list copy should fit");
         mailbox.drain_arrival();
-        let copied = mailbox.scan_list.pop_front().expect("copied list");
+        let copied = mailbox
+            .scan_list
+            .pop_front()
+            .map(|message| message.term)
+            .expect("copied list");
 
         assert_eq!(copied, list);
         assert_ne!(copied.heap_ptr(), list.heap_ptr());
