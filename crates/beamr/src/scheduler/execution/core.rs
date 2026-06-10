@@ -483,6 +483,7 @@ fn submit_dirty_call(
                 result: recorded.outcome.result,
                 exception_class: recorded.outcome.exception_class,
                 exception_stacktrace: recorded.outcome.exception_stacktrace,
+                owned_result: None,
             },
         );
         let _resumed = timer_integration::resume_suspended(shared, process.pid());

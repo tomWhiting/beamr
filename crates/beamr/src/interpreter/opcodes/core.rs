@@ -702,10 +702,13 @@ fn should_replay_select(ctx: &ExtCallContext<'_>, module: Atom, function: Atom, 
     let Some(services) = ctx.services else {
         return false;
     };
-    if services.replay_driver.is_none() || function != services.atom_table.intern("select") {
+    let Some(atom_table) = ctx.atom_table else {
+        return false;
+    };
+    if services.replay_driver.is_none() || function != atom_table.intern("select") {
         return false;
     }
-    let Some(module_name) = services.atom_table.resolve(module) else {
+    let Some(module_name) = atom_table.resolve(module) else {
         return false;
     };
     matches!(

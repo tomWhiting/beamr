@@ -332,6 +332,7 @@ impl From<(u64, u64, Term, Instant)> for ReplayEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native::select::SelectFacility;
 
     #[test]
     fn driver_consumes_select_decisions_in_order() {

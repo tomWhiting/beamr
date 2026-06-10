@@ -294,6 +294,8 @@ fn make_shared_state() -> Arc<SharedState> {
         net_kernel,
         jit_profiler: Arc::new(crate::jit::JitProfiler::new(1000)),
         jit_cache: Arc::new(crate::jit::JitCache::new()),
+        replay_driver: None,
+        replay_mode: false,
     })
 }
 

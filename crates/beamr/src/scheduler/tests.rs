@@ -567,6 +567,8 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         net_kernel,
         jit_profiler: Arc::new(crate::jit::JitProfiler::new(1000)),
         jit_cache: Arc::new(crate::jit::JitCache::new()),
+        replay_driver: None,
+        replay_mode: false,
     });
     let mut process = Process::new(1, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
@@ -928,6 +930,8 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         },
         jit_profiler: Arc::new(crate::jit::JitProfiler::new(1000)),
         jit_cache: Arc::new(crate::jit::JitCache::new()),
+        replay_driver: None,
+        replay_mode: false,
     });
     let pid = 1;
     shared.process_table.spawn_with_pid(pid);
