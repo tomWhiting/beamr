@@ -1,6 +1,6 @@
 [package]
 name = "gleam-types"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Gleam type sidecar extractor for beamr"
 readme = "README.md"

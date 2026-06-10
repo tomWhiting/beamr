@@ -1,6 +1,6 @@
 [package]
 name = "beamr"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "A Rust runtime with the BEAM's execution model, targeting Gleam"
 readme = "README.md"
@@ -23,7 +23,7 @@ crossbeam-deque = "0.8.6"
 crossbeam-queue = "0.3.12"
 dashmap = "6.1.0"
 flate2 = "1.1.9"
-gleam-types = { path = "../gleam-types", version = "0.4.0" }
+gleam-types = { path = "../gleam-types", version = "0.4.1" }
 libc = "0.2.186"
 md5 = "0.8.0"
 num_cpus = "1.17.0"
