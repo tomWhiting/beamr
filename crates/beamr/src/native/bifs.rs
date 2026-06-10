@@ -14,6 +14,7 @@ use crate::native::{
 };
 use crate::term::Term;
 use crate::term::compare;
+use crate::term::format::format_term;
 use crate::timer::TimerRef;
 
 type Gate1Bif = (&'static str, u8, Capability, NativeFn);
@@ -190,13 +191,15 @@ pub fn throw(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> 
     Err(*reason)
 }
 
-/// erlang:display/1 prints Debug formatting and returns true.
-pub fn display(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+/// erlang:display/1 prints user-facing term formatting and returns true.
+pub fn display(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [term] = args else {
         return Err(badarg());
     };
 
-    println!("{term:?}");
+    let fallback = AtomTable::with_common_atoms();
+    let atom_table = context.atom_table().unwrap_or(&fallback);
+    println!("{}", format_term(*term, atom_table));
     Ok(bool_term(true))
 }
 

@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::{env, fmt};
 
-use beamr::atom::{Atom, AtomTable};
+use beamr::atom::AtomTable;
 use beamr::error::{ExecError, LoadError};
 use beamr::io::StdoutSink;
 use beamr::jit::{AotCompiler, AotError, NativeCodeBundle};
@@ -22,7 +22,7 @@ use beamr::native::{
 };
 use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
-use beamr::term::{Tag, Term};
+use beamr::term::{Term, format::format_term};
 
 const USAGE: &str = "Usage:\n  beamr <file.beam> [--entry module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr <file.beam> [module:function/arity] [--dir <path>]... [-- <arg>...]\n  beamr imports <file.beam>\n  beamr compile <dir> [--verbose]\n  beamr --help|-h\n  beamr --version|-V";
 
@@ -87,7 +87,7 @@ enum CliError {
         actual: usize,
     },
     InvalidTerm(String),
-    ProcessExit(ExitReason),
+    ProcessExit(String),
     MissingDirValue(String),
 }
 
@@ -318,12 +318,12 @@ fn run_compile(dir: &Path, verbose: bool) -> Result<CliSuccess, CliError> {
         })?;
 
         if verbose {
-            let module = format_atom(result.module(), &atom_table);
+            let module = format_term(Term::atom(result.module()), &atom_table);
             for (function, arity, _) in result.compiled_functions() {
                 output.push_str(&format!(
                     "{}:{}/{} compiled\n",
                     module,
-                    format_atom(*function, &atom_table),
+                    format_term(Term::atom(*function), &atom_table),
                     arity
                 ));
             }
@@ -331,7 +331,7 @@ fn run_compile(dir: &Path, verbose: bool) -> Result<CliSuccess, CliError> {
                 output.push_str(&format!(
                     "{}:{}/{} skipped ({})\n",
                     module,
-                    format_atom(*function, &atom_table),
+                    format_term(Term::atom(*function), &atom_table),
                     arity,
                     reason
                 ));
@@ -403,6 +403,8 @@ fn run_module(
         .spawn(module_atom, function_atom, args)
         .map_err(CliError::Exec)?;
     let (reason, result) = scheduler.run_until_exit(pid);
+    let exit_exception = scheduler.take_exit_exception(pid);
+    let exit_error = scheduler.take_exit_error(pid);
     scheduler.shutdown();
 
     match reason {
@@ -410,7 +412,13 @@ fn run_module(
             "{}\n",
             format_term(result, &atom_table)
         ))),
-        other => Err(CliError::ProcessExit(other)),
+        other => {
+            let detail = exit_exception
+                .map(|exception| exception.format_with_atoms(&atom_table))
+                .or_else(|| exit_error.map(|error| error.format_with_atoms(&atom_table)))
+                .unwrap_or_else(|| format_term(other.as_term(), &atom_table));
+            Err(CliError::ProcessExit(detail))
+        }
     }
 }
 
@@ -535,56 +543,14 @@ fn parse_runtime_arg(arg: &str, _atom_table: &AtomTable) -> Result<Term, CliErro
 fn format_import_report(report: &UnresolvedImportReport, atom_table: &AtomTable) -> String {
     let mut output = String::new();
     for import in report.imports() {
-        output.push_str(&format_atom(import.module, atom_table));
+        output.push_str(&format_term(Term::atom(import.module), atom_table));
         output.push(':');
-        output.push_str(&format_atom(import.function, atom_table));
+        output.push_str(&format_term(Term::atom(import.function), atom_table));
         output.push('/');
         output.push_str(&import.arity.to_string());
         output.push('\n');
     }
     output
-}
-
-fn format_term(term: Term, atom_table: &AtomTable) -> String {
-    match term.tag() {
-        Tag::SmallInt => term
-            .as_small_int()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| format!("{term:?}")),
-        Tag::Atom => term
-            .as_atom()
-            .map(|atom| format_atom(atom, atom_table))
-            .unwrap_or_else(|| format!("{term:?}")),
-        Tag::Nil => "[]".to_owned(),
-        Tag::Pid => term
-            .as_pid()
-            .map(|pid| format!("<0.{pid}.0>"))
-            .unwrap_or_else(|| format!("{term:?}")),
-        Tag::Boxed => {
-            if let Some(binary) = beamr::term::binary::Binary::new(term) {
-                match std::str::from_utf8(binary.as_bytes()) {
-                    Ok(s) => format!("<<\"{s}\">>"),
-                    Err(_) => format!("<<{} bytes>>", binary.len()),
-                }
-            } else if let Some(tuple) = beamr::term::boxed::Tuple::new(term) {
-                let elements: Vec<String> = (0..tuple.arity())
-                    .filter_map(|i| tuple.get(i))
-                    .map(|t| format_term(t, atom_table))
-                    .collect();
-                format!("{{{}}}", elements.join(", "))
-            } else {
-                format!("{term:?}")
-            }
-        }
-        Tag::List => format!("{term:?}"),
-    }
-}
-
-fn format_atom(atom: Atom, atom_table: &AtomTable) -> String {
-    atom_table
-        .resolve(atom)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("{atom:?}"))
 }
 
 impl CliError {
@@ -640,7 +606,7 @@ impl fmt::Display for CliError {
                 "arity mismatch: entry expects {expected} argument(s), got {actual}"
             ),
             Self::InvalidTerm(term) => write!(formatter, "invalid term literal '{term}'"),
-            Self::ProcessExit(reason) => write!(formatter, "process exited with {reason:?}"),
+            Self::ProcessExit(detail) => formatter.write_str(detail),
             Self::MissingDirValue(message) => formatter.write_str(message),
         }
     }

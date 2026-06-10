@@ -14,14 +14,19 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::atom::Atom;
+use crate::atom::{Atom, AtomTable};
 use crate::mailbox::Mailbox;
 use crate::module::Module;
 use crate::namespace::NamespaceId;
 use crate::native::NativeContinuation;
 use crate::process::heap::Heap;
 use crate::process::stack::Stack;
-use crate::term::{Term, boxed::BoxedTag, compare};
+use crate::term::{
+    Term,
+    boxed::{BoxedTag, Cons, Tuple},
+    compare,
+    format::format_term,
+};
 
 /// Default number of reductions assigned to a fresh process time slice.
 pub const DEFAULT_REDUCTION_BUDGET: u32 = 4000;
@@ -113,6 +118,105 @@ pub struct Exception {
     pub reason: Term,
     /// Stacktrace term associated with the original raise.
     pub stacktrace: Term,
+}
+
+impl Exception {
+    /// Format exception details for user-facing diagnostics using atom-name
+    /// resolution from `atom_table`.
+    #[must_use]
+    pub fn format_with_atoms(&self, atom_table: &AtomTable) -> String {
+        let mut output = format!(
+            "{}: {}",
+            format_term(self.class, atom_table),
+            format_term(self.reason, atom_table)
+        );
+
+        if !self.stacktrace.is_nil() {
+            append_stacktrace(&mut output, self.stacktrace, atom_table);
+        }
+
+        output
+    }
+}
+
+fn append_stacktrace(output: &mut String, stacktrace: Term, atom_table: &AtomTable) {
+    let mut current = stacktrace;
+    let mut appended_frame = false;
+
+    loop {
+        if current.is_nil() {
+            return;
+        }
+
+        let Some(cons) = Cons::new(current) else {
+            if !appended_frame {
+                output.push_str("\n  stacktrace: ");
+                output.push_str(&format_term(stacktrace, atom_table));
+            } else {
+                output.push_str("\n  at ");
+                output.push_str(&format_term(current, atom_table));
+            }
+            return;
+        };
+
+        output.push_str("\n  at ");
+        output.push_str(&format_stacktrace_frame(cons.head(), atom_table));
+        appended_frame = true;
+        current = cons.tail();
+    }
+}
+
+fn format_stacktrace_frame(frame: Term, atom_table: &AtomTable) -> String {
+    let Some(tuple) = Tuple::new(frame) else {
+        return format_term(frame, atom_table);
+    };
+
+    if tuple.arity() != 4 {
+        return format_term(frame, atom_table);
+    }
+
+    let module = tuple
+        .get(0)
+        .map(|term| format_term(term, atom_table))
+        .unwrap_or_else(|| "#<missing module>".to_owned());
+    let function = tuple
+        .get(1)
+        .map(|term| format_term(term, atom_table))
+        .unwrap_or_else(|| "#<missing function>".to_owned());
+    let arity = tuple
+        .get(2)
+        .and_then(Term::as_small_int)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| {
+            tuple
+                .get(2)
+                .map(|term| format_term(term, atom_table))
+                .unwrap_or_else(|| "#<missing arity>".to_owned())
+        });
+
+    let mut formatted = format!("{module}:{function}/{arity}");
+    if let Some(info) = tuple.get(3)
+        && let Some(line) = stacktrace_line(info)
+    {
+        formatted.push(':');
+        formatted.push_str(&line.to_string());
+    }
+    formatted
+}
+
+fn stacktrace_line(info: Term) -> Option<i64> {
+    let mut current = info;
+    loop {
+        if current.is_nil() {
+            return None;
+        }
+        let cons = Cons::new(current)?;
+        let tuple = Tuple::new(cons.head())?;
+        if tuple.arity() == 2 && tuple.get(0).and_then(Term::as_atom) == Some(Atom::LINE) {
+            return tuple.get(1).and_then(Term::as_small_int);
+        }
+        current = cons.tail();
+    }
 }
 
 /// Raw stack frame captured at raise time for later stacktrace construction.
@@ -996,13 +1100,75 @@ impl Process {
 #[cfg(test)]
 mod tests {
     use super::{
-        CodePosition, DEFAULT_REDUCTION_BUDGET, ExitReason, Priority, Process, ProcessError,
-        ProcessStatus,
+        CodePosition, DEFAULT_REDUCTION_BUDGET, Exception, ExitReason, Priority, Process,
+        ProcessError, ProcessStatus,
     };
-    use crate::atom::Atom;
+    use crate::atom::{Atom, AtomTable};
     use crate::gc::tests::{alloc_proc_bin, module_pin};
     use crate::namespace::NamespaceId;
+    use crate::term::boxed::{write_cons, write_tuple};
     use crate::term::{Term, shared_binary::SharedBinary};
+
+    #[test]
+    fn exception_format_with_atoms_resolves_class_reason_and_stacktrace() {
+        let table = AtomTable::with_common_atoms();
+        let module = table.intern("sample");
+        let function = table.intern("run");
+
+        let mut line_tuple_heap = [0_u64; 3];
+        let line_tuple = match write_tuple(
+            &mut line_tuple_heap,
+            &[Term::atom(Atom::LINE), Term::small_int(123)],
+        ) {
+            Some(term) => term,
+            None => Term::NIL,
+        };
+        let mut info_heap = [0_u64; 2];
+        let info = match write_cons(&mut info_heap, line_tuple, Term::NIL) {
+            Some(term) => term,
+            None => Term::NIL,
+        };
+        let mut frame_heap = [0_u64; 5];
+        let frame = match write_tuple(
+            &mut frame_heap,
+            &[
+                Term::atom(module),
+                Term::atom(function),
+                Term::small_int(2),
+                info,
+            ],
+        ) {
+            Some(term) => term,
+            None => Term::NIL,
+        };
+        let mut stack_heap = [0_u64; 2];
+        let stacktrace = match write_cons(&mut stack_heap, frame, Term::NIL) {
+            Some(term) => term,
+            None => Term::NIL,
+        };
+        let exception = Exception {
+            class: Term::atom(Atom::ERROR),
+            reason: Term::atom(Atom::BADARG),
+            stacktrace,
+        };
+
+        assert_eq!(
+            exception.format_with_atoms(&table),
+            "error: badarg\n  at sample:run/2:123"
+        );
+    }
+
+    #[test]
+    fn exception_format_with_atoms_omits_nil_stacktrace() {
+        let table = AtomTable::with_common_atoms();
+        let exception = Exception {
+            class: Term::atom(Atom::ERROR),
+            reason: Term::atom(Atom::BADARG),
+            stacktrace: Term::NIL,
+        };
+
+        assert_eq!(exception.format_with_atoms(&table), "error: badarg");
+    }
 
     #[test]
     fn fresh_process_has_expected_state() {

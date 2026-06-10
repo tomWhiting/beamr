@@ -1,11 +1,12 @@
 //! Additional Gleam stdlib native stubs for data conversion and encoding.
 
-use crate::atom::Atom;
+use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Closure, Cons, Float, Map, Tuple};
 use crate::term::compare;
+use crate::term::format::format_term;
 
 use super::encoding_bifs::{
     bif_base64_decode as erlang_base64_decode, bif_base64_encode as erlang_base64_encode,
@@ -375,35 +376,9 @@ fn parse_float_binary(binary: Term) -> Result<f64, Term> {
 }
 
 fn render_term(term: Term, context: &ProcessContext) -> String {
-    if let Some(integer) = term.as_small_int() {
-        return integer.to_string();
-    }
-    if let Some(atom) = term.as_atom() {
-        return context
-            .atom_table()
-            .and_then(|table| table.resolve(atom))
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("Atom({atom:?})"));
-    }
-    if term.is_nil() {
-        return "[]".to_owned();
-    }
-    if let Some(binary) = BinaryRef::new(term) {
-        return match std::str::from_utf8(binary.as_bytes()) {
-            Ok(text) => text.to_owned(),
-            Err(_) => format!("<<{} bytes>>", binary.len()),
-        };
-    }
-    if let Some(tuple) = Tuple::new(term) {
-        let mut elements = Vec::with_capacity(tuple.arity());
-        for index in 0..tuple.arity() {
-            if let Some(element) = tuple.get(index) {
-                elements.push(render_term(element, context));
-            }
-        }
-        return format!("{{{}}}", elements.join(", "));
-    }
-    format!("{term:?}")
+    let fallback = AtomTable::with_common_atoms();
+    let atom_table = context.atom_table().unwrap_or(&fallback);
+    format_term(term, atom_table)
 }
 
 fn result_tuple(context: &mut ProcessContext, result: Result<Term, Term>) -> Result<Term, Term> {

@@ -13,6 +13,7 @@ use crate::native::stdlib_stubs::maps_bifs::ContinuationStep;
 use crate::native::{NativeContinuation, ProcessContext};
 use crate::term::Term;
 use crate::term::boxed::{Closure, Tuple};
+use crate::term::format::format_term;
 
 /// Atom sentinel for "None" (Gleam Option type).
 static NONE_ATOM: std::sync::OnceLock<Atom> = std::sync::OnceLock::new();
@@ -92,12 +93,14 @@ pub fn bif_dynamic_string(args: &[Term], context: &mut ProcessContext) -> Result
 
 // ── gleam@string ──────────────────────────────────────────────────────────
 
-/// `gleam@string:inspect/1` -- returns a binary with a debug representation.
+/// `gleam@string:inspect/1` -- returns a binary with a user-facing term representation.
 pub fn bif_string_inspect(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [term] = args else {
         return Err(badarg());
     };
-    let repr = format!("{term:?}");
+    let fallback = AtomTable::with_common_atoms();
+    let atom_table = context.atom_table().unwrap_or(&fallback);
+    let repr = format_term(*term, atom_table);
     context.alloc_binary(repr.as_bytes())
 }
 

@@ -7,7 +7,9 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::atom::AtomTable;
 use crate::namespace::NamespaceId;
+use crate::term::format::format_term;
 
 /// Failures that can occur while loading and validating BEAM bytecode.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,17 +111,38 @@ impl fmt::Display for ExecError {
                 module,
                 function,
                 arity,
-            } => write!(
-                formatter,
-                "undefined function {module:?}:{function:?}/{arity}"
-            ),
-            Self::Badarith => formatter.write_str("arithmetic operation failed"),
-            Self::Badarg => formatter.write_str("bad argument"),
-            Self::Badfun { term } => write!(formatter, "bad function term {term:?}"),
-            Self::Badarity { fun, args } => {
+            } => {
+                let fallback = AtomTable::with_common_atoms();
                 write!(
                     formatter,
-                    "bad arity for function {fun:?} with args {args:?}"
+                    "undefined function {}:{}/{}",
+                    fallback.resolve(*module).unwrap_or("#<unknown atom>"),
+                    fallback.resolve(*function).unwrap_or("#<unknown atom>"),
+                    arity
+                )
+            }
+            Self::Badarith => formatter.write_str("arithmetic operation failed"),
+            Self::Badarg => formatter.write_str("bad argument"),
+            Self::Badfun { term } => {
+                let fallback = AtomTable::with_common_atoms();
+                write!(
+                    formatter,
+                    "bad function term {}",
+                    format_term(*term, &fallback)
+                )
+            }
+            Self::Badarity { fun, args } => {
+                let fallback = AtomTable::with_common_atoms();
+                let formatted_args = args
+                    .iter()
+                    .map(|arg| format_term(*arg, &fallback))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    formatter,
+                    "bad arity for function {} with args [{}]",
+                    format_term(*fun, &fallback),
+                    formatted_args
                 )
             }
             Self::UserExit => formatter.write_str("process exited explicitly"),
@@ -145,6 +168,42 @@ impl fmt::Display for ExecError {
                 "heap full: requested {requested} words with {available} available"
             ),
             Self::NoConnection => formatter.write_str("distributed send failed: noconnection"),
+        }
+    }
+}
+
+impl ExecError {
+    /// Format this execution error for user-facing diagnostics using atom-name
+    /// resolution from `atom_table`.
+    #[must_use]
+    pub fn format_with_atoms(&self, atom_table: &AtomTable) -> String {
+        match self {
+            Self::Undef {
+                module,
+                function,
+                arity,
+            } => format!(
+                "undefined function {}:{}/{}",
+                atom_table.resolve(*module).unwrap_or("#<unknown atom>"),
+                atom_table.resolve(*function).unwrap_or("#<unknown atom>"),
+                arity
+            ),
+            Self::Badfun { term } => {
+                format!("bad function term {}", format_term(*term, atom_table))
+            }
+            Self::Badarity { fun, args } => {
+                let formatted_args = args
+                    .iter()
+                    .map(|arg| format_term(*arg, atom_table))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "bad arity for function {} with args [{}]",
+                    format_term(*fun, atom_table),
+                    formatted_args
+                )
+            }
+            _ => self.to_string(),
         }
     }
 }
@@ -208,6 +267,9 @@ impl Error for BeamrError {
 #[cfg(test)]
 mod tests {
     use super::{BeamrError, ExecError, LoadError};
+    use crate::atom::{Atom, AtomTable};
+    use crate::term::Term;
+    use crate::term::boxed::{write_cons, write_tuple};
 
     #[test]
     fn load_error_display_is_human_readable() {
@@ -224,6 +286,51 @@ mod tests {
 
         assert!(!formatted.is_empty());
         assert!(formatted.contains("arithmetic"));
+    }
+
+    #[test]
+    fn exec_error_format_with_atoms_resolves_undef_mfa() {
+        let table = AtomTable::with_common_atoms();
+        let module = table.intern("my_mod");
+        let function = table.intern("my_fun");
+        let error = ExecError::Undef {
+            module,
+            function,
+            arity: 2,
+        };
+
+        assert_eq!(
+            error.format_with_atoms(&table),
+            "undefined function my_mod:my_fun/2"
+        );
+    }
+
+    #[test]
+    fn exec_error_format_with_atoms_formats_badfun_and_badarity_terms() {
+        let table = AtomTable::with_common_atoms();
+        let mut tuple_heap = [0_u64; 3];
+        let fun = match write_tuple(&mut tuple_heap, &[Term::atom(Atom::OK), Term::small_int(1)]) {
+            Some(term) => term,
+            None => Term::NIL,
+        };
+        let mut args_heap = [0_u64; 2];
+        let args = match write_cons(&mut args_heap, Term::atom(Atom::BADARG), Term::NIL) {
+            Some(term) => term,
+            None => Term::NIL,
+        };
+
+        assert_eq!(
+            ExecError::Badfun { term: fun }.format_with_atoms(&table),
+            "bad function term {ok, 1}"
+        );
+        assert_eq!(
+            ExecError::Badarity {
+                fun,
+                args: vec![args],
+            }
+            .format_with_atoms(&table),
+            "bad arity for function {ok, 1} with args [[badarg]]"
+        );
     }
 
     #[test]
