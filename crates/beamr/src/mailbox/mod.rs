@@ -593,7 +593,7 @@ mod tests {
         let values = mailbox
             .scan_list
             .iter()
-            .map(|term| term.as_small_int().expect("small int"))
+            .map(|msg| msg.term.as_small_int().expect("small int"))
             .collect::<Vec<_>>();
         assert_eq!(values, vec![0, 1, 2, 3, 4]);
     }
