@@ -7,7 +7,7 @@ use dashmap::mapref::entry::Entry;
 ///
 /// Atoms are intentionally opaque outside the `beamr` crate. External users
 /// compare atoms by value rather than depending on their table indices.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Atom(u32);
 
 impl Atom {

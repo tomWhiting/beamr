@@ -88,19 +88,12 @@ pub(crate) fn call_native_entry(
             Err(error) => error.into_inner(),
         };
         let recorded = driver
-            .next_native_call(
-                process.pid(),
-                target_module,
-                target_function,
-                target_arity,
-            )
+            .next_native_call(process.pid(), target_module, target_function, target_arity)
             .map_err(ExecError::from)?;
         return apply_replayed_native_result(process, recorded.outcome, save_return);
     }
     let mut context = match ctx.timers {
-        Some(timers) => {
-            ProcessContext::with_timer_services(process.pid(), Arc::clone(timers))
-        }
+        Some(timers) => ProcessContext::with_timer_services(process.pid(), Arc::clone(timers)),
         None => {
             let mut pctx = ProcessContext::new();
             pctx.set_pid(Some(process.pid()));
@@ -114,8 +107,7 @@ pub(crate) fn call_native_entry(
         context.set_distribution_send_facility(svc.distribution_send.clone());
         context.set_spawn_facility(svc.spawn_facility.clone());
         context.set_link_facility(svc.link_facility.clone());
-        context
-            .set_distribution_control_facility(svc.distribution_control_facility.clone());
+        context.set_distribution_control_facility(svc.distribution_control_facility.clone());
         context.set_global_name_facility(svc.global_name_facility.clone());
         context.set_group_leader_facility(svc.group_leader_facility.clone());
         context.set_supervision_facility(svc.supervision_facility.clone());
@@ -132,34 +124,33 @@ pub(crate) fn call_native_entry(
         if let Some(sink) = &svc.io_sink {
             context.set_io_sink(Arc::clone(sink));
         }
+        context.set_current_native(Some((target_module, target_function, target_arity)));
+        context.set_wasm_async_nif_facility(svc.wasm_async_nif_facility.clone());
     }
 
     // Provide mailbox access for select BIFs before borrowing the process for heap allocation.
     let mut replay_select = None;
-    let snapshot =
-        if should_replay_select(ctx, target_module, target_function, target_arity) {
-            let driver = ctx
-                .services
-                .and_then(|svc| svc.replay_driver.as_ref())
-                .ok_or(ExecError::InvalidOperand("replay select driver"))?;
-            let facility = crate::replay::ReplayDriver::select_facility(
-                Arc::clone(driver),
-                process.pid(),
-            )
-            .map_err(ExecError::from)?;
-            let select_facility: Arc<dyn crate::native::SelectFacility> = facility.clone();
-            context.set_select_facility(Some(select_facility));
-            replay_select = Some(facility);
-            None
-        } else {
-            let snapshot = trampoline::build_mailbox_snapshot(process);
-            context.set_select_facility(
-                snapshot
-                    .clone()
-                    .map(|s| s as Arc<dyn crate::native::SelectFacility>),
-            );
+    let snapshot = if should_replay_select(ctx, target_module, target_function, target_arity) {
+        let driver = ctx
+            .services
+            .and_then(|svc| svc.replay_driver.as_ref())
+            .ok_or(ExecError::InvalidOperand("replay select driver"))?;
+        let facility =
+            crate::replay::ReplayDriver::select_facility(Arc::clone(driver), process.pid())
+                .map_err(ExecError::from)?;
+        let select_facility: Arc<dyn crate::native::SelectFacility> = facility.clone();
+        context.set_select_facility(Some(select_facility));
+        replay_select = Some(facility);
+        None
+    } else {
+        let snapshot = trampoline::build_mailbox_snapshot(process);
+        context.set_select_facility(
             snapshot
-        };
+                .clone()
+                .map(|s| s as Arc<dyn crate::native::SelectFacility>),
+        );
+        snapshot
+    };
     context.attach_process(process, usize::from(target_arity));
 
     let call_result = (entry.function)(&args, &mut context);
@@ -198,12 +189,7 @@ pub(crate) fn call_native_entry(
 
     // Check for trampoline request from the BIF.
     if let Some(trampoline_req) = trampoline_req {
-        return trampoline::handle_trampoline(
-            process,
-            module,
-            ctx.registry,
-            trampoline_req,
-        );
+        return trampoline::handle_trampoline(process, module, ctx.registry, trampoline_req);
     }
 
     process.set_x_reg(0, result);

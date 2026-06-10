@@ -19,12 +19,11 @@ use crate::distribution::connection::ConnectionManager;
 use crate::distribution::pg::PgRegistry;
 use crate::distribution::remote_link::ControlRouter;
 use crate::distribution::{DEFAULT_NODE_NAME, NetKernel, Node};
-pub use wasm::{WasmRunSummary, WasmScheduler};
+pub use wasm::{WasmAsyncCompletion, WasmRunSummary, WasmScheduledTimer, WasmScheduler};
 
 use crate::error::ExecError;
 use crate::ets::copy::OwnedTerm;
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
-pub use exit_capture::OwnedException;
 use crate::hook::Hook;
 use crate::io::{
     CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoOp,
@@ -47,6 +46,7 @@ use crate::term::Term;
 use crate::timer::TimerWheel;
 use crossbeam_queue::SegQueue;
 use dashmap::{DashMap, DashSet};
+pub use exit_capture::OwnedException;
 pub use module_management::{HotLoadResult, PurgeResult};
 use process_slot::{ProcessMetadata, ProcessSlot};
 use run_queue::{PriorityStealers, RunQueue};

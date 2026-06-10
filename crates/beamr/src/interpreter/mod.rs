@@ -6,6 +6,7 @@
 pub mod opcodes;
 pub mod pattern;
 
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::atom::AtomTable;
@@ -90,6 +91,8 @@ pub struct NativeServices {
     pub capability_violation_handler: Option<Arc<dyn ViolationHandler>>,
     /// BIF registry for dynamic MFA dispatch (export funs, apply).
     pub bif_registry: Option<Arc<crate::native::BifRegistryImpl>>,
+    /// Single-threaded WASM async NIF bridge used by Promise-backed host NIFs.
+    pub wasm_async_nif_facility: Option<Rc<dyn crate::native::WasmAsyncNifFacility>>,
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.

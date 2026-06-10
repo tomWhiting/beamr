@@ -4,6 +4,7 @@
 //! full process so they cannot inspect scheduler, mailbox, or process internals.
 
 use std::fmt;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,7 +28,6 @@ use crate::term::Term;
 use crate::term::compare;
 use crate::timer::{TimerRef, TimerWheel};
 
-use super::code_management_bifs::CodeManagementFacility;
 use super::distribution_bifs::GlobalNameFacility;
 use super::ets_bifs::EtsFacility;
 use super::group_leader::GroupLeaderFacility;
@@ -39,6 +39,7 @@ use super::select::SelectFacility;
 use super::spawn::SpawnFacility;
 use super::supervision::SupervisionFacility;
 use super::system_info_bifs::SystemInfoFacility;
+use super::{NativeKey, code_management_bifs::CodeManagementFacility};
 
 /// Handle to a contiguous run of terms registered as GC roots by
 /// [`ProcessContext::with_rooted`].
@@ -93,7 +94,11 @@ pub struct AionTimeoutContinuation {
     /// Opaque identifier for the timeout state in the Aion runtime.
     pub state_id: u64,
     /// Resume function called when the closure returns.
-    pub resume: fn(AionTimeoutContinuation, Term, &mut ProcessContext<'_>) -> Result<ContinuationStep, Term>,
+    pub resume: fn(
+        AionTimeoutContinuation,
+        Term,
+        &mut ProcessContext<'_>,
+    ) -> Result<ContinuationStep, Term>,
 }
 
 impl std::fmt::Debug for AionTimeoutContinuation {
@@ -285,8 +290,24 @@ pub enum ExceptionClass {
     Exit,
 }
 
+/// Single-threaded host facility for WASM async native functions.
+///
+/// Implementations start host I/O for the currently executing native call,
+/// arrange for a later completion, and request suspension on the supplied
+/// process context.
+pub trait WasmAsyncNifFacility {
+    /// Start an async native function call.
+    fn start_async_nif(
+        &self,
+        mfa: NativeKey,
+        args: &[Term],
+        context: &mut ProcessContext<'_>,
+    ) -> Result<Term, Term>;
+}
+
 pub struct ProcessContext<'process> {
     pid: Option<u64>,
+    current_native: Option<NativeKey>,
     local_node: Option<crate::distribution::Node>,
     net_kernel: Option<Arc<crate::distribution::NetKernel>>,
     distribution_send: Option<Arc<dyn DistributionSendFacility>>,
@@ -320,12 +341,14 @@ pub struct ProcessContext<'process> {
     trampoline: Option<TrampolineRequest>,
     suspend: Option<SuspendRequest>,
     replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
+    wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
 }
 
 impl fmt::Debug for ProcessContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProcessContext")
             .field("pid", &self.pid)
+            .field("current_native", &self.current_native)
             .field("local_node", &self.local_node)
             .field("net_kernel", &self.net_kernel.as_ref().map(|_| ".."))
             .field(
@@ -403,6 +426,10 @@ impl fmt::Debug for ProcessContext<'_> {
             .field("suspend", &self.suspend)
             .field("exception_stacktrace", &self.exception_stacktrace)
             .field("replay_driver", &self.replay_driver.as_ref().map(|_| ".."))
+            .field(
+                "wasm_async_nif_facility",
+                &self.wasm_async_nif_facility.as_ref().map(|_| ".."),
+            )
             .finish()
     }
 }
@@ -419,6 +446,7 @@ impl<'process> ProcessContext<'process> {
     pub fn new() -> Self {
         Self {
             pid: None,
+            current_native: None,
             local_node: None,
             net_kernel: None,
             distribution_send: None,
@@ -452,6 +480,7 @@ impl<'process> ProcessContext<'process> {
             suspend: None,
             shutdown_requested: false,
             replay_driver: None,
+            wasm_async_nif_facility: None,
         }
     }
 
@@ -460,6 +489,7 @@ impl<'process> ProcessContext<'process> {
     pub fn with_timer_services(pid: u64, timers: Arc<Mutex<TimerWheel>>) -> Self {
         Self {
             pid: Some(pid),
+            current_native: None,
             local_node: None,
             net_kernel: None,
             distribution_send: None,
@@ -493,6 +523,7 @@ impl<'process> ProcessContext<'process> {
             suspend: None,
             shutdown_requested: false,
             replay_driver: None,
+            wasm_async_nif_facility: None,
         }
     }
 
@@ -511,6 +542,28 @@ impl<'process> ProcessContext<'process> {
     #[must_use]
     pub fn pid(&self) -> Option<u64> {
         self.pid
+    }
+
+    /// Return the currently executing native MFA, if the interpreter supplied it.
+    #[must_use]
+    pub fn current_native(&self) -> Option<NativeKey> {
+        self.current_native
+    }
+
+    /// Set the currently executing native MFA for host facilities that need it.
+    pub fn set_current_native(&mut self, native: Option<NativeKey>) {
+        self.current_native = native;
+    }
+
+    /// Return the WASM async NIF bridge, if one has been configured.
+    #[must_use]
+    pub fn wasm_async_nif_facility(&self) -> Option<Rc<dyn WasmAsyncNifFacility>> {
+        self.wasm_async_nif_facility.clone()
+    }
+
+    /// Set the WASM async NIF bridge used by host-registered Promise NIFs.
+    pub fn set_wasm_async_nif_facility(&mut self, facility: Option<Rc<dyn WasmAsyncNifFacility>>) {
+        self.wasm_async_nif_facility = facility;
     }
 
     /// Return the immutable local node identity when provided by the runtime.
@@ -707,7 +760,12 @@ impl<'process> ProcessContext<'process> {
     ///
     /// Use this for loop accumulators: re-root the updated value after each
     /// allocation so the next collection forwards it.
-    pub fn set_rooted(&mut self, handle: &RootedTerms, index: usize, term: Term) -> Result<(), Term> {
+    pub fn set_rooted(
+        &mut self,
+        handle: &RootedTerms,
+        index: usize,
+        term: Term,
+    ) -> Result<(), Term> {
         let process = self
             .process
             .as_deref_mut()

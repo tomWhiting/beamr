@@ -5,6 +5,7 @@
 //! threads, blocking I/O, dirty pools, or distribution services are started here.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::atom::{Atom, AtomTable};
@@ -13,10 +14,30 @@ use crate::ets::copy::OwnedTerm;
 use crate::interpreter::{ExecutionResult, NativeServices, run_with_native_services};
 use crate::module::ModuleRegistry;
 use crate::namespace::NamespaceId;
-use crate::native::{BifRegistryImpl, CapabilitySet};
+use crate::native::{BifRegistryImpl, CapabilitySet, WasmAsyncNifFacility};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::{CodePosition, ExitReason, Priority, Process, ProcessStatus};
 use crate::term::Term;
+
+/// Receive timer scheduled by the WASM scheduler and awaiting a host timeout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WasmScheduledTimer {
+    /// Process that should be resumed when the timer expires.
+    pub pid: u64,
+    /// Opaque timer id stored on the process and mirrored by the host.
+    pub timer_id: u64,
+    /// Delay requested by the `receive after` instruction.
+    pub milliseconds: u64,
+}
+
+/// Outcome returned when host async work completes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WasmAsyncCompletion {
+    /// Promise fulfilled; inject the value into x(0) and advance past the NIF.
+    Ok(Term),
+    /// Promise rejected; terminate the process with a NIF error mapping.
+    Error(Term),
+}
 
 /// Summary returned from one cooperative scheduler turn.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -45,6 +66,11 @@ pub struct WasmScheduler {
     exit_reasons: BTreeMap<u64, ExitReason>,
     exit_results: BTreeMap<u64, OwnedTerm>,
     exit_errors: BTreeMap<u64, ExecError>,
+    next_timer_id: u64,
+    pending_timer_schedules: Vec<WasmScheduledTimer>,
+    pending_timer_cancellations: Vec<u64>,
+    async_results: BTreeMap<u64, WasmAsyncCompletion>,
+    wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
 }
 
 impl WasmScheduler {
@@ -67,6 +93,11 @@ impl WasmScheduler {
             exit_reasons: BTreeMap::new(),
             exit_results: BTreeMap::new(),
             exit_errors: BTreeMap::new(),
+            next_timer_id: 1,
+            pending_timer_schedules: Vec::new(),
+            pending_timer_cancellations: Vec::new(),
+            async_results: BTreeMap::new(),
+            wasm_async_nif_facility: None,
         }
     }
 
@@ -86,6 +117,45 @@ impl WasmScheduler {
     #[must_use]
     pub fn bif_registry(&self) -> &Arc<BifRegistryImpl> {
         &self.bif_registry
+    }
+
+    /// Install the single-threaded host bridge used by WASM async NIF stubs.
+    pub fn set_wasm_async_nif_facility(&mut self, facility: Option<Rc<dyn WasmAsyncNifFacility>>) {
+        self.wasm_async_nif_facility = facility;
+    }
+
+    /// Drain receive timers that the host must schedule with `setTimeout`.
+    pub fn take_pending_timer_schedules(&mut self) -> Vec<WasmScheduledTimer> {
+        std::mem::take(&mut self.pending_timer_schedules)
+    }
+
+    /// Drain receive timers that the host must cancel with `clearTimeout`.
+    pub fn take_pending_timer_cancellations(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.pending_timer_cancellations)
+    }
+
+    /// Expire a host timer callback if it still matches the waiting process.
+    pub fn timer_fired(&mut self, pid: u64, timer_id: u64) -> bool {
+        let Some(process) = self.processes.get_mut(&pid) else {
+            return false;
+        };
+        if process.receive_timer_ref() != Some(timer_id) {
+            return false;
+        }
+        process.set_receive_timer_ref(None);
+        if let Some(position) = process
+            .receive_timeout()
+            .map(|timeout| timeout.timeout_position)
+        {
+            process.set_code_position(Some(position));
+        }
+        self.wake(pid)
+    }
+
+    /// Record an async NIF completion and wake the suspended process.
+    pub fn complete_async(&mut self, pid: u64, completion: WasmAsyncCompletion) -> bool {
+        self.async_results.insert(pid, completion);
+        self.wake(pid)
     }
 
     /// Spawn a process at an exported module/function/arity entrypoint.
@@ -159,6 +229,10 @@ impl WasmScheduler {
             return false;
         };
         process.mailbox_mut().push_owned(message);
+        if let Some(timer_id) = process.receive_timer_ref() {
+            process.set_receive_timer_ref(None);
+            self.pending_timer_cancellations.push(timer_id);
+        }
         if self.waiting.contains(&pid) {
             return self.wake(pid);
         }
@@ -185,6 +259,15 @@ impl WasmScheduler {
             let priority = process.priority();
             if !matches!(process.status(), ProcessStatus::Running) {
                 let _transition = process.transition_to(ProcessStatus::Running);
+            }
+            if let Some(reason) = self.apply_async_completion(&mut process) {
+                let x0 = process.x_reg(0);
+                let _transition = process.transition_to(ProcessStatus::Exited(reason));
+                self.exit_reasons.insert(pid, reason);
+                self.exit_results
+                    .insert(pid, super::exit_capture::capture_term(x0));
+                summary.exited.push(pid);
+                continue;
             }
             process.reset_reductions(crate::scheduler::DEFAULT_REDUCTION_BUDGET);
 
@@ -213,6 +296,7 @@ impl WasmScheduler {
                 }
                 Ok(ExecutionResult::Waiting) => {
                     let _transition = process.transition_to(ProcessStatus::Waiting);
+                    self.register_receive_timer(&mut process);
                     self.processes.insert(pid, process);
                     self.waiting.insert(pid);
                     summary.waiting.push(pid);
@@ -272,8 +356,50 @@ impl WasmScheduler {
     fn native_services(&self) -> NativeServices {
         NativeServices {
             atom_table: Some(Arc::clone(&self.atom_table)),
+            wasm_async_nif_facility: self.wasm_async_nif_facility.clone(),
             ..NativeServices::default()
         }
+    }
+
+    fn register_receive_timer(&mut self, process: &mut Process) {
+        let Some(timeout) = process.receive_timeout() else {
+            return;
+        };
+        if process.receive_timer_ref().is_some() {
+            return;
+        }
+        let timer_id = self.next_timer_id;
+        self.next_timer_id = self.next_timer_id.saturating_add(1);
+        process.set_receive_timer_ref(Some(timer_id));
+        self.pending_timer_schedules.push(WasmScheduledTimer {
+            pid: process.pid(),
+            timer_id,
+            milliseconds: timeout.milliseconds,
+        });
+    }
+
+    fn apply_async_completion(&mut self, process: &mut Process) -> Option<ExitReason> {
+        let completion = self.async_results.remove(&process.pid())?;
+        match completion {
+            WasmAsyncCompletion::Ok(term) => {
+                process.set_x_reg(0, term);
+                advance_past_current_instruction(process);
+                None
+            }
+            WasmAsyncCompletion::Error(term) => {
+                process.set_x_reg(0, term);
+                Some(ExitReason::Error)
+            }
+        }
+    }
+}
+
+fn advance_past_current_instruction(process: &mut Process) {
+    if let Some(position) = process.code_position() {
+        process.set_code_position(Some(CodePosition {
+            module: position.module,
+            instruction_pointer: position.instruction_pointer.saturating_add(1),
+        }));
     }
 }
 
