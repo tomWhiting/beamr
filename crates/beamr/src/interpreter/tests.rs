@@ -1,5 +1,6 @@
 use super::{ExecutionResult, NativeServices, run, run_with_native_services, run_with_registry};
 use crate::atom::{Atom, AtomTable};
+use crate::capability::Sandbox;
 use crate::error::ExecError;
 use crate::jit::{JitCache, JitCacheKey, JitCompiler, JitSettings};
 use crate::loader::decode::BinaryOp;
@@ -1016,6 +1017,44 @@ fn dirty_native_returns_dirty_call_without_inline_execution() {
     assert_eq!(args, vec![Term::small_int(7)]);
     assert_eq!(kind, DirtySchedulerKind::Cpu);
     assert_eq!(process.x_reg(0), Term::small_int(7));
+}
+
+#[test]
+fn pure_sandbox_denies_native_calls() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(7),
+                destination: Operand::X(0),
+            },
+            Instruction::CallExt {
+                arity: Operand::Unsigned(1),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    module.resolved_imports.push(ResolvedImport {
+        module: Atom::OK,
+        function: Atom::OK,
+        arity: 1,
+        target: ResolvedImportTarget::Native(NativeEntry {
+            function: native_increment,
+            dirty_kind: Some(DirtySchedulerKind::Io),
+            capability: Capability::ExternalIo,
+        }),
+    });
+    let mut process = Process::with_capabilities(1, 32, Sandbox::Pure.capabilities());
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let tuple = Tuple::new(process.x_reg(0)).expect("capability denied tuple");
+    assert_eq!(tuple.arity(), 2);
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::CAPABILITY_DENIED)));
 }
 
 #[test]

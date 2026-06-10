@@ -1,5 +1,6 @@
 use super::*;
 use crate::atom::{Atom, AtomTable};
+use crate::capability::Sandbox;
 use crate::distribution::remote_link::{DistributionControlFacility, RemoteLinkError};
 use crate::native::links::{LinkError, LinkFacility, LinkRecord};
 use crate::native::spawn::{
@@ -411,6 +412,69 @@ fn parse_spawn_options_capabilities() {
 }
 
 #[test]
+fn parse_spawn_options_sandbox_profiles() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let mut ctx = ProcessContext::new();
+    ctx.set_atom_table(Some(atom_table.clone()));
+
+    let pure_options = sandbox_option_list(&atom_table, "pure");
+    let pure = parse_spawn_options(pure_options, &ctx)
+        .expect("pure sandbox options")
+        .capabilities
+        .expect("pure sandbox capabilities");
+    assert_eq!(pure, Sandbox::Pure.capabilities());
+
+    let worker_options = sandbox_option_list(&atom_table, "worker");
+    let worker = parse_spawn_options(worker_options, &ctx)
+        .expect("worker sandbox options")
+        .capabilities
+        .expect("worker sandbox capabilities");
+    assert_eq!(worker, Sandbox::Worker.capabilities());
+
+    let supervisor_options = sandbox_option_list(&atom_table, "supervisor");
+    let supervisor = parse_spawn_options(supervisor_options, &ctx)
+        .expect("supervisor sandbox options")
+        .capabilities
+        .expect("supervisor sandbox capabilities");
+    assert_eq!(supervisor, Sandbox::Supervisor.capabilities());
+
+    let unrestricted_options = sandbox_option_list(&atom_table, "unrestricted");
+    let unrestricted = parse_spawn_options(unrestricted_options, &ctx)
+        .expect("unrestricted sandbox options")
+        .capabilities
+        .expect("unrestricted sandbox capabilities");
+    assert_eq!(unrestricted, Sandbox::Unrestricted.capabilities());
+}
+
+#[test]
+fn parse_spawn_options_rejects_malformed_sandbox_options() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let mut ctx = ProcessContext::new();
+    ctx.set_atom_table(Some(atom_table.clone()));
+    let sandbox = atom_table.intern("sandbox");
+    let unknown = atom_table.intern("isolated");
+
+    let mut malformed_tuple_heap = [0u64; 2];
+    let malformed_tuple = write_tuple(&mut malformed_tuple_heap, &[Term::atom(sandbox)])
+        .expect("malformed sandbox tuple");
+    let mut malformed_list_heap = [0u64; 2];
+    let malformed_list = write_cons(&mut malformed_list_heap, malformed_tuple, Term::NIL)
+        .expect("malformed sandbox option list");
+    assert_eq!(parse_spawn_options(malformed_list, &ctx), Err(badarg()));
+
+    let mut unknown_tuple_heap = [0u64; 3];
+    let unknown_tuple = write_tuple(
+        &mut unknown_tuple_heap,
+        &[Term::atom(sandbox), Term::atom(unknown)],
+    )
+    .expect("unknown sandbox tuple");
+    let mut unknown_list_heap = [0u64; 2];
+    let unknown_list =
+        write_cons(&mut unknown_list_heap, unknown_tuple, Term::NIL).expect("unknown option list");
+    assert_eq!(parse_spawn_options(unknown_list, &ctx), Err(badarg()));
+}
+
+#[test]
 fn parse_spawn_options_ignores_unknown_atoms_and_tuples() {
     let atom_table = Arc::new(AtomTable::with_common_atoms());
     let mut ctx = ProcessContext::new();
@@ -435,6 +499,7 @@ fn parse_spawn_options_rejects_malformed_supported_options() {
     ctx.set_atom_table(Some(atom_table.clone()));
     let priority = atom_table.intern("priority");
     let min_heap_size = atom_table.intern("min_heap_size");
+    let sandbox = atom_table.intern("sandbox");
 
     let mut priority_heap = [0u64; 2];
     let priority_tuple =
@@ -454,6 +519,86 @@ fn parse_spawn_options_rejects_malformed_supported_options() {
     let heap_list =
         write_cons(&mut heap_list_heap, heap_tuple, Term::NIL).expect("heap option list");
     assert_eq!(parse_spawn_options(heap_list, &ctx), Err(badarg()));
+
+    let mut sandbox_heap = [0u64; 2];
+    let sandbox_tuple =
+        write_tuple(&mut sandbox_heap, &[Term::atom(sandbox)]).expect("malformed sandbox tuple");
+    let mut sandbox_list_heap = [0u64; 2];
+    let sandbox_list =
+        write_cons(&mut sandbox_list_heap, sandbox_tuple, Term::NIL).expect("sandbox option list");
+    assert_eq!(parse_spawn_options(sandbox_list, &ctx), Err(badarg()));
+}
+
+#[test]
+fn spawn_in_sandbox_uses_sandbox_capabilities() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockSpawnFacility::new(35));
+    let mut ctx = ProcessContext::new();
+    ctx.set_pid(Some(3));
+    ctx.set_atom_table(Some(atom_table));
+    ctx.set_spawn_facility(Some(facility.clone()));
+
+    let result = spawn_in_sandbox(Sandbox::Pure, Atom::OK, Atom::ERROR, Vec::new(), &mut ctx);
+
+    assert_eq!(result, Ok(Term::pid(35)));
+    let records = facility.options_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].options.capabilities.as_ref(),
+        Some(&Sandbox::Pure.capabilities())
+    );
+}
+
+#[test]
+fn spawn_opt_sandbox_attenuates_but_never_escalates() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockSpawnFacility::new(23));
+    let mut process = Process::with_capabilities(3, 128, Sandbox::Worker.capabilities());
+
+    let worker_options = sandbox_option_list(&atom_table, "worker");
+    {
+        let mut ctx = ProcessContext::new();
+        ctx.set_pid(Some(3));
+        ctx.set_atom_table(Some(atom_table.clone()));
+        ctx.set_spawn_facility(Some(facility.clone()));
+        ctx.attach_process(&mut process, 0);
+        let allowed = bif_spawn_opt_4(
+            &[
+                Term::atom(Atom::OK),
+                Term::atom(Atom::ERROR),
+                Term::NIL,
+                worker_options,
+            ],
+            &mut ctx,
+        );
+        ctx.detach_process();
+        assert_eq!(allowed, Ok(Term::pid(23)));
+    }
+    let records = facility.options_records();
+    assert_eq!(
+        records[0].options.capabilities.as_ref(),
+        Some(&Sandbox::Worker.capabilities())
+    );
+
+    let supervisor_options = sandbox_option_list(&atom_table, "supervisor");
+    {
+        let mut ctx = ProcessContext::new();
+        ctx.set_pid(Some(3));
+        ctx.set_atom_table(Some(atom_table.clone()));
+        ctx.set_spawn_facility(Some(facility.clone()));
+        ctx.attach_process(&mut process, 0);
+        let denied = bif_spawn_opt_4(
+            &[
+                Term::atom(Atom::OK),
+                Term::atom(Atom::ERROR),
+                Term::NIL,
+                supervisor_options,
+            ],
+            &mut ctx,
+        );
+        ctx.detach_process();
+        assert_eq!(denied, Err(badarg()));
+    }
 }
 
 #[test]
@@ -515,6 +660,23 @@ fn spawn_opt_capabilities_attenuate_but_never_escalate() {
         ctx.detach_process();
         assert_eq!(denied, Err(badarg()));
     }
+}
+
+fn sandbox_option_list(atom_table: &AtomTable, profile: &str) -> Term {
+    let mut tuple_heap = Box::new([0u64; 3]);
+    let sandbox_tuple = write_tuple(
+        tuple_heap.as_mut(),
+        &[
+            Term::atom(atom_table.intern("sandbox")),
+            Term::atom(atom_table.intern(profile)),
+        ],
+    )
+    .expect("sandbox tuple");
+    Box::leak(tuple_heap);
+    let mut option_heap = Box::new([0u64; 2]);
+    let options = write_cons(option_heap.as_mut(), sandbox_tuple, Term::NIL).expect("options cons");
+    Box::leak(option_heap);
+    options
 }
 
 fn capabilities_option_list(atom_table: &AtomTable, names: &[&str]) -> Term {

@@ -5,6 +5,7 @@
 //! utility functions.
 
 use crate::atom::{Atom, AtomTable};
+use crate::capability::Sandbox;
 use crate::native::links::LinkError;
 use crate::native::{
     BifRegistryImpl, Capability, CapabilitySet, ExceptionClass, NativeFn, NativeRegistrationError,
@@ -397,10 +398,36 @@ fn spawn_opt_mfa_impl(args: &[Term], context: &mut ProcessContext) -> Result<Ter
     let spawn_args = list_to_vec(*args_term)?;
     let options = parse_spawn_options(*options_term, context)
         .and_then(|options| attenuate_spawn_options(options, context))?;
+    spawn_with_options(module, function, spawn_args, options, context)
+}
+
+/// Spawns `module:function(args)` with the fixed capabilities for `sandbox`.
+pub fn spawn_in_sandbox(
+    sandbox: Sandbox,
+    module: Atom,
+    function: Atom,
+    args: Vec<Term>,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let options = SpawnOptions {
+        capabilities: Some(sandbox.capabilities()),
+        ..SpawnOptions::default()
+    };
+    let options = attenuate_spawn_options(options, context)?;
+    spawn_with_options(module, function, args, options, context)
+}
+
+fn spawn_with_options(
+    module: Atom,
+    function: Atom,
+    args: Vec<Term>,
+    options: SpawnOptions,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
     let caller_pid = context.pid().ok_or_else(badarg)?;
     let facility = context.spawn_facility().ok_or_else(badarg)?;
     let result = facility
-        .spawn_with_options(caller_pid, module, function, spawn_args, options)
+        .spawn_with_options(caller_pid, module, function, args, options)
         .map_err(|_| badarg())?;
     spawn_opt_result(result.pid, result.reference, context)
 }
@@ -468,6 +495,7 @@ fn parse_spawn_options(term: Term, context: &ProcessContext) -> Result<SpawnOpti
     let priority_atom = atom_table.intern("priority");
     let min_heap_size_atom = atom_table.intern("min_heap_size");
     let capabilities_atom = atom_table.intern("capabilities");
+    let sandbox_atom = atom_table.intern("sandbox");
     let mut options = SpawnOptions::default();
     for option in list_to_vec(term)? {
         if option.as_atom() == Some(link_atom) {
@@ -497,6 +525,12 @@ fn parse_spawn_options(term: Term, context: &ProcessContext) -> Result<SpawnOpti
                 }
                 let value = tuple.get(1).ok_or_else(badarg)?;
                 options.capabilities = Some(parse_capability_list(value, context)?);
+            } else if tuple.get(0) == Some(Term::atom(sandbox_atom)) {
+                if tuple.arity() != 2 {
+                    return Err(badarg());
+                }
+                let value = tuple.get(1).ok_or_else(badarg)?;
+                options.capabilities = Some(sandbox_from_term(value, context)?.capabilities());
             }
         }
     }
@@ -510,6 +544,22 @@ fn parse_capability_list(term: Term, context: &ProcessContext) -> Result<Capabil
         parsed.push(capability_from_term(capability, context)?);
     }
     Ok(CapabilitySet::from_slice(&parsed))
+}
+
+fn sandbox_from_term(term: Term, context: &ProcessContext) -> Result<Sandbox, Term> {
+    let atom = term.as_atom().ok_or_else(badarg)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    if atom == atom_table.intern("pure") {
+        Ok(Sandbox::Pure)
+    } else if atom == atom_table.intern("worker") {
+        Ok(Sandbox::Worker)
+    } else if atom == atom_table.intern("supervisor") {
+        Ok(Sandbox::Supervisor)
+    } else if atom == atom_table.intern("unrestricted") {
+        Ok(Sandbox::Unrestricted)
+    } else {
+        Err(badarg())
+    }
 }
 
 fn capability_from_term(term: Term, context: &ProcessContext) -> Result<Capability, Term> {

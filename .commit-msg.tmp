@@ -1,1 +1,1 @@
-Harden capability denial error handling and add spawn capability regression coverage
+feat(beamr): add sandbox capability profiles and spawn API
