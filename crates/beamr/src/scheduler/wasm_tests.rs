@@ -106,9 +106,10 @@ fn async_completion_injects_result_and_advances_call() {
         module: Atom::NIL,
         instruction_pointer: 12,
     }));
-    scheduler
-        .async_results
-        .insert(process.pid(), WasmAsyncCompletion::Ok(Term::small_int(987)));
+    scheduler.async_results.insert(
+        process.pid(),
+        WasmAsyncCompletion::Ok(crate::ets::OwnedTerm::immediate(Term::small_int(987))),
+    );
 
     assert_eq!(scheduler.apply_async_completion(&mut process), None);
 
@@ -128,7 +129,7 @@ fn async_rejection_maps_to_error_exit() {
     let mut process = running_process(46, module);
     scheduler.async_results.insert(
         process.pid(),
-        WasmAsyncCompletion::Error(Term::atom(Atom::BADARG)),
+        WasmAsyncCompletion::Error(crate::ets::OwnedTerm::immediate(Term::atom(Atom::BADARG))),
     );
 
     assert_eq!(

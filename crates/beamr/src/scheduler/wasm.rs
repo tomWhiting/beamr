@@ -31,12 +31,12 @@ pub struct WasmScheduledTimer {
 }
 
 /// Outcome returned when host async work completes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum WasmAsyncCompletion {
     /// Promise fulfilled; inject the value into x(0) and advance past the NIF.
-    Ok(Term),
+    Ok(OwnedTerm),
     /// Promise rejected; terminate the process with a NIF error mapping.
-    Error(Term),
+    Error(OwnedTerm),
 }
 
 /// Summary returned from one cooperative scheduler turn.
@@ -168,6 +168,16 @@ impl WasmScheduler {
         self.spawn_in(NamespaceId::DEFAULT, entry_module, entry_function, args)
     }
 
+    /// Spawn a process with arguments held in owned detached storage.
+    pub fn spawn_owned(
+        &mut self,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<OwnedTerm>,
+    ) -> Result<u64, ExecError> {
+        self.spawn_in_owned(NamespaceId::DEFAULT, entry_module, entry_function, args)
+    }
+
     /// Spawn a process in a namespace. WASM is single-node and currently only
     /// supports the default namespace.
     pub fn spawn_in(
@@ -201,6 +211,49 @@ impl WasmScheduler {
         for (index, arg) in args.into_iter().enumerate().take(1024) {
             if let Ok(register) = u16::try_from(index) {
                 process.set_x_reg(register, arg);
+            }
+        }
+        self.ready.push(pid, process.priority());
+        self.processes.insert(pid, process);
+        Ok(pid)
+    }
+
+    /// Spawn a process in a namespace with arguments copied from owned storage
+    /// into the new process heap.
+    pub fn spawn_in_owned(
+        &mut self,
+        namespace: NamespaceId,
+        entry_module: Atom,
+        entry_function: Atom,
+        args: Vec<OwnedTerm>,
+    ) -> Result<u64, ExecError> {
+        if namespace != NamespaceId::DEFAULT {
+            return Err(ExecError::Badarg);
+        }
+        let arity = u8::try_from(args.len()).map_err(|_| ExecError::Badarg)?;
+        let entry = self
+            .module_registry
+            .lookup_mfa(entry_module, entry_function, arity)?;
+        let instruction_pointer = entry.module.label_ip(entry.label)?;
+
+        let pid = self.next_pid;
+        self.next_pid = self.next_pid.saturating_add(1);
+
+        let mut process = Process::with_capabilities(pid, DEFAULT_HEAP_SIZE, CapabilitySet::all());
+        process.set_group_leader(Term::pid(pid));
+        process.set_priority(Priority::Normal);
+        process.set_namespace_id(namespace);
+        process.set_code_position(Some(CodePosition {
+            module: entry_module,
+            instruction_pointer,
+        }));
+        process.set_current_module(entry.module);
+        for (index, arg) in args.iter().enumerate().take(1024) {
+            if let Ok(register) = u16::try_from(index) {
+                let copied = arg
+                    .copy_to_heap(process.heap_mut())
+                    .map_err(|_| ExecError::Badarg)?;
+                process.set_x_reg(register, copied);
             }
         }
         self.ready.push(pid, process.priority());
@@ -382,12 +435,18 @@ impl WasmScheduler {
         let completion = self.async_results.remove(&process.pid())?;
         match completion {
             WasmAsyncCompletion::Ok(term) => {
-                process.set_x_reg(0, term);
+                let result = term
+                    .copy_to_heap(process.heap_mut())
+                    .unwrap_or_else(|_| Term::atom(Atom::BADARG));
+                process.set_x_reg(0, result);
                 advance_past_current_instruction(process);
                 None
             }
             WasmAsyncCompletion::Error(term) => {
-                process.set_x_reg(0, term);
+                let result = term
+                    .copy_to_heap(process.heap_mut())
+                    .unwrap_or_else(|_| Term::atom(Atom::BADARG));
+                process.set_x_reg(0, result);
                 Some(ExitReason::Error)
             }
         }

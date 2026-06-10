@@ -1,5 +1,7 @@
 //! JavaScript bindings for the cooperative Beamr WASM runtime.
 
+mod convert;
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
@@ -17,10 +19,10 @@ use beamr::native::stdlib_stubs::register_stdlib_stubs;
 use beamr::native::{
     BifRegistryImpl, Capability, NativeKey, NativeRegistrationError, WasmAsyncNifFacility,
 };
-use beamr::process::Process;
 use beamr::scheduler::{WasmAsyncCompletion, WasmRunSummary, WasmScheduler};
-use beamr::term::json::{term_to_value, value_to_term};
+use beamr::term::json::term_to_value;
 use beamr::term::{Term, format::format_term};
+use convert::{js_value_to_owned_term, terms_from_json_array, terms_to_js_array};
 use js_sys::{Function, Promise, Reflect};
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
@@ -129,7 +131,7 @@ impl WasmVm {
         let pid = self
             .scheduler
             .borrow_mut()
-            .spawn(module, function, args)
+            .spawn_owned(module, function, args)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
         Ok(pid)
     }
@@ -157,7 +159,7 @@ impl WasmVm {
         Ok(fired)
     }
 
-    fn json_args_to_terms(&self, value: &Value) -> Result<Vec<Term>, JsValue> {
+    fn json_args_to_terms(&self, value: &Value) -> Result<Vec<beamr::ets::OwnedTerm>, JsValue> {
         terms_from_json_array(value, &self.atom_table)
     }
 
@@ -249,25 +251,29 @@ impl WasmAsyncNifFacility for HostAsyncNifs {
         let Some(callback) = self.callbacks.borrow().get(&mfa).cloned() else {
             return Err(Term::atom(beamr::atom::Atom::UNDEF));
         };
-        let args_json = terms_to_js_array(args, self.atom_table.as_ref())
+        let args_array = terms_to_js_array(args, self.atom_table.as_ref())
             .map_err(|_| Term::atom(beamr::atom::Atom::BADARG))?;
         let promise_value = callback
-            .call1(&JsValue::UNDEFINED, &args_json)
+            .call1(&JsValue::UNDEFINED, &args_array)
             .map_err(|_| Term::atom(beamr::atom::Atom::BADARG))?;
         let promise = Promise::resolve(&promise_value);
         let scheduler = self.scheduler.clone();
         let atom_table = Arc::clone(&self.atom_table);
         wasm_bindgen_futures::spawn_local(async move {
             let completion = match JsFuture::from(promise).await {
-                Ok(value) => js_value_to_term(value, &atom_table)
+                Ok(value) => js_value_to_owned_term(value, &atom_table)
                     .map(WasmAsyncCompletion::Ok)
                     .unwrap_or_else(|_| {
-                        WasmAsyncCompletion::Error(Term::atom(beamr::atom::Atom::BADARG))
+                        WasmAsyncCompletion::Error(beamr::ets::OwnedTerm::immediate(Term::atom(
+                            beamr::atom::Atom::BADARG,
+                        )))
                     }),
-                Err(error) => js_value_to_term(error, &atom_table)
+                Err(error) => js_value_to_owned_term(error, &atom_table)
                     .map(WasmAsyncCompletion::Error)
                     .unwrap_or_else(|_| {
-                        WasmAsyncCompletion::Error(Term::atom(beamr::atom::Atom::ERROR))
+                        WasmAsyncCompletion::Error(beamr::ets::OwnedTerm::immediate(Term::atom(
+                            beamr::atom::Atom::ERROR,
+                        )))
                     }),
             };
             if let Some(scheduler) = scheduler.upgrade() {
@@ -337,55 +343,10 @@ fn summary_to_json(summary: WasmRunSummary, exits: Vec<Value>) -> Value {
     })
 }
 
-fn terms_from_json_array(value: &Value, atom_table: &Arc<AtomTable>) -> Result<Vec<Term>, JsValue> {
-    let Value::Array(values) = value else {
-        return Err(JsValue::from_str("arguments must be a JSON array"));
-    };
-    let mut scratch = Process::new(0, beamr::process::heap::DEFAULT_HEAP_SIZE);
-    let mut context = beamr::native::ProcessContext::new();
-    context.set_atom_table(Some(Arc::clone(atom_table)));
-    context.attach_process(&mut scratch, 0);
-    let mut terms = Vec::with_capacity(values.len());
-    for value in values {
-        let term = value_to_term(value, &mut context)
-            .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        terms.push(term);
-    }
-    context.detach_process();
-    Ok(terms)
-}
-
-fn js_value_to_term(value: JsValue, atom_table: &Arc<AtomTable>) -> Result<Term, JsValue> {
-    let json_value = js_value_to_json(value)?;
-    let terms = terms_from_json_array(&Value::Array(vec![json_value]), atom_table)?;
-    terms
-        .into_iter()
-        .next()
-        .ok_or_else(|| JsValue::from_str("converted result missing"))
-}
-
-fn terms_to_js_array(args: &[Term], atom_table: &AtomTable) -> Result<JsValue, JsValue> {
-    let values = args
-        .iter()
-        .map(|term| {
-            term_to_value(*term, atom_table).map_err(|error| JsValue::from_str(&error.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    json_to_js(&Value::Array(values))
-}
-
 fn term_to_json_or_fallback(term: Term, atom_table: &AtomTable) -> Value {
     match term_to_value(term, atom_table) {
         Ok(value) => value,
         Err(_) => Value::String(format_term(term, atom_table)),
-    }
-}
-
-fn js_value_to_json(value: JsValue) -> Result<Value, JsValue> {
-    if let Some(text) = value.as_string() {
-        serde_json::from_str(&text).or(Ok(Value::String(text)))
-    } else {
-        serde_wasm_bindgen::from_value(value).map_err(|error| JsValue::from_str(&error.to_string()))
     }
 }
 
