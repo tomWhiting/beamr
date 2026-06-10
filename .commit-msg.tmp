@@ -1,1 +1,1 @@
-chore(release): harden 0.4.0 release prep
+fix(ets): replace match-spec leaking allocator with arena

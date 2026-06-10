@@ -8,7 +8,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::atom::{Atom, AtomTable};
 use crate::ets::{
     AccessOp, CompiledMatchSpec, EtsError, EtsHeir, EtsRegistry, EtsTable, EtsTableId,
-    EtsTableMetadata, EtsTableType, Protection, TermKey, copy_term_to_ets,
+    EtsTableMetadata, EtsTableType, MatchArena, Protection, TermKey, copy_term_to_ets,
+    copy_term_to_heap,
 };
 use crate::native::stdlib_stubs::maps_bifs::ContinuationStep;
 use crate::native::{
@@ -798,11 +799,10 @@ fn collect_select_results(
     limit: Option<usize>,
     context: &mut ProcessContext,
 ) -> Result<PagedResults, Term> {
-    let compiled = {
-        let atom_table = context.atom_table().ok_or_else(badarg)?;
-        CompiledMatchSpec::compile(spec, atom_table).map_err(|_| badarg())?
-    };
+    let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
+    let compiled = CompiledMatchSpec::compile(spec, atom_table.as_ref()).map_err(|_| badarg())?;
     let snapshot = table.tab2list();
+    let mut arena = MatchArena::new();
     let mut results = Vec::new();
     for (position, object) in snapshot.into_iter().enumerate().skip(start_position) {
         if limit.is_some_and(|limit| results.len() == limit) {
@@ -811,10 +811,11 @@ fn collect_select_results(
                 next_position: Some(position),
             });
         }
-        if let Some(result) = compiled
-            .eval_with_context(object, context)
+        if let Some(arena_result) = compiled
+            .run(object, atom_table.as_ref(), &mut arena)
             .map_err(|_| badarg())?
         {
+            let result = copy_term_to_process(arena_result, context)?;
             results.push(result);
         }
     }
@@ -1184,6 +1185,13 @@ const fn list_heap_words(element_count: usize) -> usize {
 
 const fn info_proplist_heap_words(item_count: usize) -> usize {
     item_count * 5
+}
+
+fn copy_term_to_process(term: Term, context: &mut ProcessContext<'_>) -> Result<Term, Term> {
+    let Some(process) = context.process_mut() else {
+        return Err(badarg());
+    };
+    copy_term_to_heap(term, process.heap_mut()).map_err(ets_error_to_badarg)
 }
 
 fn ets_error_to_badarg(_error: EtsError) -> Term {
