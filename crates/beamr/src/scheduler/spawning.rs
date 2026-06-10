@@ -35,6 +35,17 @@ pub(in crate::scheduler) struct SpawnRequest {
     pub(in crate::scheduler) heap_size: usize,
 }
 
+struct EnqueueSpawnRequest {
+    module_version: Arc<Module>,
+    instruction_pointer: usize,
+    args: Vec<Term>,
+    trap_exit: bool,
+    namespace_id: NamespaceId,
+    parent_pid: u64,
+    function: Atom,
+    arity: u8,
+}
+
 impl Scheduler {
     /// Spawn a process at an exported module/function/arity entrypoint.
     pub fn spawn(
@@ -77,16 +88,16 @@ impl Scheduler {
         })?;
         let entry = registry.lookup_mfa(entry_module, entry_function, arity)?;
         let instruction_pointer = entry.module.label_ip(entry.label)?;
-        Ok(self.enqueue_spawn_with_trap_exit(
-            entry.module,
+        Ok(self.enqueue_spawn_with_trap_exit(EnqueueSpawnRequest {
+            module_version: entry.module,
             instruction_pointer,
             args,
-            false,
-            namespace,
-            0,
-            entry_function,
+            trap_exit: false,
+            namespace_id: namespace,
+            parent_pid: 0,
+            function: entry_function,
             arity,
-        ))
+        }))
     }
 
     /// Spawn a process in a namespace with trap-exit set before it is made runnable.
@@ -105,16 +116,16 @@ impl Scheduler {
         })?;
         let entry = registry.lookup_mfa(entry_module, entry_function, arity)?;
         let instruction_pointer = entry.module.label_ip(entry.label)?;
-        Ok(self.enqueue_spawn_with_trap_exit(
-            entry.module,
+        Ok(self.enqueue_spawn_with_trap_exit(EnqueueSpawnRequest {
+            module_version: entry.module,
             instruction_pointer,
             args,
-            true,
-            namespace,
-            0,
-            entry_function,
+            trap_exit: true,
+            namespace_id: namespace,
+            parent_pid: 0,
+            function: entry_function,
             arity,
-        ))
+        }))
     }
 
     /// Spawn a process and link it to `parent_pid`.
@@ -165,50 +176,43 @@ impl Scheduler {
         function: Atom,
         arity: u8,
     ) -> u64 {
-        self.enqueue_spawn_with_trap_exit(
+        self.enqueue_spawn_with_trap_exit(EnqueueSpawnRequest {
             module_version,
             instruction_pointer,
             args,
-            false,
-            NamespaceId::DEFAULT,
-            0,
+            trap_exit: false,
+            namespace_id: NamespaceId::DEFAULT,
+            parent_pid: 0,
             function,
             arity,
-        )
+        })
     }
 
-    fn enqueue_spawn_with_trap_exit(
-        &self,
-        module_version: Arc<Module>,
-        instruction_pointer: usize,
-        args: Vec<Term>,
-        trap_exit: bool,
-        namespace_id: NamespaceId,
-        parent_pid: u64,
-        function: Atom,
-        arity: u8,
-    ) -> u64 {
+    fn enqueue_spawn_with_trap_exit(&self, enqueue: EnqueueSpawnRequest) -> u64 {
         let pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
         self.shared.process_table.spawn_with_pid(pid);
         let index =
             self.shared.spawn_counter.fetch_add(1, Ordering::Relaxed) % self.shared.thread_count;
-        let module = module_version.name;
+        let module = enqueue.module_version.name;
+        let parent_pid = enqueue.parent_pid;
+        let function = enqueue.function;
+        let arity = enqueue.arity;
         let request = SpawnRequest {
             pid,
             module,
-            module_version,
-            instruction_pointer,
+            module_version: enqueue.module_version,
+            instruction_pointer: enqueue.instruction_pointer,
             capabilities: CapabilitySet::all(),
-            namespace_id,
+            namespace_id: enqueue.namespace_id,
             group_leader: Term::pid(pid),
             priority: Priority::Normal,
             heap_size: DEFAULT_HEAP_SIZE,
             parent_pid,
             function,
             arity,
-            args,
+            args: enqueue.args,
         };
-        if trap_exit {
+        if enqueue.trap_exit {
             let mut process = build_process(request);
             process.set_trap_exit(true);
             self.shared.process_bodies.insert(
