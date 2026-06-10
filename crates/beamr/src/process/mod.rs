@@ -443,6 +443,47 @@ pub struct Process {
     not_send_sync: PhantomData<Rc<()>>,
 }
 
+impl Clone for Process {
+    fn clone(&self) -> Self {
+        let mut heap = self.heap.clone();
+        heap.rebase_snapshot_terms(&self.heap);
+        let mut clone = Self {
+            pid: self.pid,
+            capabilities: self.capabilities.clone(),
+            status: self.status,
+            priority: self.priority,
+            heap,
+            virtual_binary_heap: self.virtual_binary_heap,
+            stack: self.stack.clone(),
+            mailbox: self.mailbox.clone(),
+            handlers: self.handlers.clone(),
+            current_exception: self.current_exception,
+            dictionary: self.dictionary.clone(),
+            receive_timeout: self.receive_timeout,
+            receive_timer_ref: self.receive_timer_ref,
+            x_regs: self.x_regs,
+            float_regs: self.float_regs,
+            native_continuation: self.native_continuation.clone(),
+            raw_stacktrace: self.raw_stacktrace.clone(),
+            reduction_counter: self.reduction_counter,
+            namespace_id: self.namespace_id,
+            code_position: self.code_position,
+            current_module: self.current_module.clone(),
+            current_mfa: self.current_mfa,
+            jit_runtime_context: self.jit_runtime_context,
+            jit_status: self.jit_status,
+            links: self.links.clone(),
+            remote_links: self.remote_links.clone(),
+            monitors: self.monitors.clone(),
+            trap_exit: self.trap_exit,
+            group_leader: self.group_leader,
+            not_send_sync: PhantomData,
+        };
+        clone.rebase_roots_from(self);
+        clone
+    }
+}
+
 impl Process {
     /// Create a fresh process with `pid` and a heap capacity of `heap_size`
     /// words.
@@ -678,6 +719,37 @@ impl Process {
                 compare::exact_eq(*existing_value, value).then_some(*key)
             })
             .collect()
+    }
+
+    fn rebase_roots_from(&mut self, original: &Self) {
+        for root in &mut self.x_regs {
+            *root = self.heap.rebase_term_from(*root, &original.heap);
+        }
+        for root in self.stack.y_regs_mut() {
+            *root = self.heap.rebase_term_from(*root, &original.heap);
+        }
+        for root in self.mailbox.scan_iter_mut() {
+            *root = self.heap.rebase_term_from(*root, &original.heap);
+        }
+        for entry in &mut self.raw_stacktrace {
+            entry.location_info = self
+                .heap
+                .rebase_term_from(entry.location_info, &original.heap);
+        }
+        if let Some(exception) = &mut self.current_exception {
+            exception.class = self.heap.rebase_term_from(exception.class, &original.heap);
+            exception.reason = self.heap.rebase_term_from(exception.reason, &original.heap);
+            exception.stacktrace = self
+                .heap
+                .rebase_term_from(exception.stacktrace, &original.heap);
+        }
+        for (key, value) in &mut self.dictionary {
+            *key = self.heap.rebase_term_from(*key, &original.heap);
+            *value = self.heap.rebase_term_from(*value, &original.heap);
+        }
+        self.group_leader = self
+            .heap
+            .rebase_term_from(self.group_leader, &original.heap);
     }
 
     /// Snapshot every GC root owned by this process, treating all X registers as live.

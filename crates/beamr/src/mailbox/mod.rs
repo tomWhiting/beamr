@@ -70,6 +70,17 @@ impl MailboxMessage {
     }
 }
 
+impl Clone for Mailbox {
+    fn clone(&self) -> Self {
+        Self {
+            arrival: Arc::new(SegQueue::new()),
+            scan_list: self.scan_list.clone(),
+            save_pointer: self.save_pointer,
+            recv_marker: self.recv_marker,
+        }
+    }
+}
+
 impl Mailbox {
     /// Create an empty mailbox with no arrived or buffered messages.
     #[must_use]

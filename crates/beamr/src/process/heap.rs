@@ -61,7 +61,7 @@ impl fmt::Display for HeapFull {
 impl std::error::Error for HeapFull {}
 
 /// One fixed-capacity bump region inside a process heap.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct HeapRegion {
     words: Vec<u64>,
     allocations: Vec<(usize, usize)>,
@@ -159,7 +159,7 @@ impl HeapRegion {
 }
 
 /// Generational bump allocator for one process heap.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Heap {
     young: HeapRegion,
     old: HeapRegion,
@@ -331,6 +331,23 @@ impl Heap {
         self.old.visit_allocated_boxed_objects(visit);
     }
 
+    pub(crate) fn rebase_snapshot_terms(&mut self, original: &Heap) {
+        let mappings = original.rebase_mappings(self);
+        self.rebase_embedded_terms(&mappings);
+    }
+
+    pub(crate) fn rebase_term_from(
+        &self,
+        term: crate::term::Term,
+        original: &Heap,
+    ) -> crate::term::Term {
+        let mappings = original.rebase_mappings(self);
+        match rebase_term(term, &mappings) {
+            Some(rebased) => rebased,
+            None => term,
+        }
+    }
+
     /// Reclaim the nursery wholesale after all live young objects are promoted.
     pub(crate) fn reset_young(&mut self) {
         self.young.reset();
@@ -400,6 +417,131 @@ impl Heap {
         // words in a heap region and does not overlap the temporary source vec.
         unsafe { std::ptr::copy_nonoverlapping(words.as_ptr(), dst, words.len()) }
     }
+
+    fn rebase_mappings(&self, cloned: &Self) -> [(*const u64, *const u64, usize); 2] {
+        [
+            (
+                self.young.words.as_ptr(),
+                cloned.young.words.as_ptr(),
+                self.young.words.len(),
+            ),
+            (
+                self.old.words.as_ptr(),
+                cloned.old.words.as_ptr(),
+                self.old.words.len(),
+            ),
+        ]
+    }
+
+    fn rebase_embedded_terms(&mut self, mappings: &[(*const u64, *const u64, usize)]) {
+        rebase_region_embedded_terms(&mut self.young, mappings);
+        rebase_region_embedded_terms(&mut self.old, mappings);
+    }
+}
+
+fn rebase_region_embedded_terms(
+    region: &mut HeapRegion,
+    mappings: &[(*const u64, *const u64, usize)],
+) {
+    for (offset, allocation_words) in region.allocations.clone() {
+        let Some(block) = region
+            .words
+            .get_mut(offset..offset.saturating_add(allocation_words))
+        else {
+            continue;
+        };
+        rebase_heap_block_terms(block, mappings);
+    }
+}
+
+fn rebase_heap_block_terms(block: &mut [u64], mappings: &[(*const u64, *const u64, usize)]) {
+    let Some((header, payload)) = block.split_first_mut() else {
+        return;
+    };
+
+    match BoxedHeader::tag(*header) {
+        Some(BoxedTag::Tuple) => {
+            for word in payload.iter_mut().take(BoxedHeader::size(*header)) {
+                rebase_term_word(word, mappings);
+            }
+        }
+        Some(BoxedTag::Map) => {
+            let len = payload.first().copied().unwrap_or(0) as usize;
+            for word in payload.iter_mut().skip(1).take(len.saturating_mul(2)) {
+                rebase_term_word(word, mappings);
+            }
+        }
+        Some(BoxedTag::Closure) => {
+            let num_free = payload.get(3).copied().unwrap_or(0) as usize;
+            for word in payload.iter_mut().skip(6).take(num_free) {
+                rebase_term_word(word, mappings);
+            }
+        }
+        Some(BoxedTag::MatchContext) => {
+            if let Some(word) = payload.get_mut(2) {
+                rebase_term_word(word, mappings);
+            }
+        }
+        Some(BoxedTag::SubBinary) => {
+            if let Some(word) = payload.first_mut() {
+                rebase_term_word(word, mappings);
+            }
+        }
+        Some(
+            BoxedTag::Float
+            | BoxedTag::BigInt
+            | BoxedTag::Reference
+            | BoxedTag::Binary
+            | BoxedTag::BinaryBuilder
+            | BoxedTag::ProcBin
+            | BoxedTag::FdResource
+            | BoxedTag::ExternalPid
+            | BoxedTag::ExternalReference,
+        ) => {}
+        None if block.len() >= 2 => {
+            rebase_term_word(&mut block[0], mappings);
+            rebase_term_word(&mut block[1], mappings);
+        }
+        None => {}
+    }
+}
+
+fn rebase_term_word(word: &mut u64, mappings: &[(*const u64, *const u64, usize)]) {
+    if let Some(rebased) = rebase_term(crate::term::Term::from_raw(*word), mappings) {
+        *word = rebased.raw();
+    }
+}
+
+fn rebase_term(
+    term: crate::term::Term,
+    mappings: &[(*const u64, *const u64, usize)],
+) -> Option<crate::term::Term> {
+    if !term.is_boxed() && !term.is_list() {
+        return None;
+    }
+
+    let ptr = term.heap_ptr()?;
+    let word_size = std::mem::size_of::<u64>();
+    for &(original, cloned, len) in mappings {
+        let start = original as usize;
+        let byte_len = len.checked_mul(word_size)?;
+        let end = start.checked_add(byte_len)?;
+        let ptr = ptr as usize;
+        if ptr < start || ptr >= end {
+            continue;
+        }
+        let offset = ptr.checked_sub(start)?;
+        if !offset.is_multiple_of(word_size) {
+            return None;
+        }
+        let rebased = cloned.wrapping_add(offset / word_size);
+        return Some(if term.is_boxed() {
+            crate::term::Term::boxed_ptr(rebased)
+        } else {
+            crate::term::Term::list_ptr(rebased)
+        });
+    }
+    None
 }
 
 impl Default for Heap {
