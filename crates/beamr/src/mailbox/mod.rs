@@ -54,8 +54,8 @@ pub struct Mailbox {
 }
 
 #[derive(Clone, Debug)]
-struct MailboxMessage {
-    term: Term,
+pub(super) struct MailboxMessage {
+    pub(super) term: Term,
     #[cfg(feature = "telemetry")]
     trace_context: Option<crate::telemetry::spans::MessageTraceContext>,
 }
