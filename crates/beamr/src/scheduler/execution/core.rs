@@ -75,14 +75,12 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             ws.waiting.insert(pid, my_index);
         }
         SliceOutcome::Suspended(process) => {
-            // Snapshot the queue depth at the suspend boundary: messages that
-            // arrive during the slice (merged from pending metadata at
-            // store-back) or in the gap before wait-set registration would
-            // otherwise be lost wakeups — the sender's wake_process call is a
-            // no-op until the pid is registered as waiting. A depth delta
-            // (rather than non-emptiness) avoids a resume spin on stale
-            // mailbox messages the suspended call is not selecting on.
-            let queued_at_suspend = process.mailbox().message_count();
+            // Suspended means a dirty native call is in flight (host-side
+            // request_suspend parks through Waiting/Wait instead). Mailbox
+            // arrivals while a dirty call runs are normal and must NOT
+            // resume the process — only the dirty result may, via the
+            // completion bridge's resume_suspended or, when the result
+            // landed before this registration, the check below.
             store_runnable_process(shared, process);
             if cleanup_if_tombstoned_after_store(shared, pid) {
                 return;
@@ -91,9 +89,7 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
                 let mut ws = lock_or_recover(&shared.wait_set);
                 ws.waiting.insert(pid, my_index);
             }
-            let arrived_while_unparked = stored_message_count(shared, pid)
-                .is_some_and(|queued_now| queued_now > queued_at_suspend);
-            if arrived_while_unparked || shared.dirty_results.contains_key(&pid) {
+            if shared.dirty_results.contains_key(&pid) {
                 let _resumed = timer_integration::resume_suspended(shared, pid);
             }
         }
@@ -342,15 +338,6 @@ fn process_has_queued_messages(shared: &SharedState, pid: u64) -> bool {
     match &*slot {
         ProcessSlot::Present(ScheduledProcess(process)) => !process.mailbox().is_empty(),
         ProcessSlot::Executing(_) | ProcessSlot::Absent => false,
-    }
-}
-
-fn stored_message_count(shared: &SharedState, pid: u64) -> Option<usize> {
-    let entry = shared.process_bodies.get(&pid)?;
-    let slot = lock_or_recover(&entry);
-    match &*slot {
-        ProcessSlot::Present(ScheduledProcess(process)) => Some(process.mailbox().message_count()),
-        ProcessSlot::Executing(_) | ProcessSlot::Absent => None,
     }
 }
 

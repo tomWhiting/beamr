@@ -131,3 +131,78 @@ fn marker_delivered_while_executing_resumes_the_suspending_process() {
     assert_eq!(result.root(), Term::small_int(42));
     waiter.join().expect("waiter thread panicked");
 }
+
+/// Dirty-call phases: 0 = not started, 1 = dirty native running,
+/// 2 = test delivered an unrelated message, native may finish.
+static DIRTY_PHASE: AtomicUsize = AtomicUsize::new(0);
+
+fn dirty_await_release(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+    DIRTY_PHASE.store(1, Ordering::Release);
+    while DIRTY_PHASE.load(Ordering::Acquire) != 2 {
+        std::thread::yield_now();
+    }
+    Ok(Term::small_int(7))
+}
+
+#[test]
+fn delivery_during_in_flight_dirty_call_does_not_resume_the_process() {
+    let registry = Arc::new(ModuleRegistry::new());
+    let mut awaiting = module(
+        Atom::ERROR,
+        vec![
+            Instruction::CallExt {
+                arity: Operand::Unsigned(0),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    awaiting.resolved_imports.push(ResolvedImport {
+        module: Atom::ERROR,
+        function: Atom::ERROR,
+        arity: 0,
+        target: ResolvedImportTarget::Native(NativeEntry {
+            function: dirty_await_release,
+            dirty_kind: Some(beamr::scheduler::dirty::DirtySchedulerKind::Cpu),
+            capability: Capability::Pure,
+        }),
+    });
+    let awaiting = registry.insert(awaiting);
+
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            dirty_cpu_threads: Some(1),
+            dirty_io_threads: Some(1),
+            dirty_queue_depth: Some(8),
+            ..SchedulerConfig::default()
+        },
+        Arc::clone(&registry),
+    )
+    .expect("scheduler starts");
+
+    let pid = scheduler.spawn_process(&awaiting);
+    while DIRTY_PHASE.load(Ordering::Acquire) != 1 {
+        std::thread::yield_now();
+    }
+    // An unrelated mailbox message arrives while the dirty call is still in
+    // flight. It must be delivered, but it must NOT resume the process — a
+    // premature resume re-executes the dirty call instruction in an illegal
+    // state and kills the workflow.
+    assert!(scheduler.enqueue_atom_message(pid, Atom::OK));
+    std::thread::sleep(Duration::from_millis(100));
+    DIRTY_PHASE.store(2, Ordering::Release);
+
+    let (sender, receiver) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let outcome = scheduler.run_until_exit(pid);
+        let _ = sender.send(outcome);
+        scheduler.shutdown();
+    });
+    let (reason, result) = receiver
+        .recv_timeout(Duration::from_secs(60))
+        .expect("dirty call never completed");
+    assert_eq!(reason, ExitReason::Normal);
+    assert_eq!(result.root(), Term::small_int(7));
+    waiter.join().expect("waiter thread panicked");
+}
