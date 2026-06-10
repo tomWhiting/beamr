@@ -500,7 +500,12 @@ fn exit_process(shared: &SharedState, process: &mut Process, reason: ExitReason)
     let pid = process.pid();
     let result = process.x_reg(0);
     if let Some(exception) = process.current_exception() {
+        #[cfg(feature = "telemetry")]
+        crate::telemetry::lifecycle::record_process_crashed(&shared.atom_table, pid, exception);
         shared.exit_exceptions.insert(pid, exception);
+    } else if reason != ExitReason::Normal {
+        #[cfg(feature = "telemetry")]
+        crate::telemetry::lifecycle::record_process_crashed_reason(&shared.atom_table, pid, reason);
     }
     process.terminate(reason);
     SliceOutcome::Exited(reason, result)
@@ -699,6 +704,8 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     reason: ExitReason,
 ) {
     shared.exit_tombstones.insert(pid, reason);
+    #[cfg(feature = "telemetry")]
+    crate::telemetry::lifecycle::record_process_exited(&shared.atom_table, pid, reason);
     let _deleted_tables = shared.transfer_or_delete_tables_owned_by(pid);
     supervision_integration::propagate_exit(shared, pid, reason);
     close_owned_fd_resources_on_exit(shared, pid);
