@@ -192,15 +192,34 @@ pub fn bif_string_split(args: &[Term], context: &mut ProcessContext) -> Result<T
         return Err(badarg());
     }
     let input_bytes = input_string.bytes();
-    let parts = if let Some(index) = find_subsequence(input_bytes, &pattern) {
+    if let Some(index) = find_subsequence(input_bytes, &pattern) {
         let left = input_string.allocate_like_input(context, &input_bytes[..index])?;
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(0, left);
+        }
         let right =
             input_string.allocate_like_input(context, &input_bytes[index + pattern.len()..])?;
-        vec![left, right]
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(1, right);
+        }
+        context.ensure_heap_space(4)?;
+        let (left, right) = {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            (process.x_reg(0), process.x_reg(1))
+        };
+        let tail = context.alloc_cons_prereserved(right, Term::NIL)?;
+        context.alloc_cons_prereserved(left, tail)
     } else {
-        vec![*input]
-    };
-    context.alloc_list(&parts)
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(0, *input);
+        }
+        context.ensure_heap_space(2)?;
+        let input = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+        context.alloc_cons_prereserved(input, Term::NIL)
+    }
 }
 
 fn badarg() -> Term {

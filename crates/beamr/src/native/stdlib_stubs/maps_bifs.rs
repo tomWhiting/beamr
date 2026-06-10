@@ -53,7 +53,17 @@ pub fn bif_maps_find(args: &[Term], context: &mut ProcessContext) -> Result<Term
     };
     let map = Map::new(*map_term).ok_or_else(badarg)?;
     match map.get(*key) {
-        Some(value) => context.alloc_tuple(&[Term::atom(Atom::OK), value]),
+        Some(_) => {
+            context
+                .process_mut()
+                .ok_or_else(badarg)?
+                .set_x_reg(1, *map_term);
+            context.ensure_heap_space(3)?;
+            let map_term = context.process_mut().ok_or_else(badarg)?.x_reg(1);
+            let map = Map::new(map_term).ok_or_else(badarg)?;
+            let value = map.get(*key).ok_or_else(badarg)?;
+            context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), value])
+        }
         None => Ok(Term::atom(Atom::ERROR)),
     }
 }
@@ -85,11 +95,22 @@ pub fn bif_maps_to_list(args: &[Term], context: &mut ProcessContext) -> Result<T
         return Err(badarg());
     };
     let pairs = map_entries(*map_term)?;
-    let mut tuples = Vec::with_capacity(pairs.len());
-    for (key, value) in pairs {
-        tuples.push(context.alloc_tuple(&[key, value])?);
+    if pairs.is_empty() {
+        return Ok(Term::NIL);
     }
-    list_from_vec(&tuples, context)
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *map_term);
+    }
+    context.ensure_heap_space(pairs.len() * (3 + 2))?;
+    let map_term = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+    let pairs = map_entries(map_term)?;
+    let mut result = Term::NIL;
+    for (key, value) in pairs.into_iter().rev() {
+        let tuple = context.alloc_tuple_prereserved(&[key, value])?;
+        result = context.alloc_cons_prereserved(tuple, result)?;
+    }
+    Ok(result)
 }
 
 pub fn bif_maps_fold(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -451,9 +472,10 @@ fn make_map_from_entries(
     context: &mut ProcessContext,
     entries: &[(Term, Term)],
 ) -> Result<Term, Term> {
+    context.ensure_heap_space(2 + entries.len() * 2)?;
     let keys: Vec<_> = entries.iter().map(|(key, _)| *key).collect();
     let values: Vec<_> = entries.iter().map(|(_, value)| *value).collect();
-    context.alloc_map(&keys, &values)
+    context.alloc_map_prereserved(&keys, &values)
 }
 
 fn list_to_vec(term: Term) -> Result<Vec<Term>, Term> {

@@ -87,10 +87,19 @@ pub fn bif_insert_selector_handler(
     let [selector, tag, handler] = args else {
         return Err(badarg());
     };
-    // Build {Tag, Handler} tuple on the process heap.
-    let entry = context.alloc_tuple(&[*tag, *handler])?;
-    // Prepend to the selector list: [entry | Selector].
-    let cons = context.alloc_cons(entry, *selector)?;
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *selector);
+        process.set_x_reg(1, *tag);
+        process.set_x_reg(2, *handler);
+    }
+    context.ensure_heap_space(3 + 2)?;
+    let (selector, tag, handler) = {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        (process.x_reg(0), process.x_reg(1), process.x_reg(2))
+    };
+    let entry = context.alloc_tuple_prereserved(&[tag, handler])?;
+    let cons = context.alloc_cons_prereserved(entry, selector)?;
     Ok(cons)
 }
 
@@ -108,6 +117,20 @@ pub fn bif_map_selector(args: &[Term], context: &mut ProcessContext) -> Result<T
     // Walk the selector list, wrapping each handler.
     let entries = list_to_vec(*selector)?;
     let mut result = Term::NIL;
+    if entries.is_empty() {
+        return Ok(Term::NIL);
+    }
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *selector);
+        process.set_x_reg(1, *map_fun);
+    }
+    context.ensure_heap_space(entries.len() * (4 + 3 + 2))?;
+    let (selector, map_fun) = {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        (process.x_reg(0), process.x_reg(1))
+    };
+    let entries = list_to_vec(selector)?;
 
     // Build the new list in reverse order to preserve original ordering
     // after prepending.
@@ -122,9 +145,9 @@ pub fn bif_map_selector(args: &[Term], context: &mut ProcessContext) -> Result<T
         // Create a {mapped, MapFun, OriginalHandler} tuple to signal
         // composed invocation to the trampoline.
         let mapped_atom = Term::atom(Atom::new(mapped_atom_index()));
-        let wrapped = context.alloc_tuple(&[mapped_atom, *map_fun, original_handler])?;
-        let new_entry = context.alloc_tuple(&[tag, wrapped])?;
-        result = context.alloc_cons(new_entry, result)?;
+        let wrapped = context.alloc_tuple_prereserved(&[mapped_atom, map_fun, original_handler])?;
+        let new_entry = context.alloc_tuple_prereserved(&[tag, wrapped])?;
+        result = context.alloc_cons_prereserved(new_entry, result)?;
     }
 
     Ok(result)
@@ -144,10 +167,20 @@ pub fn bif_merge_selector(args: &[Term], context: &mut ProcessContext) -> Result
 
     // Walk SelectorA, collect entries, then rebuild with SelectorB as tail.
     let entries_a = list_to_vec(*selector_a)?;
-    let mut result = *selector_b;
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *selector_a);
+        process.set_x_reg(1, *selector_b);
+    }
+    context.ensure_heap_space(entries_a.len() * 2)?;
+    let (selector_a, mut result) = {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        (process.x_reg(0), process.x_reg(1))
+    };
+    let entries_a = list_to_vec(selector_a)?;
 
     for entry in entries_a.into_iter().rev() {
-        result = context.alloc_cons(entry, result)?;
+        result = context.alloc_cons_prereserved(entry, result)?;
     }
 
     Ok(result)
@@ -167,6 +200,20 @@ pub fn bif_remove_selector_handler(
 
     let entries = list_to_vec(*selector)?;
     let mut result = Term::NIL;
+    if entries.is_empty() {
+        return Ok(Term::NIL);
+    }
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, *selector);
+        process.set_x_reg(1, *remove_tag);
+    }
+    context.ensure_heap_space(entries.len() * 2)?;
+    let (selector, remove_tag) = {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        (process.x_reg(0), process.x_reg(1))
+    };
+    let entries = list_to_vec(selector)?;
 
     // Rebuild list in reverse, skipping entries that match remove_tag.
     for entry_term in entries.into_iter().rev() {
@@ -175,8 +222,8 @@ pub fn bif_remove_selector_handler(
             return Err(badarg());
         }
         let tag = entry.get(0).ok_or_else(badarg)?;
-        if tag != *remove_tag {
-            result = context.alloc_cons(entry_term, result)?;
+        if tag != remove_tag {
+            result = context.alloc_cons_prereserved(entry_term, result)?;
         }
     }
 

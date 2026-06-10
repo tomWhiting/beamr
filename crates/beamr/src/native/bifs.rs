@@ -261,7 +261,13 @@ pub fn start_timer(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     let delay = duration_from_term(*delay)?;
     let target_pid = pid.as_pid().ok_or_else(badarg)?;
     let reference = context.reserve_timer_reference().ok_or_else(badarg)?;
-    let payload = timeout_tuple_term(context, reference, *message)?;
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(2, *message);
+    }
+    context.ensure_heap_space(3)?;
+    let message = context.process_mut().ok_or_else(badarg)?.x_reg(2);
+    let payload = timeout_tuple_term_prereserved(context, reference, message)?;
     let reference = context
         .schedule_reserved_timer(reference, delay, target_pid, payload)
         .ok_or_else(badarg)?;
@@ -330,12 +336,12 @@ fn timer_ref_term(reference: TimerRef) -> Result<Term, Term> {
         .ok_or_else(badarg)
 }
 
-fn timeout_tuple_term(
+fn timeout_tuple_term_prereserved(
     context: &mut ProcessContext,
     reference: TimerRef,
     message: Term,
 ) -> Result<Term, Term> {
-    context.alloc_tuple(&[
+    context.alloc_tuple_prereserved(&[
         Term::atom(Atom::TIMEOUT),
         timer_ref_term(reference)?,
         message,

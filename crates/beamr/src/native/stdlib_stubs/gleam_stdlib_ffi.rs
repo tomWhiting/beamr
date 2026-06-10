@@ -20,10 +20,10 @@ pub fn bif_string_replace(args: &[Term], context: &mut ProcessContext) -> Result
 
     let mut out = Vec::with_capacity(input.len());
     let mut index = 0;
-    while let Some(relative) = find_bytes(&input[index..], pattern) {
+    while let Some(relative) = find_bytes(&input[index..], &pattern) {
         let match_start = index + relative;
         out.extend_from_slice(&input[index..match_start]);
-        out.extend_from_slice(replacement);
+        out.extend_from_slice(&replacement);
         index = match_start + pattern.len();
     }
     out.extend_from_slice(&input[index..]);
@@ -39,7 +39,6 @@ pub fn bif_less_than(args: &[Term], context: &mut ProcessContext) -> Result<Term
 }
 
 pub fn bif_slice(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input, offset, length] = args else {
         return Err(badarg());
     };
@@ -54,7 +53,6 @@ pub fn bif_slice(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
 }
 
 pub fn bif_crop_string(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
-    let _ = context;
     let [input, length] = args else {
         return Err(badarg());
     };
@@ -71,7 +69,7 @@ pub fn bif_contains_string(args: &[Term], context: &mut ProcessContext) -> Resul
     };
     let haystack = binary_bytes(*haystack)?;
     let needle = binary_bytes(*needle)?;
-    Ok(bool_term(find_bytes(haystack, needle).is_some()))
+    Ok(bool_term(find_bytes(&haystack, &needle).is_some()))
 }
 
 pub fn bif_string_starts_with(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -79,9 +77,9 @@ pub fn bif_string_starts_with(args: &[Term], context: &mut ProcessContext) -> Re
     let [input, prefix] = args else {
         return Err(badarg());
     };
-    Ok(bool_term(
-        binary_bytes(*input)?.starts_with(binary_bytes(*prefix)?),
-    ))
+    let input = binary_bytes(*input)?;
+    let prefix = binary_bytes(*prefix)?;
+    Ok(bool_term(input.starts_with(&prefix)))
 }
 
 pub fn bif_string_ends_with(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -89,9 +87,9 @@ pub fn bif_string_ends_with(args: &[Term], context: &mut ProcessContext) -> Resu
     let [input, suffix] = args else {
         return Err(badarg());
     };
-    Ok(bool_term(
-        binary_bytes(*input)?.ends_with(binary_bytes(*suffix)?),
-    ))
+    let input = binary_bytes(*input)?;
+    let suffix = binary_bytes(*suffix)?;
+    Ok(bool_term(input.ends_with(&suffix)))
 }
 
 pub fn bif_string_pop_grapheme(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -104,13 +102,28 @@ pub fn bif_string_pop_grapheme(args: &[Term], context: &mut ProcessContext) -> R
         return Ok(Term::atom(Atom::ERROR));
     }
 
-    let first_len = std::str::from_utf8(bytes)
+    let first_len = std::str::from_utf8(&bytes)
         .ok()
         .and_then(|text| text.chars().next().map(char::len_utf8))
         .unwrap_or(1);
-    let head = context.alloc_binary(&bytes[..first_len])?;
-    let rest = context.alloc_binary(&bytes[first_len..])?;
-    context.alloc_tuple(&[Term::atom(Atom::OK), head, rest])
+    let head_bytes = bytes[..first_len].to_vec();
+    let rest_bytes = bytes[first_len..].to_vec();
+    let head = context.alloc_binary(&head_bytes)?;
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(0, head);
+    }
+    let rest = context.alloc_binary(&rest_bytes)?;
+    {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        process.set_x_reg(1, rest);
+    }
+    context.ensure_heap_space(4)?;
+    let (head, rest) = {
+        let process = context.process_mut().ok_or_else(badarg)?;
+        (process.x_reg(0), process.x_reg(1))
+    };
+    context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), head, rest])
 }
 
 pub fn bif_utf_codepoint_list_to_string(
@@ -141,7 +154,8 @@ pub fn bif_inspect(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
         return Err(badarg());
     };
     if let Some(binary) = BinaryRef::new(*value) {
-        return context.alloc_binary(binary.as_bytes());
+        let bytes = binary.as_bytes().to_vec();
+        return context.alloc_binary(&bytes);
     }
     if let Some(integer) = value.as_small_int() {
         return context.alloc_binary(integer.to_string().as_bytes());
@@ -164,9 +178,16 @@ pub fn bif_string_remove_prefix(args: &[Term], context: &mut ProcessContext) -> 
     };
     let input = binary_bytes(*input)?;
     let prefix = binary_bytes(*prefix)?;
-    if input.starts_with(prefix) {
-        let rest = context.alloc_binary(&input[prefix.len()..])?;
-        context.alloc_tuple(&[Term::atom(Atom::OK), rest])
+    if input.starts_with(&prefix) {
+        let rest_bytes = input[prefix.len()..].to_vec();
+        let rest = context.alloc_binary(&rest_bytes)?;
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(0, rest);
+        }
+        context.ensure_heap_space(3)?;
+        let rest = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+        context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), rest])
     } else {
         Ok(Term::atom(Atom::ERROR))
     }
@@ -179,9 +200,16 @@ pub fn bif_string_remove_suffix(args: &[Term], context: &mut ProcessContext) -> 
     };
     let input = binary_bytes(*input)?;
     let suffix = binary_bytes(*suffix)?;
-    if input.ends_with(suffix) {
-        let rest = context.alloc_binary(&input[..input.len() - suffix.len()])?;
-        context.alloc_tuple(&[Term::atom(Atom::OK), rest])
+    if input.ends_with(&suffix) {
+        let rest_bytes = input[..input.len() - suffix.len()].to_vec();
+        let rest = context.alloc_binary(&rest_bytes)?;
+        {
+            let process = context.process_mut().ok_or_else(badarg)?;
+            process.set_x_reg(0, rest);
+        }
+        context.ensure_heap_space(3)?;
+        let rest = context.process_mut().ok_or_else(badarg)?.x_reg(0);
+        context.alloc_tuple_prereserved(&[Term::atom(Atom::OK), rest])
     } else {
         Ok(Term::atom(Atom::ERROR))
     }
@@ -218,9 +246,9 @@ fn collect_iodata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
     Err(badarg())
 }
 
-fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {
+fn binary_bytes(term: Term) -> Result<Vec<u8>, Term> {
     BinaryRef::new(term)
-        .map(|binary| binary.as_bytes())
+        .map(|binary| binary.as_bytes().to_vec())
         .ok_or_else(badarg)
 }
 

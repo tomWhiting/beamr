@@ -5,6 +5,36 @@
 //! the Rust function directly — same process, no IPC, no serialisation.
 //! BIFs (built-in, ship with the VM) and NIFs (registered by the host)
 //! use the same mechanism but have different ownership (per D6).
+//!
+//! # GC-safe BIF allocation pattern
+//!
+//! A [`NativeFn`] receives its arguments as copied [`Term`] values in `&[Term]`.
+//! Those copies are not GC roots. Any BIF that keeps heap terms from `args`
+//! (lists, tuples, maps, binaries, bigints, floats, closures, references,
+//! external pids/refs, or any term read out of those structures) and then calls
+//! [`ProcessContext::ensure_heap_space`] directly or indirectly through
+//! `alloc_tuple`, `alloc_cons`, `alloc_binary`, `alloc_bigint`, `alloc_list`,
+//! `alloc_map`, or another allocation helper must root the live terms first.
+//! Immediate terms such as atoms, small integers, local pids, and `[]` do not
+//! need rooting solely because they are not heap pointers.
+//!
+//! The required sequence is:
+//!
+//! 1. Validate/count without allocating.
+//! 2. Save every live heap-term argument (and any boxed term that will be copied
+//!    into the result) into x-registers with `context.process_mut()?.set_x_reg`.
+//! 3. Call `context.ensure_heap_space(total_words)?` or the first allocator that
+//!    may trigger GC.
+//! 4. Re-read the terms with `context.process_mut()?.x_reg(n)` before
+//!    dereferencing or copying them into allocated data, then use pre-reserved
+//!    allocation helpers when building multiple heap objects from that budget.
+//!
+//! For example, `stdlib_stubs::collection_bifs::bif_lists_reverse` is the
+//! canonical implementation: it counts the list, saves the input in x(0), calls
+//! `ensure_heap_space(count * 2)`, re-reads x(0), and only then walks the list to
+//! build cons cells. Binary data has the same hazard: do not hold a slice borrowed
+//! from a heap binary across `alloc_binary`; either copy bytes into owned Rust
+//! memory before allocating, or re-borrow from the re-read rooted `Term` after GC.
 pub mod bifs;
 pub mod capability;
 pub mod code_management_bifs;
