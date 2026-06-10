@@ -991,10 +991,12 @@ impl SpawnFacility for SchedulerSpawnFacility {
         });
 
         if let Some(parent_pid) = link_to {
-            child.add_link(parent_pid);
-            add_link_to_slot(&self.shared, parent_pid, child_pid);
-            #[cfg(feature = "telemetry")]
-            crate::telemetry::lifecycle::record_process_linked(parent_pid, child_pid);
+            let child_linked = child.add_link(parent_pid);
+            let parent_linked = add_link_to_slot(&self.shared, parent_pid, child_pid);
+            if child_linked && parent_linked {
+                #[cfg(feature = "telemetry")]
+                crate::telemetry::lifecycle::record_process_linked(parent_pid, child_pid);
+            }
         }
 
         self.shared.process_bodies.insert(
@@ -1084,10 +1086,12 @@ impl SpawnFacility for SchedulerSpawnFacility {
         });
 
         if let Some(parent_pid) = link_to {
-            child.add_link(parent_pid);
-            add_link_to_slot(&self.shared, parent_pid, child_pid);
-            #[cfg(feature = "telemetry")]
-            crate::telemetry::lifecycle::record_process_linked(parent_pid, child_pid);
+            let child_linked = child.add_link(parent_pid);
+            let parent_linked = add_link_to_slot(&self.shared, parent_pid, child_pid);
+            if child_linked && parent_linked {
+                #[cfg(feature = "telemetry")]
+                crate::telemetry::lifecycle::record_process_linked(parent_pid, child_pid);
+            }
         }
 
         self.shared.process_bodies.insert(
@@ -1306,16 +1310,22 @@ impl SchedulerSpawnFacility {
         options: SpawnOptions,
     ) -> SpawnOptionsResult {
         let child_pid = request.pid;
-        let _parent_pid = request.parent_pid;
-        let _module = request.module;
-        let _function = request.function;
-        let _arity = request.arity;
+        #[cfg(feature = "telemetry")]
+        let parent_pid = request.parent_pid;
+        #[cfg(feature = "telemetry")]
+        let module = request.module;
+        #[cfg(feature = "telemetry")]
+        let function = request.function;
+        #[cfg(feature = "telemetry")]
+        let arity = request.arity;
         let mut child = super::spawning::build_process(request);
         if options.link {
-            child.add_link(caller_pid);
-            add_link_to_slot(&self.shared, caller_pid, child_pid);
-            #[cfg(feature = "telemetry")]
-            crate::telemetry::lifecycle::record_process_linked(caller_pid, child_pid);
+            let child_linked = child.add_link(caller_pid);
+            let caller_linked = add_link_to_slot(&self.shared, caller_pid, child_pid);
+            if child_linked && caller_linked {
+                #[cfg(feature = "telemetry")]
+                crate::telemetry::lifecycle::record_process_linked(caller_pid, child_pid);
+            }
         }
         if options.monitor {
             let result = self.register_monitor_insert_and_wake(caller_pid, child_pid, child);
@@ -1579,9 +1589,9 @@ impl LinkFacility for SchedulerLinkFacility {
         }
 
         // Add link to target.
-        add_link_to_slot(&self.shared, target_pid, caller_pid);
+        let target_linked = add_link_to_slot(&self.shared, target_pid, caller_pid);
 
-        if !already_linked {
+        if !already_linked && target_linked {
             #[cfg(feature = "telemetry")]
             crate::telemetry::lifecycle::record_process_linked(caller_pid, target_pid);
         }

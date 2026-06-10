@@ -145,6 +145,7 @@ pub(crate) fn record_process_crashed(atom_table: &AtomTable, pid: u64, exception
             int_attr("process.pid", pid_to_i64(pid)),
             int_attr("pid", pid_to_i64(pid)),
             string_attr("exception.class", format_term(exception.class, atom_table)),
+            string_attr("exception_class", format_term(exception.class, atom_table)),
             string_attr(
                 "exception.reason",
                 format_term(exception.reason, atom_table),
@@ -168,6 +169,7 @@ pub(crate) fn record_process_crashed_reason(atom_table: &AtomTable, pid: u64, re
             int_attr("process.pid", pid_to_i64(pid)),
             int_attr("pid", pid_to_i64(pid)),
             string_attr("exception.class", "error"),
+            string_attr("exception_class", "error"),
             string_attr("exception.reason", reason_name.clone()),
             string_attr("exception.stacktrace", "[]"),
             string_attr("reason", reason_name),
@@ -381,6 +383,10 @@ mod tests {
         assert_eq!(attr_i64(&crashed.record, "process.pid"), Some(42));
         assert_eq!(
             attr_string(&crashed.record, "exception.class"),
+            Some("error".to_owned())
+        );
+        assert_eq!(
+            attr_string(&crashed.record, "exception_class"),
             Some("error".to_owned())
         );
         assert_eq!(

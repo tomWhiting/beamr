@@ -259,10 +259,14 @@ pub(in crate::scheduler) fn drain_pending_spawns(
 
 pub(super) fn materialize_spawn_request(shared: &SharedState, request: SpawnRequest) -> u64 {
     let pid = request.pid;
-    let _parent_pid = request.parent_pid;
-    let _module = request.module;
-    let _function = request.function;
-    let _arity = request.arity;
+    #[cfg(feature = "telemetry")]
+    let parent_pid = request.parent_pid;
+    #[cfg(feature = "telemetry")]
+    let module = request.module;
+    #[cfg(feature = "telemetry")]
+    let function = request.function;
+    #[cfg(feature = "telemetry")]
+    let arity = request.arity;
     let process = build_process(request);
     shared.process_bodies.insert(
         pid,

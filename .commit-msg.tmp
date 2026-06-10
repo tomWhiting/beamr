@@ -1,1 +1,1 @@
-feat(beamr): emit structured process lifecycle events
+harden(beamr): tighten lifecycle telemetry event wiring
