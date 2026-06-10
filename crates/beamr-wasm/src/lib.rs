@@ -31,7 +31,6 @@ pub struct WasmVm {
     module_registry: Arc<ModuleRegistry>,
     bif_registry: Arc<BifRegistryImpl>,
     scheduler: WasmScheduler,
-    last_spawned: Option<u64>,
 }
 
 #[wasm_bindgen]
@@ -53,7 +52,6 @@ impl WasmVm {
             module_registry,
             bif_registry,
             scheduler,
-            last_spawned: None,
         })
     }
 
@@ -87,7 +85,6 @@ impl WasmVm {
             .scheduler
             .spawn(module, function, args)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        self.last_spawned = Some(pid);
         Ok(pid)
     }
 
@@ -167,7 +164,7 @@ fn summary_to_json(summary: WasmRunSummary, exits: Vec<Value>) -> Value {
 }
 
 fn json_to_js(value: &Value) -> Result<JsValue, JsValue> {
-    JsValue::from_str(&value.to_string()).into()
+    Ok(JsValue::from_str(&value.to_string()))
 }
 
 fn registration_error_to_js(error: NativeRegistrationError) -> JsValue {

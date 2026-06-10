@@ -226,7 +226,9 @@ impl WasmScheduler {
                 Ok(ExecutionResult::DirtyCall { .. }) => {
                     self.exit_errors.insert(
                         pid,
-                        ExecError::UnsupportedOpcode("dirty native call on wasm"),
+                        ExecError::UnsupportedOpcode {
+                            name: "dirty native call on wasm",
+                        },
                     );
                     summary.errored.push(pid);
                 }
