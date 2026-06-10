@@ -437,7 +437,8 @@ mod tests {
         let mut ctx = context(&mut process, Arc::clone(&atom_table));
 
         let wc_atom = atom_table.intern("wall_clock");
-        let wall_clock_term = bif_statistics_1(&[Term::atom(wc_atom)], &mut ctx).expect("wall_clock");
+        let wall_clock_term =
+            bif_statistics_1(&[Term::atom(wc_atom)], &mut ctx).expect("wall_clock");
         let wall_clock = Tuple::new(wall_clock_term).expect("wall_clock tuple");
         assert_eq!(wall_clock.arity(), 2);
         assert_eq!(wall_clock.get(0).and_then(Term::as_small_int), Some(100));
@@ -451,7 +452,8 @@ mod tests {
         assert_eq!(runtime.get(1).and_then(Term::as_small_int), Some(0));
 
         let red_atom = atom_table.intern("reductions");
-        let reductions_term = bif_statistics_1(&[Term::atom(red_atom)], &mut ctx).expect("reductions");
+        let reductions_term =
+            bif_statistics_1(&[Term::atom(red_atom)], &mut ctx).expect("reductions");
         let reductions = Tuple::new(reductions_term).expect("reductions tuple");
         assert_eq!(reductions.arity(), 2);
         assert_eq!(reductions.get(0).and_then(Term::as_small_int), Some(1_000));

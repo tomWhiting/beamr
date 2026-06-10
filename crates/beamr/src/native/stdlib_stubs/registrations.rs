@@ -5,11 +5,6 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, Capability, NativeFn, NativeRegistrationError};
 use crate::scheduler::dirty::DirtySchedulerKind;
 
-use super::misc_bifs::{
-    bif_binary_part, bif_characters_to_binary, bif_characters_to_list, bif_debug_options,
-    bif_fun_info, bif_fwrite_g, bif_identity, bif_init_stop, bif_logger_warning,
-    bif_rand_uniform,
-};
 use super::bitwise_bifs::{bif_band, bif_bnot, bif_bor, bif_bsl, bif_bsr, bif_bxor};
 use super::collection_bifs::{
     bif_lists_reverse, bif_maps_from_list, bif_maps_map, bif_maps_merge, bif_maps_remove,
@@ -18,25 +13,14 @@ use super::collection_bifs::{
 use super::encoding_bifs::{
     bif_base64_decode, bif_base64_encode, bif_binary_decode_hex, bif_binary_encode_hex,
 };
-use super::gleam_stdlib_ffi::{
-    bif_contains_string, bif_crop_string, bif_inspect, bif_iodata_append, bif_less_than, bif_slice,
-    bif_string_ends_with, bif_string_pop_grapheme, bif_string_remove_prefix,
-    bif_string_remove_suffix, bif_string_replace, bif_string_starts_with,
-    bif_utf_codepoint_list_to_string,
-};
-use super::gleam_stdlib_ffi2::{
-    bif_base16_decode as bif_gleam_base16_decode, bif_base16_encode as bif_gleam_base16_encode,
-    bif_base64_decode as bif_gleam_base64_decode, bif_base64_encode as bif_gleam_base64_encode,
-    bif_bit_array_concat as bif_gleam_bit_array_concat,
-    bif_bit_array_pad_to_bytes as bif_gleam_bit_array_pad_to_bytes,
-    bif_bit_array_slice as bif_gleam_bit_array_slice,
-    bif_bit_array_to_int_and_size as bif_gleam_bit_array_to_int_and_size, bif_float_to_string,
-    bif_int_from_base_string, bif_map_get, bif_parse_float, bif_parse_int, bif_print,
-    bif_print_error, bif_println, bif_println_error, bif_wrap_list,
-};
+use super::gleam_stdlib_ffi2::{bif_print, bif_print_error, bif_println, bif_println_error};
 use super::io_bifs::{
     bif_io_format_2, bif_io_format_3, bif_io_get_line_1, bif_io_lib_format_2, bif_io_put_chars_1,
     bif_io_put_chars_2, bif_io_setopts_2,
+};
+use super::json_bifs::{
+    bif_json_decode, bif_json_encode, bif_json_encode_binary, bif_json_encode_float,
+    bif_json_encode_integer,
 };
 use super::lists_bifs::{
     bif_lists_append_1, bif_lists_append_2, bif_lists_flatten, bif_lists_join, bif_lists_keydelete,
@@ -44,17 +28,19 @@ use super::lists_bifs::{
     bif_lists_nth, bif_lists_reverse_2, bif_lists_seq, bif_lists_sort, bif_lists_unzip,
     bif_lists_zip,
 };
-use super::lists_hof_bifs::{bif_lists_filter, bif_lists_filtermap, bif_lists_foreach, bif_lists_map};
+use super::lists_hof_bifs::{
+    bif_lists_filter, bif_lists_filtermap, bif_lists_foreach, bif_lists_map,
+};
 use super::maps_bifs::{
     bif_maps_filter, bif_maps_find, bif_maps_fold, bif_maps_keys, bif_maps_merge_with,
     bif_maps_put, bif_maps_to_list, bif_maps_update_with, bif_maps_values, bif_maps_with,
     bif_maps_without,
 };
-use super::json_bifs::{
-    bif_json_decode, bif_json_encode, bif_json_encode_binary, bif_json_encode_float,
-    bif_json_encode_integer,
-};
 use super::math_bifs::{bif_ceil, bif_exp, bif_floor, bif_log, bif_pow};
+use super::misc_bifs::{
+    bif_binary_part, bif_characters_to_binary, bif_characters_to_list, bif_debug_options,
+    bif_fun_info, bif_fwrite_g, bif_init_stop, bif_logger_warning, bif_rand_uniform,
+};
 use super::string_bifs::{
     bif_equal as bif_string_equal, bif_find as bif_string_find,
     bif_is_empty as bif_string_is_empty, bif_length as bif_string_length,
@@ -70,8 +56,7 @@ use super::type_conversion_bifs::{
     bif_list_to_bitstring, bif_list_to_tuple, bif_tuple_to_list,
 };
 use super::uri_bifs::{
-    bif_parse_query, bif_percent_decode, bif_percent_encode, bif_uri_parse,
-    bif_uri_string_dissect_query, bif_uri_string_parse,
+    bif_maps_get_2, bif_maps_get_3, bif_uri_string_dissect_query, bif_uri_string_parse,
 };
 
 /// A stub BIF entry: (module_name, function_name, arity, capability, dirty_kind, implementation).
@@ -219,54 +204,6 @@ const STDLIB_STUBS: &[StubBif] = &[
     ),
     (
         "gleam_stdlib",
-        "identity",
-        1,
-        Capability::Pure,
-        None,
-        bif_identity,
-    ),
-    (
-        "gleam_stdlib",
-        "float_to_string",
-        1,
-        Capability::Pure,
-        None,
-        bif_float_to_string,
-    ),
-    (
-        "gleam_stdlib",
-        "int_from_base_string",
-        2,
-        Capability::Pure,
-        None,
-        bif_int_from_base_string,
-    ),
-    (
-        "gleam_stdlib",
-        "parse_float",
-        1,
-        Capability::Pure,
-        None,
-        bif_parse_float,
-    ),
-    (
-        "gleam_stdlib",
-        "parse_int",
-        1,
-        Capability::Pure,
-        None,
-        bif_parse_int,
-    ),
-    (
-        "gleam_stdlib",
-        "map_get",
-        2,
-        Capability::Pure,
-        None,
-        bif_map_get,
-    ),
-    (
-        "gleam_stdlib",
         "print",
         1,
         Capability::ExternalIo,
@@ -296,214 +233,6 @@ const STDLIB_STUBS: &[StubBif] = &[
         Capability::ExternalIo,
         None,
         bif_println_error,
-    ),
-    (
-        "gleam_stdlib",
-        "wrap_list",
-        1,
-        Capability::Pure,
-        None,
-        bif_wrap_list,
-    ),
-    (
-        "gleam_stdlib",
-        "parse_query",
-        1,
-        Capability::Pure,
-        None,
-        bif_parse_query,
-    ),
-    (
-        "gleam_stdlib",
-        "percent_decode",
-        1,
-        Capability::Pure,
-        None,
-        bif_percent_decode,
-    ),
-    (
-        "gleam_stdlib",
-        "percent_encode",
-        1,
-        Capability::Pure,
-        None,
-        bif_percent_encode,
-    ),
-    (
-        "gleam_stdlib",
-        "uri_parse",
-        1,
-        Capability::Pure,
-        None,
-        bif_uri_parse,
-    ),
-    (
-        "gleam_stdlib",
-        "base16_decode",
-        1,
-        Capability::Pure,
-        None,
-        bif_gleam_base16_decode,
-    ),
-    (
-        "gleam_stdlib",
-        "base16_encode",
-        1,
-        Capability::Pure,
-        None,
-        bif_gleam_base16_encode,
-    ),
-    (
-        "gleam_stdlib",
-        "base64_decode",
-        1,
-        Capability::Pure,
-        None,
-        bif_gleam_base64_decode,
-    ),
-    (
-        "gleam_stdlib",
-        "base64_encode",
-        2,
-        Capability::Pure,
-        None,
-        bif_gleam_base64_encode,
-    ),
-    (
-        "gleam_stdlib",
-        "bit_array_concat",
-        1,
-        Capability::Pure,
-        None,
-        bif_gleam_bit_array_concat,
-    ),
-    (
-        "gleam_stdlib",
-        "bit_array_pad_to_bytes",
-        1,
-        Capability::Pure,
-        None,
-        bif_gleam_bit_array_pad_to_bytes,
-    ),
-    (
-        "gleam_stdlib",
-        "bit_array_slice",
-        3,
-        Capability::Pure,
-        None,
-        bif_gleam_bit_array_slice,
-    ),
-    (
-        "gleam_stdlib",
-        "bit_array_to_int_and_size",
-        1,
-        Capability::Pure,
-        None,
-        bif_gleam_bit_array_to_int_and_size,
-    ),
-    (
-        "gleam_stdlib",
-        "string_replace",
-        3,
-        Capability::Pure,
-        None,
-        bif_string_replace,
-    ),
-    (
-        "gleam_stdlib",
-        "less_than",
-        2,
-        Capability::Pure,
-        None,
-        bif_less_than,
-    ),
-    (
-        "gleam_stdlib",
-        "slice",
-        3,
-        Capability::Pure,
-        None,
-        bif_slice,
-    ),
-    (
-        "gleam_stdlib",
-        "crop_string",
-        2,
-        Capability::Pure,
-        None,
-        bif_crop_string,
-    ),
-    (
-        "gleam_stdlib",
-        "contains_string",
-        2,
-        Capability::Pure,
-        None,
-        bif_contains_string,
-    ),
-    (
-        "gleam_stdlib",
-        "string_starts_with",
-        2,
-        Capability::Pure,
-        None,
-        bif_string_starts_with,
-    ),
-    (
-        "gleam_stdlib",
-        "string_ends_with",
-        2,
-        Capability::Pure,
-        None,
-        bif_string_ends_with,
-    ),
-    (
-        "gleam_stdlib",
-        "string_pop_grapheme",
-        1,
-        Capability::Pure,
-        None,
-        bif_string_pop_grapheme,
-    ),
-    (
-        "gleam_stdlib",
-        "utf_codepoint_list_to_string",
-        1,
-        Capability::Pure,
-        None,
-        bif_utf_codepoint_list_to_string,
-    ),
-    (
-        "gleam_stdlib",
-        "inspect",
-        1,
-        Capability::Pure,
-        None,
-        bif_inspect,
-    ),
-    (
-        "gleam_stdlib",
-        "string_remove_prefix",
-        2,
-        Capability::Pure,
-        None,
-        bif_string_remove_prefix,
-    ),
-    (
-        "gleam_stdlib",
-        "string_remove_suffix",
-        2,
-        Capability::Pure,
-        None,
-        bif_string_remove_suffix,
-    ),
-    (
-        "gleam_stdlib",
-        "iodata_append",
-        2,
-        Capability::Pure,
-        None,
-        bif_iodata_append,
     ),
     (
         "uri_string",
@@ -716,6 +445,8 @@ const STDLIB_STUBS: &[StubBif] = &[
     ("maps", "map", 2, Capability::Pure, None, bif_maps_map),
     ("maps", "put", 3, Capability::Pure, None, bif_maps_put),
     ("maps", "find", 2, Capability::Pure, None, bif_maps_find),
+    ("maps", "get", 2, Capability::Pure, None, bif_maps_get_2),
+    ("maps", "get", 3, Capability::Pure, None, bif_maps_get_3),
     ("maps", "keys", 1, Capability::Pure, None, bif_maps_keys),
     ("maps", "values", 1, Capability::Pure, None, bif_maps_values),
     (

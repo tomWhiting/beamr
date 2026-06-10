@@ -1,6 +1,6 @@
 use super::{
-    CodePosition, DEFAULT_REDUCTION_BUDGET, Exception, ExitReason, Priority, Process,
-    ProcessError, ProcessStatus,
+    CodePosition, DEFAULT_REDUCTION_BUDGET, Exception, ExitReason, Priority, Process, ProcessError,
+    ProcessStatus,
 };
 use crate::atom::{Atom, AtomTable};
 use crate::gc::tests::{alloc_proc_bin, module_pin};

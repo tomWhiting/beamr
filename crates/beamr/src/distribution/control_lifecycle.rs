@@ -92,13 +92,21 @@ impl DistributedPid {
     /// Construct a local PID identity.
     #[must_use]
     pub const fn local(pid_number: u64) -> Self {
-        Self { node: None, pid_number, serial: 0 }
+        Self {
+            node: None,
+            pid_number,
+            serial: 0,
+        }
     }
 
     /// Construct a remote PID identity.
     #[must_use]
     pub const fn remote(node: Atom, pid_number: u64, serial: u64) -> Self {
-        Self { node: Some(node), pid_number, serial }
+        Self {
+            node: Some(node),
+            pid_number,
+            serial,
+        }
     }
 }
 
@@ -119,25 +127,45 @@ impl OutboundControlMessage {
     /// Build a LINK control.
     #[must_use]
     pub const fn link(from: Term, to: Term) -> Self {
-        Self { op: ControlOp::Link, from, to, reason: None }
+        Self {
+            op: ControlOp::Link,
+            from,
+            to,
+            reason: None,
+        }
     }
 
     /// Build an UNLINK control.
     #[must_use]
     pub const fn unlink(from: Term, to: Term) -> Self {
-        Self { op: ControlOp::Unlink, from, to, reason: None }
+        Self {
+            op: ControlOp::Unlink,
+            from,
+            to,
+            reason: None,
+        }
     }
 
     /// Build an EXIT control propagated through a link.
     #[must_use]
     pub const fn exit(from: Term, to: Term, reason: ExitReason) -> Self {
-        Self { op: ControlOp::Exit, from, to, reason: Some(reason) }
+        Self {
+            op: ControlOp::Exit,
+            from,
+            to,
+            reason: Some(reason),
+        }
     }
 
     /// Build an EXIT2 control for explicit `exit/2` delivery.
     #[must_use]
     pub const fn exit2(from: Term, to: Term, reason: ExitReason) -> Self {
-        Self { op: ControlOp::Exit2, from, to, reason: Some(reason) }
+        Self {
+            op: ControlOp::Exit2,
+            from,
+            to,
+            reason: Some(reason),
+        }
     }
 }
 
@@ -188,9 +216,13 @@ pub trait ControlMessageHandler {
     fn handle_reg_send(&mut self, _tuple: Tuple) {}
     /// LINK establishes a cross-node link on the local side.
     fn handle_link(
-        &mut self, _from: DistributedPid, _from_term: Term,
-        _to: DistributedPid, _to_term: Term,
-    ) {}
+        &mut self,
+        _from: DistributedPid,
+        _from_term: Term,
+        _to: DistributedPid,
+        _to_term: Term,
+    ) {
+    }
     /// UNLINK removes a cross-node link on the local side.
     fn handle_unlink(&mut self, _from: DistributedPid, _to: DistributedPid) {}
     /// EXIT propagates a linked-process exit.
@@ -235,45 +267,71 @@ where
     }
 }
 
-fn dispatch_known<H: ControlMessageHandler>(
-    tuple: Tuple, op: ControlOp, h: &mut H,
-) -> bool {
+fn dispatch_known<H: ControlMessageHandler>(tuple: Tuple, op: ControlOp, h: &mut H) -> bool {
     match op {
-        ControlOp::Send => { h.handle_send(tuple); true }
-        ControlOp::RegSend => { h.handle_reg_send(tuple); true }
+        ControlOp::Send => {
+            h.handle_send(tuple);
+            true
+        }
+        ControlOp::RegSend => {
+            h.handle_reg_send(tuple);
+            true
+        }
         ControlOp::Link => dispatch_link(tuple, h),
         ControlOp::Exit => dispatch_exit(tuple, h, false),
         ControlOp::Unlink => dispatch_unlink(tuple, h),
-        ControlOp::MonitorP => { h.handle_monitor_p(tuple); true }
-        ControlOp::DemonitorP => { h.handle_demonitor_p(tuple); true }
-        ControlOp::MonitorPExit => { h.handle_monitor_p_exit(tuple); true }
+        ControlOp::MonitorP => {
+            h.handle_monitor_p(tuple);
+            true
+        }
+        ControlOp::DemonitorP => {
+            h.handle_demonitor_p(tuple);
+            true
+        }
+        ControlOp::MonitorPExit => {
+            h.handle_monitor_p_exit(tuple);
+            true
+        }
         ControlOp::Exit2 => dispatch_exit(tuple, h, true),
-        ControlOp::SpawnRequest => { h.handle_spawn_request(tuple); true }
-        ControlOp::SpawnReply => { h.handle_spawn_reply(tuple); true }
+        ControlOp::SpawnRequest => {
+            h.handle_spawn_request(tuple);
+            true
+        }
+        ControlOp::SpawnReply => {
+            h.handle_spawn_reply(tuple);
+            true
+        }
     }
 }
 
 fn dispatch_link<H: ControlMessageHandler>(tuple: Tuple, h: &mut H) -> bool {
-    let Some((from, ft, to, tt)) = pid_pair_terms(tuple) else { return false };
+    let Some((from, ft, to, tt)) = pid_pair_terms(tuple) else {
+        return false;
+    };
     h.handle_link(from, ft, to, tt);
     true
 }
 
 fn dispatch_unlink<H: ControlMessageHandler>(tuple: Tuple, h: &mut H) -> bool {
-    let Some((from, to)) = pid_pair(tuple) else { return false };
+    let Some((from, to)) = pid_pair(tuple) else {
+        return false;
+    };
     h.handle_unlink(from, to);
     true
 }
 
-fn dispatch_exit<H: ControlMessageHandler>(
-    tuple: Tuple, h: &mut H, explicit: bool,
-) -> bool {
-    let Some((from, to)) = pid_pair(tuple) else { return false };
+fn dispatch_exit<H: ControlMessageHandler>(tuple: Tuple, h: &mut H, explicit: bool) -> bool {
+    let Some((from, to)) = pid_pair(tuple) else {
+        return false;
+    };
     let Some(reason) = tuple.get(3).and_then(exit_reason_from_term) else {
         return false;
     };
-    if explicit { h.handle_exit2(from, to, reason); }
-    else { h.handle_exit(from, to, reason); }
+    if explicit {
+        h.handle_exit2(from, to, reason);
+    } else {
+        h.handle_exit(from, to, reason);
+    }
     true
 }
 
@@ -282,13 +340,18 @@ fn pid_pair(tuple: Tuple) -> Option<(DistributedPid, DistributedPid)> {
     Some((from, to))
 }
 
-fn pid_pair_terms(
-    tuple: Tuple,
-) -> Option<(DistributedPid, Term, DistributedPid, Term)> {
-    if tuple.arity() < 3 { return None; }
+fn pid_pair_terms(tuple: Tuple) -> Option<(DistributedPid, Term, DistributedPid, Term)> {
+    if tuple.arity() < 3 {
+        return None;
+    }
     let ft = tuple.get(1)?;
     let tt = tuple.get(2)?;
-    Some((DistributedPid::from_term(ft)?, ft, DistributedPid::from_term(tt)?, tt))
+    Some((
+        DistributedPid::from_term(ft)?,
+        ft,
+        DistributedPid::from_term(tt)?,
+        tt,
+    ))
 }
 
 /// Convert currently-supported exit reason atoms into runtime exit reasons.
@@ -326,9 +389,7 @@ pub struct RemoteLink {
 
 impl ControlLifecycleState {
     /// Establish a link while preserving insertion order and suppressing duplicates.
-    pub fn establish_link(
-        &mut self, left: DistributedPid, right: DistributedPid,
-    ) -> bool {
+    pub fn establish_link(&mut self, left: DistributedPid, right: DistributedPid) -> bool {
         let lt = pid_term(left).unwrap_or(Term::NIL);
         let rt = pid_term(right).unwrap_or(Term::NIL);
         self.establish_link_terms(left, lt, right, rt)
@@ -336,90 +397,95 @@ impl ControlLifecycleState {
 
     /// Establish a link retaining the original PID terms for outbound controls.
     pub fn establish_link_terms(
-        &mut self, left: DistributedPid, left_term: Term,
-        right: DistributedPid, right_term: Term,
+        &mut self,
+        left: DistributedPid,
+        left_term: Term,
+        right: DistributedPid,
+        right_term: Term,
     ) -> bool {
-        if left == right || self.has_link(left, right) { return false; }
-        self.links.push(RemoteLink { left, left_term, right, right_term });
+        if left == right || self.has_link(left, right) {
+            return false;
+        }
+        self.links.push(RemoteLink {
+            left,
+            left_term,
+            right,
+            right_term,
+        });
         true
     }
 
     /// Remove a link in either direction.
-    pub fn remove_link(
-        &mut self, left: DistributedPid, right: DistributedPid,
-    ) -> bool {
+    pub fn remove_link(&mut self, left: DistributedPid, right: DistributedPid) -> bool {
         let before = self.links.len();
-        self.links.retain(|lk| !same_link(lk.left, lk.right, left, right));
+        self.links
+            .retain(|lk| !same_link(lk.left, lk.right, left, right));
         before != self.links.len()
     }
 
     /// Return true when a link exists in either direction.
     #[must_use]
     pub fn has_link(&self, left: DistributedPid, right: DistributedPid) -> bool {
-        self.links.iter().any(|lk| same_link(lk.left, lk.right, left, right))
+        self.links
+            .iter()
+            .any(|lk| same_link(lk.left, lk.right, left, right))
     }
 
     /// Linked pairs in insertion order.
     #[must_use]
-    pub fn links(&self) -> &[RemoteLink] { &self.links }
+    pub fn links(&self) -> &[RemoteLink] {
+        &self.links
+    }
 
     /// Record delivery of an inbound EXIT/EXIT2 signal.
-    pub fn deliver_exit(
-        &mut self, from: DistributedPid, to: DistributedPid, reason: ExitReason,
-    ) {
+    pub fn deliver_exit(&mut self, from: DistributedPid, to: DistributedPid, reason: ExitReason) {
         self.delivered_exits.push((from, to, reason));
         self.remove_link(from, to);
     }
 
     /// Delivered exit signals in arrival order.
     #[must_use]
-    pub fn delivered_exits(
-        &self,
-    ) -> &[(DistributedPid, DistributedPid, ExitReason)] {
+    pub fn delivered_exits(&self) -> &[(DistributedPid, DistributedPid, ExitReason)] {
         &self.delivered_exits
     }
 }
 
 impl ControlMessageHandler for ControlLifecycleState {
-    fn handle_link(
-        &mut self, from: DistributedPid, ft: Term, to: DistributedPid, tt: Term,
-    ) {
+    fn handle_link(&mut self, from: DistributedPid, ft: Term, to: DistributedPid, tt: Term) {
         self.establish_link_terms(from, ft, to, tt);
     }
     fn handle_unlink(&mut self, from: DistributedPid, to: DistributedPid) {
         self.remove_link(from, to);
     }
-    fn handle_exit(
-        &mut self, from: DistributedPid, to: DistributedPid, reason: ExitReason,
-    ) {
+    fn handle_exit(&mut self, from: DistributedPid, to: DistributedPid, reason: ExitReason) {
         self.deliver_exit(from, to, reason);
     }
-    fn handle_exit2(
-        &mut self, from: DistributedPid, to: DistributedPid, reason: ExitReason,
-    ) {
+    fn handle_exit2(&mut self, from: DistributedPid, to: DistributedPid, reason: ExitReason) {
         self.deliver_exit(from, to, reason);
     }
 }
 
-fn same_link(
-    sl: DistributedPid, sr: DistributedPid, l: DistributedPid, r: DistributedPid,
-) -> bool {
+fn same_link(sl: DistributedPid, sr: DistributedPid, l: DistributedPid, r: DistributedPid) -> bool {
     (sl == l && sr == r) || (sl == r && sr == l)
 }
 
 fn pid_term(pid: DistributedPid) -> Option<Term> {
-    if pid.node.is_none() { Term::try_pid(pid.pid_number) } else { None }
+    if pid.node.is_none() {
+        Term::try_pid(pid.pid_number)
+    } else {
+        None
+    }
 }
 
 /// Send a LINK control to a remote PID and record the local half of the link.
 pub fn link_remote<S: ControlMessageSink>(
-    sink: &mut S, state: &mut ControlLifecycleState,
-    local_pid: Term, remote_pid: Term,
+    sink: &mut S,
+    state: &mut ControlLifecycleState,
+    local_pid: Term,
+    remote_pid: Term,
 ) -> Result<(), LifecycleError> {
-    let local = DistributedPid::from_term(local_pid)
-        .ok_or(LifecycleError::MalformedControl)?;
-    let remote = DistributedPid::from_term(remote_pid)
-        .ok_or(LifecycleError::MalformedControl)?;
+    let local = DistributedPid::from_term(local_pid).ok_or(LifecycleError::MalformedControl)?;
+    let remote = DistributedPid::from_term(remote_pid).ok_or(LifecycleError::MalformedControl)?;
     let node = remote.node.ok_or(LifecycleError::NotRemotePid)?;
     sink.send_control(node, OutboundControlMessage::link(local_pid, remote_pid))?;
     state.establish_link_terms(local, local_pid, remote, remote_pid);
@@ -428,17 +494,15 @@ pub fn link_remote<S: ControlMessageSink>(
 
 /// Send an UNLINK control to a remote PID and remove local lifecycle state.
 pub fn unlink_remote<S: ControlMessageSink>(
-    sink: &mut S, state: &mut ControlLifecycleState,
-    local_pid: Term, remote_pid: Term,
+    sink: &mut S,
+    state: &mut ControlLifecycleState,
+    local_pid: Term,
+    remote_pid: Term,
 ) -> Result<(), LifecycleError> {
-    let local = DistributedPid::from_term(local_pid)
-        .ok_or(LifecycleError::MalformedControl)?;
-    let remote = DistributedPid::from_term(remote_pid)
-        .ok_or(LifecycleError::MalformedControl)?;
+    let local = DistributedPid::from_term(local_pid).ok_or(LifecycleError::MalformedControl)?;
+    let remote = DistributedPid::from_term(remote_pid).ok_or(LifecycleError::MalformedControl)?;
     let node = remote.node.ok_or(LifecycleError::NotRemotePid)?;
-    sink.send_control(
-        node, OutboundControlMessage::unlink(local_pid, remote_pid),
-    )?;
+    sink.send_control(node, OutboundControlMessage::unlink(local_pid, remote_pid))?;
     state.remove_link(local, remote);
     Ok(())
 }
@@ -446,13 +510,15 @@ pub fn unlink_remote<S: ControlMessageSink>(
 /// Send linked-process EXIT controls for every remote peer linked to
 /// `exiting_pid`.
 pub fn propagate_remote_exit<S: ControlMessageSink>(
-    sink: &mut S, state: &mut ControlLifecycleState,
-    exiting_pid: Term, reason: ExitReason,
+    sink: &mut S,
+    state: &mut ControlLifecycleState,
+    exiting_pid: Term,
+    reason: ExitReason,
 ) -> Result<(), LifecycleError> {
-    let source = DistributedPid::from_term(exiting_pid)
-        .ok_or(LifecycleError::MalformedControl)?;
+    let source = DistributedPid::from_term(exiting_pid).ok_or(LifecycleError::MalformedControl)?;
     let peers: Vec<(DistributedPid, Term)> = state
-        .links().iter()
+        .links()
+        .iter()
         .filter_map(|link| {
             if link.left == source {
                 Some((link.right, link.right_term))
@@ -479,10 +545,12 @@ pub fn propagate_remote_exit<S: ControlMessageSink>(
 
 /// Send an explicit EXIT2 control to a remote PID.
 pub fn exit2_remote<S: ControlMessageSink>(
-    sink: &mut S, from_pid: Term, remote_pid: Term, reason: ExitReason,
+    sink: &mut S,
+    from_pid: Term,
+    remote_pid: Term,
+    reason: ExitReason,
 ) -> Result<(), LifecycleError> {
-    let remote = DistributedPid::from_term(remote_pid)
-        .ok_or(LifecycleError::MalformedControl)?;
+    let remote = DistributedPid::from_term(remote_pid).ok_or(LifecycleError::MalformedControl)?;
     let node = remote.node.ok_or(LifecycleError::NotRemotePid)?;
     sink.send_control(
         node,
@@ -491,4 +559,5 @@ pub fn exit2_remote<S: ControlMessageSink>(
 }
 
 #[cfg(test)]
-#[path = "control_lifecycle_tests.rs"] mod tests;
+#[path = "control_lifecycle_tests.rs"]
+mod tests;

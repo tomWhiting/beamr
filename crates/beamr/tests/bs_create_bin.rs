@@ -26,10 +26,7 @@ fn load_fixture(atoms: &AtomTable) -> Module {
 
 fn call(module: &Module, atoms: &AtomTable, function: &str) -> Vec<u8> {
     let function = atoms.intern(function);
-    let label = *module
-        .exports
-        .get(&(function, 0))
-        .expect("export exists");
+    let label = *module.exports.get(&(function, 0)).expect("export exists");
     let entry_ip = module
         .code
         .iter()

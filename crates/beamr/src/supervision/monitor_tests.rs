@@ -170,8 +170,7 @@ fn down_on_near_full_heap_preserves_live_young_terms() {
 
     let reference = monitors.monitor_pid(&mut watcher, 2);
 
-    let recovered =
-        Tuple::new(watcher.x_reg(0)).unwrap_or_else(|| panic!("X0 is still a tuple"));
+    let recovered = Tuple::new(watcher.x_reg(0)).unwrap_or_else(|| panic!("X0 is still a tuple"));
     assert_eq!(recovered.arity(), 2);
     assert_eq!(recovered.get(0), Some(Term::small_int(7)));
     assert_eq!(recovered.get(1), Some(Term::small_int(8)));

@@ -21,7 +21,6 @@ use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
 use crate::timer::TimerWheel;
 
-
 /// JIT dispatch services shared by local and external call handlers.
 #[derive(Copy, Clone)]
 pub struct JitDispatchContext<'a> {

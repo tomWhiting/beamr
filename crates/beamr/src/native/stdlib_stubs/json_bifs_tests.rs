@@ -136,19 +136,16 @@ fn decode_reports_otp_error_reasons() {
     let invalid = ctx.alloc_binary(b"{\"a\" 1}").expect("binary");
     let error = bif_json_decode(&[invalid], &mut ctx).expect_err("invalid byte");
     let tuple = Tuple::new(error).expect("invalid_byte tuple");
+    assert_eq!(tuple.get(0), Some(Term::atom(table.intern("invalid_byte"))));
     assert_eq!(
-        tuple.get(0),
-        Some(Term::atom(table.intern("invalid_byte")))
+        tuple.get(1).and_then(Term::as_small_int),
+        Some(i64::from(b'1'))
     );
-    assert_eq!(tuple.get(1).and_then(Term::as_small_int), Some(i64::from(b'1')));
 
     let trailing = ctx.alloc_binary(b"1 x").expect("binary");
     let error = bif_json_decode(&[trailing], &mut ctx).expect_err("trailing garbage");
     let tuple = Tuple::new(error).expect("invalid_byte tuple");
-    assert_eq!(
-        tuple.get(0),
-        Some(Term::atom(table.intern("invalid_byte")))
-    );
+    assert_eq!(tuple.get(0), Some(Term::atom(table.intern("invalid_byte"))));
 }
 
 #[test]
@@ -163,9 +160,7 @@ fn decode_handles_bignums_and_surrogate_pairs() {
     let encoded = bif_json_encode_integer(&[decoded], &mut ctx).expect("round trip");
     assert_eq!(binary_string(encoded), "123456789012345678901234567890");
 
-    let emoji = ctx
-        .alloc_binary(b"\"\\uD83D\\uDE00\"")
-        .expect("binary");
+    let emoji = ctx.alloc_binary(b"\"\\uD83D\\uDE00\"").expect("binary");
     let decoded = bif_json_decode(&[emoji], &mut ctx).expect("surrogate pair decodes");
     let text = BinaryRef::new(decoded).expect("string");
     assert_eq!(text.as_bytes(), "😀".as_bytes());

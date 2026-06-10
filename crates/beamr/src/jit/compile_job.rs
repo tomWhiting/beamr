@@ -59,12 +59,10 @@ impl CompilationJob {
     fn run(self) {
         let request = self.request;
         let key = request.key;
-        match self.compiler.compile(
-            &request.instructions,
-            key.module,
-            key.function,
-            key.arity,
-        ) {
+        match self
+            .compiler
+            .compile(&request.instructions, key.module, key.function, key.arity)
+        {
             Ok(native_code) => {
                 self.cache.insert(key, native_code);
                 self.profiler

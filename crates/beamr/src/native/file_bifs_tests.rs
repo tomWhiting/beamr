@@ -462,11 +462,7 @@ fn file_seek_rejects_unrepresentable_position_without_mutating_offset() {
         .expect("fd resource allocation");
 
     let result = file_seek(
-        &[
-            resource,
-            Term::small_int(1),
-            Term::atom(Atom::CUR),
-        ],
+        &[resource, Term::small_int(1), Term::atom(Atom::CUR)],
         &mut context,
     )
     .expect("unrepresentable seek result");

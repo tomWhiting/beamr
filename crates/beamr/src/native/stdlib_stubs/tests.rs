@@ -4,14 +4,14 @@ use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary::{self, Binary};
 use crate::term::binary_ref::BinaryRef;
-use crate::term::boxed::{Cons, ProcBin, Tuple, write_cons};
+use crate::term::boxed::{Cons, write_cons};
 use std::sync::Arc;
 
+use super::string_bifs;
 use super::{
     bif_binary_part, bif_characters_to_binary, bif_characters_to_list, bif_debug_options,
-    bif_identity, bif_logger_warning, register_stdlib_stubs,
+    bif_logger_warning, register_stdlib_stubs,
 };
-use super::{gleam_stdlib_ffi, string_bifs};
 
 fn context(process: &mut Process) -> ProcessContext<'_> {
     let mut context = ProcessContext::new();
@@ -45,52 +45,6 @@ fn atom_context(process: &mut Process) -> ProcessContext<'_> {
     ctx.attach_process(process, 0);
     ctx
 }
-
-// ---- gleam_stdlib:identity/1 ----
-
-#[test]
-fn identity_returns_atom_unchanged() {
-    let mut process = Process::new(1, 64);
-    let mut ctx = context(&mut process);
-    let term = Term::atom(Atom::OK);
-    assert_eq!(bif_identity(&[term], &mut ctx), Ok(term));
-}
-
-#[test]
-fn identity_returns_integer_unchanged() {
-    let mut process = Process::new(1, 64);
-    let mut ctx = context(&mut process);
-    let term = Term::small_int(42);
-    assert_eq!(bif_identity(&[term], &mut ctx), Ok(term));
-}
-
-#[test]
-fn identity_returns_nil_unchanged() {
-    let mut process = Process::new(1, 64);
-    let mut ctx = context(&mut process);
-    assert_eq!(bif_identity(&[Term::NIL], &mut ctx), Ok(Term::NIL));
-}
-
-#[test]
-fn identity_returns_pid_unchanged() {
-    let mut process = Process::new(1, 64);
-    let mut ctx = context(&mut process);
-    let term = Term::pid(7);
-    assert_eq!(bif_identity(&[term], &mut ctx), Ok(term));
-}
-
-#[test]
-fn identity_rejects_wrong_arity() {
-    let mut process = Process::new(1, 64);
-    let mut ctx = context(&mut process);
-    assert_eq!(bif_identity(&[], &mut ctx), Err(badarg()));
-    assert_eq!(
-        bif_identity(&[Term::NIL, Term::NIL], &mut ctx),
-        Err(badarg())
-    );
-}
-
-// ---- sys:debug_options/1 ----
 
 #[test]
 fn debug_options_returns_empty_list() {
@@ -272,17 +226,50 @@ fn characters_to_list_handles_multibyte_utf8() {
 }
 
 #[test]
-fn characters_to_list_rejects_non_binary() {
+fn characters_to_list_rejects_non_chardata() {
     let mut process = Process::new(1, 64);
     let mut ctx = context(&mut process);
     assert_eq!(
         bif_characters_to_list(&[Term::small_int(42)], &mut ctx),
         Err(badarg())
     );
-    assert_eq!(
-        bif_characters_to_list(&[Term::NIL], &mut ctx),
-        Err(badarg())
-    );
+}
+
+#[test]
+fn characters_to_list_accepts_chardata_list() {
+    let mut process = Process::new(1, 256);
+    let mut ctx = context(&mut process);
+    // ["A", 66 | <<"C">>] mixes binaries, codepoints, and an improper tail.
+    let chunk = binary(b"A");
+    let tail = binary(b"C");
+    let heap = Box::leak(Box::new([0u64; 2]));
+    let inner = write_cons(heap, Term::small_int(66), tail).expect("cons");
+    let heap = Box::leak(Box::new([0u64; 2]));
+    let chardata = write_cons(heap, chunk, inner).expect("cons");
+    let result = bif_characters_to_list(&[chardata], &mut ctx).expect("list");
+    let first = Cons::new(result).expect("first");
+    assert_eq!(first.head(), Term::small_int(65));
+    let second = Cons::new(first.tail()).expect("second");
+    assert_eq!(second.head(), Term::small_int(66));
+    let third = Cons::new(second.tail()).expect("third");
+    assert_eq!(third.head(), Term::small_int(67));
+    assert_eq!(third.tail(), Term::NIL);
+}
+
+#[test]
+fn characters_to_binary_handles_nested_and_improper_chardata() {
+    let mut process = Process::new(1, 256);
+    let mut ctx = context(&mut process);
+    // [[101, 769] | <<"xy">>] — string:next_grapheme cluster head shape.
+    let tail = binary(b"xy");
+    let heap = Box::leak(Box::new([0u64; 2]));
+    let cluster_tail = write_cons(heap, Term::small_int(769), Term::NIL).expect("cons");
+    let heap = Box::leak(Box::new([0u64; 2]));
+    let cluster = write_cons(heap, Term::small_int(101), cluster_tail).expect("cons");
+    let heap = Box::leak(Box::new([0u64; 2]));
+    let chardata = write_cons(heap, cluster, tail).expect("cons");
+    let result = bif_characters_to_binary(&[chardata], &mut ctx).expect("binary");
+    assert_binary(result, "e\u{0301}xy".as_bytes());
 }
 
 #[test]
@@ -290,116 +277,6 @@ fn characters_to_list_rejects_wrong_arity() {
     let mut process = Process::new(1, 64);
     let mut ctx = context(&mut process);
     assert_eq!(bif_characters_to_list(&[], &mut ctx), Err(badarg()));
-}
-
-// ---- B-033 Gleam stdlib stubs ----
-
-#[test]
-fn gleam_stdlib_string_functions_handle_binary_cases() {
-    let mut process = Process::new(1, 256);
-    let mut ctx = context(&mut process);
-    assert_binary(
-        gleam_stdlib_ffi::bif_string_replace(
-            &[binary(b"hello"), binary(b"l"), binary(b"L")],
-            &mut ctx,
-        )
-        .expect("replace"),
-        b"heLLo",
-    );
-    assert_eq!(
-        gleam_stdlib_ffi::bif_contains_string(&[binary(b"hello"), binary(b"ell")], &mut ctx),
-        Ok(Term::atom(Atom::TRUE))
-    );
-    assert_eq!(
-        gleam_stdlib_ffi::bif_string_starts_with(&[binary(b"hello"), binary(b"he")], &mut ctx),
-        Ok(Term::atom(Atom::TRUE))
-    );
-    assert_eq!(
-        gleam_stdlib_ffi::bif_string_ends_with(&[binary(b"hello"), binary(b"lo")], &mut ctx),
-        Ok(Term::atom(Atom::TRUE))
-    );
-    assert_binary(
-        gleam_stdlib_ffi::bif_slice(
-            &[binary(b"hello"), Term::small_int(1), Term::small_int(3)],
-            &mut ctx,
-        )
-        .expect("slice"),
-        b"ell",
-    );
-    assert_binary(
-        gleam_stdlib_ffi::bif_crop_string(&[binary(b"hello"), Term::small_int(2)], &mut ctx)
-            .expect("crop"),
-        b"he",
-    );
-}
-
-#[test]
-fn gleam_stdlib_other_functions_handle_binary_cases() {
-    let mut process = Process::new(1, 256);
-    let mut ctx = atom_context(&mut process);
-    assert_eq!(
-        gleam_stdlib_ffi::bif_less_than(&[Term::small_int(1), Term::small_int(2)], &mut ctx),
-        Ok(Term::atom(Atom::TRUE))
-    );
-    assert_binary(
-        gleam_stdlib_ffi::bif_iodata_append(&[binary(b"hello "), binary(b"world")], &mut ctx)
-            .expect("append"),
-        b"hello world",
-    );
-
-    let large_left = vec![b'a'; 40];
-    let large_right = vec![b'b'; 25];
-    let large_result =
-        gleam_stdlib_ffi::bif_iodata_append(&[binary(&large_left), binary(&large_right)], &mut ctx)
-            .expect("large append");
-    let mut expected_large = large_left;
-    expected_large.extend_from_slice(&large_right);
-    assert_eq!(
-        BinaryRef::new(large_result)
-            .expect("large binary")
-            .as_bytes(),
-        expected_large.as_slice()
-    );
-    assert!(ProcBin::new(large_result).is_some());
-    assert_binary(
-        gleam_stdlib_ffi::bif_utf_codepoint_list_to_string(
-            &[write_cons(
-                Box::leak(Box::new([0u64; 2])),
-                Term::small_int(65),
-                Term::NIL,
-            )
-            .expect("list")],
-            &mut ctx,
-        )
-        .expect("codepoints"),
-        b"A",
-    );
-    assert_binary(
-        gleam_stdlib_ffi::bif_inspect(&[binary(b"hello")], &mut ctx).expect("inspect"),
-        b"hello",
-    );
-
-    let prefix =
-        gleam_stdlib_ffi::bif_string_remove_prefix(&[binary(b"foobar"), binary(b"foo")], &mut ctx)
-            .expect("prefix");
-    let tuple = Tuple::new(prefix).expect("ok tuple");
-    assert_eq!(tuple.get(0), Some(Term::atom(Atom::OK)));
-    assert_binary(tuple.get(1).expect("rest"), b"bar");
-
-    let pop = gleam_stdlib_ffi::bif_string_pop_grapheme(&[binary(b"hi")], &mut ctx).expect("pop");
-    let tuple = Tuple::new(pop).expect("pop tuple");
-    assert_eq!(tuple.get(0), Some(Term::atom(Atom::OK)));
-    assert_binary(tuple.get(1).expect("head"), b"h");
-    assert_binary(tuple.get(2).expect("rest"), b"i");
-
-    assert_eq!(
-        gleam_stdlib_ffi::bif_string_remove_suffix(&[binary(b"foobar"), binary(b"baz")], &mut ctx),
-        Ok(Term::atom(Atom::ERROR))
-    );
-    assert_eq!(
-        gleam_stdlib_ffi::bif_contains_string(&[Term::small_int(1), binary(b"x")], &mut ctx),
-        Err(badarg())
-    );
 }
 
 // ---- B-033 string module stubs ----
@@ -534,13 +411,14 @@ fn register_stdlib_stubs_registers_all_expected_mfas() {
         ("unicode", "characters_to_list", 1),
         ("unicode", "characters_to_binary", 1),
         ("sys", "debug_options", 1),
-        ("gleam_stdlib", "identity", 1),
         ("maps", "from_list", 1),
         ("maps", "merge", 2),
         ("maps", "remove", 2),
         ("maps", "map", 2),
         ("maps", "put", 3),
         ("maps", "find", 2),
+        ("maps", "get", 2),
+        ("maps", "get", 3),
         ("maps", "keys", 1),
         ("maps", "values", 1),
         ("maps", "to_list", 1),

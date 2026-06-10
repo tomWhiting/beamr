@@ -1,16 +1,23 @@
 //! Erlang `string` module native stubs for binary string inputs.
+//!
+//! These natives serve the real `gleam_stdlib.erl` bytecode (the gleam-level
+//! FFI shadows were removed), so their contracts must match Erlang/OTP's
+//! `string` module exactly: lengths, slices, reversal, and padding operate on
+//! extended grapheme clusters, and case/trim operations use full Unicode
+//! mappings rather than ASCII approximations.
 
 use crate::atom::Atom;
 use crate::native::ProcessContext;
 use crate::term::Term;
 use crate::term::binary_ref::BinaryRef;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub fn bif_length(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let _ = context;
     let [input] = args else {
         return Err(badarg());
     };
-    let len = binary_bytes(*input)?.len();
+    let len = utf8_str(*input)?.graphemes(true).count();
     i64::try_from(len)
         .ok()
         .and_then(Term::try_small_int)
@@ -21,56 +28,40 @@ pub fn bif_reverse(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     let [input] = args else {
         return Err(badarg());
     };
-    let mut bytes = binary_bytes(*input)?.to_vec();
-    bytes.reverse();
-    context.alloc_binary(&bytes)
+    let text = utf8_str(*input)?;
+    let reversed: String = text.graphemes(true).rev().collect();
+    context.alloc_binary(reversed.as_bytes())
 }
 
 pub fn bif_lowercase(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };
-    let bytes: Vec<u8> = binary_bytes(*input)?
-        .iter()
-        .map(|byte| byte.to_ascii_lowercase())
-        .collect();
-    context.alloc_binary(&bytes)
+    let lowered = utf8_str(*input)?.to_lowercase();
+    context.alloc_binary(lowered.as_bytes())
 }
 
 pub fn bif_uppercase(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };
-    let bytes: Vec<u8> = binary_bytes(*input)?
-        .iter()
-        .map(|byte| byte.to_ascii_uppercase())
-        .collect();
-    context.alloc_binary(&bytes)
+    let raised = utf8_str(*input)?.to_uppercase();
+    context.alloc_binary(raised.as_bytes())
 }
 
 pub fn bif_trim(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input, direction] = args else {
         return Err(badarg());
     };
-    let bytes = binary_bytes(*input)?;
+    let text = utf8_str(*input)?;
     let direction = atom_name(*direction, context)?;
-    let (mut start, mut end) = (0, bytes.len());
-
-    if direction == "leading" || direction == "both" {
-        while start < end && bytes[start].is_ascii_whitespace() {
-            start += 1;
-        }
-    } else if direction != "trailing" {
-        return Err(badarg());
-    }
-
-    if direction == "trailing" || direction == "both" {
-        while end > start && bytes[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
-    }
-
-    context.alloc_binary(&bytes[start..end])
+    let trimmed = match direction {
+        "leading" => text.trim_start(),
+        "trailing" => text.trim_end(),
+        "both" => text.trim(),
+        _ => return Err(badarg()),
+    };
+    context.alloc_binary(trimmed.as_bytes())
 }
 
 pub fn bif_split(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -110,47 +101,65 @@ pub fn bif_find(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
     }
 }
 
+/// `string:next_grapheme/1` over a UTF-8 binary.
+///
+/// Matches OTP's contract: `[]` for the empty string, otherwise an improper
+/// cons `[Grapheme | RestBinary]` whose head is the codepoint integer for a
+/// single-codepoint grapheme or a list of codepoint integers for a
+/// multi-codepoint cluster.
 pub fn bif_next_grapheme(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input] = args else {
         return Err(badarg());
     };
-    let bytes = binary_bytes(*input)?;
-    if bytes.is_empty() {
-        return Ok(Term::atom(Atom::ERROR));
-    }
-
-    let first_len = std::str::from_utf8(bytes)
-        .ok()
-        .and_then(|text| text.chars().next().map(char::len_utf8))
-        .unwrap_or(1);
-    let head = context.alloc_binary(&bytes[..first_len])?;
-    let rest = context.alloc_binary(&bytes[first_len..])?;
-    context.alloc_tuple(&[Term::atom(Atom::OK), head, rest])
+    let text = utf8_str(*input)?;
+    let Some(grapheme) = text.graphemes(true).next() else {
+        return Ok(Term::NIL);
+    };
+    let rest_bytes = text.as_bytes()[grapheme.len()..].to_vec();
+    let codepoints: Vec<Term> = grapheme
+        .chars()
+        .map(|ch| Term::try_small_int(i64::from(ch as u32)).ok_or_else(badarg))
+        .collect::<Result<_, _>>()?;
+    context.with_rooted(&[], |context, roots| {
+        let rest = context.alloc_binary(&rest_bytes)?;
+        context.rooted_push(roots, rest)?;
+        let head = if codepoints.len() == 1 {
+            codepoints[0]
+        } else {
+            let head = context.alloc_list(&codepoints)?;
+            context.rooted_push(roots, head)?;
+            context.rooted(roots, 1)?
+        };
+        let rest = context.rooted(roots, 0)?;
+        context.alloc_cons(head, rest)
+    })
 }
 
 pub fn bif_pad(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input, length, direction, pad] = args else {
         return Err(badarg());
     };
-    let input = binary_bytes(*input)?;
+    let text = utf8_str(*input)?;
     let target_len = non_negative_usize(*length)?;
     let direction = atom_name(*direction, context)?;
     let pad = binary_bytes(*pad)?;
     if pad.is_empty() {
         return Err(badarg());
     }
-    if input.len() >= target_len {
+    let current_len = text.graphemes(true).count();
+    let input = text.as_bytes();
+    if current_len >= target_len {
         return context.alloc_binary(input);
     }
 
-    let needed = target_len - input.len();
+    let needed = target_len - current_len;
     let (leading, trailing) = match direction {
         "leading" => (needed, 0),
         "trailing" => (0, needed),
         "both" => (needed / 2, needed - (needed / 2)),
         _ => return Err(badarg()),
     };
-    let mut out = Vec::with_capacity(target_len);
+    let mut out = Vec::with_capacity(input.len() + needed * pad.len());
     append_pad(&mut out, pad, leading);
     out.extend_from_slice(input);
     append_pad(&mut out, pad, trailing);
@@ -177,18 +186,26 @@ pub fn bif_replace(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
     context.alloc_binary(&out)
 }
 
+/// `string:slice/3` indexed and measured in grapheme clusters.
+///
+/// Out-of-range start positions and lengths clamp to the available string —
+/// OTP never raises for them.
 pub fn bif_slice(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [input, offset, length] = args else {
         return Err(badarg());
     };
-    let bytes = binary_bytes(*input)?;
+    let text = utf8_str(*input)?;
     let offset = non_negative_usize(*offset)?;
     let length = non_negative_usize(*length)?;
-    let end = offset.checked_add(length).ok_or_else(badarg)?;
-    if end > bytes.len() {
-        return Err(badarg());
+    if length == 0 {
+        return context.alloc_binary(&[]);
     }
-    context.alloc_binary(&bytes[offset..end])
+    let mut indices = text.grapheme_indices(true).skip(offset);
+    let Some((start, _)) = indices.next() else {
+        return context.alloc_binary(&[]);
+    };
+    let end = indices.nth(length - 1).map_or(text.len(), |(end, _)| end);
+    context.alloc_binary(&text.as_bytes()[start..end])
 }
 
 pub fn bif_equal(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -313,6 +330,10 @@ fn atom_name<'a>(term: Term, context: &'a ProcessContext<'_>) -> Result<&'a str,
     } else {
         Err(badarg())
     }
+}
+
+fn utf8_str(term: Term) -> Result<&'static str, Term> {
+    std::str::from_utf8(binary_bytes(term)?).map_err(|_| badarg())
 }
 
 fn binary_bytes(term: Term) -> Result<&'static [u8], Term> {

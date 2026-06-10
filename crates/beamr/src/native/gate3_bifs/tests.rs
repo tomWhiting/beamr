@@ -841,8 +841,7 @@ fn abs_promotes_small_overflow_and_accepts_bignums() {
     let mut ctx = context(&mut process);
 
     // abs(SMALL_INT_MIN) leaves the small range and promotes to a bignum.
-    let promoted =
-        bif_abs_1(&[Term::small_int(Term::SMALL_INT_MIN)], &mut ctx).expect("promotes");
+    let promoted = bif_abs_1(&[Term::small_int(Term::SMALL_INT_MIN)], &mut ctx).expect("promotes");
     let bigint = BigInt::new(promoted).expect("bignum box");
     assert!(!bigint.is_negative());
     assert_eq!(bigint.limbs(), [Term::SMALL_INT_MIN.unsigned_abs()]);

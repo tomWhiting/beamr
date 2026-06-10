@@ -74,7 +74,6 @@ impl PartialEq<u64> for EtsOwner {
     }
 }
 
-
 /// ETS ownership heir configured at table creation.
 #[derive(Debug)]
 pub struct EtsHeir {

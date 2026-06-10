@@ -187,7 +187,11 @@ fn encode_term(term: Term, context: &mut ProcessContext, out: &mut Vec<u8>) -> R
     Err(badarg())
 }
 
-fn encode_object_key(key: Term, context: &mut ProcessContext, out: &mut Vec<u8>) -> Result<(), Term> {
+fn encode_object_key(
+    key: Term,
+    context: &mut ProcessContext,
+    out: &mut Vec<u8>,
+) -> Result<(), Term> {
     if let Some(binary) = BinaryRef::new(key) {
         out.extend_from_slice(&escape_json_string(binary.as_bytes()));
         return Ok(());
@@ -248,7 +252,9 @@ impl Parser<'_> {
             Ok(binary) => binary,
             Err(error) => return error,
         };
-        context.alloc_tuple(&[tag, binary]).unwrap_or_else(|error| error)
+        context
+            .alloc_tuple(&[tag, binary])
+            .unwrap_or_else(|error| error)
     }
 
     fn parse_value(&mut self, context: &mut ProcessContext) -> Result<Term, Term> {
@@ -431,7 +437,8 @@ impl Parser<'_> {
         let escape_start = self.pos - 1;
         let high = self.parse_hex4(context)?;
         if (0xD800..=0xDBFF).contains(&high) {
-            if self.bytes.get(self.pos) == Some(&b'\\') && self.bytes.get(self.pos + 1) == Some(&b'u')
+            if self.bytes.get(self.pos) == Some(&b'\\')
+                && self.bytes.get(self.pos + 1) == Some(&b'u')
             {
                 self.pos += 1;
                 let low = self.parse_hex4(context)?;

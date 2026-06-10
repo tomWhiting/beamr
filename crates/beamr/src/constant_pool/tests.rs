@@ -173,10 +173,7 @@ fn big_integer_literals_materialise_with_sign_and_limbs() {
     positive.extend_from_slice(&magnitude);
     let mut negative = vec![1_u8];
     negative.extend_from_slice(&magnitude);
-    let literals = vec![
-        Literal::BigInteger(positive),
-        Literal::BigInteger(negative),
-    ];
+    let literals = vec![Literal::BigInteger(positive), Literal::BigInteger(negative)];
 
     let pool = materialise_literals(&literals, None).expect("pool");
     let expected = [

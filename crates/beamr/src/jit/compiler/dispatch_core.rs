@@ -1,35 +1,35 @@
 //! Core instruction lowering: basic ops, guards, messages, exceptions, return.
 
 use crate::jit::ir_arithmetic::{
-    lower_arithmetic_bif, lower_comparison, ArithmeticLowering, ArithmeticOp, ParsedBif,
+    ArithmeticLowering, ArithmeticOp, ParsedBif, lower_arithmetic_bif, lower_comparison,
 };
 use crate::jit::ir_common::{
-    label_operand, read_operand_term, write_operand_term, JIT_DEOPT_SENTINEL,
+    JIT_DEOPT_SENTINEL, label_operand, read_operand_term, write_operand_term,
 };
 use crate::jit::ir_control::BlockMap;
 use crate::jit::ir_exceptions::{
-    return_status, return_status_raw, ExceptionLoweringState, JIT_STATUS_DEOPT, JIT_STATUS_NORMAL,
+    ExceptionLoweringState, JIT_STATUS_DEOPT, JIT_STATUS_NORMAL, return_status, return_status_raw,
 };
 use crate::jit::ir_guards::{
-    immediate_raw_term, lower_is_tagged_tuple, lower_select_val, lower_test_arity, lower_type_test,
-    parse_select_pairs, SelectPair,
+    SelectPair, immediate_raw_term, lower_is_tagged_tuple, lower_select_val, lower_test_arity,
+    lower_type_test, parse_select_pairs,
 };
 use crate::jit::ir_message::{
-    translate_loop_rec, translate_loop_rec_end, translate_remove_message, translate_send,
-    translate_timeout, translate_wait, translate_wait_timeout, MessageLoweringContext,
+    MessageLoweringContext, translate_loop_rec, translate_loop_rec_end, translate_remove_message,
+    translate_send, translate_timeout, translate_wait, translate_wait_timeout,
 };
 use crate::jit::safepoint::SafepointBuilder;
 use crate::jit::type_info::TypeDescriptor;
-use crate::loader::decode::compact::Operand;
 use crate::loader::Instruction;
+use crate::loader::decode::compact::Operand;
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_frontend::FunctionBuilder;
 
+use super::JitError;
 use super::ir_helpers::CompileHelpers;
 use super::ir_typed::{
-    lower_typed_int_arithmetic, lower_typed_test_arity, lower_typed_type_test, TypedRegisterState,
+    TypedRegisterState, lower_typed_int_arithmetic, lower_typed_test_arity, lower_typed_type_test,
 };
-use super::JitError;
 
 /// Lower a core instruction (basic ops, guards, messages, exceptions, return).
 ///

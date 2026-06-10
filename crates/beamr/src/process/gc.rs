@@ -64,7 +64,14 @@ mod tests {
 
         let roots = root_set(&mut process, 2);
 
-        assert_eq!(roots.as_slice(), &[Term::small_int(1), Term::small_int(2), process.group_leader()]);
+        assert_eq!(
+            roots.as_slice(),
+            &[
+                Term::small_int(1),
+                Term::small_int(2),
+                process.group_leader()
+            ]
+        );
     }
 
     #[test]

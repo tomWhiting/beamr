@@ -2,36 +2,36 @@
 
 use crate::atom::Atom;
 use crate::jit::ir_allocation::{
-    lower_get_hd, lower_get_list, lower_get_tl, lower_get_tuple_element, lower_put_list,
-    lower_put_tuple2, tuple_root_operands, LoweringContext,
+    LoweringContext, lower_get_hd, lower_get_list, lower_get_tl, lower_get_tuple_element,
+    lower_put_list, lower_put_tuple2, tuple_root_operands,
 };
 use crate::jit::ir_binary::{
-    binary_allocation_roots, fail_operand, lower_binary_op, BinaryLoweringContext,
+    BinaryLoweringContext, binary_allocation_roots, fail_operand, lower_binary_op,
 };
 use crate::jit::ir_common::label_operand;
-use crate::jit::ir_control::{opcode_name, BlockMap};
+use crate::jit::ir_control::{BlockMap, opcode_name};
 use crate::jit::ir_exceptions::JIT_STATUS_EXCEPTION;
 use crate::jit::ir_float::{
-    float_boxing_roots, translate_fconv, translate_float_binary, translate_fmove,
-    translate_fnegate, FloatBinaryOp, FloatLoweringContext, FloatRegisterMap,
+    FloatBinaryOp, FloatLoweringContext, FloatRegisterMap, float_boxing_roots, translate_fconv,
+    translate_float_binary, translate_fmove, translate_fnegate,
 };
 use crate::jit::ir_guards::immediate_usize;
 use crate::jit::ir_map::{
-    map_allocation_roots, parse_get_map_elements_operands, parse_has_map_fields_operands,
-    parse_put_map_operands, translate_get_map_elements, translate_has_map_fields,
-    translate_put_map_assoc, translate_put_map_exact, MapLoweringContext,
+    MapLoweringContext, map_allocation_roots, parse_get_map_elements_operands,
+    parse_has_map_fields_operands, parse_put_map_operands, translate_get_map_elements,
+    translate_has_map_fields, translate_put_map_assoc, translate_put_map_exact,
 };
 use crate::jit::safepoint::SafepointBuilder;
-use crate::loader::decode::compact::Operand;
-use crate::loader::decode::MapOp;
 use crate::loader::Instruction;
+use crate::loader::decode::MapOp;
+use crate::loader::decode::compact::Operand;
 use crate::term::Term;
 use cranelift_frontend::FunctionBuilder;
 
+use super::JitError;
 use super::dispatch_helpers::{allocation_binary_op, clear_binary_outputs, supported_binary_op};
 use super::ir_helpers::CompileHelpers;
-use super::ir_typed::{float_fail_block, TypedRegisterState};
-use super::JitError;
+use super::ir_typed::{TypedRegisterState, float_fail_block};
 
 /// Lower a data-structure, float, binary, or map instruction.
 ///

@@ -2,7 +2,10 @@ use super::*;
 
 fn plane() -> (ControlPlane, Arc<RecordingMonitorSender>) {
     let sender = Arc::new(RecordingMonitorSender::new());
-    let plane = ControlPlane::new(Atom::OK, Arc::clone(&sender) as Arc<dyn MonitorControlSender>);
+    let plane = ControlPlane::new(
+        Atom::OK,
+        Arc::clone(&sender) as Arc<dyn MonitorControlSender>,
+    );
     (plane, sender)
 }
 

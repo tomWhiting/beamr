@@ -341,9 +341,7 @@ impl ControlPlane {
         let references: Vec<u64> = state
             .outbound_by_ref
             .iter()
-            .filter_map(|(reference, monitor)| {
-                (monitor.target.node == node).then_some(*reference)
-            })
+            .filter_map(|(reference, monitor)| (monitor.target.node == node).then_some(*reference))
             .collect();
         references
             .into_iter()
@@ -384,31 +382,18 @@ impl ControlPlane {
 /// Facility exposed to process BIFs for remote monitor control.
 pub trait DistributionMonitorFacility: Send + Sync {
     /// Establish a cross-node process monitor and send MONITOR_P.
-    fn monitor_remote(&self, watcher_pid: u64, target: RemotePid)
-        -> Result<u64, ControlSendError>;
+    fn monitor_remote(&self, watcher_pid: u64, target: RemotePid) -> Result<u64, ControlSendError>;
 
     /// Remove a known cross-node monitor and send DEMONITOR_P.
-    fn demonitor_remote(
-        &self,
-        watcher_pid: u64,
-        reference: u64,
-    ) -> Result<bool, ControlSendError>;
+    fn demonitor_remote(&self, watcher_pid: u64, reference: u64) -> Result<bool, ControlSendError>;
 }
 
 impl DistributionMonitorFacility for ControlPlane {
-    fn monitor_remote(
-        &self,
-        watcher_pid: u64,
-        target: RemotePid,
-    ) -> Result<u64, ControlSendError> {
+    fn monitor_remote(&self, watcher_pid: u64, target: RemotePid) -> Result<u64, ControlSendError> {
         self.monitor_remote(watcher_pid, target)
     }
 
-    fn demonitor_remote(
-        &self,
-        watcher_pid: u64,
-        reference: u64,
-    ) -> Result<bool, ControlSendError> {
+    fn demonitor_remote(&self, watcher_pid: u64, reference: u64) -> Result<bool, ControlSendError> {
         self.demonitor_remote(watcher_pid, reference)
     }
 }

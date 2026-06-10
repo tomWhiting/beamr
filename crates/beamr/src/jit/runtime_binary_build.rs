@@ -1,13 +1,13 @@
 //! Binary construction runtime helpers callable from JIT-generated code.
 use super::runtime::{alloc_words, process_from_abi};
 use super::runtime_binary_match::{
-    allocate_binary, boxed_tag, read_word, set_badarg, valid_codepoint, write_word, Endian,
+    Endian, allocate_binary, boxed_tag, read_word, set_badarg, valid_codepoint, write_word,
 };
 use crate::process::Process;
+use crate::term::Term;
 use crate::term::binary::packed_word_count;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{BoxedHeader, BoxedTag};
-use crate::term::Term;
 
 const BUILDER_META_WORDS: usize = 3;
 
@@ -75,11 +75,7 @@ pub(crate) extern "C" fn jit_bs_put_integer(
     0
 }
 
-pub(crate) extern "C" fn jit_bs_put_binary(
-    process: *mut Process,
-    builder: u64,
-    source: u64,
-) -> u8 {
+pub(crate) extern "C" fn jit_bs_put_binary(process: *mut Process, builder: u64, source: u64) -> u8 {
     let Some(process) = process_from_abi(process) else {
         return 1;
     };

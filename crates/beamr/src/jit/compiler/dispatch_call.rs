@@ -3,16 +3,16 @@
 use crate::atom::Atom;
 use crate::jit::ir_allocation::LoweringContext;
 use crate::jit::ir_closure::{
-    lower_call_fun, lower_make_fun2, make_fun_free_var_operands, make_fun_free_var_roots,
-    ClosureCall, ClosureMetadata,
+    ClosureCall, ClosureMetadata, lower_call_fun, lower_make_fun2, make_fun_free_var_operands,
+    make_fun_free_var_roots,
 };
 use crate::jit::ir_common::label_operand;
 use crate::jit::ir_control::BlockMap;
 use crate::jit::ir_exceptions::{CompiledFrameInfo, ExceptionLoweringState};
 use crate::jit::safepoint::SafepointBuilder;
-use crate::loader::decode::compact::Operand;
 use crate::loader::Instruction;
-use cranelift_codegen::ir::{types, InstBuilder};
+use crate::loader::decode::compact::Operand;
+use cranelift_codegen::ir::{InstBuilder, types};
 use cranelift_frontend::FunctionBuilder;
 
 use super::dispatch_helpers::{

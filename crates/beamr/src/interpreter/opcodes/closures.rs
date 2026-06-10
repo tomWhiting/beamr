@@ -130,7 +130,9 @@ fn call_export_fun(
     return_ip: usize,
     ctx: &core::ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
-    let target_module = closure.module().ok_or(ExecError::Badfun { term: fun_term })?;
+    let target_module = closure
+        .module()
+        .ok_or(ExecError::Badfun { term: fun_term })?;
     let target_function = closure
         .export_function()
         .ok_or(ExecError::Badfun { term: fun_term })?;

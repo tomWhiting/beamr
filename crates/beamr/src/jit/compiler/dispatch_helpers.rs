@@ -2,18 +2,18 @@
 
 use crate::jit::ir_common::write_operand_term;
 use crate::jit::ir_exceptions::{
-    dispatch_exception_status, return_status, CompiledFrameInfo, ExceptionDispatch,
-    ExceptionHelpers, JIT_STATUS_DEOPT, JIT_STATUS_NORMAL, JIT_STATUS_YIELD,
+    CompiledFrameInfo, ExceptionDispatch, ExceptionHelpers, JIT_STATUS_DEOPT, JIT_STATUS_NORMAL,
+    JIT_STATUS_YIELD, dispatch_exception_status, return_status,
 };
-use crate::loader::decode::compact::Operand;
 use crate::loader::decode::BinaryOp;
-use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::InstBuilder;
+use crate::loader::decode::compact::Operand;
 use cranelift_codegen::CodegenError;
+use cranelift_codegen::ir::InstBuilder;
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_frontend::FunctionBuilder;
 
-use super::ir_typed::TypedRegisterState;
 use super::JitError;
+use super::ir_typed::TypedRegisterState;
 
 pub(super) fn branch_to_yield_if_exhausted(
     builder: &mut FunctionBuilder<'_>,

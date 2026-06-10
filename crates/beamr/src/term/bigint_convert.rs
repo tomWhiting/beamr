@@ -215,7 +215,10 @@ mod tests {
             to_string_radix(&BigIntValue::from_i64(255), 16).as_deref(),
             Some("FF")
         );
-        assert_eq!(to_string_radix(&BigIntValue::zero(), 2).as_deref(), Some("0"));
+        assert_eq!(
+            to_string_radix(&BigIntValue::zero(), 2).as_deref(),
+            Some("0")
+        );
         assert_eq!(to_string_radix(&value, 1), None);
         assert_eq!(to_string_radix(&value, 37), None);
     }

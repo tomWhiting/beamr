@@ -384,7 +384,10 @@ pub(crate) fn bif_get_members_2(args: &[Term], context: &mut ProcessContext) -> 
     members(context, scope, *group, true)
 }
 
-pub(crate) fn bif_get_local_members_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+pub(crate) fn bif_get_local_members_1(
+    args: &[Term],
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
     let [group] = args else {
         return Err(badarg());
     };
@@ -392,7 +395,10 @@ pub(crate) fn bif_get_local_members_1(args: &[Term], context: &mut ProcessContex
     members(context, default_scope, *group, false)
 }
 
-pub(crate) fn bif_get_local_members_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+pub(crate) fn bif_get_local_members_2(
+    args: &[Term],
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
     let [scope, group] = args else {
         return Err(badarg());
     };
@@ -443,4 +449,3 @@ fn members(
 fn badarg() -> Term {
     Term::atom(Atom::BADARG)
 }
-

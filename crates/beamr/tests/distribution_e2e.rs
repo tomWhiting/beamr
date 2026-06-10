@@ -65,8 +65,16 @@ fn scheduler(
 async fn loopback_cross_node_pid_send_round_trip() {
     let resolver = Arc::new(DynamicResolver::default());
     let atom_table = Arc::new(AtomTable::with_common_atoms());
-    let node_a = scheduler("a@127.0.0.1", Arc::clone(&resolver), Arc::clone(&atom_table));
-    let node_b = scheduler("b@127.0.0.1", Arc::clone(&resolver), Arc::clone(&atom_table));
+    let node_a = scheduler(
+        "a@127.0.0.1",
+        Arc::clone(&resolver),
+        Arc::clone(&atom_table),
+    );
+    let node_b = scheduler(
+        "b@127.0.0.1",
+        Arc::clone(&resolver),
+        Arc::clone(&atom_table),
+    );
     let listen_a = node_a
         .distribution_connections()
         .listen("127.0.0.1:0".parse().expect("listen address parses"))

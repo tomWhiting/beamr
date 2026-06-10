@@ -181,8 +181,7 @@ fn register_selector_bifs_registers_all_expected_mfas() {
 
     let atom_table = AtomTable::with_common_atoms();
     let registry = BifRegistryImpl::new();
-    register_selector_bifs(&registry, &atom_table)
-        .expect("selector registration should succeed");
+    register_selector_bifs(&registry, &atom_table).expect("selector registration should succeed");
 
     let module = atom_table.intern("gleam_erlang_ffi");
     for (name, arity) in [

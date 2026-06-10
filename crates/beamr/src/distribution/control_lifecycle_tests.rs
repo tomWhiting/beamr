@@ -28,23 +28,16 @@ impl ControlMessageHandler for RecordingHandler {
     fn handle_reg_send(&mut self, _tuple: Tuple) {
         self.calls.push(ControlOp::RegSend);
     }
-    fn handle_link(
-        &mut self, _from: DistributedPid, _ft: Term,
-        _to: DistributedPid, _tt: Term,
-    ) {
+    fn handle_link(&mut self, _from: DistributedPid, _ft: Term, _to: DistributedPid, _tt: Term) {
         self.calls.push(ControlOp::Link);
     }
     fn handle_unlink(&mut self, _from: DistributedPid, _to: DistributedPid) {
         self.calls.push(ControlOp::Unlink);
     }
-    fn handle_exit(
-        &mut self, _from: DistributedPid, _to: DistributedPid, _r: ExitReason,
-    ) {
+    fn handle_exit(&mut self, _from: DistributedPid, _to: DistributedPid, _r: ExitReason) {
         self.calls.push(ControlOp::Exit);
     }
-    fn handle_exit2(
-        &mut self, _from: DistributedPid, _to: DistributedPid, _r: ExitReason,
-    ) {
+    fn handle_exit2(&mut self, _from: DistributedPid, _to: DistributedPid, _r: ExitReason) {
         self.calls.push(ControlOp::Exit2);
     }
     fn handle_monitor_p(&mut self, _tuple: Tuple) {
@@ -71,7 +64,9 @@ struct RecordingSink {
 
 impl ControlMessageSink for RecordingSink {
     fn send_control(
-        &mut self, node: Atom, message: OutboundControlMessage,
+        &mut self,
+        node: Atom,
+        message: OutboundControlMessage,
     ) -> Result<(), LifecycleError> {
         self.sent.push((node, message));
         Ok(())

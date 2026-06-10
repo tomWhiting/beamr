@@ -47,38 +47,41 @@ pub fn bif_characters_to_binary(args: &[Term], context: &mut ProcessContext) -> 
         return context.alloc_binary(&[]);
     }
 
-    // If it's a list, try to collect integer code points into UTF-8 bytes.
+    // Chardata: an arbitrarily nested list of codepoint integers, UTF-8
+    // binaries, and further chardata, where any tail may improperly end in a
+    // binary. Collect it depth-first.
     if input.is_list() {
         let mut bytes = Vec::new();
-        let mut current = *input;
-
-        loop {
-            if current.is_nil() {
-                break;
-            }
-            let cons = Cons::new(current).ok_or_else(badarg)?;
-            let head = cons.head();
-
-            // Head could be a small integer (code point) or a binary chunk.
-            if let Some(code_point) = head.as_small_int() {
-                let cp = u32::try_from(code_point).map_err(|_| badarg())?;
-                let ch = char::from_u32(cp).ok_or_else(badarg)?;
-                let mut buf = [0u8; 4];
-                let encoded = ch.encode_utf8(&mut buf);
-                bytes.extend_from_slice(encoded.as_bytes());
-            } else if let Some(binary) = BinaryRef::new(head) {
-                bytes.extend_from_slice(binary.as_bytes());
-            } else {
-                return Err(badarg());
-            }
-
-            current = cons.tail();
-        }
-
+        collect_chardata(*input, &mut bytes)?;
         return context.alloc_binary(&bytes);
     }
 
     Err(badarg())
+}
+
+/// Collects Erlang chardata into UTF-8 bytes.
+///
+/// Heads may be codepoint integers, binaries, or nested chardata lists; tails
+/// may be further chardata or an improper binary tail, matching
+/// `unicode:chardata()`.
+fn collect_chardata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {
+    if term.is_nil() {
+        return Ok(());
+    }
+    if let Some(code_point) = term.as_small_int() {
+        let cp = u32::try_from(code_point).map_err(|_| badarg())?;
+        let ch = char::from_u32(cp).ok_or_else(badarg)?;
+        let mut buf = [0u8; 4];
+        bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        return Ok(());
+    }
+    if let Some(binary) = BinaryRef::new(term) {
+        bytes.extend_from_slice(binary.as_bytes());
+        return Ok(());
+    }
+    let cons = Cons::new(term).ok_or_else(badarg)?;
+    collect_chardata(cons.head(), bytes)?;
+    collect_chardata(cons.tail(), bytes)
 }
 
 /// unicode:characters_to_list/1 — converts a binary to a list of code points.
@@ -89,10 +92,16 @@ pub fn bif_characters_to_list(args: &[Term], context: &mut ProcessContext) -> Re
         return Err(badarg());
     };
 
-    let binary = BinaryRef::new(*input).ok_or_else(badarg)?;
-    let bytes = binary.as_bytes();
+    let mut bytes = Vec::new();
+    if let Some(binary) = BinaryRef::new(*input) {
+        bytes.extend_from_slice(binary.as_bytes());
+    } else if input.is_nil() || input.is_list() {
+        collect_chardata(*input, &mut bytes)?;
+    } else {
+        return Err(badarg());
+    }
 
-    let text = std::str::from_utf8(bytes).map_err(|_| badarg())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| badarg())?;
     let elements: Vec<_> = text
         .chars()
         .map(|ch| Term::try_small_int(i64::from(ch as u32)).ok_or_else(badarg))
@@ -151,15 +160,6 @@ pub fn bif_debug_options(args: &[Term], _context: &mut ProcessContext) -> Result
     };
 
     Ok(Term::NIL)
-}
-
-/// gleam_stdlib:identity/1 — returns its argument unchanged.
-pub fn bif_identity(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    let [value] = args else {
-        return Err(badarg());
-    };
-
-    Ok(*value)
 }
 
 /// erlang:fun_info/2 — return metadata about a closure.

@@ -21,8 +21,8 @@ use beamr::native::otp_stubs::{init_otp_atoms, register_otp_stubs};
 use beamr::native::process_bifs::register_gate2_bifs;
 use beamr::native::selector_ffi::register_selector_bifs;
 use beamr::native::stdlib_stubs::register_stdlib_stubs;
-use beamr::term::Term;
 use beamr::process::Process;
+use beamr::term::Term;
 use beamr::term::boxed::Cons;
 
 /// Set up the full BIF registry matching the CLI.

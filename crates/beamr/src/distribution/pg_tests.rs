@@ -131,8 +131,7 @@ fn remote_apply_join_visible_only_in_all_members_and_purged_on_node_down() {
     let mut context = context(&mut process, Arc::clone(&registry));
 
     let local_args = [Term::atom(group)];
-    let local =
-        super::pg::bif_get_local_members_1(&local_args, &mut context).expect("local");
+    let local = super::pg::bif_get_local_members_1(&local_args, &mut context).expect("local");
     assert!(list_terms(local).is_empty());
 
     let all_args = [Term::atom(group)];

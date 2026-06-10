@@ -11,7 +11,6 @@
 pub mod bitwise_bifs;
 pub mod collection_bifs;
 pub mod encoding_bifs;
-pub mod gleam_stdlib_ffi;
 pub mod gleam_stdlib_ffi2;
 pub mod io_bifs;
 pub mod json_bifs;
@@ -19,21 +18,18 @@ pub mod lists_bifs;
 pub mod lists_hof_bifs;
 pub mod maps_bifs;
 pub mod math_bifs;
+pub mod misc_bifs;
+pub mod registrations;
 pub mod string_bifs;
 pub mod type_conversion_bifs;
 pub mod uri_bifs;
-pub mod misc_bifs;
-pub mod registrations;
 
 pub use misc_bifs::{
     bif_binary_part, bif_characters_to_binary, bif_characters_to_list, bif_debug_options,
-    bif_fun_info, bif_fwrite_g, bif_identity, bif_init_stop, bif_logger_warning,
-    bif_rand_uniform,
+    bif_fun_info, bif_fwrite_g, bif_init_stop, bif_logger_warning, bif_rand_uniform,
 };
 pub use registrations::register_stdlib_stubs;
 
-#[cfg(test)]
-mod b033_tests;
 #[cfg(test)]
 mod b038_tests;
 #[cfg(test)]

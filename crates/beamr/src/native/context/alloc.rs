@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, write_fd_resource};
 use crate::term::Term;
 use crate::term::boxed::{
-    write_bigint, write_cons, write_external_pid, write_external_reference, write_float,
-    write_map, write_reference, write_tuple,
+    write_bigint, write_cons, write_external_pid, write_external_reference, write_float, write_map,
+    write_reference, write_tuple,
 };
 use crate::term::shared_binary::{alloc_binary, alloc_binary_word_count};
 
@@ -24,7 +24,8 @@ impl ProcessContext<'_> {
         if self.process.is_none() {
             // Detached contexts allocate owned blocks and never collect.
             let heap = self.alloc_words(words)?;
-            return write_tuple(heap, elements).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
+            return write_tuple(heap, elements)
+                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
         }
         // Root the inputs: the reserve below may collect and move them.
         self.with_rooted(elements, |context, roots| {
@@ -112,7 +113,8 @@ impl ProcessContext<'_> {
         if self.process.is_none() {
             // Detached contexts allocate owned blocks and never collect.
             let heap = self.alloc_words(2)?;
-            return write_cons(heap, head, tail).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
+            return write_cons(heap, head, tail)
+                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
         }
         // Root the inputs: the reserve below may collect and move them.
         self.with_rooted(&[head, tail], |context, roots| {
@@ -203,7 +205,8 @@ impl ProcessContext<'_> {
         if self.process.is_none() {
             // Detached contexts allocate owned blocks and never collect.
             let heap = self.alloc_words(words)?;
-            return write_map(heap, keys, values).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
+            return write_map(heap, keys, values)
+                .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG));
         }
         let mut rooted = Vec::with_capacity(keys.len() + values.len());
         rooted.extend_from_slice(keys);

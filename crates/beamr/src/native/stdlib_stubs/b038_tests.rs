@@ -1,6 +1,5 @@
 use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
-use crate::process::Process;
 use crate::native::stdlib_stubs::lists_bifs::{
     bif_lists_append_1, bif_lists_append_2, bif_lists_join, bif_lists_reverse_2, bif_lists_seq,
 };
@@ -8,6 +7,7 @@ use crate::native::stdlib_stubs::maps_bifs::{
     bif_maps_find, bif_maps_keys, bif_maps_put, bif_maps_to_list, bif_maps_values, bif_maps_with,
     bif_maps_without,
 };
+use crate::process::Process;
 use crate::term::Term;
 use crate::term::boxed::{Cons, Map, Tuple, write_map};
 use crate::term::compare;

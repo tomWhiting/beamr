@@ -1,4 +1,4 @@
-use cranelift_codegen::ir::{types, AbiParam, FuncRef};
+use cranelift_codegen::ir::{AbiParam, FuncRef, types};
 use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
 

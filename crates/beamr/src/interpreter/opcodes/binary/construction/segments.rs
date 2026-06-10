@@ -50,7 +50,15 @@ pub(super) fn bs_create_bin(
     module: &Module,
     operands: &[Operand],
 ) -> Result<InstructionOutcome, ExecError> {
-    let [fail, _alloc, _live, _unit, destination, Operand::List(fields)] = operands else {
+    let [
+        fail,
+        _alloc,
+        _live,
+        _unit,
+        destination,
+        Operand::List(fields),
+    ] = operands
+    else {
         return Err(ExecError::InvalidOperand("bs_create_bin operands"));
     };
     match construct(process, module, fields) {
@@ -68,11 +76,7 @@ pub(super) fn bs_create_bin(
 }
 
 /// Build the byte content for all segments without touching the heap.
-fn construct(
-    process: &Process,
-    module: &Module,
-    fields: &[Operand],
-) -> Result<Vec<u8>, ExecError> {
+fn construct(process: &Process, module: &Module, fields: &[Operand]) -> Result<Vec<u8>, ExecError> {
     if !fields.len().is_multiple_of(SEGMENT_FIELDS) {
         return Err(ExecError::InvalidOperand("bs_create_bin segment"));
     }

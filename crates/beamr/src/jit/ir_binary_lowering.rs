@@ -416,10 +416,7 @@ pub(super) fn parse_utf_get_operands<'a>(
     }
 }
 
-pub(super) fn required_fail(
-    resolved: Option<Block>,
-    operand: &Operand,
-) -> Result<Block, JitError> {
+pub(super) fn required_fail(resolved: Option<Block>, operand: &Operand) -> Result<Block, JitError> {
     resolved.ok_or_else(|| JitError::UnsupportedOperand {
         operand: format!("missing fail block for {operand:?}"),
     })
@@ -438,10 +435,7 @@ pub(super) fn segment_bits(
         })
 }
 
-pub(super) fn immediate_u64(
-    operand: &Operand,
-    context: &'static str,
-) -> Result<u64, JitError> {
+pub(super) fn immediate_u64(operand: &Operand, context: &'static str) -> Result<u64, JitError> {
     match operand {
         Operand::Unsigned(value) => Ok(*value),
         Operand::Integer(value) => {
