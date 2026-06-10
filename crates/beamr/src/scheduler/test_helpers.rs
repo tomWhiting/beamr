@@ -13,21 +13,6 @@ use crate::term::Term;
 use super::{ProcessSlot, ScheduledProcess, Scheduler, lock_or_recover};
 
 impl Scheduler {
-    /// Enqueue an immediate atom message into a live process mailbox.
-    #[must_use]
-    pub fn enqueue_atom_message(&self, target_pid: u64, atom: Atom) -> bool {
-        let delivered = self
-            .with_process(target_pid, |process| {
-                process.mailbox_mut().push_owned(Term::atom(atom));
-                true
-            })
-            .unwrap_or(false);
-        if delivered {
-            self.wake_process(target_pid);
-        }
-        delivered
-    }
-
     fn with_process<T>(&self, pid: u64, f: impl FnOnce(&mut Process) -> T) -> Option<T> {
         let entry = self.shared.process_bodies.get(&pid)?;
         let mut slot = lock_or_recover(&entry);

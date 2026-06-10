@@ -960,6 +960,45 @@ pub(super) fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, 
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+impl Scheduler {
+    /// Enqueue an immediate atom message into a live process mailbox and wake
+    /// the process if it is parked.
+    ///
+    /// Embedders use this as a host-to-process wake primitive (e.g. activity
+    /// completion markers). Delivery must succeed in every live slot state: a
+    /// process currently executing a slice receives the message through its
+    /// pending metadata, which the scheduler merges into the mailbox at
+    /// store-back and then resumes the process if it suspended meanwhile —
+    /// otherwise a completion racing the suspend transition is lost and the
+    /// process sleeps forever.
+    ///
+    /// Returns false only when no live process exists for `target_pid`.
+    #[must_use]
+    pub fn enqueue_atom_message(&self, target_pid: u64, atom: crate::atom::Atom) -> bool {
+        let Some(entry) = self.shared.process_bodies.get(&target_pid) else {
+            return false;
+        };
+        let mut slot = lock_or_recover(&entry);
+        let delivered = match &mut *slot {
+            ProcessSlot::Present(scheduled) => {
+                scheduled.0.mailbox_mut().push_owned(Term::atom(atom));
+                true
+            }
+            ProcessSlot::Executing(metadata) => {
+                metadata.pending_io_messages.push(Term::atom(atom));
+                true
+            }
+            ProcessSlot::Absent => false,
+        };
+        drop(slot);
+        drop(entry);
+        if delivered {
+            execution::wake_process(&self.shared, target_pid);
+        }
+        delivered
+    }
+}
+
 impl IoWakeTarget for SharedState {
     fn wake_with_io_result(&self, pid: u64, term: Term) {
         self.async_results.insert(pid, term);
