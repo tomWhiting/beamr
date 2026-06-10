@@ -143,10 +143,45 @@ fn binary_term(bytes: &[u8]) -> Term {
     write_binary(heap, bytes).expect("binary")
 }
 
-fn fd_is_closed(fd: RawFd) -> bool {
+/// True when `fd` no longer refers to the original socket bound to `original_addr`.
+///
+/// Raw fd numbers are recycled by the kernel as soon as they close, so under
+/// parallel test threads a freshly closed fd may already belong to an unrelated
+/// descriptor and a bare `fcntl(F_GETFD)` probe races. The fd is released when
+/// it is closed outright (`EBADF`), is no longer a socket, or is a socket bound
+/// to a different local address; only a live socket still bound to the original
+/// ephemeral address means the fd leaked.
+fn fd_released(fd: RawFd, original_addr: SocketAddr) -> bool {
     // SAFETY: F_GETFD only observes descriptor table state for the supplied raw fd.
-    let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    result < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return io::Error::last_os_error().raw_os_error() == Some(libc::EBADF);
+    }
+    // SAFETY: an all-zero sockaddr_storage is a valid out-buffer value.
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    // SAFETY: `storage` and `len` describe a writable buffer large enough for
+    // any socket address family; getsockname only writes within that buffer.
+    let rc = unsafe {
+        libc::getsockname(
+            fd,
+            (&mut storage as *mut libc::sockaddr_storage).cast::<libc::sockaddr>(),
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        // Closed in the meantime or recycled as a non-socket descriptor.
+        return true;
+    }
+    if libc::c_int::from(storage.ss_family) != libc::AF_INET {
+        return true;
+    }
+    // SAFETY: the address family is AF_INET, so the buffer holds a sockaddr_in.
+    let addr_in =
+        unsafe { *(&storage as *const libc::sockaddr_storage).cast::<libc::sockaddr_in>() };
+    let port = u16::from_be(addr_in.sin_port);
+    let ip = Ipv4Addr::from(u32::from_be(addr_in.sin_addr.s_addr));
+    SocketAddr::from((ip, port)) != original_addr
 }
 
 #[test]
@@ -302,6 +337,7 @@ fn tcp_accept_timeout_does_not_leak_fd() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
     let listener_fd = listener.into_raw_fd();
     let accepted = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("accepted fd stand-in");
+    let accepted_addr = accepted.local_addr().expect("accepted local addr");
     let accepted_fd = accepted.into_raw_fd();
     facility.push_completion(
         FileIoContinuation::Accept,
@@ -328,7 +364,10 @@ fn tcp_accept_timeout_does_not_leak_fd() {
     let tuple = Tuple::new(result).expect("error tuple");
     assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
     assert_eq!(tuple.get(1), Some(Term::atom(Atom::TIMEOUT)));
-    assert!(fd_is_closed(accepted_fd));
+    assert!(
+        fd_released(accepted_fd, accepted_addr),
+        "accepted fd leaked: still refers to the original socket at {accepted_addr}"
+    );
     assert!(facility.tracked().is_empty());
 }
 

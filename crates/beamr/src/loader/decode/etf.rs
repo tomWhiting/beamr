@@ -175,6 +175,11 @@ fn decode_big_integer(
         cursor.read_u32()? as usize
     };
     let sign = cursor.read_u8()?;
+    if sign > 1 {
+        return Err(LoadError::DecodeError(format!(
+            "invalid bignum sign {sign}"
+        )));
+    }
     let bytes = cursor.read_bytes(len)?;
     if len <= 8 {
         let mut value: i128 = 0;
@@ -183,24 +188,21 @@ fn decode_big_integer(
         }
         if sign == 1 {
             value = -value;
-        } else if sign != 0 {
-            return Err(LoadError::DecodeError(format!(
-                "invalid bignum sign {sign}"
-            )));
         }
-        i64::try_from(value)
-            .map(Literal::Integer)
-            .map_err(|_| LoadError::DecodeError(format!("ETF bignum {value} is outside i64 range")))
-    } else {
-        let capacity = len
-            .checked_add(1)
-            .ok_or_else(|| LoadError::DecodeError("ETF bignum allocation size overflow".into()))?;
-        budget.charge_bytes(capacity)?;
-        let mut out = Vec::with_capacity(capacity);
-        out.push(sign);
-        out.extend_from_slice(bytes);
-        Ok(Literal::BigInteger(out))
+        // Word-sized values that exceed i64 (e.g. an 8-byte magnitude with the
+        // top bit set) fall through to the big-integer literal encoding.
+        if let Ok(value) = i64::try_from(value) {
+            return Ok(Literal::Integer(value));
+        }
     }
+    let capacity = len
+        .checked_add(1)
+        .ok_or_else(|| LoadError::DecodeError("ETF bignum allocation size overflow".into()))?;
+    budget.charge_bytes(capacity)?;
+    let mut out = Vec::with_capacity(capacity);
+    out.push(sign);
+    out.extend_from_slice(bytes);
+    Ok(Literal::BigInteger(out))
 }
 
 #[cfg(test)]
@@ -346,5 +348,63 @@ mod tests {
             decode_with_atom_table(&new_atom_bytes, &atoms, &mut budget),
             Ok(Literal::Atom(atoms.lookup("ok").expect("common ok atom")))
         );
+    }
+
+    /// SMALL_BIG_EXT (tag 110): one length byte, one sign byte, then
+    /// little-endian magnitude bytes.
+    fn small_big(sign: u8, magnitude_le: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![110, magnitude_le.len() as u8, sign];
+        bytes.extend_from_slice(magnitude_le);
+        bytes
+    }
+
+    #[test]
+    fn small_big_within_i64_decodes_to_integer_literal() {
+        assert_eq!(
+            decode(&small_big(0, &42_u64.to_le_bytes())),
+            Ok(Literal::Integer(42))
+        );
+        assert_eq!(
+            decode(&small_big(1, &42_u64.to_le_bytes())),
+            Ok(Literal::Integer(-42))
+        );
+    }
+
+    #[test]
+    fn word_sized_big_beyond_i64_decodes_to_big_integer_literal() {
+        // Magnitude 2^63 with positive sign exceeds i64::MAX.
+        let magnitude = (1_u64 << 63).to_le_bytes();
+        let mut expected = vec![0_u8];
+        expected.extend_from_slice(&magnitude);
+        assert_eq!(
+            decode(&small_big(0, &magnitude)),
+            Ok(Literal::BigInteger(expected))
+        );
+        // ... while -(2^63) is exactly i64::MIN and stays an integer literal.
+        assert_eq!(
+            decode(&small_big(1, &magnitude)),
+            Ok(Literal::Integer(i64::MIN))
+        );
+    }
+
+    #[test]
+    fn nine_byte_big_decodes_to_big_integer_literal_with_sign() {
+        let magnitude = &100_000_000_000_000_000_000_u128.to_le_bytes()[..9];
+        let mut expected = vec![1_u8];
+        expected.extend_from_slice(magnitude);
+        assert_eq!(
+            decode(&small_big(1, magnitude)),
+            Ok(Literal::BigInteger(expected))
+        );
+    }
+
+    #[test]
+    fn big_with_invalid_sign_is_rejected() {
+        match decode(&small_big(2, &42_u64.to_le_bytes())) {
+            Err(LoadError::DecodeError(message)) => {
+                assert!(message.contains("sign"), "unexpected error: {message}");
+            }
+            other => panic!("expected invalid-sign DecodeError, got {other:?}"),
+        }
     }
 }

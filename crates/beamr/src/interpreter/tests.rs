@@ -1532,7 +1532,7 @@ fn call_ext_unresolved_target_returns_undef() {
 }
 
 #[test]
-fn call_ext_denial_stub_target_returns_mfa_rich_undef() {
+fn call_ext_denied_target_returns_mfa_rich_undef() {
     let atoms = AtomTable::new();
     let caller_atom = atoms.intern("caller");
     let target_atom = atoms.intern("meridian_ffi");
@@ -1542,11 +1542,9 @@ fn call_ext_denial_stub_target_returns_mfa_rich_undef() {
         caller_atom,
         target_atom,
         run_cmd_atom,
-        ResolvedImportTarget::Native(NativeEntry {
-            function: crate::native::denial_stub,
-            dirty_kind: None,
+        ResolvedImportTarget::Denied {
             capability: Capability::ExternalIo,
-        }),
+        },
     ));
     let mut process = Process::new(1, 32);
 

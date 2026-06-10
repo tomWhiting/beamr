@@ -184,38 +184,9 @@ fn format_map(map: Map, atom_table: &AtomTable, depth: usize) -> String {
 }
 
 fn bigint_to_decimal_string(bigint: BigInt) -> String {
-    let mut limbs = bigint.limbs().to_vec();
-    while limbs.last().copied() == Some(0) {
-        limbs.pop();
-    }
-
-    if limbs.is_empty() {
-        return "0".to_owned();
-    }
-
-    let mut digits = Vec::new();
-    while limbs.iter().any(|limb| *limb != 0) {
-        let remainder = div_rem_limbs_by_10(&mut limbs);
-        digits.push(char::from(b'0' + remainder as u8));
-        while limbs.last().copied() == Some(0) {
-            limbs.pop();
-        }
-    }
-
-    if bigint.is_negative() {
-        digits.push('-');
-    }
-    digits.iter().rev().collect()
-}
-
-fn div_rem_limbs_by_10(limbs: &mut [u64]) -> u64 {
-    let mut remainder = 0_u128;
-    for limb in limbs.iter_mut().rev() {
-        let value = (remainder << u64::BITS) | u128::from(*limb);
-        *limb = (value / 10) as u64;
-        remainder = value % 10;
-    }
-    remainder as u64
+    let value = crate::term::bigint_math::BigIntValue::from_bigint(bigint);
+    // Radix 10 is always valid, so the conversion cannot return `None`.
+    crate::term::bigint_convert::to_string_radix(&value, 10).unwrap_or_else(|| "0".to_owned())
 }
 
 #[cfg(test)]

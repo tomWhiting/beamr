@@ -83,8 +83,7 @@ use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::Term;
 
 pub use capability::{
-    AllCapabilitiesPolicy, Capability, CapabilityPolicy, CapabilitySet, DenialMode,
-    LeastAuthorityPolicy, denial_stub,
+    AllCapabilitiesPolicy, Capability, CapabilityPolicy, CapabilitySet, LeastAuthorityPolicy,
 };
 pub use code_management_bifs::CodeManagementFacility;
 pub use context::{

@@ -128,6 +128,16 @@ impl BigIntValue {
     }
 
     #[must_use]
+    pub fn negate(&self) -> Self {
+        Self::new(!self.is_negative(), self.limbs.clone())
+    }
+
+    #[must_use]
+    pub fn abs(&self) -> Self {
+        Self::new(false, self.limbs.clone())
+    }
+
+    #[must_use]
     pub fn shl_bits(&self, shift: usize) -> Self {
         Self::new(self.is_negative(), shl_abs(&self.limbs, shift))
     }
@@ -383,5 +393,25 @@ mod tests {
             BigIntValue::from_i64(42)
         );
         assert_eq!(BigIntValue::new(true, vec![0, 0]), BigIntValue::zero());
+    }
+
+    #[test]
+    fn negate_flips_sign_and_keeps_zero_canonical() {
+        let value = BigIntValue::new(false, vec![0, 1]);
+        let negated = value.negate();
+        assert!(negated.is_negative());
+        assert_eq!(negated.limbs(), value.limbs());
+        assert_eq!(negated.negate(), value);
+        assert_eq!(BigIntValue::zero().negate(), BigIntValue::zero());
+        assert_eq!(BigIntValue::from_i64(-5).negate(), BigIntValue::from_i64(5));
+    }
+
+    #[test]
+    fn abs_clears_sign_for_any_magnitude() {
+        let negative = BigIntValue::new(true, vec![7, 9]);
+        let positive = BigIntValue::new(false, vec![7, 9]);
+        assert_eq!(negative.abs(), positive);
+        assert_eq!(positive.abs(), positive);
+        assert_eq!(BigIntValue::from_i64(i64::MIN).abs().limbs(), &[1 << 63]);
     }
 }

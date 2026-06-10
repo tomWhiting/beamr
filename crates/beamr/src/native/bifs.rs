@@ -349,7 +349,12 @@ fn two_integer_values(args: &[Term]) -> Result<(BigIntValue, BigIntValue), Term>
     Ok((left, right))
 }
 
-fn integer_result(value: BigIntValue, context: &mut ProcessContext) -> Result<Term, Term> {
+/// Converts an owned bignum into a runtime term, demoting word-sized values
+/// to small-integer immediates so integer representation stays canonical.
+pub(crate) fn integer_result(
+    value: BigIntValue,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
     if let Some(value) = value.to_small_i64().and_then(Term::try_small_int) {
         Ok(value)
     } else {

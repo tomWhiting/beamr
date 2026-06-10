@@ -425,6 +425,9 @@ pub struct Process {
     x_regs: [Term; 1024],
     float_regs: [f64; 16],
     native_continuation: Option<NativeContinuation>,
+    /// Explicit GC roots registered by native code for terms it must keep
+    /// alive across allocations. See `ProcessContext::root_term`.
+    native_roots: Vec<Term>,
     raw_stacktrace: Vec<RawStackEntry>,
     reduction_counter: u32,
     namespace_id: NamespaceId,
@@ -464,6 +467,7 @@ impl Clone for Process {
             x_regs: self.x_regs,
             float_regs: self.float_regs,
             native_continuation: self.native_continuation.clone(),
+            native_roots: self.native_roots.clone(),
             raw_stacktrace: self.raw_stacktrace.clone(),
             reduction_counter: self.reduction_counter,
             namespace_id: self.namespace_id,
@@ -516,6 +520,7 @@ impl Process {
             x_regs: [Term::NIL; 1024],
             float_regs: [0.0; 16],
             native_continuation: None,
+            native_roots: Vec::new(),
             raw_stacktrace: Vec::new(),
             reduction_counter: DEFAULT_REDUCTION_BUDGET,
             namespace_id: NamespaceId::DEFAULT,

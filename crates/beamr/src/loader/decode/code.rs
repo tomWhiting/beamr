@@ -8,11 +8,15 @@ use super::instruction::{
 };
 use super::opcode::opcode_arity;
 
+/// Decodes the `Code` chunk into instructions plus any big-integer literals
+/// materialised from oversized compact operands. The extra literals must be
+/// appended after the module's `LitT` entries; operands already reference
+/// them at those indices.
 pub fn decode_code_chunk(
     bytes: &[u8],
     atoms: &[Atom],
     literals: &[Literal],
-) -> Result<Vec<Instruction>, LoadError> {
+) -> Result<(Vec<Instruction>, Vec<Literal>), LoadError> {
     if bytes.len() < 20 {
         return Err(LoadError::DecodeError(
             "Code chunk header is truncated".into(),
@@ -35,7 +39,7 @@ pub fn decode_code_chunk(
         )));
     }
 
-    let instructions = decode_instructions(&bytes[20..], atoms, literals)?;
+    let (instructions, extra_literals) = decode_instructions(&bytes[20..], atoms, literals)?;
     for instruction in &instructions {
         if let Instruction::Label { label } = instruction
             && *label > label_count
@@ -52,14 +56,16 @@ pub fn decode_code_chunk(
             "decoded opcode {max_seen} exceeds Code opcode_max {opcode_max}"
         )));
     }
-    Ok(instructions)
+    Ok((instructions, extra_literals))
 }
 
+/// Decodes raw instruction bytes, returning the instructions and any
+/// big-integer literals materialised from oversized compact operands.
 pub fn decode_instructions(
     code_bytes: &[u8],
     atoms: &[Atom],
     literals: &[Literal],
-) -> Result<Vec<Instruction>, LoadError> {
+) -> Result<(Vec<Instruction>, Vec<Literal>), LoadError> {
     let mut decoder = CompactDecoder::new(code_bytes, atoms, literals);
     let mut instructions = Vec::new();
     while !decoder.is_empty() {
@@ -69,7 +75,7 @@ pub fn decode_instructions(
         }
         instructions.push(decode_instruction(opcode, &mut decoder)?);
     }
-    Ok(instructions)
+    Ok((instructions, decoder.take_extra_literals()))
 }
 
 fn decode_instruction(
@@ -493,7 +499,8 @@ mod tests {
             &[],
             &[],
         )
-        .expect("decode get_list");
+        .expect("decode get_list")
+        .0;
 
         assert_eq!(
             instructions,
@@ -520,7 +527,8 @@ mod tests {
             &[],
             &[],
         )
-        .expect("decode float opcodes");
+        .expect("decode float opcodes")
+        .0;
 
         assert_eq!(
             instructions,
@@ -570,7 +578,8 @@ mod tests {
     fn opcode_159_decodes_to_is_tagged_tuple() {
         let atoms = [Atom::OK];
         let instructions = decode_instructions(&[159, 0x75, 0x03, 0x20, 0x12], &atoms, &[])
-            .expect("decode is_tagged_tuple");
+            .expect("decode is_tagged_tuple")
+            .0;
 
         assert_eq!(
             instructions,
@@ -595,7 +604,8 @@ mod tests {
             &[],
             &[],
         )
-        .expect("decode recv_marker opcodes");
+        .expect("decode recv_marker opcodes")
+        .0;
 
         assert_eq!(
             instructions,

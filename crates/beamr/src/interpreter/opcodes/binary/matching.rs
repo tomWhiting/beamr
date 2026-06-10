@@ -556,7 +556,7 @@ pub(super) fn segment_bits(size: &Operand, unit: &Operand) -> Result<usize, Exec
     size.checked_mul(unit)
         .ok_or(ExecError::InvalidOperand("segment size"))
 }
-fn literal_bytes<'a>(
+pub(super) fn literal_bytes<'a>(
     module: &'a Module,
     operand: &'a Operand,
     byte_len: usize,

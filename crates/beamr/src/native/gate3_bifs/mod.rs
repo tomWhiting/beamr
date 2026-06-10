@@ -443,15 +443,21 @@ pub fn bif_max_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Te
 }
 
 /// erlang:abs/1 — returns the absolute value of an integer or float.
+///
+/// Integer results promote to a bignum when they leave the small-integer
+/// range and demote back to a small immediate when they fit.
 pub fn bif_abs_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [value] = args else {
         return Err(badarg());
     };
-    if let Some(integer) = value.as_small_int() {
-        return integer
-            .checked_abs()
-            .and_then(Term::try_small_int)
-            .ok_or_else(badarg);
+    if let Some(integer) = value.as_small_int()
+        && let Some(absolute) = integer.checked_abs().and_then(Term::try_small_int)
+    {
+        return Ok(absolute);
+    }
+    // Small integers whose absolute value overflows fall through here too.
+    if let Some(integer) = crate::term::bigint_math::BigIntValue::from_term(*value) {
+        return crate::native::bifs::integer_result(integer.abs(), context);
     }
     let value = Float::new(*value).ok_or_else(badarg)?.value();
     if !value.is_finite() {

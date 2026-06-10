@@ -2,7 +2,9 @@
 
 use crate::atom::Atom;
 use crate::native::ProcessContext;
+use crate::native::bifs::integer_result;
 use crate::term::Term;
+use crate::term::bigint_convert;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Float, Map, Tuple};
 
@@ -145,14 +147,16 @@ pub fn bif_atom_to_list(args: &[Term], context: &mut ProcessContext) -> Result<T
 }
 
 /// erlang:list_to_integer/1 — parses a base-10 integer from a character list.
-pub fn bif_list_to_integer(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+///
+/// Values beyond the small-integer range allocate a bignum.
+pub fn bif_list_to_integer(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [list_term] = args else {
         return Err(badarg());
     };
     let bytes = proper_byte_list(*list_term)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| badarg())?;
-    let integer = text.parse::<i64>().map_err(|_| badarg())?;
-    Term::try_small_int(integer).ok_or_else(badarg)
+    let integer = bigint_convert::from_str_radix(text, 10).ok_or_else(badarg)?;
+    integer_result(integer, context)
 }
 
 /// erlang:list_to_float/1 — parses a finite float from a character list.

@@ -8,10 +8,8 @@ use beamr::native::meridian_ffi::register_meridian_ffi;
 use beamr::native::stdlib_stubs::register_stdlib_stubs;
 use beamr::native::{
     AllCapabilitiesPolicy, BifRegistryImpl, Capability, CapabilitySet, LeastAuthorityPolicy,
-    ProcessContext, denial_stub,
 };
 use beamr::scheduler::{Scheduler, SchedulerConfig};
-use beamr::term::Term;
 
 fn parsed_with_import(
     atoms: &AtomTable,
@@ -29,6 +27,15 @@ fn parsed_with_import(
     parsed
 }
 
+fn first_target(
+    resolved: &[Option<beamr::module::ResolvedImport>],
+) -> Option<ResolvedImportTarget> {
+    resolved
+        .first()
+        .and_then(Option::as_ref)
+        .map(|entry| entry.target)
+}
+
 #[test]
 fn least_authority_grants_pure_and_denies_external_io() {
     let atoms = AtomTable::with_common_atoms();
@@ -41,8 +48,8 @@ fn least_authority_grants_pure_and_denies_external_io() {
     let (resolved, report) = resolve_imports(&pure, &registry, &bifs, &LeastAuthorityPolicy);
     assert!(report.is_empty());
     assert!(matches!(
-        resolved.first().and_then(Option::as_ref).map(|entry| entry.target),
-        Some(ResolvedImportTarget::Native(entry)) if entry.function as usize != denial_stub as usize
+        first_target(&resolved),
+        Some(ResolvedImportTarget::Native(_))
     ));
 
     let external = parsed_with_import(&atoms, "meridian_ffi", "run_cmd", 1);
@@ -54,8 +61,10 @@ fn least_authority_grants_pure_and_denies_external_io() {
     );
     assert!(report.to_string().contains("capability denied"));
     assert!(matches!(
-        resolved.first().and_then(Option::as_ref).map(|entry| entry.target),
-        Some(ResolvedImportTarget::Native(entry)) if entry.function as usize == denial_stub as usize
+        first_target(&resolved),
+        Some(ResolvedImportTarget::Denied {
+            capability: Capability::ExternalIo
+        })
     ));
 }
 
@@ -71,8 +80,8 @@ fn all_capabilities_resolves_external_io_normally() {
 
     assert!(report.is_empty());
     assert!(matches!(
-        resolved.first().and_then(Option::as_ref).map(|entry| entry.target),
-        Some(ResolvedImportTarget::Native(entry)) if entry.function as usize != denial_stub as usize
+        first_target(&resolved),
+        Some(ResolvedImportTarget::Native(_))
     ));
 }
 
@@ -89,8 +98,8 @@ fn custom_capability_set_grants_clock_and_denies_entropy() {
     let (resolved, report) = resolve_imports(&clock, &registry, &bifs, &policy);
     assert!(report.is_empty());
     assert!(matches!(
-        resolved.first().and_then(Option::as_ref).map(|entry| entry.target),
-        Some(ResolvedImportTarget::Native(entry)) if entry.function as usize != denial_stub as usize
+        first_target(&resolved),
+        Some(ResolvedImportTarget::Native(_))
     ));
 
     let entropy = parsed_with_import(&atoms, "rand", "uniform", 0);
@@ -98,18 +107,11 @@ fn custom_capability_set_grants_clock_and_denies_entropy() {
     assert!(report.has_denied());
     assert_eq!(report.denied_imports()[0].capability, Capability::Entropy);
     assert!(matches!(
-        resolved.first().and_then(Option::as_ref).map(|entry| entry.target),
-        Some(ResolvedImportTarget::Native(entry)) if entry.function as usize == denial_stub as usize
+        first_target(&resolved),
+        Some(ResolvedImportTarget::Denied {
+            capability: Capability::Entropy
+        })
     ));
-}
-
-#[test]
-fn calling_denied_stub_returns_undef() {
-    let mut context = ProcessContext::new();
-    assert_eq!(
-        denial_stub(&[Term::small_int(1)], &mut context),
-        Err(Term::atom(beamr::atom::Atom::UNDEF))
-    );
 }
 
 #[test]
@@ -132,7 +134,7 @@ fn scheduler_policy_can_deny_external_io_at_load_time() {
     .expect("scheduler starts");
 
     let parsed = parsed_with_import(&atoms, "meridian_ffi", "run_cmd", 1);
-    let (_resolved, report) = resolve_imports(
+    let (resolved, report) = resolve_imports(
         &parsed,
         &ModuleRegistry::new(),
         bifs.as_ref(),
@@ -140,5 +142,9 @@ fn scheduler_policy_can_deny_external_io_at_load_time() {
     );
 
     assert!(report.has_denied());
+    assert!(matches!(
+        first_target(&resolved),
+        Some(ResolvedImportTarget::Denied { .. })
+    ));
     scheduler.shutdown();
 }

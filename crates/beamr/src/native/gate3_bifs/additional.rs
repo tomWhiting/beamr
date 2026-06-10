@@ -2,7 +2,9 @@
 
 use crate::atom::Atom;
 use crate::native::ProcessContext;
+use crate::native::bifs::integer_result;
 use crate::term::Term;
+use crate::term::bigint_math::BigIntValue;
 use crate::term::binary::Binary;
 use crate::term::boxed::{Float, Map};
 
@@ -101,15 +103,21 @@ pub fn bif_bit_size(args: &[Term], context: &mut ProcessContext) -> Result<Term,
 }
 
 /// erlang:-/1 — unary numeric negation.
+///
+/// Integer negation promotes to a bignum when the result leaves the
+/// small-integer range and demotes bignum results that fit back into it.
 pub fn bif_unary_minus(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [value] = args else {
         return Err(badarg());
     };
-    if let Some(integer) = value.as_small_int() {
-        return integer
-            .checked_neg()
-            .and_then(Term::try_small_int)
-            .ok_or_else(badarg);
+    if let Some(integer) = value.as_small_int()
+        && let Some(negated) = integer.checked_neg().and_then(Term::try_small_int)
+    {
+        return Ok(negated);
+    }
+    // Small integers whose negation overflows fall through here too.
+    if let Some(integer) = BigIntValue::from_term(*value) {
+        return integer_result(integer.negate(), context);
     }
     let value = Float::new(*value).ok_or_else(badarg)?.value();
     if !value.is_finite() {

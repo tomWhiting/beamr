@@ -1,12 +1,9 @@
 //! Capability metadata and policies for native imports.
 //!
 //! Native functions are tagged with the authority they need. Import resolution
-//! checks those tags once, then either binds the real native entry or a small
-//! undef-returning denial stub.
-
-use crate::atom::Atom;
-use crate::native::ProcessContext;
-use crate::term::Term;
+//! checks those tags once, then either binds the real native entry or an
+//! explicit `ResolvedImportTarget::Denied` placeholder that raises a rich
+//! `undef` when called.
 
 /// Authority required by a native function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -129,30 +126,11 @@ impl CapabilityPolicy for CapabilitySet {
     }
 }
 
-/// Current denied-import binding behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DenialMode {
-    /// Bind denied native imports to a native stub that raises `undef`.
-    Undef,
-}
-
-/// Native stub used for denied imports.
-///
-/// The surrounding resolved import table preserves the import slot and arity;
-/// this function has the same signature as every native and returns `undef`
-/// when invoked.
-pub fn denial_stub(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-    Err(Term::atom(Atom::UNDEF))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         AllCapabilitiesPolicy, Capability, CapabilityPolicy, CapabilitySet, LeastAuthorityPolicy,
-        denial_stub,
     };
-    use crate::native::ProcessContext;
-    use crate::term::Term;
 
     #[test]
     fn least_authority_grants_only_pure() {
@@ -185,14 +163,5 @@ mod tests {
         assert!(!policy.grants(Capability::Entropy));
         assert!(!policy.grants(Capability::ExternalIo));
         assert!(!policy.grants(Capability::Spawn));
-    }
-
-    #[test]
-    fn denial_stub_returns_undef() {
-        let mut context = ProcessContext::new();
-        assert_eq!(
-            denial_stub(&[Term::small_int(1)], &mut context),
-            Err(Term::atom(crate::atom::Atom::UNDEF))
-        );
     }
 }

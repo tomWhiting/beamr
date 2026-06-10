@@ -504,15 +504,12 @@ fn call_external_target(
             function,
             arity,
         }),
+        ResolvedImportTarget::Denied { .. } => Err(ExecError::Undef {
+            module: resolved.module,
+            function: resolved.function,
+            arity: resolved.arity,
+        }),
         ResolvedImportTarget::Native(entry) => {
-            if entry.function as usize == crate::native::denial_stub as usize {
-                return Err(ExecError::Undef {
-                    module: resolved.module,
-                    function: resolved.function,
-                    arity: resolved.arity,
-                });
-            }
-
             let audit_event = CapabilityAuditEvent {
                 pid: process.pid(),
                 capability: entry.capability,

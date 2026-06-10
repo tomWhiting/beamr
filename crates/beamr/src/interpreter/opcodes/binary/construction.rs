@@ -1,3 +1,14 @@
+//! Binary construction handlers: writable builders, legacy put-style
+//! segments, and dispatch for the OTP 25+ `bs_create_bin` instruction.
+//!
+//! Decoded `bs_create_bin` operands arrive as
+//! `[Fail, Alloc, Live, Unit, Dst, List]` where the list holds six operands
+//! per segment; that form is handled by the [`segments`] submodule. The
+//! older synthetic forms (used by unit tests and the JIT lowering) are kept
+//! for compatibility.
+
+mod segments;
+
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
 use crate::loader::decode::compact::Operand;
@@ -19,11 +30,24 @@ pub(super) fn bs_init_or_create(
     operands: &[Operand],
 ) -> Result<InstructionOutcome, ExecError> {
     match operands {
+        // Real `bs_init_writable` takes no operands: the size hint sits in
+        // x0 and the result replaces it. The result only ever feeds a later
+        // `bs_create_bin` append segment, which copies its source, so an
+        // ordinary empty binary preserves the semantics.
+        [] => {
+            let empty = segments::empty_binary(process)?;
+            process.set_x_reg(0, empty);
+            Ok(InstructionOutcome::Continue)
+        }
         [size, destination] => {
             let capacity = core::operand_usize(size, "binary builder size")?;
             let term = allocate_builder(process, capacity)?;
             core::write_term(process, destination, term)?;
             Ok(InstructionOutcome::Continue)
+        }
+        // Real compiler output: [Fail, Alloc, Live, Unit, Dst, SegmentList].
+        [Operand::Label(_), _, _, _, _, Operand::List(_)] => {
+            segments::bs_create_bin(process, module, operands)
         }
         [destination, size, segments @ ..] => {
             let capacity = core::operand_usize(size, "binary builder size")?;

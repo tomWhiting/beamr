@@ -69,19 +69,25 @@ impl Scheduler {
         &self,
         parent_pid: u64,
     ) -> Result<u64, crate::native::links::LinkError> {
-        let Some(parent_entry) = self.shared.process_bodies.get(&parent_pid) else {
-            return Err(crate::native::links::LinkError::NoProc);
-        };
-        let mut parent_slot = lock_or_recover(&parent_entry);
-        let ProcessSlot::Present(ScheduledProcess(parent)) = &mut *parent_slot else {
-            return Err(crate::native::links::LinkError::NoProc);
-        };
         let child_pid = self.shared.next_pid.fetch_add(1, Ordering::Relaxed);
+        // Scope the parent map guard so it is released before the insert below:
+        // holding a DashMap shard guard across an insert into the same map
+        // self-deadlocks when both pids hash to the same shard.
+        let parent_group_leader = {
+            let Some(parent_entry) = self.shared.process_bodies.get(&parent_pid) else {
+                return Err(crate::native::links::LinkError::NoProc);
+            };
+            let mut parent_slot = lock_or_recover(&parent_entry);
+            let ProcessSlot::Present(ScheduledProcess(parent)) = &mut *parent_slot else {
+                return Err(crate::native::links::LinkError::NoProc);
+            };
+            parent.add_link(child_pid);
+            parent.group_leader()
+        };
         self.shared.process_table.spawn_with_pid(child_pid);
         let mut child = Process::new(child_pid, DEFAULT_HEAP_SIZE);
-        child.set_group_leader(parent.group_leader());
+        child.set_group_leader(parent_group_leader);
         child.add_link(parent_pid);
-        parent.add_link(child_pid);
         self.shared.process_bodies.insert(
             child_pid,
             Mutex::new(ProcessSlot::Present(ScheduledProcess(child))),

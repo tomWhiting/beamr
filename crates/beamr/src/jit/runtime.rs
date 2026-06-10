@@ -137,7 +137,9 @@ pub(crate) extern "C" fn jit_call_interpreted(
         ResolvedImportTarget::Code { .. } | ResolvedImportTarget::Deferred { .. } => {
             (resolved.module, resolved.function, resolved.arity)
         }
-        ResolvedImportTarget::Unresolved { .. } | ResolvedImportTarget::Native(_) => {
+        ResolvedImportTarget::Unresolved { .. }
+        | ResolvedImportTarget::Native(_)
+        | ResolvedImportTarget::Denied { .. } => {
             return JitReturn::deopt(JIT_DEOPT_SENTINEL as u64);
         }
     };

@@ -10,6 +10,8 @@ use std::fmt;
 use crate::atom::AtomTable;
 use crate::error::LoadError;
 use crate::loader::Literal;
+use crate::term::bigint_convert;
+use crate::term::bigint_math::BigIntValue;
 use crate::term::binary::{packed_word_count, write_binary};
 use crate::term::boxed::{
     BoxedHeader, BoxedTag, write_bigint, write_cons, write_float, write_map, write_tuple,
@@ -295,21 +297,34 @@ fn materialise_literal(
     atom_table: Option<&AtomTable>,
 ) -> Result<RootEntry, LoadError> {
     match literal {
-        Literal::Integer(value) => Term::try_small_int(*value)
-            .map(RootEntry::Immediate)
-            .ok_or_else(|| {
-                LoadError::ValidationError("integer literal outside small range".into())
-            }),
+        // i64 literals that cannot live in a small-integer immediate become
+        // single-limb bignum boxes, matching the runtime's promote-on-overflow
+        // representation so `=:=` against computed values stays canonical.
+        Literal::Integer(value) => match Term::try_small_int(*value) {
+            Some(term) => Ok(RootEntry::Immediate(term)),
+            None => {
+                let limbs = [value.unsigned_abs()];
+                let block = pool.push_block(vec![0; 3 + limbs.len()], BlockKind::Boxed)?;
+                let term = write_bigint(&mut pool.blocks[block], *value < 0, &limbs)
+                    .ok_or_else(write_failed)?;
+                pool.push_root(term)
+            }
+        },
         Literal::Float(value) => {
             let block = pool.push_block(vec![0; 2], BlockKind::Boxed)?;
             let term = write_float(&mut pool.blocks[block], *value).ok_or_else(write_failed)?;
             pool.push_root(term)
         }
         Literal::BigInteger(bytes) => {
-            let limbs = limbs_to_u64(bytes)?;
+            let value = bigint_literal_value(bytes)?;
+            // Demote non-minimal encodings that fit a small immediate.
+            if let Some(term) = value.to_small_i64().and_then(Term::try_small_int) {
+                return Ok(RootEntry::Immediate(term));
+            }
+            let limbs = value.limbs();
             let block = pool.push_block(vec![0; 3 + limbs.len()], BlockKind::Boxed)?;
-            let term =
-                write_bigint(&mut pool.blocks[block], false, &limbs).ok_or_else(write_failed)?;
+            let term = write_bigint(&mut pool.blocks[block], value.is_negative(), limbs)
+                .ok_or_else(write_failed)?;
             pool.push_root(term)
         }
         Literal::Atom(atom) => Ok(RootEntry::Immediate(Term::atom(*atom))),
@@ -409,19 +424,22 @@ fn materialise_literal_term(
     })
 }
 
-fn limbs_to_u64(bytes: &[u8]) -> Result<Vec<u64>, LoadError> {
-    if !bytes.len().is_multiple_of(8) {
-        return Err(LoadError::ValidationError(
-            "big integer literal limb bytes are not word-aligned".into(),
-        ));
-    }
-    let mut limbs = Vec::with_capacity(bytes.len() / 8);
-    for chunk in bytes.chunks_exact(8) {
-        let mut limb = [0u8; 8];
-        limb.copy_from_slice(chunk);
-        limbs.push(u64::from_le_bytes(limb));
-    }
-    Ok(limbs)
+/// Parses a decoded big-integer literal: one sign byte (0 positive,
+/// 1 negative) followed by little-endian magnitude bytes.
+fn bigint_literal_value(bytes: &[u8]) -> Result<BigIntValue, LoadError> {
+    let (sign, magnitude) = bytes.split_first().ok_or_else(|| {
+        LoadError::ValidationError("big integer literal is missing its sign byte".into())
+    })?;
+    let negative = match sign {
+        0 => false,
+        1 => true,
+        other => {
+            return Err(LoadError::ValidationError(format!(
+                "big integer literal has invalid sign byte {other}"
+            )));
+        }
+    };
+    Ok(bigint_convert::from_sign_magnitude_le(negative, magnitude))
 }
 
 fn write_failed() -> LoadError {
@@ -442,9 +460,10 @@ impl fmt::Display for ConstantPool {
 #[cfg(test)]
 mod tests {
     use crate::atom::AtomTable;
+    use crate::error::LoadError;
     use crate::loader::Literal;
     use crate::term::binary::Binary;
-    use crate::term::boxed::{Cons, Float, Map, Tuple};
+    use crate::term::boxed::{BigInt, Cons, Float, Map, Tuple};
     use crate::term::{Term, compare};
 
     use super::materialise_literals;
@@ -584,5 +603,69 @@ mod tests {
         let map = Map::new(pool.get(0).expect("map")).expect("map view");
         let first_key = map.key(0).expect("first key");
         assert!(compare::cmp(first_key, Term::atom(b), &atoms).is_lt());
+    }
+
+    #[test]
+    fn big_integer_literals_materialise_with_sign_and_limbs() {
+        // 10^20 in sign+little-endian-magnitude form, positive then negative.
+        let magnitude = 100_000_000_000_000_000_000_u128.to_le_bytes()[..9].to_vec();
+        let mut positive = vec![0_u8];
+        positive.extend_from_slice(&magnitude);
+        let mut negative = vec![1_u8];
+        negative.extend_from_slice(&magnitude);
+        let literals = vec![
+            Literal::BigInteger(positive),
+            Literal::BigInteger(negative),
+        ];
+
+        let pool = materialise_literals(&literals, None).expect("pool");
+        let expected = [
+            100_000_000_000_000_000_000_u128 as u64,
+            (100_000_000_000_000_000_000_u128 >> 64) as u64,
+        ];
+        let positive = BigInt::new(pool.get(0).expect("positive")).expect("bigint box");
+        assert!(!positive.is_negative());
+        assert_eq!(positive.limbs(), expected);
+        let negative = BigInt::new(pool.get(1).expect("negative")).expect("bigint box");
+        assert!(negative.is_negative());
+        assert_eq!(negative.limbs(), expected);
+    }
+
+    #[test]
+    fn big_integer_literal_in_small_range_demotes_to_immediate() {
+        let literals = vec![Literal::BigInteger(vec![1, 42, 0, 0, 0, 0, 0, 0, 0, 0])];
+        let pool = materialise_literals(&literals, None).expect("pool");
+        assert_eq!(pool.get(0), Some(Term::small_int(-42)));
+    }
+
+    #[test]
+    fn big_integer_literal_with_invalid_sign_is_rejected() {
+        for bad in [Literal::BigInteger(vec![2, 1]), Literal::BigInteger(vec![])] {
+            assert!(matches!(
+                materialise_literals(&[bad], None),
+                Err(LoadError::ValidationError(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn integer_literal_beyond_small_range_materialises_as_bignum_box() {
+        let positive_value = Term::SMALL_INT_MAX + 1;
+        let negative_value = Term::SMALL_INT_MIN - 1;
+        let literals = vec![
+            Literal::Integer(positive_value),
+            Literal::Integer(negative_value),
+            // -(SMALL_INT_MAX + 1) is exactly SMALL_INT_MIN: still immediate.
+            Literal::Integer(-positive_value),
+        ];
+        let pool = materialise_literals(&literals, None).expect("pool");
+
+        let positive = BigInt::new(pool.get(0).expect("positive")).expect("bigint box");
+        assert!(!positive.is_negative());
+        assert_eq!(positive.limbs(), [positive_value.unsigned_abs()]);
+        let negative = BigInt::new(pool.get(1).expect("negative")).expect("bigint box");
+        assert!(negative.is_negative());
+        assert_eq!(negative.limbs(), [negative_value.unsigned_abs()]);
+        assert_eq!(pool.get(2), Some(Term::small_int(Term::SMALL_INT_MIN)));
     }
 }

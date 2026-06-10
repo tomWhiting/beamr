@@ -32,6 +32,15 @@ pub enum ResolvedImportTarget {
     },
     /// A Rust native function registered as a BIF.
     Native(NativeEntry),
+    /// A native import denied by the capability policy at load time.
+    ///
+    /// Carried as an explicit variant (not a sentinel function pointer, which
+    /// is unreliable to compare across codegen units in release builds) so
+    /// dispatch can raise a rich `undef` with the denied MFA.
+    Denied {
+        /// Capability the policy refused to grant.
+        capability: crate::native::Capability,
+    },
     /// A BEAM function whose module was not loaded when this module was loaded.
     Deferred {
         /// Target module atom.

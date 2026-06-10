@@ -411,6 +411,19 @@ fn list_to_integer_parses_decimal_character_list() {
 }
 
 #[test]
+fn list_to_integer_parses_bignum_character_list() {
+    let mut process = Process::new(1, 512);
+    let mut ctx = ProcessContext::new();
+    ctx.attach_process(&mut process, 0);
+    let list = char_list(&mut ctx, b"-100000000000000000000");
+    let parsed = bif_list_to_integer(&[list], &mut ctx).expect("parses bignum");
+    let bigint = crate::term::boxed::BigInt::new(parsed).expect("bignum box");
+    assert!(bigint.is_negative());
+    let magnitude = 100_000_000_000_000_000_000_u128;
+    assert_eq!(bigint.limbs(), [magnitude as u64, (magnitude >> 64) as u64]);
+}
+
+#[test]
 fn list_to_integer_badarg_invalid_input() {
     let mut process = Process::new(1, 128);
     let mut ctx = ProcessContext::new();
@@ -424,10 +437,10 @@ fn list_to_float_parses_decimal_character_list() {
     let mut process = Process::new(1, 128);
     let mut ctx = ProcessContext::new();
     ctx.attach_process(&mut process, 0);
-    let list = char_list(&mut ctx, b"3.14");
+    let list = char_list(&mut ctx, b"3.25");
     let result = bif_list_to_float(&[list], &mut ctx).unwrap();
     let value = Float::new(result).expect("float").value();
-    assert!((value - 3.14).abs() < f64::EPSILON);
+    assert!((value - 3.25).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -445,9 +458,9 @@ fn float_to_list_formats_character_list() {
     let mut ctx = ProcessContext::new();
     ctx.attach_process(&mut process, 0);
     let mut heap = [0u64; 2];
-    let float = write_float(&mut heap, 3.14).expect("float");
+    let float = write_float(&mut heap, 3.25).expect("float");
     let result = bif_float_to_list(&[float], &mut ctx).unwrap();
-    assert_eq!(list_bytes(result), b"3.14");
+    assert_eq!(list_bytes(result), b"3.25");
 }
 
 #[test]
@@ -471,10 +484,10 @@ fn float_to_binary_formats_with_decimals_option() {
         write_tuple(&mut tuple_heap, &[Term::atom(decimals), Term::small_int(2)]).expect("tuple");
     let options = ctx.alloc_list(&[option]).expect("options list");
     let mut float_heap = [0u64; 2];
-    let float = write_float(&mut float_heap, 3.14).expect("float");
+    let float = write_float(&mut float_heap, 3.25).expect("float");
     let result = bif_float_to_binary_2(&[float, options], &mut ctx).unwrap();
     let binary = crate::term::binary::Binary::new(result).expect("binary");
-    assert_eq!(binary.as_bytes(), b"3.14");
+    assert_eq!(binary.as_bytes(), b"3.25");
 }
 
 #[test]
@@ -482,7 +495,7 @@ fn float_to_binary_badarg_malformed_options() {
     let mut process = Process::new(1, 128);
     let mut ctx = ctx_with_atoms(&mut process);
     let mut float_heap = [0u64; 2];
-    let float = write_float(&mut float_heap, 3.14).expect("float");
+    let float = write_float(&mut float_heap, 3.25).expect("float");
     let options = ctx
         .alloc_list(&[Term::atom(Atom::OK)])
         .expect("options list");
@@ -505,7 +518,7 @@ fn float_to_binary_badarg_decimals_out_of_range() {
     .expect("tuple");
     let options = ctx.alloc_list(&[option]).expect("options list");
     let mut float_heap = [0u64; 2];
-    let float = write_float(&mut float_heap, 3.14).expect("float");
+    let float = write_float(&mut float_heap, 3.25).expect("float");
 
     assert_eq!(
         bif_float_to_binary_2(&[float, options], &mut ctx),

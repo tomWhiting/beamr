@@ -7,9 +7,7 @@ use crate::atom::{Atom, AtomTable};
 use crate::constant_pool::materialise_literals;
 use crate::error::LoadError;
 use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
-use crate::native::{
-    AllCapabilitiesPolicy, BifRegistry, Capability, CapabilityPolicy, NativeEntry, denial_stub,
-};
+use crate::native::{AllCapabilitiesPolicy, BifRegistry, Capability, CapabilityPolicy};
 
 use super::decode::budget::DecodeBudget;
 use super::decode::{
@@ -315,14 +313,17 @@ pub fn load_beam_chunks(bytes: &[u8], atom_table: &AtomTable) -> Result<ParsedMo
         .copied()
         .ok_or_else(|| LoadError::DecodeError("atom chunk is empty".into()))?;
 
-    let literals = match find_chunk(&chunks, b"LitT") {
+    let mut literals = match find_chunk(&chunks, b"LitT") {
         Some(bytes) => decode_literal_chunk(bytes, atom_table, &mut budget)?,
         None => Vec::new(),
     };
 
     let code_chunk =
         find_chunk(&chunks, b"Code").ok_or_else(|| LoadError::MissingChunk("Code".into()))?;
-    let instructions = decode_code_chunk(code_chunk, &atoms, &literals)?;
+    let (instructions, extra_literals) = decode_code_chunk(code_chunk, &atoms, &literals)?;
+    // Oversized compact integer operands were materialised as literals whose
+    // indices start at the end of the LitT table.
+    literals.extend(extra_literals);
 
     let imports = match find_chunk(&chunks, b"ImpT") {
         Some(bytes) => decode_import_chunk(bytes, &atoms, &mut budget)?,
@@ -522,8 +523,8 @@ pub fn resolve_imports(
 
     for import in &parsed.imports {
         if let Some(entry) = bif_registry.lookup(import.module, import.function, import.arity) {
-            let entry = if capability_policy.is_granted(entry.capability) {
-                entry
+            let target = if capability_policy.is_granted(entry.capability) {
+                ResolvedImportTarget::Native(entry)
             } else {
                 denied.push(DeniedImportEntry::new(
                     import.module,
@@ -531,9 +532,7 @@ pub fn resolve_imports(
                     import.arity,
                     entry.capability,
                 ));
-                NativeEntry {
-                    function: denial_stub,
-                    dirty_kind: None,
+                ResolvedImportTarget::Denied {
                     capability: entry.capability,
                 }
             };
@@ -541,7 +540,7 @@ pub fn resolve_imports(
                 module: import.module,
                 function: import.function,
                 arity: import.arity,
-                target: ResolvedImportTarget::Native(entry),
+                target,
             }));
             continue;
         }
@@ -1050,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn denied_bif_import_is_bound_to_denial_stub_and_reported() {
+    fn denied_bif_import_is_bound_to_denied_target_and_reported() {
         let atoms = AtomTable::new();
         let erlang = atoms.intern("erlang");
         let now = atoms.intern("now");
@@ -1094,14 +1093,14 @@ mod tests {
         assert!(report.has_denied());
         assert_eq!(report.denied_imports().len(), 1);
         assert!(report.to_string().contains("capability denied"));
-        let Some(ResolvedImportTarget::Native(entry)) = resolved
+        let Some(ResolvedImportTarget::Denied { capability }) = resolved
             .first()
             .and_then(|entry| entry.as_ref())
             .map(|entry| entry.target)
         else {
             panic!("denied native should still occupy import slot");
         };
-        assert_eq!(entry.function as usize, crate::native::denial_stub as usize);
+        assert_eq!(capability, Capability::Clock);
     }
 
     #[test]

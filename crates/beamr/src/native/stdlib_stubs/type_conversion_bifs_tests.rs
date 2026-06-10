@@ -5,7 +5,7 @@ use crate::native::ProcessContext;
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary::{self, Binary};
-use crate::term::boxed::{Cons, Float, Tuple, write_cons, write_float, write_tuple};
+use crate::term::boxed::{BigInt, Cons, Float, Tuple, write_cons, write_float, write_tuple};
 
 use super::type_conversion_bifs::*;
 
@@ -121,6 +121,83 @@ fn integer_to_binary_formats_radix() {
         bif_integer_to_binary_radix(&[Term::small_int(255), Term::small_int(16)], &mut context)
             .expect("binary");
     assert_binary(result, b"FF");
+}
+
+const REPRO_DECIMAL: &[u8] = b"100000000000000000000"; // 10^20
+
+fn repro_limbs() -> [u64; 2] {
+    let magnitude = 100_000_000_000_000_000_000_u128;
+    [magnitude as u64, (magnitude >> 64) as u64]
+}
+
+#[test]
+fn integer_to_binary_formats_bignums() {
+    let mut process = Process::new(1, 256);
+    let mut context = context(&mut process);
+    let positive = context.alloc_bigint(false, &repro_limbs()).expect("bignum");
+    let result = bif_integer_to_binary(&[positive], &mut context).expect("binary");
+    assert_binary(result, REPRO_DECIMAL);
+
+    let negative = context.alloc_bigint(true, &repro_limbs()).expect("bignum");
+    let result = bif_integer_to_binary(&[negative], &mut context).expect("binary");
+    assert_binary(result, b"-100000000000000000000");
+}
+
+#[test]
+fn integer_to_binary_formats_bignum_radix() {
+    let mut process = Process::new(1, 256);
+    let mut context = context(&mut process);
+    let positive = context.alloc_bigint(false, &repro_limbs()).expect("bignum");
+    let result = bif_integer_to_binary_radix(&[positive, Term::small_int(16)], &mut context)
+        .expect("binary");
+    assert_binary(result, b"56BC75E2D63100000");
+}
+
+#[test]
+fn binary_to_integer_round_trips_bignums() {
+    let mut process = Process::new(1, 256);
+    let mut context = context(&mut process);
+    let parsed =
+        bif_binary_to_integer(&[binary(REPRO_DECIMAL)], &mut context).expect("parses bignum");
+    let bigint = BigInt::new(parsed).expect("bignum box");
+    assert!(!bigint.is_negative());
+    assert_eq!(bigint.limbs(), repro_limbs());
+
+    let parsed = bif_binary_to_integer(&[binary(b"-100000000000000000000")], &mut context)
+        .expect("parses negative bignum");
+    let bigint = BigInt::new(parsed).expect("bignum box");
+    assert!(bigint.is_negative());
+    assert_eq!(bigint.limbs(), repro_limbs());
+
+    let round_tripped = bif_integer_to_binary(&[parsed], &mut context).expect("binary");
+    assert_binary(round_tripped, b"-100000000000000000000");
+}
+
+#[test]
+fn binary_to_integer_rejects_malformed_digits() {
+    let mut process = Process::new(1, 128);
+    let mut context = context(&mut process);
+    assert_eq!(
+        bif_binary_to_integer(&[binary(b"12x")], &mut context),
+        Err(badarg())
+    );
+    assert_eq!(
+        bif_binary_to_integer(&[binary(b"")], &mut context),
+        Err(badarg())
+    );
+}
+
+#[test]
+fn integer_to_list_formats_bignum_chars() {
+    let mut process = Process::new(1, 512);
+    let mut context = context(&mut process);
+    let negative = context.alloc_bigint(true, &repro_limbs()).expect("bignum");
+    let result = bif_integer_to_list(&[negative], &mut context).expect("list");
+    let expected: Vec<Term> = b"-100000000000000000000"
+        .iter()
+        .map(|byte| Term::small_int(i64::from(*byte)))
+        .collect();
+    assert_eq!(list_to_vec(result), expected);
 }
 
 #[test]

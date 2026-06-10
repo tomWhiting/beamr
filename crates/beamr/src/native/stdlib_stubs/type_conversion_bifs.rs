@@ -2,7 +2,9 @@
 
 use crate::atom::Atom;
 use crate::native::ProcessContext;
+use crate::native::bifs::integer_result;
 use crate::term::Term;
+use crate::term::bigint_convert;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Float, Tuple};
 
@@ -26,27 +28,22 @@ pub fn bif_binary_to_float(args: &[Term], context: &mut ProcessContext) -> Resul
     make_float(context, value)
 }
 
-pub fn bif_binary_to_integer(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
+pub fn bif_binary_to_integer(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [binary_term] = args else {
         return Err(badarg());
     };
-    binary_to_integer(*binary_term, 10)
+    binary_to_integer(*binary_term, 10, context)
 }
 
 pub fn bif_binary_to_integer_radix(
     args: &[Term],
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
-    let _ = context;
     let [binary_term, radix_term] = args else {
         return Err(badarg());
     };
-    let radix = radix_term
-        .as_small_int()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| (2..=36).contains(value))
-        .ok_or_else(badarg)?;
-    binary_to_integer(*binary_term, radix)
+    let radix = parse_radix(*radix_term)?;
+    binary_to_integer(*binary_term, radix, context)
 }
 
 pub fn bif_float(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -66,33 +63,28 @@ pub fn bif_integer_to_binary(args: &[Term], context: &mut ProcessContext) -> Res
     let [integer_term] = args else {
         return Err(badarg());
     };
-    let integer = integer_term.as_small_int().ok_or_else(badarg)?;
-    context.alloc_binary(integer.to_string().as_bytes())
+    let text = format_integer_term(*integer_term, 10)?;
+    context.alloc_binary(text.as_bytes())
 }
 
 pub fn bif_integer_to_binary_radix(
     args: &[Term],
     context: &mut ProcessContext,
 ) -> Result<Term, Term> {
-    let _ = context;
     let [integer_term, radix_term] = args else {
         return Err(badarg());
     };
-    let integer = integer_term.as_small_int().ok_or_else(badarg)?;
-    let radix = radix_term
-        .as_small_int()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| (2..=36).contains(value))
-        .ok_or_else(badarg)?;
-    context.alloc_binary(format_integer(integer, radix)?.as_bytes())
+    let radix = parse_radix(*radix_term)?;
+    let text = format_integer_term(*integer_term, radix)?;
+    context.alloc_binary(text.as_bytes())
 }
 
 pub fn bif_integer_to_list(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [integer_term] = args else {
         return Err(badarg());
     };
-    let integer = integer_term.as_small_int().ok_or_else(badarg)?;
-    make_list(context, integer.to_string().bytes().map(i64::from))
+    let text = format_integer_term(*integer_term, 10)?;
+    make_list(context, text.bytes().map(i64::from))
 }
 
 pub fn bif_iolist_to_binary(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -127,39 +119,30 @@ pub fn bif_tuple_to_list(args: &[Term], context: &mut ProcessContext) -> Result<
     context.alloc_list(&values)
 }
 
-fn binary_to_integer(binary_term: Term, radix: u32) -> Result<Term, Term> {
+/// Parses integer text in the given radix, allocating a bignum when the value
+/// does not fit a small-integer immediate.
+fn binary_to_integer(
+    binary_term: Term,
+    radix: u32,
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
     let binary = BinaryRef::new(binary_term).ok_or_else(badarg)?;
     let text = std::str::from_utf8(binary.as_bytes()).map_err(|_| badarg())?;
-    let integer = i64::from_str_radix(text, radix).map_err(|_| badarg())?;
-    Term::try_small_int(integer).ok_or_else(badarg)
+    let integer = bigint_convert::from_str_radix(text, radix).ok_or_else(badarg)?;
+    integer_result(integer, context)
 }
 
-fn format_integer(integer: i64, radix: u32) -> Result<String, Term> {
-    if radix == 10 {
-        return Ok(integer.to_string());
-    }
+/// Formats a small or bignum integer term in the given radix.
+fn format_integer_term(integer_term: Term, radix: u32) -> Result<String, Term> {
+    bigint_convert::integer_term_to_string_radix(integer_term, radix).ok_or_else(badarg)
+}
 
-    let negative = integer.is_negative();
-    let mut value = integer.unsigned_abs();
-    let mut digits = Vec::new();
-    if value == 0 {
-        digits.push(b'0');
-    }
-    while value > 0 {
-        let digit = (value % u64::from(radix)) as u8;
-        let byte = if digit < 10 {
-            b'0' + digit
-        } else {
-            b'A' + (digit - 10)
-        };
-        digits.push(byte);
-        value /= u64::from(radix);
-    }
-    if negative {
-        digits.push(b'-');
-    }
-    digits.reverse();
-    String::from_utf8(digits).map_err(|_| badarg())
+fn parse_radix(radix_term: Term) -> Result<u32, Term> {
+    radix_term
+        .as_small_int()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| (bigint_convert::MIN_RADIX..=bigint_convert::MAX_RADIX).contains(value))
+        .ok_or_else(badarg)
 }
 
 fn collect_iodata(term: Term, bytes: &mut Vec<u8>) -> Result<(), Term> {

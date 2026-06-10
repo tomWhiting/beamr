@@ -16,8 +16,8 @@ use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary;
 use crate::term::boxed::{
-    Float, write_closure, write_cons, write_external_pid, write_external_reference, write_float,
-    write_tuple,
+    BigInt, Float, write_closure, write_cons, write_external_pid, write_external_reference,
+    write_float, write_tuple,
 };
 use crate::term::reference_ref::ReferenceRef;
 
@@ -833,6 +833,35 @@ fn abs_handles_numbers_and_rejects_non_numbers() {
     let float_result = bif_abs_1(&[float(-2.5)], &mut ctx).expect("float abs");
     assert_eq!(Float::new(float_result).expect("float").value(), 2.5);
     assert_eq!(bif_abs_1(&[Term::atom(Atom::OK)], &mut ctx), Err(badarg()));
+}
+
+#[test]
+fn abs_promotes_small_overflow_and_accepts_bignums() {
+    let mut process = Process::new(1, 256);
+    let mut ctx = context(&mut process);
+
+    // abs(SMALL_INT_MIN) leaves the small range and promotes to a bignum.
+    let promoted =
+        bif_abs_1(&[Term::small_int(Term::SMALL_INT_MIN)], &mut ctx).expect("promotes");
+    let bigint = BigInt::new(promoted).expect("bignum box");
+    assert!(!bigint.is_negative());
+    assert_eq!(bigint.limbs(), [Term::SMALL_INT_MIN.unsigned_abs()]);
+
+    // abs(-(10^20)) -> 100000000000000000000 keeps the magnitude, drops the sign.
+    let magnitude = 100_000_000_000_000_000_000_u128;
+    let limbs = [magnitude as u64, (magnitude >> 64) as u64];
+    let negative = ctx.alloc_bigint(true, &limbs).expect("bignum");
+    let absolute = bif_abs_1(&[negative], &mut ctx).expect("abs");
+    let bigint = BigInt::new(absolute).expect("bignum box");
+    assert!(!bigint.is_negative());
+    assert_eq!(bigint.limbs(), limbs);
+
+    // A non-canonical bignum holding -5 demotes to the small immediate 5.
+    let small_magnitude = ctx.alloc_bigint(true, &[5]).expect("bignum");
+    assert_eq!(
+        bif_abs_1(&[small_magnitude], &mut ctx),
+        Ok(Term::small_int(5))
+    );
 }
 
 // ---- Registration ----
