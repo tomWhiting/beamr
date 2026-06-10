@@ -1,1 +1,1 @@
-feat(wasm): bridge receive timers and async nif promises
+Harden B-145 WASM timer/async bridge and add targeted scheduler tests

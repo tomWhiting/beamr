@@ -21,7 +21,7 @@ use beamr::process::Process;
 use beamr::scheduler::{WasmAsyncCompletion, WasmRunSummary, WasmScheduler};
 use beamr::term::json::{term_to_value, value_to_term};
 use beamr::term::{Term, format::format_term};
-use js_sys::{Function, Promise};
+use js_sys::{Function, Promise, Reflect};
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -398,19 +398,28 @@ fn registration_error_to_js(error: NativeRegistrationError) -> JsValue {
 }
 
 fn set_timeout(callback: &Closure<dyn FnMut()>, milliseconds: u64) -> Result<i32, JsValue> {
-    let Some(window) = web_sys::window() else {
-        return Err(JsValue::from_str("setTimeout requires a browser Window"));
-    };
+    let global = js_sys::global();
+    let set_timeout = Reflect::get(&global, &JsValue::from_str("setTimeout"))?
+        .dyn_into::<Function>()
+        .map_err(|_| JsValue::from_str("global setTimeout is not a function"))?;
     let delay = i32::try_from(milliseconds).unwrap_or(i32::MAX);
-    window.set_timeout_with_callback_and_timeout_and_arguments_0(
+    let handle = set_timeout.call2(
+        &global,
         callback.as_ref().unchecked_ref(),
-        delay,
-    )
+        &JsValue::from_f64(f64::from(delay)),
+    )?;
+    handle
+        .as_f64()
+        .and_then(|value| i32::try_from(value as i64).ok())
+        .ok_or_else(|| JsValue::from_str("setTimeout did not return a numeric handle"))
 }
 
 fn clear_timeout(handle: i32) {
-    if let Some(window) = web_sys::window() {
-        window.clear_timeout_with_handle(handle);
+    let global = js_sys::global();
+    if let Ok(clear_timeout) = Reflect::get(&global, &JsValue::from_str("clearTimeout"))
+        && let Ok(clear_timeout) = clear_timeout.dyn_into::<Function>()
+    {
+        let _ignored = clear_timeout.call1(&global, &JsValue::from_f64(f64::from(handle)));
     }
 }
 

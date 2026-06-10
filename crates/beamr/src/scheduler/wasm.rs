@@ -60,16 +60,16 @@ pub struct WasmScheduler {
     module_registry: Arc<ModuleRegistry>,
     bif_registry: Arc<BifRegistryImpl>,
     next_pid: u64,
-    processes: BTreeMap<u64, Process>,
-    ready: ReadyQueues,
-    waiting: BTreeSet<u64>,
+    pub(super) processes: BTreeMap<u64, Process>,
+    pub(super) ready: ReadyQueues,
+    pub(super) waiting: BTreeSet<u64>,
     exit_reasons: BTreeMap<u64, ExitReason>,
     exit_results: BTreeMap<u64, OwnedTerm>,
     exit_errors: BTreeMap<u64, ExecError>,
     next_timer_id: u64,
     pending_timer_schedules: Vec<WasmScheduledTimer>,
     pending_timer_cancellations: Vec<u64>,
-    async_results: BTreeMap<u64, WasmAsyncCompletion>,
+    pub(super) async_results: BTreeMap<u64, WasmAsyncCompletion>,
     wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
 }
 
@@ -361,7 +361,7 @@ impl WasmScheduler {
         }
     }
 
-    fn register_receive_timer(&mut self, process: &mut Process) {
+    pub(super) fn register_receive_timer(&mut self, process: &mut Process) {
         let Some(timeout) = process.receive_timeout() else {
             return;
         };
@@ -378,7 +378,7 @@ impl WasmScheduler {
         });
     }
 
-    fn apply_async_completion(&mut self, process: &mut Process) -> Option<ExitReason> {
+    pub(super) fn apply_async_completion(&mut self, process: &mut Process) -> Option<ExitReason> {
         let completion = self.async_results.remove(&process.pid())?;
         match completion {
             WasmAsyncCompletion::Ok(term) => {
@@ -404,7 +404,7 @@ fn advance_past_current_instruction(process: &mut Process) {
 }
 
 #[derive(Default)]
-struct ReadyQueues {
+pub(super) struct ReadyQueues {
     max: VecDeque<u64>,
     high: VecDeque<u64>,
     normal: VecDeque<u64>,
@@ -421,7 +421,7 @@ impl ReadyQueues {
         }
     }
 
-    fn pop(&mut self) -> Option<u64> {
+    pub(super) fn pop(&mut self) -> Option<u64> {
         self.max
             .pop_front()
             .or_else(|| self.high.pop_front())
@@ -435,19 +435,5 @@ impl ReadyQueues {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wasm_scheduler_starts_empty_and_runs_idle_round() {
-        let atom_table = Arc::new(AtomTable::with_common_atoms());
-        let modules = Arc::new(ModuleRegistry::new());
-        let bifs = Arc::new(BifRegistryImpl::new());
-        let mut scheduler = WasmScheduler::new(atom_table, modules, bifs);
-
-        let summary = scheduler.run_until_idle();
-
-        assert_eq!(summary.executed, 0);
-        assert!(summary.exited.is_empty());
-    }
-}
+#[path = "wasm_tests.rs"]
+mod tests;
