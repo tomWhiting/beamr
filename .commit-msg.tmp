@@ -1,1 +1,1 @@
-review: harden wasm JS message send and callback bridge
+feat(wasm): add bundle builder and edge worker example

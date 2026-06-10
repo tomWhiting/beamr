@@ -20,3 +20,6 @@ wasm-bindgen-futures = "0.4.73"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.55"
+
+[build-dependencies]
+zstd = "0.13.3"
