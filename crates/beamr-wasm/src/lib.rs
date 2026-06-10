@@ -199,6 +199,19 @@ impl WasmVm {
         json_to_js(&value)
     }
 
+    /// Consume and return the captured exit value for `pid`, if that process has exited.
+    ///
+    /// Hosts that serve many independent requests should prefer this over repeatedly
+    /// scanning `run_step().results`, because it releases the scheduler's retained
+    /// copy of the process result once the host has converted it.
+    pub fn take_exit_result(&mut self, pid: u64) -> Result<JsValue, JsValue> {
+        let result = { self.scheduler.borrow_mut().take_exit_result(pid) };
+        let value = result
+            .map(|term| self.term_to_json_or_fallback(term.root()))
+            .unwrap_or(Value::Null);
+        json_to_js(&value)
+    }
+
     /// Called by tests or custom hosts to drive an already-fired timer manually.
     pub fn timer_fired(&mut self, pid: u64, timer_id: u64) -> Result<bool, JsValue> {
         self.timer_handles.borrow_mut().remove(&timer_id);

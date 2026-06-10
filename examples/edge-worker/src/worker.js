@@ -6,17 +6,17 @@ const DEFAULT_MAX_STEPS = 1024;
 
 let preloadedVmPromise;
 
-function configuredModule(env) {
+function configuredModule(env = {}) {
   return env.BEAMR_EDGE_MODULE || DEFAULT_MODULE;
 }
 
-function configuredFunction(env) {
+function configuredFunction(env = {}) {
   return env.BEAMR_EDGE_FUNCTION || DEFAULT_FUNCTION;
 }
 
-function configuredMaxSteps(env) {
+function configuredMaxSteps(env = {}) {
   const value = Number(env.BEAMR_EDGE_MAX_STEPS || DEFAULT_MAX_STEPS);
-  return Number.isFinite(value) && value > 0 ? value : DEFAULT_MAX_STEPS;
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_STEPS;
 }
 
 function getPreloadedVm() {
@@ -27,7 +27,7 @@ function getPreloadedVm() {
 }
 
 function headersToObject(headers) {
-  const object = {};
+  const object = Object.create(null);
   for (const [name, value] of headers) {
     object[name] = value;
   }
@@ -50,8 +50,21 @@ function jsonSummary(value) {
 
 function responseFromBeamValue(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    const status = Number(value.status || 200);
-    const headers = value.headers && typeof value.headers === "object" ? value.headers : {};
+    const status = Number(value.status ?? 200);
+    if (!Number.isInteger(status) || status < 200 || status > 599) {
+      throw new Error(`BEAM handler returned invalid HTTP status ${value.status}`);
+    }
+    const headers = new Headers();
+    if (value.headers != null) {
+      if (typeof value.headers !== "object" || Array.isArray(value.headers)) {
+        throw new Error("BEAM handler returned invalid HTTP headers");
+      }
+      for (const [name, headerValue] of Object.entries(value.headers)) {
+        if (headerValue != null) {
+          headers.set(name, String(headerValue));
+        }
+      }
+    }
     const body = value.body == null ? "" : value.body;
     return new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers });
   }
@@ -72,7 +85,8 @@ async function runBeamRequest(request, env) {
       { status: 503 }
     );
   }
-  return responseFromBeamValue(result.value);
+  const value = typeof vm.take_exit_result === "function" ? jsonSummary(vm.take_exit_result(pid)) : result.value;
+  return responseFromBeamValue(value);
 }
 
 export default {

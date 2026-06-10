@@ -53,7 +53,7 @@ npm install
 npm test
 ```
 
-The smoke test verifies HTTP request/response handling and the explicit WebSocket rejection path. It uses a tiny in-test VM stub so it can run without a prebuilt `.wasm` artifact; use the build steps above for an end-to-end bundle test.
+The smoke test verifies HTTP request/response handling, the explicit WebSocket rejection path, and cleanup of per-request exit results while reusing the preloaded VM. It runs the real `src/worker.js` with an in-test bundle stub so it can run without a prebuilt `.wasm` artifact; use the build steps above for an end-to-end bundle test.
 
 ## Boundaries
 

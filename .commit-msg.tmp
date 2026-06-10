@@ -1,1 +1,1 @@
-feat(wasm): add bundle builder and edge worker example
+Harden WASM bundle bootstrap and edge worker request handling

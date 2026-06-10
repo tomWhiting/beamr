@@ -1,51 +1,62 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Miniflare } from "miniflare";
 
-function workerScript() {
-  return `
+async function workerScript() {
+  const source = await readFile(new URL("../src/worker.js", import.meta.url), "utf8");
+  const stubBundle = `
     const vm = {
+      nextPid: 1,
+      results: new Map(),
       spawn(module, fun, argsJson) {
-        this.last = { module, fun, args: JSON.parse(argsJson) };
-        return 1;
+        const pid = this.nextPid++;
+        const [request] = JSON.parse(argsJson);
+        this.results.set(pid, {
+          status: 201,
+          headers: { "x-beamr": "edge", "x-beamr-pid": String(pid) },
+          body: JSON.stringify({ module, fun, method: request.method, url: request.url, body: request.body })
+        });
+        return pid;
       },
       run_step() {
-        return JSON.stringify({
-          executed: 1,
-          yielded: 0,
-          waiting: 0,
-          exited: 1,
-          errored: 0,
-          results: [{ pid: 1, value: { status: 201, headers: { "x-beamr": "edge" }, body: this.last.args[0].method + " " + this.last.args[0].url } }]
-        });
+        const results = [...this.results].map(([pid, value]) => ({ pid, value }));
+        return JSON.stringify({ executed: 1, yielded: 0, waiting: 0, exited: results.length, errored: 0, results });
+      },
+      take_exit_result(pid) {
+        const value = this.results.get(pid) ?? null;
+        this.results.delete(pid);
+        return JSON.stringify(value);
       }
     };
-    function runUntilExit(vm, pid) {
-      const summary = JSON.parse(vm.run_step());
-      return { summary, result: summary.results.find((entry) => entry.pid === pid) };
+    async function createPreloadedVm() {
+      return { vm, loads: [] };
     }
-    async function requestToBeamValue(request) {
-      const body = request.method === "GET" || request.method === "HEAD" ? "" : await request.text();
-      return { method: request.method, url: request.url, headers: Object.fromEntries(request.headers), body };
+    function parseJsonResult(value) {
+      return typeof value === "string" ? JSON.parse(value) : value;
     }
-    export default {
-      async fetch(request, env) {
-        if (request.headers.get("upgrade")) {
-          return new Response("WebSocket upgrades are not supported by this stateless Beamr edge worker", { status: 426 });
+    function runUntilExit(vm, pid, options = {}) {
+      const maxSteps = options.maxSteps ?? 1024;
+      for (let step = 0; step < maxSteps; step += 1) {
+        const summary = parseJsonResult(vm.run_step());
+        const result = summary.results.find((entry) => entry.pid === pid);
+        if (result) {
+          return { summary, result };
         }
-        const requestValue = await requestToBeamValue(request);
-        const pid = vm.spawn(env.BEAMR_EDGE_MODULE, env.BEAMR_EDGE_FUNCTION, JSON.stringify([requestValue]));
-        const { result } = runUntilExit(vm, pid);
-        return new Response(result.value.body, { status: result.value.status, headers: result.value.headers });
       }
-    };
+      throw new Error("process did not exit");
+    }
   `;
+  return source.replace(
+    'import { createPreloadedVm, runUntilExit } from "../../../crates/beamr-wasm/pkg/beamr.bundle.mjs";',
+    stubBundle
+  );
 }
 
 test("Cloudflare Worker spawns one BEAM process per HTTP request shape", async () => {
   const miniflare = new Miniflare({
     modules: true,
-    script: workerScript(),
+    script: await workerScript(),
     bindings: {
       BEAMR_EDGE_MODULE: "edge_handler",
       BEAMR_EDGE_FUNCTION: "handle",
@@ -60,19 +71,39 @@ test("Cloudflare Worker spawns one BEAM process per HTTP request shape", async (
     });
     assert.equal(response.status, 201);
     assert.equal(response.headers.get("x-beamr"), "edge");
-    assert.equal(await response.text(), "POST https://example.test/path");
+    const body = JSON.parse(await response.text());
+    assert.deepEqual(body, {
+      module: "edge_handler",
+      fun: "handle",
+      method: "POST",
+      url: "https://example.test/path",
+      body: "hello",
+    });
   } finally {
     await miniflare.dispose();
   }
 });
 
 test("WebSocket upgrade stays out of scope", async () => {
-  const miniflare = new Miniflare({ modules: true, script: workerScript() });
+  const miniflare = new Miniflare({ modules: true, script: await workerScript() });
   try {
     const response = await miniflare.dispatchFetch("https://example.test/socket", {
       headers: { upgrade: "websocket" },
     });
     assert.equal(response.status, 426);
+  } finally {
+    await miniflare.dispose();
+  }
+});
+
+test("process exit results are consumed between requests", async () => {
+  const miniflare = new Miniflare({ modules: true, script: await workerScript() });
+  try {
+    const first = await miniflare.dispatchFetch("https://example.test/first");
+    const second = await miniflare.dispatchFetch("https://example.test/second");
+    assert.equal(first.headers.get("x-beamr-pid"), "1");
+    assert.equal(second.headers.get("x-beamr-pid"), "2");
+    assert.equal(JSON.parse(await second.text()).url, "https://example.test/second");
   } finally {
     await miniflare.dispose();
   }

@@ -280,6 +280,9 @@ export function runUntilExit(vm, pid, options = {}) {
     const summary = parseJsonResult(vm.run_step());
     const result = summary.results.find((entry) => entry.pid === pid);
     if (result) {
+      if (typeof vm.take_exit_result === "function") {
+        result.value = parseJsonResult(vm.take_exit_result(pid));
+      }
       return { summary, result };
     }
     if (summary.executed === 0 && summary.waiting === 0 && summary.yielded === 0) {
@@ -323,8 +326,12 @@ async function main() {
   const glue = await readFile(gluePath, "utf8");
   const wasm = await readFile(wasmPath);
   const wasmBase64 = wasm.toString("base64");
+  const importLine = 'import init, { create_vm, WasmVm } from "./beamr_wasm.js";';
+  if (!bootstrap.includes(importLine)) {
+    throw new Error("bootstrap import line did not match expected wasm-bindgen import");
+  }
   const rewrittenBootstrap = bootstrap.replace(
-    'import init, { create_vm, WasmVm } from "./beamr_wasm.js";',
+    importLine,
     'const { default: init, create_vm, WasmVm } = await importWasmBindgen();'
   );
   const bundle = `// Generated Beamr single-file WASM bundle.\nconst WASM_BASE64 = ${jsString(wasmBase64)};\nconst WASM_GLUE = ${jsString(glue)};\n\nfunction decodeEmbeddedBase64(base64) {\n  if (typeof atob === "function") {\n    const binary = atob(base64);\n    const bytes = new Uint8Array(binary.length);\n    for (let index = 0; index < binary.length; index += 1) {\n      bytes[index] = binary.charCodeAt(index);\n    }\n    return bytes;\n  }\n  if (typeof Buffer === "function") {\n    return new Uint8Array(Buffer.from(base64, "base64"));\n  }\n  throw new Error("No base64 decoder is available in this JavaScript host");\n}\n\nasync function importWasmBindgen() {\n  const source = WASM_GLUE.replace(/new URL\\(['\"]beamr_wasm_bg\\.wasm['\"], import\\.meta\\.url\\)/g, "decodeEmbeddedBase64(WASM_BASE64)");\n  const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));\n  try {\n    return await import(url);\n  } finally {\n    URL.revokeObjectURL(url);\n  }\n}\n\n${rewrittenBootstrap}\n`;
