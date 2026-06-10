@@ -296,7 +296,7 @@ impl HostAsyncNifs {
         let Some(callback) = self.callbacks.borrow().get(&mfa).cloned() else {
             return Err(Term::atom(beamr::atom::Atom::UNDEF));
         };
-        self.start_callback(callback, args, context)
+        self.start_callback(callback, args, context, HostCallbackArguments::SingleArray)
     }
 
     fn start_callback(
@@ -304,15 +304,22 @@ impl HostAsyncNifs {
         callback: Function,
         args: &[Term],
         context: &mut beamr::native::ProcessContext<'_>,
+        arguments: HostCallbackArguments,
     ) -> Result<Term, Term> {
         let Some(pid) = context.pid() else {
             return Err(Term::atom(beamr::atom::Atom::BADARG));
         };
         let args_array = terms_to_js_array(args, self.atom_table.as_ref())
             .map_err(|_| Term::atom(beamr::atom::Atom::BADARG))?;
-        let value = callback
-            .call1(&JsValue::UNDEFINED, &args_array)
-            .map_err(|_| Term::atom(beamr::atom::Atom::BADARG))?;
+        let value = match arguments {
+            HostCallbackArguments::SingleArray => callback.call1(&JsValue::UNDEFINED, &args_array),
+            HostCallbackArguments::Positional => Reflect::apply(
+                &callback,
+                &JsValue::UNDEFINED,
+                args_array.unchecked_ref::<js_sys::Array>(),
+            ),
+        }
+        .map_err(|_| Term::atom(beamr::atom::Atom::BADARG))?;
         if is_promise_like(&value) {
             self.start_promise_completion(pid, Promise::resolve(&value));
             context.request_suspend(None);
@@ -388,9 +395,19 @@ impl HostJsCallbacks {
         let Some(callback) = self.callbacks.borrow().get(&name).cloned() else {
             return Err(Term::atom(beamr::atom::Atom::UNDEF));
         };
-        self.async_nifs
-            .start_callback(callback, callback_args, context)
+        self.async_nifs.start_callback(
+            callback,
+            callback_args,
+            context,
+            HostCallbackArguments::Positional,
+        )
     }
+}
+
+#[derive(Clone, Copy)]
+enum HostCallbackArguments {
+    SingleArray,
+    Positional,
 }
 
 struct HostWasmFacility {

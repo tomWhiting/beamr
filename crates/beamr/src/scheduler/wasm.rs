@@ -155,6 +155,9 @@ impl WasmScheduler {
 
     /// Record an async NIF completion and wake the suspended process.
     pub fn complete_async(&mut self, pid: u64, completion: WasmAsyncCompletion) -> bool {
+        if !self.processes.contains_key(&pid) {
+            return false;
+        }
         self.async_results.insert(pid, completion);
         self.wake(pid)
     }

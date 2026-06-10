@@ -143,6 +143,17 @@ fn stale_timer_callback_is_ignored() {
 }
 
 #[test]
+fn async_completion_rejects_missing_pid_without_recording_result() {
+    let (mut scheduler, _module) = scheduler_with_test_module();
+
+    assert!(!scheduler.complete_async(
+        404,
+        WasmAsyncCompletion::Ok(crate::ets::OwnedTerm::immediate(Term::small_int(1)))
+    ));
+    assert!(scheduler.async_results.is_empty());
+}
+
+#[test]
 fn async_completion_injects_result_and_advances_call() {
     let (mut scheduler, module) = scheduler_with_test_module();
     let mut process = running_process(45, module);
