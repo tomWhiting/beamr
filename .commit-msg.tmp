@@ -1,1 +1,1 @@
-fix(beamr): restore native scheduler module layout for wasm support
+fix(beamr-wasm): serialize unresolved imports via atom table

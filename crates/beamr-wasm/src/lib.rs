@@ -65,7 +65,7 @@ impl WasmVm {
             ModuleOrigin::Preloaded,
         )
         .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        let unresolved = unresolved_imports_to_json(unresolved.imports());
+        let unresolved = unresolved_imports_to_json(unresolved.imports(), self.atom_table.as_ref());
         let result = json!({
             "ok": true,
             "module": self.atom_table.resolve(module.name).unwrap_or("#<unknown>"),
@@ -139,13 +139,22 @@ fn register_wasm_safe_bifs(
     Ok(())
 }
 
-fn unresolved_imports_to_json(imports: Vec<UnresolvedImport>) -> Vec<Value> {
+fn unresolved_imports_to_json(
+    imports: Vec<UnresolvedImport>,
+    atom_table: &AtomTable,
+) -> Vec<Value> {
     imports
         .into_iter()
         .map(|import| {
+            let module = atom_table
+                .resolve(import.module)
+                .map_or_else(|| format!("{:?}", import.module), str::to_owned);
+            let function = atom_table
+                .resolve(import.function)
+                .map_or_else(|| format!("{:?}", import.function), str::to_owned);
             json!({
-                "module": import.module.index(),
-                "function": import.function.index(),
+                "module": module,
+                "function": function,
                 "arity": import.arity,
             })
         })
