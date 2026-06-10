@@ -1,0 +1,131 @@
+{
+  "id": "B-174",
+  "cluster": "beamr",
+  "title": "First-class error reporting — resolve atom names in all user-facing output",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": ["C8", "C9"],
+  "stories": ["S22"],
+  "purpose": "beamr currently displays raw atom indices (e.g. Atom(5)) instead of human-readable names (e.g. badarg) in error messages, crash reports, and term formatting. ExecError::Display uses Debug formatting on Atom which has no AtomTable access. The CLI never retrieves the ExecError or Exception from the scheduler after a process crash — it only prints the bare ExitReason enum variant. The io_bifs and gleam_stdlib_ffi formatters fall back to Atom(N) when the atom table is unavailable. This makes debugging Gleam programs on beamr significantly harder than on BEAM. This brief makes all error output first-class: atom names resolved, crash details surfaced, terms pretty-printed including lists and maps.",
+  "task": "Add a TermFormatter utility in beamr core that pretty-prints any Term given an AtomTable reference. Add a format_with_atoms method to ExecError and Exception. Update the CLI to retrieve and display ExecError/Exception details after process crashes. Fix io_bifs::render_term and gleam_stdlib_ffi::bif_string_inspect to handle all term types including lists and maps. Ensure every user-facing output path resolves atoms to names.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "TermFormatter utility in beamr core",
+      "spec": "Create a format_term(term: Term, atom_table: &AtomTable) -> String function in a new crates/beamr/src/term/format.rs module. It shall handle all term types: small_int, atom (resolved via AtomTable), nil, pid, list (recursive, with proper [H|T] notation for improper lists), tuple, binary (UTF-8 string or byte count), map (#{key => value} notation), closure (fun module:function/arity), and BigInt. Unknown or opaque boxed terms fall back to a tag-describing string, never raw Debug output.",
+      "acceptance": [
+        "format_term(Term::atom(Atom::BADARG), table) returns \"badarg\"",
+        "format_term on a proper list returns \"[1, 2, 3]\"",
+        "format_term on an improper list returns \"[1, 2 | 3]\"",
+        "format_term on a tuple returns \"{ok, 42}\"",
+        "format_term on a UTF-8 binary returns \"<<\\\"hello\\\">>\"",
+        "format_term on a non-UTF-8 binary returns \"<<5 bytes>>\"",
+        "format_term on a map returns \"#{key => value}\"",
+        "format_term on a pid returns \"<0.N.0>\"",
+        "format_term on nil returns \"[]\"",
+        "format_term on a closure returns \"fun module:function/arity\"",
+        "No raw Atom(N) or opaque hex appears in any output"
+      ],
+      "files": {
+        "create": ["crates/beamr/src/term/format.rs"],
+        "modify": ["crates/beamr/src/term/mod.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R2",
+      "title": "ExecError::format_with_atoms resolves atom names",
+      "spec": "Add a pub fn format_with_atoms(&self, atom_table: &AtomTable) -> String method to ExecError. For the Undef variant, it shall produce \"undefined function module_name:function_name/arity\" with resolved atom names. For Badfun, it shall format the term using format_term. For Badarity, it shall format the fun and args using format_term. All other variants delegate to the existing Display impl.",
+      "acceptance": [
+        "Undef{module: Atom(5), function: Atom(12), arity: 2} with table resolving 5->my_mod, 12->my_fun produces \"undefined function my_mod:my_fun/2\"",
+        "Badfun{term} formats the term with resolved atoms",
+        "Badarity{fun, args} formats both fun and args with resolved atoms",
+        "Badmatch, Badarith, FunctionClause match existing Display output"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/error.rs"]
+      },
+      "checklist": ["C8"],
+      "stories": ["S22"]
+    },
+    {
+      "id": "R3",
+      "title": "Exception::format_with_atoms for BEAM exception details",
+      "spec": "Add a pub fn format_with_atoms(&self, atom_table: &AtomTable) -> String method to the Exception struct. It shall format as \"ExceptionClass: reason\" with both class and reason terms resolved via format_term. If stacktrace is non-nil, append formatted stacktrace entries showing module:function/arity and source location.",
+      "acceptance": [
+        "Exception{class: error, reason: badarg, stacktrace: nil} formats as \"error: badarg\"",
+        "Exception with populated stacktrace includes module:function/arity lines",
+        "All atom terms in class, reason, and stacktrace are resolved to names"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/process/mod.rs"]
+      },
+      "checklist": [],
+      "stories": ["S22"]
+    },
+    {
+      "id": "R4",
+      "title": "CLI retrieves and displays ExecError/Exception on process crash",
+      "spec": "After run_until_exit returns a non-Normal exit reason, the CLI shall call take_exit_error and take_exit_exception on the scheduler. If an Exception is available, format it with format_with_atoms. If an ExecError is available, format it with format_with_atoms. If neither, format the exit reason term using format_term. The CLI's format_term function shall be replaced with a call to the core format_term from term::format, eliminating the duplicated formatting logic.",
+      "acceptance": [
+        "A process that crashes with badarg shows \"error: badarg\" not \"process exited with Error\"",
+        "A process that calls an undefined function shows \"undefined function module:function/arity\" with resolved names",
+        "The exit result term is formatted with resolved atoms",
+        "The CLI format_term and format_atom functions are removed in favor of core term::format::format_term",
+        "Normal exits still display the result term with resolved atoms"
+      ],
+      "files": {
+        "modify": ["crates/beamr-cli/src/main.rs"]
+      },
+      "checklist": ["C9"],
+      "stories": []
+    },
+    {
+      "id": "R5",
+      "title": "Fix io_bifs::render_term for complete term formatting",
+      "spec": "Replace io_bifs::render_term with a call to term::format::format_term, passing the atom table from ProcessContext. This eliminates the Atom(N) fallback and adds list/map/closure formatting that render_term currently lacks. If atom_table() returns None (should not happen in practice), use a fallback AtomTable with common atoms.",
+      "acceptance": [
+        "erlang:display/1 of an atom shows the atom name, never Atom(N)",
+        "erlang:display/1 of a list shows [element, element, ...]",
+        "erlang:display/1 of a map shows #{key => value}",
+        "io:format ~p of terms shows resolved atoms",
+        "No Atom(N) appears in any io output"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/io_bifs.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    },
+    {
+      "id": "R6",
+      "title": "Fix gleam_stdlib_ffi::bif_string_inspect atom fallback",
+      "spec": "Replace the Atom({atom:?}) fallback in bif_string_inspect with a call to term::format::format_term, then convert the result to a binary. This ensures string.inspect in Gleam code always shows resolved atom names.",
+      "acceptance": [
+        "string.inspect(atom) returns the atom name as a string, never Atom(N)",
+        "string.inspect(tuple) returns {element, element} with resolved atoms",
+        "string.inspect(list) returns [element, element] with resolved atoms"
+      ],
+      "files": {
+        "modify": ["crates/beamr/src/native/stdlib_stubs/gleam_stdlib_ffi.rs"]
+      },
+      "checklist": [],
+      "stories": []
+    }
+  ],
+  "boundaries": [
+    "format_term is for user-facing display — not for serialization or ETF encoding",
+    "Stacktrace formatting covers the structural layout — source file/line enrichment deferred to a future brief",
+    "format_term handles recursive/deeply nested terms with a depth limit to prevent stack overflow on circular references",
+    "OUT OF SCOPE: ANSI color output or terminal formatting",
+    "OUT OF SCOPE: Configurable format styles (Erlang vs Gleam syntax)",
+    "OUT OF SCOPE: Changing ExecError or Exception enum shapes — only adding methods"
+  ],
+  "verification": [
+    "cargo test -p beamr --lib -- format",
+    "cargo test -p beamr-cli",
+    "run a .beam file that crashes with badarg and verify the output shows 'error: badarg' not 'Atom(9)' or 'process exited with Error'",
+    "run a .beam file that calls an undefined function and verify the output shows resolved module:function/arity names"
+  ]
+}

@@ -125,5 +125,10 @@
     "OUT OF SCOPE: Performance parity with GMP — correctness first",
     "OUT OF SCOPE: Crypto-specific constant-time arithmetic"
   ],
-  "verification": "cargo test -p beamr --lib -- bigint; factorial(100) produces the correct 158-digit result; ETF round-trip for large integers matches BEAM output; no badarith for overflow in arithmetic BIFs"
+  "verification": [
+    "cargo test -p beamr --lib -- bigint",
+    "factorial(100) produces the correct 158-digit result",
+    "ETF round-trip for large integers matches BEAM output",
+    "no badarith for overflow in arithmetic BIFs"
+  ]
 }
