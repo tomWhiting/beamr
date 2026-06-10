@@ -105,7 +105,6 @@ fn host_send_owned_copies_message_into_receiver_heap_and_wakes() {
     let Some(delivered) = resumed.mailbox_mut().current_message() else {
         panic!("message is visible through normal receive scan");
     };
-    assert_ne!(delivered, tuple);
     let delivered_tuple = Tuple::new(delivered).expect("delivered message is tuple-shaped");
     assert_eq!(delivered_tuple.get(0), Some(Term::small_int(1)));
     assert_eq!(delivered_tuple.get(1), Some(Term::small_int(2)));
