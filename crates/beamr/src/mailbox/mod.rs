@@ -76,7 +76,7 @@ impl Clone for Mailbox {
             arrival: Arc::new(SegQueue::new()),
             scan_list: self.scan_list.clone(),
             save_pointer: self.save_pointer,
-            recv_marker: self.recv_marker,
+            recv_marker: self.recv_marker.clone(),
         }
     }
 }
