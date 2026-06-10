@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::ets::{EtsTableId, OwnedTerm};
 use crate::io::resource::FdInner;
 use crate::namespace::NamespaceId;
+use crate::native::CapabilitySet;
 use crate::process::{ExitReason, Monitor, Priority, RemotePid};
 use crate::term::Term;
 
@@ -40,6 +41,7 @@ pub struct TcpActiveMessage {
 
 pub(super) struct ProcessMetadata {
     pub(super) namespace_id: NamespaceId,
+    pub(super) capabilities: CapabilitySet,
     pub(super) links: Vec<u64>,
     pub(super) remote_links: Vec<RemotePid>,
     pub(super) monitors: Vec<Monitor>,

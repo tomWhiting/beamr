@@ -6,7 +6,7 @@ use crate::loader::decode::BinaryOp;
 use crate::loader::decode::compact::Operand;
 use crate::loader::{Instruction, Literal};
 use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
-use crate::native::{Capability, ExceptionClass, NativeEntry, ProcessContext};
+use crate::native::{Capability, CapabilitySet, ExceptionClass, NativeEntry, ProcessContext};
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::scheduler::dirty::DirtySchedulerKind;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
@@ -1016,6 +1016,48 @@ fn dirty_native_returns_dirty_call_without_inline_execution() {
     assert_eq!(args, vec![Term::small_int(7)]);
     assert_eq!(kind, DirtySchedulerKind::Cpu);
     assert_eq!(process.x_reg(0), Term::small_int(7));
+}
+
+#[test]
+fn native_call_denied_by_process_capability_returns_error_tuple() {
+    let mut module = module(
+        Atom::OK,
+        vec![
+            Instruction::Move {
+                source: Operand::Integer(7),
+                destination: Operand::X(0),
+            },
+            Instruction::CallExt {
+                arity: Operand::Unsigned(1),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    module.resolved_imports.push(ResolvedImport {
+        module: Atom::OK,
+        function: Atom::OK,
+        arity: 1,
+        target: ResolvedImportTarget::Native(NativeEntry {
+            function: native_increment,
+            dirty_kind: Some(DirtySchedulerKind::Io),
+            capability: Capability::ExternalIo,
+        }),
+    });
+    let mut process = Process::with_capabilities(
+        1,
+        32,
+        CapabilitySet::from_slice(&[Capability::Pure, Capability::ProcessLocal]),
+    );
+
+    assert_eq!(
+        run(&mut process, &module),
+        Ok(ExecutionResult::Exited(ExitReason::Normal))
+    );
+    let tuple = Tuple::new(process.x_reg(0)).expect("capability denied tuple");
+    assert_eq!(tuple.arity(), 2);
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::ERROR)));
+    assert_eq!(tuple.get(1), Some(Term::atom(Atom::CAPABILITY_DENIED)));
 }
 
 fn try_native_class_module(function: crate::native::NativeFn, expected_class: Atom) -> Module {

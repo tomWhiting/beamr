@@ -8,6 +8,7 @@
 use std::fmt;
 
 use crate::atom::Atom;
+use crate::native::CapabilitySet;
 use crate::process::Priority;
 use crate::term::Term;
 
@@ -105,12 +106,13 @@ pub trait SpawnFacility: Send + Sync {
 }
 
 /// Options accepted by `erlang:spawn_opt/2,4`.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SpawnOptions {
     pub link: bool,
     pub monitor: bool,
     pub priority: Option<Priority>,
     pub min_heap_size: Option<usize>,
+    pub capabilities: Option<CapabilitySet>,
 }
 
 /// Successful spawn result that may include a monitor reference.

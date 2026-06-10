@@ -9,8 +9,8 @@ use crate::native::supervision::{
     MonitorResult, SupervisionError, SupervisionFacility, SupervisionRecord,
 };
 use crate::native::{
-    BifRegistryImpl, ExceptionClass, ProcessContext, RemoteSpawnError, RemoteSpawnFacility,
-    RemoteSpawnResult,
+    BifRegistryImpl, CapabilitySet, ExceptionClass, ProcessContext, RemoteSpawnError,
+    RemoteSpawnFacility, RemoteSpawnResult,
 };
 use crate::process::{ExitReason, Priority, Process, RemotePid};
 use crate::term::Term;
@@ -380,6 +380,37 @@ fn parse_spawn_options_min_heap_size() {
 }
 
 #[test]
+fn parse_spawn_options_capabilities() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let mut ctx = ProcessContext::new();
+    ctx.set_atom_table(Some(atom_table.clone()));
+    let capabilities = atom_table.intern("capabilities");
+    let file = atom_table.intern("file");
+    let spawn = atom_table.intern("spawn");
+
+    let mut capability_tail_heap = [0u64; 2];
+    let capability_tail = write_cons(&mut capability_tail_heap, Term::atom(spawn), Term::NIL)
+        .expect("spawn capability cons");
+    let mut capability_head_heap = [0u64; 2];
+    let capability_list = write_cons(&mut capability_head_heap, Term::atom(file), capability_tail)
+        .expect("file capability cons");
+    let mut tuple_heap = [0u64; 3];
+    let capability_tuple = write_tuple(
+        &mut tuple_heap,
+        &[Term::atom(capabilities), capability_list],
+    )
+    .expect("capabilities tuple");
+    let mut cons_heap = [0u64; 2];
+    let list = write_cons(&mut cons_heap, capability_tuple, Term::NIL).expect("options list");
+
+    let options = parse_spawn_options(list, &ctx).expect("options parse");
+    let requested = options.capabilities.expect("capabilities option");
+    assert!(requested.contains(Capability::ExternalIo));
+    assert!(requested.contains(Capability::Spawn));
+    assert!(!requested.contains(Capability::Clock));
+}
+
+#[test]
 fn parse_spawn_options_ignores_unknown_atoms_and_tuples() {
     let atom_table = Arc::new(AtomTable::with_common_atoms());
     let mut ctx = ProcessContext::new();
@@ -423,6 +454,84 @@ fn parse_spawn_options_rejects_malformed_supported_options() {
     let heap_list =
         write_cons(&mut heap_list_heap, heap_tuple, Term::NIL).expect("heap option list");
     assert_eq!(parse_spawn_options(heap_list, &ctx), Err(badarg()));
+}
+
+#[test]
+fn spawn_opt_capabilities_attenuate_but_never_escalate() {
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let facility = Arc::new(MockSpawnFacility::new(22));
+    let mut process =
+        Process::with_capabilities(3, 128, CapabilitySet::from_slice(&[Capability::ExternalIo]));
+    let mut ctx = ProcessContext::new();
+    ctx.set_pid(Some(3));
+    ctx.set_atom_table(Some(atom_table.clone()));
+    ctx.set_spawn_facility(Some(facility.clone()));
+
+    let file_options = capabilities_option_list(&atom_table, &["file"]);
+    ctx.attach_process(&mut process, 0);
+    let allowed = bif_spawn_opt_4(
+        &[
+            Term::atom(Atom::OK),
+            Term::atom(Atom::ERROR),
+            Term::NIL,
+            file_options,
+        ],
+        &mut ctx,
+    );
+    ctx.detach_process();
+    assert_eq!(allowed, Ok(Term::pid(22)));
+    let requested = facility.options_records()[0]
+        .options
+        .capabilities
+        .clone()
+        .expect("requested capabilities");
+    assert_eq!(
+        requested,
+        CapabilitySet::from_slice(&[Capability::ExternalIo])
+    );
+
+    let escalating_options = capabilities_option_list(&atom_table, &["file", "spawn"]);
+    ctx.attach_process(&mut process, 0);
+    let denied = bif_spawn_opt_4(
+        &[
+            Term::atom(Atom::OK),
+            Term::atom(Atom::ERROR),
+            Term::NIL,
+            escalating_options,
+        ],
+        &mut ctx,
+    );
+    ctx.detach_process();
+    assert_eq!(denied, Err(badarg()));
+}
+
+fn capabilities_option_list(atom_table: &AtomTable, names: &[&str]) -> Term {
+    let mut capability_list = Term::NIL;
+    for name in names.iter().rev() {
+        let mut cons_heap = Box::new([0u64; 2]);
+        capability_list = write_cons(
+            cons_heap.as_mut(),
+            Term::atom(atom_table.intern(name)),
+            capability_list,
+        )
+        .expect("capability cons");
+        Box::leak(cons_heap);
+    }
+    let mut tuple_heap = Box::new([0u64; 3]);
+    let capability_tuple = write_tuple(
+        tuple_heap.as_mut(),
+        &[
+            Term::atom(atom_table.intern("capabilities")),
+            capability_list,
+        ],
+    )
+    .expect("capabilities tuple");
+    Box::leak(tuple_heap);
+    let mut option_heap = Box::new([0u64; 2]);
+    let options =
+        write_cons(option_heap.as_mut(), capability_tuple, Term::NIL).expect("options cons");
+    Box::leak(option_heap);
+    options
 }
 
 // ---- erlang:spawn_opt/4 ----
@@ -1427,7 +1536,14 @@ impl SupervisionFacility for MockSupervisionFacility {
 
 // ---- Mock remote spawn facility ----
 
-type RemoteSpawnRecord = (u64, crate::atom::Atom, crate::atom::Atom, crate::atom::Atom, Vec<Term>, SpawnOptions);
+type RemoteSpawnRecord = (
+    u64,
+    crate::atom::Atom,
+    crate::atom::Atom,
+    crate::atom::Atom,
+    Vec<Term>,
+    SpawnOptions,
+);
 
 struct MockRemoteSpawnFacility {
     pid_number: u64,

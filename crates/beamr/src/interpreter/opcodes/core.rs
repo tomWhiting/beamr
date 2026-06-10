@@ -510,6 +510,11 @@ fn call_external_target(
                 });
             }
 
+            if !process.capabilities().contains(entry.capability) {
+                let result = capability_denied_result(process)?;
+                return complete_native_value(process, result, save_return);
+            }
+
             let mut args = Vec::with_capacity(usize::from(arity));
             for register in 0..arity {
                 args.push(process.x_reg(register.into()));
@@ -613,6 +618,32 @@ fn call_external_target(
                 return_(process)
             }
         }
+    }
+}
+
+fn capability_denied_result(process: &mut Process) -> Result<Term, ExecError> {
+    let words = 3;
+    ensure_space(process, words, 0).map_err(gc_error_to_exec)?;
+    let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
+    let heap = heap_slice(ptr, words);
+    write_tuple(
+        heap,
+        &[Term::atom(Atom::ERROR), Term::atom(Atom::CAPABILITY_DENIED)],
+    )
+    .ok_or(ExecError::Badarg)
+}
+
+fn complete_native_value(
+    process: &mut Process,
+    result: Term,
+    save_return: bool,
+) -> Result<InstructionOutcome, ExecError> {
+    process.set_x_reg(0, result);
+    charge_reduction(process)?;
+    if save_return {
+        Ok(InstructionOutcome::Continue)
+    } else {
+        return_(process)
     }
 }
 

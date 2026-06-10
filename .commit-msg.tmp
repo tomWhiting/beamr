@@ -1,1 +1,1 @@
-Harden B-176 test reliability fixes: enable differential tests, repair sample workflow runtime path, and stabilize flaky cleanup/dirty tests
+Harden capability denial error handling and add spawn capability regression coverage

@@ -9,6 +9,7 @@ use crate::atom::Atom;
 use crate::error::ExecError;
 use crate::module::Module;
 use crate::namespace::NamespaceId;
+use crate::native::CapabilitySet;
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::{CodePosition, Priority, Process};
 use crate::term::Term;
@@ -24,6 +25,7 @@ pub(in crate::scheduler) struct SpawnRequest {
     pub(in crate::scheduler) module_version: Arc<Module>,
     pub(in crate::scheduler) instruction_pointer: usize,
     pub(in crate::scheduler) args: Vec<Term>,
+    pub(in crate::scheduler) capabilities: CapabilitySet,
     pub(in crate::scheduler) namespace_id: NamespaceId,
     pub(in crate::scheduler) group_leader: Term,
     pub(in crate::scheduler) priority: Priority,
@@ -178,6 +180,7 @@ impl Scheduler {
             module: module_version.name,
             module_version,
             instruction_pointer,
+            capabilities: CapabilitySet::all(),
             namespace_id,
             group_leader: Term::pid(pid),
             priority: Priority::Normal,
@@ -231,7 +234,8 @@ pub(super) fn materialize_spawn_request(shared: &SharedState, request: SpawnRequ
 }
 
 pub(in crate::scheduler) fn build_process(request: SpawnRequest) -> Process {
-    let mut process = Process::new(request.pid, request.heap_size);
+    let mut process =
+        Process::with_capabilities(request.pid, request.heap_size, request.capabilities);
     process.set_group_leader(request.group_leader);
     process.set_priority(request.priority);
     process.set_namespace_id(request.namespace_id);

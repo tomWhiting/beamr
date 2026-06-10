@@ -15,6 +15,7 @@ use crate::distribution::remote_link::{DistributionControlFacility, RemoteLinkEr
 use crate::ets::{EtsError, EtsTable, EtsTableId, EtsTableMetadata};
 use crate::io::{CompletionRing, IoOp};
 use crate::namespace::NamespaceId;
+use crate::native::CapabilitySet;
 use crate::native::ets_bifs::EtsFacility;
 use crate::native::io_message::IoMessageFacility;
 use crate::native::links::{LinkError, LinkFacility};
@@ -948,6 +949,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
     ) -> Result<u64, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
         let group_leader = self.caller_group_leader(caller_pid);
+        let capabilities = self.caller_capabilities(caller_pid);
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
@@ -973,6 +975,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             args,
             namespace_id,
             group_leader,
+            capabilities,
             priority: Priority::Normal,
             heap_size: DEFAULT_HEAP_SIZE,
         });
@@ -1024,6 +1027,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
     ) -> Result<u64, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
         let group_leader = self.caller_group_leader(caller_pid);
+        let capabilities = self.caller_capabilities(caller_pid);
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let loaded = registry.lookup(module).ok_or(SpawnError::UnresolvedMfa)?;
@@ -1049,6 +1053,7 @@ impl SpawnFacility for SchedulerSpawnFacility {
             args: Vec::new(),
             namespace_id,
             group_leader,
+            capabilities,
             priority: Priority::Normal,
             heap_size: DEFAULT_HEAP_SIZE,
         });
@@ -1116,6 +1121,7 @@ impl SchedulerSpawnFacility {
     ) -> Result<SpawnMonitorResult, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
         let group_leader = self.caller_group_leader(caller_pid);
+        let capabilities = self.caller_capabilities(caller_pid);
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
@@ -1141,6 +1147,7 @@ impl SchedulerSpawnFacility {
             args,
             namespace_id,
             group_leader,
+            capabilities,
             priority: Priority::Normal,
             heap_size: DEFAULT_HEAP_SIZE,
         });
@@ -1158,6 +1165,10 @@ impl SchedulerSpawnFacility {
     ) -> Result<SpawnOptionsResult, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
         let group_leader = self.caller_group_leader(caller_pid);
+        let capabilities = options
+            .capabilities
+            .clone()
+            .unwrap_or_else(|| self.caller_capabilities(caller_pid));
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let arity = u8::try_from(args.len()).map_err(|_| SpawnError::UnresolvedMfa)?;
@@ -1177,6 +1188,7 @@ impl SchedulerSpawnFacility {
             args,
             namespace_id,
             group_leader,
+            capabilities,
             priority: options.priority.unwrap_or(Priority::Normal),
             heap_size: options.min_heap_size.unwrap_or(DEFAULT_HEAP_SIZE),
         };
@@ -1192,6 +1204,10 @@ impl SchedulerSpawnFacility {
     ) -> Result<SpawnOptionsResult, SpawnError> {
         let namespace_id = self.caller_namespace(caller_pid);
         let group_leader = self.caller_group_leader(caller_pid);
+        let capabilities = options
+            .capabilities
+            .clone()
+            .unwrap_or_else(|| self.caller_capabilities(caller_pid));
         let registry = namespace_registry(&self.shared, namespace_id)
             .unwrap_or_else(|| Arc::clone(&self.shared.module_registry));
         let loaded = registry.lookup(module).ok_or(SpawnError::UnresolvedMfa)?;
@@ -1211,6 +1227,7 @@ impl SchedulerSpawnFacility {
             args: Vec::new(),
             namespace_id,
             group_leader,
+            capabilities,
             priority: options.priority.unwrap_or(Priority::Normal),
             heap_size: options.min_heap_size.unwrap_or(DEFAULT_HEAP_SIZE),
         };
@@ -1286,6 +1303,7 @@ impl SchedulerSpawnFacility {
             args: Vec::new(),
             namespace_id,
             group_leader,
+            capabilities: self.caller_capabilities(caller_pid),
             priority: Priority::Normal,
             heap_size: DEFAULT_HEAP_SIZE,
         });
@@ -1358,6 +1376,20 @@ impl SchedulerSpawnFacility {
             Some(pid_term) => pid_term,
             None => Term::NIL,
         }
+    }
+
+    fn caller_capabilities(&self, caller_pid: u64) -> CapabilitySet {
+        if let Some(parent_entry) = self.shared.process_bodies.get(&caller_pid) {
+            let parent_slot = lock_or_recover(&parent_entry);
+            match &*parent_slot {
+                ProcessSlot::Present(ScheduledProcess(parent)) => {
+                    return parent.capabilities().clone();
+                }
+                ProcessSlot::Executing(metadata) => return metadata.capabilities.clone(),
+                ProcessSlot::Absent => {}
+            }
+        }
+        CapabilitySet::all()
     }
 }
 

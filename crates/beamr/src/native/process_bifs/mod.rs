@@ -7,8 +7,8 @@
 use crate::atom::{Atom, AtomTable};
 use crate::native::links::LinkError;
 use crate::native::{
-    BifRegistryImpl, Capability, ExceptionClass, NativeFn, NativeRegistrationError, ProcessContext,
-    SpawnOptions,
+    BifRegistryImpl, Capability, CapabilitySet, ExceptionClass, NativeFn, NativeRegistrationError,
+    ProcessContext, SpawnOptions,
 };
 use crate::process::{ExitReason, Priority};
 use crate::term::Term;
@@ -395,7 +395,8 @@ fn spawn_opt_mfa_impl(args: &[Term], context: &mut ProcessContext) -> Result<Ter
     let module = module_term.as_atom().ok_or_else(badarg)?;
     let function = function_term.as_atom().ok_or_else(badarg)?;
     let spawn_args = list_to_vec(*args_term)?;
-    let options = parse_spawn_options(*options_term, context)?;
+    let options = parse_spawn_options(*options_term, context)
+        .and_then(|options| attenuate_spawn_options(options, context))?;
     let caller_pid = context.pid().ok_or_else(badarg)?;
     let facility = context.spawn_facility().ok_or_else(badarg)?;
     let result = facility
@@ -414,7 +415,8 @@ fn spawn_opt_fun_impl(args: &[Term], context: &mut ProcessContext) -> Result<Ter
     }
     let module = closure.module().ok_or_else(badarg)?;
     let lambda_index = closure.function_index() as u32;
-    let options = parse_spawn_options(*options_term, context)?;
+    let options = parse_spawn_options(*options_term, context)
+        .and_then(|options| attenuate_spawn_options(options, context))?;
     let caller_pid = context.pid().ok_or_else(badarg)?;
     let facility = context.spawn_facility().ok_or_else(badarg)?;
     let result = facility
@@ -465,6 +467,7 @@ fn parse_spawn_options(term: Term, context: &ProcessContext) -> Result<SpawnOpti
     let monitor_atom = atom_table.intern("monitor");
     let priority_atom = atom_table.intern("priority");
     let min_heap_size_atom = atom_table.intern("min_heap_size");
+    let capabilities_atom = atom_table.intern("capabilities");
     let mut options = SpawnOptions::default();
     for option in list_to_vec(term)? {
         if option.as_atom() == Some(link_atom) {
@@ -488,10 +491,71 @@ fn parse_spawn_options(term: Term, context: &ProcessContext) -> Result<SpawnOpti
                     return Err(badarg());
                 }
                 options.min_heap_size = Some(size as usize);
+            } else if tuple.get(0) == Some(Term::atom(capabilities_atom)) {
+                if tuple.arity() != 2 {
+                    return Err(badarg());
+                }
+                let value = tuple.get(1).ok_or_else(badarg)?;
+                options.capabilities = Some(parse_capability_list(value, context)?);
             }
         }
     }
     Ok(options)
+}
+
+fn parse_capability_list(term: Term, context: &ProcessContext) -> Result<CapabilitySet, Term> {
+    let capabilities = list_to_vec(term)?;
+    let mut parsed = Vec::with_capacity(capabilities.len());
+    for capability in capabilities {
+        parsed.push(capability_from_term(capability, context)?);
+    }
+    Ok(CapabilitySet::from_slice(&parsed))
+}
+
+fn capability_from_term(term: Term, context: &ProcessContext) -> Result<Capability, Term> {
+    let atom = term.as_atom().ok_or_else(badarg)?;
+    let atom_table = context.atom_table().ok_or_else(badarg)?;
+    if atom == atom_table.intern("pure") {
+        Ok(Capability::Pure)
+    } else if atom == atom_table.intern("process_local") {
+        Ok(Capability::ProcessLocal)
+    } else if atom == atom_table.intern("clock") {
+        Ok(Capability::Clock)
+    } else if atom == atom_table.intern("entropy") {
+        Ok(Capability::Entropy)
+    } else if atom == atom_table.intern("external_io")
+        || atom == atom_table.intern("file")
+        || atom == atom_table.intern("file_io")
+        || atom == atom_table.intern("net")
+        || atom == atom_table.intern("network")
+    {
+        Ok(Capability::ExternalIo)
+    } else if atom == atom_table.intern("spawn") {
+        Ok(Capability::Spawn)
+    } else {
+        Err(badarg())
+    }
+}
+
+fn attenuate_spawn_options(
+    options: SpawnOptions,
+    context: &mut ProcessContext,
+) -> Result<SpawnOptions, Term> {
+    let Some(requested) = &options.capabilities else {
+        return Ok(options);
+    };
+    let Some(process) = context.process_mut() else {
+        return if requested.is_subset_of(&CapabilitySet::all()) {
+            Ok(options)
+        } else {
+            Err(badarg())
+        };
+    };
+    if requested.is_subset_of(process.capabilities()) {
+        Ok(options)
+    } else {
+        Err(badarg())
+    }
 }
 
 fn atom_to_bool(term: Term) -> Option<bool> {

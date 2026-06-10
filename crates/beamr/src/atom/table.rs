@@ -78,6 +78,7 @@ impl Atom {
     pub const EINPROGRESS: Self = Self(64);
     pub const ENOTCONN: Self = Self(65);
     pub const NOCONNECTION: Self = Self(66);
+    pub const CAPABILITY_DENIED: Self = Self(67);
 
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
@@ -156,6 +157,7 @@ const COMMON_ATOMS: &[(&str, Atom)] = &[
     ("einprogress", Atom::EINPROGRESS),
     ("enotconn", Atom::ENOTCONN),
     ("noconnection", Atom::NOCONNECTION),
+    ("capability_denied", Atom::CAPABILITY_DENIED),
 ];
 
 /// Concurrent intern table for atom strings.

@@ -25,6 +25,19 @@ pub enum Capability {
     /// Talks to the outside world: shell commands, filesystem, network, or the
     /// process environment.
     ExternalIo,
+    /// Creates child processes.
+    Spawn,
+}
+
+impl Capability {
+    const ALL: [Self; 6] = [
+        Self::Pure,
+        Self::ProcessLocal,
+        Self::Clock,
+        Self::Entropy,
+        Self::ExternalIo,
+        Self::Spawn,
+    ];
 }
 
 /// Policy consulted by import resolution before binding a native function.
@@ -54,12 +67,18 @@ impl CapabilityPolicy for AllCapabilitiesPolicy {
 }
 
 /// Small custom capability policy built from an explicit allow-list.
-#[derive(Debug, Clone, Default, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CapabilitySet {
     grants: Vec<Capability>,
 }
 
 impl CapabilitySet {
+    /// Builds a backwards-compatible set containing every known capability.
+    #[must_use]
+    pub fn all() -> Self {
+        Self::from_slice(&Capability::ALL)
+    }
+
     /// Builds a custom policy from a slice of granted capabilities.
     #[must_use]
     pub fn from_slice(capabilities: &[Capability]) -> Self {
@@ -76,6 +95,31 @@ impl CapabilitySet {
     #[must_use]
     pub fn grants(&self, capability: Capability) -> bool {
         self.grants.contains(&capability)
+    }
+
+    /// Returns true when `capability` is in this set.
+    #[must_use]
+    pub fn contains(&self, capability: Capability) -> bool {
+        self.grants(capability)
+    }
+
+    /// Returns true when every capability in `self` is present in `other`.
+    #[must_use]
+    pub fn is_subset_of(&self, other: &Self) -> bool {
+        self.grants
+            .iter()
+            .all(|capability| other.contains(*capability))
+    }
+
+    /// Iterates over granted capabilities.
+    pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
+        self.grants.iter().copied()
+    }
+}
+
+impl Default for CapabilitySet {
+    fn default() -> Self {
+        Self::all()
     }
 }
 
@@ -118,6 +162,7 @@ mod tests {
         assert!(!policy.is_granted(Capability::Clock));
         assert!(!policy.is_granted(Capability::Entropy));
         assert!(!policy.is_granted(Capability::ExternalIo));
+        assert!(!policy.is_granted(Capability::Spawn));
     }
 
     #[test]
@@ -128,6 +173,7 @@ mod tests {
         assert!(policy.is_granted(Capability::Clock));
         assert!(policy.is_granted(Capability::Entropy));
         assert!(policy.is_granted(Capability::ExternalIo));
+        assert!(policy.is_granted(Capability::Spawn));
     }
 
     #[test]
@@ -138,6 +184,7 @@ mod tests {
         assert!(!policy.grants(Capability::Clock));
         assert!(!policy.grants(Capability::Entropy));
         assert!(!policy.grants(Capability::ExternalIo));
+        assert!(!policy.grants(Capability::Spawn));
     }
 
     #[test]

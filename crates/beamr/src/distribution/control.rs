@@ -200,9 +200,7 @@ pub fn handle_frame(
     registry: Option<&dyn ControlRegistry>,
 ) -> Result<bool, ControlError> {
     match decode_control(control_etf, atom_table)? {
-        ControlMessage::Send { to_pid } => {
-            Ok(delivery.deliver_payload(to_pid, payload_etf))
-        }
+        ControlMessage::Send { to_pid } => Ok(delivery.deliver_payload(to_pid, payload_etf)),
         ControlMessage::RegSend { to_name } => {
             let Some(registry) = registry else {
                 return Ok(false);
@@ -355,7 +353,7 @@ pub fn alloc_spawn_request(
         Term::atom(request.mfa.function),
         args,
     ])?;
-    let opt_list = spawn_options_to_list(context, request.options)?;
+    let opt_list = spawn_options_to_list(context, request.options.clone())?;
     let op = Term::try_small_int(SPAWN_REQUEST).ok_or_else(badarg)?;
     let req_id = Term::try_small_int(i64::try_from(request.request_id).map_err(|_| badarg())?)
         .ok_or_else(badarg)?;

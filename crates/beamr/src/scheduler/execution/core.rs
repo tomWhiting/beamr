@@ -93,6 +93,7 @@ pub(in crate::scheduler) fn take_runnable_process(
             let process = scheduled.0;
             let metadata = ProcessMetadata {
                 namespace_id: process.namespace_id(),
+                capabilities: process.capabilities().clone(),
                 links: process.links().to_vec(),
                 remote_links: process.remote_links().to_vec(),
                 monitors: process.monitors().to_vec(),
@@ -127,6 +128,7 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
         let mut slot = lock_or_recover(&entry);
         if let ProcessSlot::Executing(metadata) = &mut *slot {
             process.set_group_leader(metadata.group_leader);
+            process.set_capabilities(metadata.capabilities.clone());
             for linked_pid in &metadata.links {
                 process.add_link(*linked_pid);
             }

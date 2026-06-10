@@ -410,6 +410,7 @@ impl std::error::Error for ProcessError {}
 #[derive(Debug)]
 pub struct Process {
     pid: u64,
+    capabilities: crate::native::CapabilitySet,
     status: ProcessStatus,
     priority: Priority,
     heap: Heap,
@@ -445,8 +446,19 @@ impl Process {
     /// words.
     #[must_use]
     pub fn new(pid: u64, heap_size: usize) -> Self {
+        Self::with_capabilities(pid, heap_size, crate::native::CapabilitySet::all())
+    }
+
+    /// Create a fresh process with an explicit capability set.
+    #[must_use]
+    pub fn with_capabilities(
+        pid: u64,
+        heap_size: usize,
+        capabilities: crate::native::CapabilitySet,
+    ) -> Self {
         Self {
             pid,
+            capabilities,
             status: ProcessStatus::New,
             priority: Priority::Normal,
             heap: Heap::new(heap_size),
@@ -489,6 +501,17 @@ impl Process {
             Some(pid_term) => pid_term,
             None => Term::NIL,
         }
+    }
+
+    /// Capabilities granted to this process.
+    #[must_use]
+    pub const fn capabilities(&self) -> &crate::native::CapabilitySet {
+        &self.capabilities
+    }
+
+    /// Replace this process's capability set before it is made runnable.
+    pub fn set_capabilities(&mut self, capabilities: crate::native::CapabilitySet) {
+        self.capabilities = capabilities;
     }
 
     /// Current lifecycle status.
