@@ -1,1 +1,1 @@
-feat(beamr): audit native capability enforcement
+review: harden capability audit violation defaults

@@ -1,6 +1,8 @@
 use super::{ExecutionResult, NativeServices, run, run_with_native_services, run_with_registry};
 use crate::atom::{Atom, AtomTable};
-use crate::capability::{CapabilityAuditEvent, CapabilityAuditSink, Sandbox, ViolationHandler};
+use crate::capability::{
+    CapabilityAuditEvent, CapabilityAuditSink, Sandbox, StderrViolationHandler, ViolationHandler,
+};
 use crate::error::ExecError;
 use crate::jit::{JitCache, JitCacheKey, JitCompiler, JitSettings};
 use crate::loader::decode::BinaryOp;
@@ -1124,6 +1126,26 @@ fn custom_violation_handler_receives_denied_native_call_context() {
     assert_eq!(event.operation.arity, 1);
     assert!(!event.granted);
     assert_eq!(event.process_capabilities, capabilities);
+}
+
+#[test]
+fn stderr_violation_handler_accepts_denied_native_call_context() {
+    let event = CapabilityAuditEvent {
+        pid: 44,
+        capability: Capability::ExternalIo,
+        operation: crate::capability::CapabilityOperation {
+            module: Atom::OK,
+            function: Atom::OK,
+            arity: 1,
+        },
+        granted: false,
+        process_capabilities: CapabilitySet::from_slice(&[
+            Capability::Pure,
+            Capability::ProcessLocal,
+        ]),
+    };
+
+    StderrViolationHandler.on_violation(event);
 }
 
 #[test]
