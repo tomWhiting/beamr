@@ -12,6 +12,7 @@ pub mod exceptions;
 pub mod floats;
 pub mod guards;
 pub mod messaging;
+pub mod native_call;
 pub mod recv;
 pub mod trampoline;
 

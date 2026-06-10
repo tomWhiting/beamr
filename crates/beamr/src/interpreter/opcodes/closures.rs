@@ -144,7 +144,7 @@ fn call_export_fun(
     {
         // save_return=true: the BIF runs inline and execution continues at
         // the instruction after the call, like a body call.
-        return core::call_native_entry(
+        return super::native_call::call_native_entry(
             process,
             module,
             entry,
