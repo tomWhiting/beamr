@@ -9,7 +9,6 @@ use crate::atom::Atom;
 use crate::hook::{HookDecision, HookEvent};
 use crate::process::{ExitReason, Process, ProcessStatus};
 use crate::term::Term;
-use crate::timer::TimerRef;
 
 use super::{ProcessSlot, ScheduledProcess, SharedState, lock_or_recover};
 
@@ -48,14 +47,6 @@ pub(super) fn register_receive_timer(shared: &SharedState, process: &mut Process
     process.set_receive_timer_ref(Some(timer_ref.id()));
 }
 
-/// Cancel a process's receive timer when a message arrives first.
-pub(super) fn cancel_receive_timer(shared: &SharedState, pid: u64) {
-    let timer_id = read_process_field(shared, pid, |p| p.receive_timer_ref());
-    if let Some(id) = timer_id.flatten() {
-        let _remaining = lock_or_recover(&shared.timers).cancel(TimerRef::from_id(id));
-    }
-}
-
 /// Process a timer batch recorded in the replay log.
 pub(super) fn tick_replay_timers(shared: &SharedState) {
     let Some(driver) = &shared.replay_driver else {
@@ -88,27 +79,89 @@ fn fail_replay_timer(shared: &SharedState, error: crate::replay::ReplayMismatch)
     shared.wake_condvar.notify_all();
 }
 
-/// Process expired timers: update the process code position to the timeout
-/// label and move the process from the wait set to the woken list.
+/// Process expired timers: mark each fired timer for its target process and
+/// wake the process if it is parked in the wait set.
 pub(super) fn tick_timers(shared: &SharedState) {
     let expired = lock_or_recover(&shared.timers).tick();
     expire_timers(shared, expired);
 }
 
+/// Mark-and-wake for fired timers. The timeout-label jump is NOT applied
+/// here: the firing thread may observe the slot as `Executing` (the process
+/// is mid-slice or inside a park gap), where a position mutation would be
+/// lost or land on a stale position. Instead the fired timer id is recorded
+/// in `expired_receive_timers`; the owning scheduler thread consumes the mark
+/// at the start of the process's next slice and applies the jump there. A
+/// process parked in the wait set is woken so that next slice happens
+/// promptly; a process whose park raced the expiry is caught by the Wait
+/// arm's post-registration recheck in `run_process`.
+///
+/// Stale fires (the receive completed or was replaced before the wheel
+/// fired) insert marks whose ids no longer match the process's armed
+/// receive-timer ref; consumption drops them, at worst after one benign
+/// spurious wake.
 fn expire_timers(shared: &SharedState, expired: Vec<crate::timer::ExpiredTimer>) {
     for timer in expired {
         let pid = timer.target_pid;
-        mutate_process(shared, pid, |process| {
-            process.set_receive_timer_ref(None);
-            if let Some(position) = process.receive_timeout().map(|t| t.timeout_position) {
-                process.set_code_position(Some(position));
-            }
-        });
-        let mut wait_set = lock_or_recover(&shared.wait_set);
-        if let Some(index) = wait_set.waiting.remove(&pid) {
-            wait_set.woken.push((pid, index));
-            shared.wake_condvar.notify_all();
+        if shared.process_table.get(pid).is_none() {
+            continue;
         }
+        mark_fired_receive_timer(shared, pid, timer.reference.id());
+    }
+}
+
+/// Insert a fired-timer mark for `pid` and wake the process if it is parked.
+///
+/// Exit cleanup (`cleanup_exited_process`) can win the race against the
+/// liveness check in `expire_timers`: it purges the process table and the
+/// pid's marks between that check and the insert below, after which the
+/// freshly inserted mark would orphan permanently — pids are never reused,
+/// so nothing would ever consume or clear it. The post-insert double-check
+/// closes that window: if the pid has vanished from the table, the mark is
+/// removed again. A concurrent inserter for the same dead pid runs the same
+/// double-check, so no dead-pid mark survives.
+pub(super) fn mark_fired_receive_timer(shared: &SharedState, pid: u64, timer_id: u64) {
+    shared
+        .expired_receive_timers
+        .entry(pid)
+        .or_default()
+        .push(timer_id);
+    if shared.process_table.get(pid).is_none() {
+        let _orphaned_mark = shared.expired_receive_timers.remove(&pid);
+        return;
+    }
+    let mut wait_set = lock_or_recover(&shared.wait_set);
+    if let Some(index) = wait_set.waiting.remove(&pid) {
+        wait_set.woken.push((pid, index));
+        shared.wake_condvar.notify_all();
+    }
+}
+
+/// True when a fired receive timer is marked for `pid` and not yet consumed.
+/// Used by the Wait arm's post-registration recheck: a timer that fired
+/// before the pid was registered in the wait set woke nobody, so the parking
+/// thread must notice the mark itself.
+pub(super) fn has_pending_expired_timer(shared: &SharedState, pid: u64) -> bool {
+    shared.expired_receive_timers.contains_key(&pid)
+}
+
+/// Consume `pid`'s fired-timer marks. If one of them is the process's armed
+/// receive timer, clear the ref and jump to the recorded timeout
+/// continuation (the instruction after the parking `wait_timeout`, or the
+/// native resume position for suspend-based timeouts). Ids that match
+/// nothing are stale — their receive completed before the wheel fired — and
+/// are dropped.
+pub(super) fn apply_expired_receive_timer(shared: &SharedState, process: &mut Process) {
+    let Some((_, fired)) = shared.expired_receive_timers.remove(&process.pid()) else {
+        return;
+    };
+    let (Some(timeout), Some(armed)) = (process.receive_timeout(), process.receive_timer_ref())
+    else {
+        return;
+    };
+    if fired.contains(&armed) {
+        process.set_receive_timer_ref(None);
+        process.set_code_position(Some(timeout.timeout_position));
     }
 }
 
@@ -133,28 +186,6 @@ pub(super) fn resume_suspended(shared: &SharedState, pid: u64) -> bool {
         true
     } else {
         false
-    }
-}
-
-fn read_process_field<T>(
-    shared: &SharedState,
-    pid: u64,
-    f: impl FnOnce(&Process) -> T,
-) -> Option<T> {
-    let entry = shared.process_bodies.get(&pid)?;
-    let slot = lock_or_recover(&entry);
-    match &*slot {
-        ProcessSlot::Present(ScheduledProcess(p)) => Some(f(p)),
-        ProcessSlot::Executing(_) | ProcessSlot::Absent => None,
-    }
-}
-
-fn mutate_process(shared: &SharedState, pid: u64, f: impl FnOnce(&mut Process)) {
-    if let Some(entry) = shared.process_bodies.get(&pid) {
-        let mut slot = lock_or_recover(&entry);
-        if let ProcessSlot::Present(ScheduledProcess(process)) = &mut *slot {
-            f(process);
-        }
     }
 }
 

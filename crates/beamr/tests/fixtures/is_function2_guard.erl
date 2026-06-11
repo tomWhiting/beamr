@@ -1,3 +1,6 @@
+%% Fixture exercising the literal-arity is_function/2 guard (the
+%% is_function2 test opcode). Compile with `erlc is_function2_guard.erl`
+%% (OTP 25+) and commit the .beam next to this source.
 -module(is_function2_guard).
 -export([check/1, matching_arity/0, wrong_arity/0, not_a_fun/0]).
 

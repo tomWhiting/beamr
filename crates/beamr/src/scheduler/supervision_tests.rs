@@ -266,6 +266,7 @@ fn make_shared_state() -> Arc<SharedState> {
         control_router: crate::distribution::remote_link::ControlRouter::new(),
         process_registry: DashMap::new(),
         timers: Arc::new(std::sync::Mutex::new(crate::timer::TimerWheel::new())),
+        expired_receive_timers: DashMap::new(),
         output_sink: std::sync::Mutex::new(Arc::new(crate::io::NullSink)),
         io_ring: None,
         io_registry: None,

@@ -26,8 +26,8 @@ use crate::term::pid_ref::PidRef;
 use crate::term::reference_ref::ReferenceRef;
 
 pub use additional::{
-    bif_binary_part, bif_bit_size, bif_is_bitstring, bif_is_map_key, bif_map_size, bif_round,
-    bif_trunc, bif_unary_minus,
+    bif_binary_part, bif_bit_size, bif_is_bitstring, bif_is_function_1, bif_is_function_2,
+    bif_is_map_key, bif_map_size, bif_round, bif_trunc, bif_unary_minus,
 };
 pub use registry_bifs::{bif_register, bif_unregister, bif_whereis};
 pub use type_conversion::{
@@ -115,6 +115,8 @@ const GATE3_BIFS: &[Gate3Bif] = &[
     ("round", 1, Capability::Pure, bif_round),
     ("trunc", 1, Capability::Pure, bif_trunc),
     ("is_bitstring", 1, Capability::Pure, bif_is_bitstring),
+    ("is_function", 1, Capability::Pure, bif_is_function_1),
+    ("is_function", 2, Capability::Pure, bif_is_function_2),
     ("is_map_key", 2, Capability::Pure, bif_is_map_key),
     ("map_size", 1, Capability::Pure, bif_map_size),
     ("binary_part", 3, Capability::Pure, bif_binary_part),

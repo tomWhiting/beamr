@@ -92,28 +92,41 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             //    wake moves the pid from `waiting` to `woken`; the recheck
             //    also sees the message, but its `waiting` removal finds
             //    nothing, so the process is scheduled exactly once (by the
-            //    woken drain, which also canceled the receive timer).
+            //    woken drain).
             // 3. Delivery lands after the recheck: the wake finds the pid in
             //    `waiting` and schedules it.
             //
             // Rechecking before registering (the previous order) lost
             // interleaving 1: a delivery in that gap woke nobody and the
             // process parked forever.
+            // Gap hook: must stay between the store-back above and the
+            // wait-set registration below — move it with them.
             #[cfg(test)]
             invoke_park_gap_hook(shared, ParkGap::WaitStored, pid);
             {
                 let mut ws = lock_or_recover(&shared.wait_set);
                 ws.waiting.insert(pid, my_index);
             }
+            // Gap hook: must stay between the registration above and the
+            // recheck below — move it with them.
             #[cfg(test)]
             invoke_park_gap_hook(shared, ParkGap::WaitRegistered, pid);
-            if process_has_queued_messages(shared, pid) {
+            // The recheck must notice BOTH wake sources that can land before
+            // the registration above: a delivered message, and a receive
+            // timer that fired while the slot was Executing or in the
+            // store-to-register gap (expire_timers found nothing in
+            // `waiting`, so only this recheck can schedule the process; the
+            // mark is consumed at the start of the next slice, which applies
+            // the timeout jump). A stale mark costs one benign spurious
+            // wake.
+            if process_has_queued_messages(shared, pid)
+                || timer_integration::has_pending_expired_timer(shared, pid)
+            {
                 let self_woke = {
                     let mut ws = lock_or_recover(&shared.wait_set);
                     ws.waiting.remove(&pid).is_some()
                 };
                 if self_woke {
-                    timer_integration::cancel_receive_timer(shared, pid);
                     queue.push_with_priority(pid, priority);
                 }
             }
@@ -129,6 +142,8 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             if cleanup_if_tombstoned_after_store(shared, pid) {
                 return;
             }
+            // Gap hook: must stay between the store-back above and the
+            // wait-set registration below — move it with them.
             #[cfg(test)]
             invoke_park_gap_hook(shared, ParkGap::SuspendStored, pid);
             {
@@ -491,6 +506,13 @@ fn execute_slice_with_budget(
             }
         }
     }
+    // A receive timer that fired since the last slice is applied here, on
+    // the owning thread: jump to the recorded timeout continuation. Doing
+    // this at slice start (instead of from the timer-expiry thread) means
+    // the jump can never race a slot that is Executing or mid-park, and a
+    // timer that fires while the process handles a non-matching message
+    // still times the receive out on the next slice.
+    timer_integration::apply_expired_receive_timer(shared, process);
     if let Some((_, result_term)) = shared.async_results.remove(&process.pid()) {
         process.set_x_reg(0, result_term);
         advance_past_current_instruction(process);
@@ -982,6 +1004,8 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     let mut wait_set = lock_or_recover(&shared.wait_set);
     wait_set.waiting.remove(&pid);
     wait_set.woken.retain(|(woken_pid, _)| *woken_pid != pid);
+    drop(wait_set);
+    let _stale_marks = shared.expired_receive_timers.remove(&pid);
 }
 
 fn close_owned_fd_resources_on_exit(shared: &SharedState, pid: u64) {

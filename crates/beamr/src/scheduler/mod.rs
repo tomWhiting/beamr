@@ -168,6 +168,13 @@ pub(super) struct SharedState {
     control_router: ControlRouter,
     process_registry: DashMap<crate::atom::Atom, u64>,
     timers: Arc<Mutex<TimerWheel>>,
+    /// Receive timers that fired but could not be applied in place: pid →
+    /// fired timer ids. `expire_timers` only marks and wakes; the woken
+    /// process applies the timeout jump itself at the start of its next
+    /// slice (and drops stale ids whose receive completed first). This keeps
+    /// the timeout-label jump on the owning thread, so it can never race a
+    /// slot that is `Executing` or a park gap.
+    expired_receive_timers: DashMap<u64, Vec<u64>>,
     output_sink: Mutex<Arc<dyn IoSink>>,
     io_ring: Option<Arc<dyn CompletionRing>>,
     io_registry: Option<Arc<PendingIoRegistry>>,
@@ -649,6 +656,7 @@ impl Scheduler {
             control_router: ControlRouter::new(),
             process_registry: DashMap::new(),
             timers: Arc::new(Mutex::new(TimerWheel::new())),
+            expired_receive_timers: DashMap::new(),
             output_sink: Mutex::new(Arc::new(NullSink)),
             io_ring,
             io_registry,
