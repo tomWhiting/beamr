@@ -135,8 +135,41 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
                 let mut ws = lock_or_recover(&shared.wait_set);
                 ws.waiting.insert(pid, my_index);
             }
-            if shared.dirty_results.contains_key(&pid) {
-                let _resumed = timer_integration::resume_suspended(shared, pid);
+            // The completion bridge publishes the dirty result, then calls
+            // `resume_suspended` (flip status Suspended→Yielded, move the
+            // pid from `waiting` to `woken`). Interleavings against the
+            // store-back and registration above:
+            //
+            // 1. Bridge resume before the store-back: the slot is still
+            //    Executing, so the status flip is refused and nothing is
+            //    resumed; the resume below (status Suspended, pid
+            //    registered) succeeds.
+            // 2. Bridge resume between store-back and registration: the
+            //    status flips to Yielded but the `waiting` removal finds
+            //    nothing; the resume below then refuses because the status
+            //    is no longer Suspended. The result is already published,
+            //    so the only missing step is the unpark — performed by the
+            //    fallback below.
+            // 3. Bridge resume after registration: it fully succeeds; the
+            //    resume below refuses (status already Yielded) and the
+            //    fallback's `waiting` removal finds the pid already moved
+            //    to `woken` — a no-op.
+            //
+            // The fallback re-verifies the pending result under the wait-set
+            // lock: if a woken slice already consumed it (and possibly
+            // parked again for a NEW in-flight dirty call), the unpark must
+            // not fire — resuming an in-flight dirty call re-executes the
+            // call instruction in an illegal state.
+            if shared.dirty_results.contains_key(&pid)
+                && !timer_integration::resume_suspended(shared, pid)
+            {
+                let mut ws = lock_or_recover(&shared.wait_set);
+                if shared.dirty_results.contains_key(&pid)
+                    && let Some(index) = ws.waiting.remove(&pid)
+                {
+                    ws.woken.push((pid, index));
+                    shared.wake_condvar.notify_all();
+                }
             }
         }
         SliceOutcome::Exited(reason, result) => {
