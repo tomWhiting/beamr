@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### Correctness
+
+- Wave 1 scheduler/VM fixes: opcode 115 (`is_function2`) decodes with its arity operand instead of crashing every literal-arity `is_function/2` guard; `try_case` consumes the current exception so a caught-and-handled exception no longer surfaces as an exit exception; the Wait arm registers in the wait set before its final mailbox recheck (lost-wakeup race against concurrent delivery); a dirty suspension whose resume raced the park is unparked by a fallback recheck.
+- Registered `erlang:is_function/1` and `is_function/2` as callable BIFs — body-position calls and variable-arity guards (which compile to the guard-BIF instruction) previously crashed at call time on the unresolved erlang import.
+- `receive ... after` timeouts are delivered per BEAM semantics: timer expiry falls through to the `timeout` instruction (the after-body) instead of re-scanning the receive loop and re-arming forever, and the receive timer stays armed across non-matching message wakeups instead of being cancelled with a stale ref that blocked re-arming. Timer expiry is now mark-and-wake: the owning scheduler thread applies the timeout jump at slice start, closing the expiry-vs-park race (the wait-arm recheck also notices a timer that fired inside the park gap).
+
+### Output
+
+- Lists of printable latin1 character codes format as double-quoted strings (`[104,105]` prints as `"hi"`), matching `io_lib:printable_list/1` semantics and the Erlang shell.
+
+## 0.4.9
+
+- `bs_match` `'=:='` chunks compare as integer values, fixing literal-pattern matches against binary segments.
+
+## 0.4.8
+
+- Dirty-parked processes stay parked across mailbox wakes: a message arriving while a dirty native call is in flight no longer schedules a slice that re-executes the call instruction.
+
+## 0.4.7
+
+- Only dirty results resume dirty-call suspensions; mailbox deliveries can no longer resume a process suspended on an in-flight dirty native call.
+
+## 0.4.6
+
+- NIF private data — the `enif_priv_data` equivalent, carried into continuation resume contexts.
+- Closed a lost-wakeup race between host delivery and NIF suspend.
+
+## 0.4.5
+
+- Allocation-list fun entries reserve the full closure base, fixing heap reservation for funs allocated through allocation lists.
+
+## 0.4.4
+
+- Release of the 0.4.3 series (no code changes beyond the version bump).
+
+## 0.4.3
+
+- Removed all remaining `gleam_stdlib`/`gleam@` native stub shadows; OTP-level natives made contract-exact. Fixed seven VM bugs found by extended gate stdlib coverage, plus binary-match opcodes and `string:trim` semantics.
+- Deterministic replay: causal message ordering, persisted replay logs, a record/replay CLI, and hardened log validation.
+- WASM scheduler: receive timers and async NIF promises bridged, direct JS term conversion, JS message send and callbacks, bundle builder with an edge-worker example.
+- Workflow telemetry bridged into process tracing; Aion `with_timeout` trampoline continuation variant.
+
+## 0.4.2
+
+- Release bump for the correctness work documented under 0.4.1 below (core correctness, structural GC rooting, fresh Gleam gate).
+
 ## 0.4.1
 
 ### Correctness

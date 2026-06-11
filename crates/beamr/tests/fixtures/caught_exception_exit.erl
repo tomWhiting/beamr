@@ -1,3 +1,6 @@
+%% Fixture exercising caught-exception exit paths. Compile with
+%% `erlc caught_exception_exit.erl` (OTP 25+) and commit the .beam next
+%% to this source.
 -module(caught_exception_exit).
 -export([catch_then_normal/0, rethrow_unmatched_class/0]).
 

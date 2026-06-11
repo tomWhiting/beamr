@@ -99,12 +99,16 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             // Rechecking before registering (the previous order) lost
             // interleaving 1: a delivery in that gap woke nobody and the
             // process parked forever.
+            // Gap hook: must stay between the store-back above and the
+            // wait-set registration below — move it with them.
             #[cfg(test)]
             invoke_park_gap_hook(shared, ParkGap::WaitStored, pid);
             {
                 let mut ws = lock_or_recover(&shared.wait_set);
                 ws.waiting.insert(pid, my_index);
             }
+            // Gap hook: must stay between the registration above and the
+            // recheck below — move it with them.
             #[cfg(test)]
             invoke_park_gap_hook(shared, ParkGap::WaitRegistered, pid);
             // The recheck must notice BOTH wake sources that can land before
@@ -138,6 +142,8 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             if cleanup_if_tombstoned_after_store(shared, pid) {
                 return;
             }
+            // Gap hook: must stay between the store-back above and the
+            // wait-set registration below — move it with them.
             #[cfg(test)]
             invoke_park_gap_hook(shared, ParkGap::SuspendStored, pid);
             {

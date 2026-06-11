@@ -53,6 +53,9 @@ fn format_atom(atom: Atom, atom_table: &AtomTable) -> String {
 }
 
 fn format_list(term: Term, atom_table: &AtomTable, depth: usize) -> String {
+    if let Some(text) = format_printable_charlist(term) {
+        return text;
+    }
     let mut elements = Vec::new();
     let mut current = term;
     let mut count = 0usize;
@@ -79,6 +82,50 @@ fn format_list(term: Term, atom_table: &AtomTable, depth: usize) -> String {
         current = cons.tail();
         count += 1;
     }
+}
+
+/// OTP's `io_lib:printable_list/1` in latin1 mode: a proper list whose
+/// elements are all printable latin1 character codes renders as a
+/// double-quoted, Erlang-escaped string, matching the Erlang shell and
+/// `erlang:display/1` (e.g. `[104,105]` prints as `"hi"`). Returns `None`
+/// for anything else so the caller falls back to element-wise rendering.
+fn format_printable_charlist(term: Term) -> Option<String> {
+    let mut out = String::from("\"");
+    let mut current = term;
+    let mut count = 0usize;
+    while !current.is_nil() {
+        let cons = Cons::new(current)?;
+        if count >= MAX_LIST_ELEMENTS {
+            return None;
+        }
+        let code = u32::try_from(cons.head().as_small_int()?).ok()?;
+        push_escaped_latin1_char(&mut out, code)?;
+        current = cons.tail();
+        count += 1;
+    }
+    out.push('"');
+    Some(out)
+}
+
+/// Appends `code` to `out` with Erlang string escaping, or returns `None`
+/// when the character is not printable latin1 (so the list is not a
+/// printable charlist). The printable set and escapes follow
+/// `io_lib:printable_latin1_list/1` and `io_lib:write_string/1`.
+fn push_escaped_latin1_char(out: &mut String, code: u32) -> Option<()> {
+    match code {
+        8 => out.push_str("\\b"),
+        9 => out.push_str("\\t"),
+        10 => out.push_str("\\n"),
+        11 => out.push_str("\\v"),
+        12 => out.push_str("\\f"),
+        13 => out.push_str("\\r"),
+        27 => out.push_str("\\e"),
+        34 => out.push_str("\\\""),
+        92 => out.push_str("\\\\"),
+        32..=126 | 160..=255 => out.push(char::from_u32(code)?),
+        _ => return None,
+    }
+    Some(())
 }
 
 fn format_boxed(term: Term, atom_table: &AtomTable, depth: usize) -> String {
@@ -237,6 +284,54 @@ mod tests {
         };
 
         assert_eq!(format_term(list, &table), "[1, 2 | 3]");
+    }
+
+    /// Builds a proper list of small integers on leaked cells.
+    fn int_list(codes: &[i64]) -> Term {
+        let mut tail = Term::NIL;
+        for code in codes.iter().rev() {
+            let cell = Box::leak(Box::new([0_u64; 2]));
+            tail = write_cons(cell, Term::small_int(*code), tail).expect("cons fits");
+        }
+        tail
+    }
+
+    // Expected strings verified against OTP 28:
+    // `io:format("~p~n", [List])` for each list below.
+    #[test]
+    fn formats_printable_charlists_as_strings_like_the_otp_shell() {
+        let table = AtomTable::with_common_atoms();
+
+        assert_eq!(
+            format_term(int_list(&[104, 101, 108, 108, 111]), &table),
+            "\"hello\""
+        );
+        // Escaped control characters keep the list printable.
+        assert_eq!(
+            format_term(int_list(&[104, 101, 108, 10]), &table),
+            "\"hel\\n\""
+        );
+        assert_eq!(format_term(int_list(&[34, 92]), &table), "\"\\\"\\\\\"");
+        assert_eq!(format_term(int_list(&[27]), &table), "\"\\e\"");
+        // Printable latin1 above 159 renders as the character itself.
+        assert_eq!(format_term(int_list(&[200, 232]), &table), "\"Èè\"");
+    }
+
+    #[test]
+    fn non_printable_and_improper_lists_keep_element_rendering() {
+        let table = AtomTable::with_common_atoms();
+
+        // 7 (BEL) and 0 are outside the printable latin1 set.
+        assert_eq!(format_term(int_list(&[7]), &table), "[7]");
+        assert_eq!(
+            format_term(int_list(&[104, 0, 108]), &table),
+            "[104, 0, 108]"
+        );
+
+        let cell = Box::leak(Box::new([0_u64; 2]));
+        let improper =
+            write_cons(cell, Term::small_int(104), Term::small_int(105)).expect("cons fits");
+        assert_eq!(format_term(improper, &table), "[104 | 105]");
     }
 
     #[test]
