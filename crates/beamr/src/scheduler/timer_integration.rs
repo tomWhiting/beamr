@@ -119,6 +119,14 @@ fn expire_timers(shared: &SharedState, expired: Vec<crate::timer::ExpiredTimer>)
     }
 }
 
+/// True when a fired receive timer is marked for `pid` and not yet consumed.
+/// Used by the Wait arm's post-registration recheck: a timer that fired
+/// before the pid was registered in the wait set woke nobody, so the parking
+/// thread must notice the mark itself.
+pub(super) fn has_pending_expired_timer(shared: &SharedState, pid: u64) -> bool {
+    shared.expired_receive_timers.contains_key(&pid)
+}
+
 /// Consume `pid`'s fired-timer marks. If one of them is the process's armed
 /// receive timer, clear the ref and jump to the recorded timeout
 /// continuation (the instruction after the parking `wait_timeout`, or the

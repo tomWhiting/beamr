@@ -1904,3 +1904,137 @@ fn dirty_resume_in_the_suspend_park_gap_is_not_lost() {
     assert_eq!(exit_value, Some(Term::small_int(7)));
     scheduler.shutdown();
 }
+
+// ---------------------------------------------------------------------------
+// Receive-timer expiry racing the wait-arm park gaps: the timer flavor of the
+// lost-wakeup interleavings above. expire_timers only marks and wakes, so a
+// fire that lands before wait-set registration relies entirely on the Wait
+// arm's post-registration recheck noticing the mark.
+// ---------------------------------------------------------------------------
+
+/// `receive ... after 1 -> true end` in the erlc instruction shape: the
+/// wait_timeout fail label is the receive loop, and timer expiry falls
+/// through to `timeout` and the after-body.
+fn receive_after_module(registry: &ModuleRegistry, name: Atom) -> Arc<Module> {
+    registry.insert(test_module(
+        name,
+        vec![
+            Instruction::Label { label: 1 },
+            Instruction::LoopRec {
+                fail: Operand::Label(2),
+                destination: Operand::X(0),
+            },
+            Instruction::RemoveMessage,
+            Instruction::Return,
+            Instruction::Label { label: 2 },
+            Instruction::WaitTimeout {
+                fail: Operand::Label(1),
+                timeout: Operand::Unsigned(1),
+            },
+            Instruction::Timeout,
+            Instruction::Move {
+                source: Operand::Atom(Some(Atom::TRUE)),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    ))
+}
+
+/// Sleeps past the 1ms receive deadline and force-ticks the shared wheel so
+/// the timer fires synchronously inside the park gap.
+fn fire_receive_timer_in_gap(shared: &SharedState) {
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    timer_integration::tick_timers(shared);
+}
+
+#[test]
+fn timer_expiry_in_the_wait_park_gap_is_not_a_lost_timeout() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("timer_wait_park_gap");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = receive_after_module(&registry, module_name);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+
+    // Fire the timer in the gap between the Wait arm's store-back and its
+    // wait-set registration: expire_timers finds nothing in `waiting`, so
+    // only the post-registration recheck (noticing the pending mark) can
+    // schedule the process; the next slice consumes the mark and jumps to
+    // the timeout continuation.
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired_by_hook = Arc::clone(&fired);
+    *lock_or_recover(&scheduler.shared.park_gap_hook) = Some(Box::new(move |shared, gap, pid| {
+        if gap != ParkGap::WaitStored
+            || pid == shared.standard_io_pid
+            || fired_by_hook.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        fire_receive_timer_in_gap(shared);
+    }));
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || {
+        scheduler.shared.exit_tombstones.contains_key(&pid)
+    });
+    assert!(fired.load(Ordering::Acquire), "park gap was exercised");
+    let exit_value = scheduler
+        .shared
+        .exit_results
+        .get(&pid)
+        .map(|result| result.root());
+    assert_eq!(exit_value, Some(Term::atom(Atom::TRUE)));
+    scheduler.shutdown();
+}
+
+#[test]
+fn timer_expiry_after_wait_registration_schedules_the_process_once() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("timer_wait_park_gap_late");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = receive_after_module(&registry, module_name);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+
+    // Fire the timer between registration and the recheck: the wake moves
+    // the pid to `woken`, and the recheck's self-wake must back off (its
+    // `waiting` removal finds nothing) so the process is scheduled exactly
+    // once.
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired_by_hook = Arc::clone(&fired);
+    *lock_or_recover(&scheduler.shared.park_gap_hook) = Some(Box::new(move |shared, gap, pid| {
+        if gap != ParkGap::WaitRegistered
+            || pid == shared.standard_io_pid
+            || fired_by_hook.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        fire_receive_timer_in_gap(shared);
+    }));
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || {
+        scheduler.shared.exit_tombstones.contains_key(&pid)
+    });
+    assert!(fired.load(Ordering::Acquire), "park gap was exercised");
+    let exit_value = scheduler
+        .shared
+        .exit_results
+        .get(&pid)
+        .map(|result| result.root());
+    assert_eq!(exit_value, Some(Term::atom(Atom::TRUE)));
+    scheduler.shutdown();
+}

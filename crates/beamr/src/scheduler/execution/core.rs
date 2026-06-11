@@ -107,7 +107,17 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             }
             #[cfg(test)]
             invoke_park_gap_hook(shared, ParkGap::WaitRegistered, pid);
-            if process_has_queued_messages(shared, pid) {
+            // The recheck must notice BOTH wake sources that can land before
+            // the registration above: a delivered message, and a receive
+            // timer that fired while the slot was Executing or in the
+            // store-to-register gap (expire_timers found nothing in
+            // `waiting`, so only this recheck can schedule the process; the
+            // mark is consumed at the start of the next slice, which applies
+            // the timeout jump). A stale mark costs one benign spurious
+            // wake.
+            if process_has_queued_messages(shared, pid)
+                || timer_integration::has_pending_expired_timer(shared, pid)
+            {
                 let self_woke = {
                     let mut ws = lock_or_recover(&shared.wait_set);
                     ws.waiting.remove(&pid).is_some()
