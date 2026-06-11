@@ -115,6 +115,21 @@ fn variable_arity_guard_routes_through_the_bif() {
 }
 
 #[test]
+fn invalid_arity_in_guard_position_takes_the_false_branch() {
+    let atoms = Arc::new(AtomTable::with_common_atoms());
+    let scheduler = start_scheduler(&atoms);
+    let (reason, result) = call(&scheduler, &atoms, "guard_badarg");
+    assert_eq!(reason, ExitReason::Normal);
+    assert_atom_tuple(
+        &atoms,
+        result.root(),
+        &["fallthrough", "fallthrough"],
+        "guard_badarg",
+    );
+    scheduler.shutdown();
+}
+
+#[test]
 fn negative_arity_in_body_position_is_badarg() {
     let atoms = Arc::new(AtomTable::with_common_atoms());
     let scheduler = start_scheduler(&atoms);

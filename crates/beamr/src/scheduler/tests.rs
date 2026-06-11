@@ -1625,6 +1625,46 @@ fn mailbox_send_wakes_waiting_process_event_driven() {
 }
 
 #[test]
+fn fired_timer_mark_for_a_dead_pid_does_not_orphan() {
+    let registry = Arc::new(ModuleRegistry::new());
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        registry,
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    let shared = &scheduler.shared;
+
+    // A pid absent from the process table models the timer thread losing
+    // the race in `expire_timers`: it passed the liveness check while the
+    // process was alive, then exit cleanup purged the table and the pid's
+    // marks before the insert. Pids are never reused, so without the
+    // post-insert double-check the mark would orphan forever.
+    let dead_pid = 4242;
+    timer_integration::mark_fired_receive_timer(shared, dead_pid, 7);
+    assert!(
+        shared.expired_receive_timers.get(&dead_pid).is_none(),
+        "mark for a dead pid must be removed by the double-check"
+    );
+
+    // A live pid keeps its mark for the owning thread to consume.
+    let live_pid = 4243;
+    shared.process_table.spawn_with_pid(live_pid);
+    timer_integration::mark_fired_receive_timer(shared, live_pid, 8);
+    assert_eq!(
+        shared
+            .expired_receive_timers
+            .get(&live_pid)
+            .map(|marks| marks.clone()),
+        Some(vec![8]),
+        "mark for a live pid must survive"
+    );
+    scheduler.shutdown();
+}
+
+#[test]
 fn mailbox_send_does_not_wake_when_copy_fails() {
     let called = Arc::new(AtomicBool::new(false));
     let called_by_wake = Arc::clone(&called);

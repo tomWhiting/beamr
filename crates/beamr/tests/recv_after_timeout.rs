@@ -27,6 +27,7 @@ use beamr::native::{
 use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::term::Term;
+use beamr::timer::TimerRef;
 
 fn start_scheduler(atoms: &Arc<AtomTable>) -> Arc<Scheduler> {
     let bifs = BifRegistryImpl::new();
@@ -89,8 +90,37 @@ fn empty_mailbox_receive_after_runs_the_after_clause() {
     scheduler.shutdown();
 }
 
+/// Polls the shared timer wheel until the selective receive's 200ms timer
+/// is armed, returning its reference and absolute deadline. The wheel is
+/// this scheduler's only timer source, so the single entry is ours.
+fn wait_for_armed_timer(scheduler: &Arc<Scheduler>) -> (TimerRef, Instant) {
+    let polling_started = Instant::now();
+    while polling_started.elapsed() < Duration::from_secs(10) {
+        {
+            let wheel = lock_wheel(scheduler);
+            if wheel.len() == 1 {
+                for id in 1..=1024 {
+                    let reference = TimerRef::from_id(id);
+                    if let Some(entry) = wheel.get(reference) {
+                        return (reference, entry.expires_at);
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    panic!("selective: receive timer was never armed");
+}
+
+fn lock_wheel(scheduler: &Arc<Scheduler>) -> std::sync::MutexGuard<'_, beamr::timer::TimerWheel> {
+    scheduler
+        .timers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
-fn timeout_survives_a_non_matching_message_wakeup() {
+fn timeout_survives_non_matching_message_wakeups() {
     let atoms = Arc::new(AtomTable::with_common_atoms());
     let scheduler = start_scheduler(&atoms);
     let module = atoms.intern("recv_after_timer");
@@ -99,22 +129,58 @@ fn timeout_survives_a_non_matching_message_wakeup() {
     let pid = scheduler
         .spawn(module, function, Vec::new())
         .expect("spawn");
-    // Let the receive park with its 200ms timer, then wake it with a
-    // message that matches no clause: the process must re-park with the
-    // ORIGINAL deadline still armed.
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(scheduler.enqueue_atom_message(pid, nomatch));
-    let started = Instant::now();
+    let (armed_ref, armed_deadline) = wait_for_armed_timer(&scheduler);
+
+    // Wake the parked receive repeatedly with messages that match no
+    // clause, spaced across the 200ms window: every wake must re-park with
+    // the ORIGINAL timer still armed. The regression is asserted on wheel
+    // state rather than wall-clock time because idle-loop latency under a
+    // throttled CI/QoS environment inflates end-to-end timing by far more
+    // than one timeout period, while the wheel entry is exact: a
+    // full-timeout re-arm cancels the armed timer and schedules a fresh
+    // reference, so the very first re-armed wake fails the checks below.
+    let mut delivered_wakes = 0;
+    for round in 0..4 {
+        std::thread::sleep(Duration::from_millis(40));
+        if scheduler.process_table().get(pid).is_none() {
+            // Already timed out on the original deadline.
+            break;
+        }
+        if scheduler.enqueue_atom_message(pid, nomatch) {
+            delivered_wakes += 1;
+        }
+        // Give the wake a moment to rescan the mailbox and re-park.
+        std::thread::sleep(Duration::from_millis(20));
+        let wheel = lock_wheel(&scheduler);
+        match wheel.len() {
+            // Only a fired timer may leave the wheel empty, and the wheel
+            // cannot fire before the armed deadline: an earlier
+            // disappearance means a wake cancelled the receive timer.
+            0 => assert!(
+                Instant::now() >= armed_deadline,
+                "wake {round} cancelled the receive timer before its deadline"
+            ),
+            1 => {
+                let entry = wheel.get(armed_ref).unwrap_or_else(|| {
+                    panic!("wake {round} replaced the receive timer (full-timeout re-arm)")
+                });
+                assert_eq!(
+                    entry.expires_at, armed_deadline,
+                    "wake {round} moved the receive deadline"
+                );
+            }
+            extra => panic!("wake {round} armed {extra} timers (re-arm without cancel)"),
+        }
+    }
+    assert!(
+        delivered_wakes >= 1,
+        "no non-matching wake reached the parked receive"
+    );
+
     let (reason, result) = run_with_watchdog(&scheduler, pid, "selective");
     assert_eq!(reason, ExitReason::Normal);
     let timed_out = atoms.intern("timed_out");
     assert_eq!(result.root(), Term::atom(timed_out));
-    // The non-matching wake must not stretch the deadline by re-arming the
-    // full timeout: well under 200ms remains of the original deadline.
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "timeout took implausibly long after a non-matching message"
-    );
     scheduler.shutdown();
 }
 

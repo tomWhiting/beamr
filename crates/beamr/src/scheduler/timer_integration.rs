@@ -106,16 +106,34 @@ fn expire_timers(shared: &SharedState, expired: Vec<crate::timer::ExpiredTimer>)
         if shared.process_table.get(pid).is_none() {
             continue;
         }
-        shared
-            .expired_receive_timers
-            .entry(pid)
-            .or_default()
-            .push(timer.reference.id());
-        let mut wait_set = lock_or_recover(&shared.wait_set);
-        if let Some(index) = wait_set.waiting.remove(&pid) {
-            wait_set.woken.push((pid, index));
-            shared.wake_condvar.notify_all();
-        }
+        mark_fired_receive_timer(shared, pid, timer.reference.id());
+    }
+}
+
+/// Insert a fired-timer mark for `pid` and wake the process if it is parked.
+///
+/// Exit cleanup (`cleanup_exited_process`) can win the race against the
+/// liveness check in `expire_timers`: it purges the process table and the
+/// pid's marks between that check and the insert below, after which the
+/// freshly inserted mark would orphan permanently — pids are never reused,
+/// so nothing would ever consume or clear it. The post-insert double-check
+/// closes that window: if the pid has vanished from the table, the mark is
+/// removed again. A concurrent inserter for the same dead pid runs the same
+/// double-check, so no dead-pid mark survives.
+pub(super) fn mark_fired_receive_timer(shared: &SharedState, pid: u64, timer_id: u64) {
+    shared
+        .expired_receive_timers
+        .entry(pid)
+        .or_default()
+        .push(timer_id);
+    if shared.process_table.get(pid).is_none() {
+        let _orphaned_mark = shared.expired_receive_timers.remove(&pid);
+        return;
+    }
+    let mut wait_set = lock_or_recover(&shared.wait_set);
+    if let Some(index) = wait_set.waiting.remove(&pid) {
+        wait_set.woken.push((pid, index));
+        shared.wake_condvar.notify_all();
     }
 }
 

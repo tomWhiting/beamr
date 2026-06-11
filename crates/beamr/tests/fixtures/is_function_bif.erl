@@ -6,8 +6,8 @@
 %% `erlc is_function_bif.erl` (OTP 25+) and commit the .beam next to this
 %% source.
 -module(is_function_bif).
--export([body_one/0, body_two/0, guard_variable_arity/0, arity_badarg/0,
-         id/1, check/2]).
+-export([body_one/0, body_two/0, guard_variable_arity/0, guard_badarg/0,
+         arity_badarg/0, id/1, check/2]).
 
 %% Exported so the compiler cannot constant-fold the type tests or infer
 %% argument types at the call sites (type inference would otherwise turn
@@ -30,6 +30,12 @@ guard_variable_arity() ->
 
 check(F, N) when is_function(F, N) -> matched;
 check(_, _) -> fallthrough.
+
+%% An invalid arity (negative or non-integer) in GUARD position must fail
+%% the guard and take the false branch, not crash the process.
+guard_badarg() ->
+    F = id(fun(A) -> A end),
+    {check(F, -1), check(F, not_an_arity)}.
 
 %% A negative arity in body position raises badarg.
 arity_badarg() ->
