@@ -214,7 +214,12 @@ pub(in crate::scheduler) fn wake_process(shared: &SharedState, pid: u64) {
     if shared.dirty_in_flight.contains(&pid) && !shared.dirty_results.contains_key(&pid) {
         return;
     }
-    timer_integration::cancel_receive_timer(shared, pid);
+    // The receive timer is deliberately NOT cancelled here. BEAM keeps the
+    // receive-after timer armed across message wakeups: if the message does
+    // not match, the process re-parks and the original deadline must still
+    // fire. The timer is dropped when the receive completes (the
+    // remove_message/timeout opcodes clear the ref, and the eventual stale
+    // fire is discarded by the id check in `apply_expired_receive_timer`).
     let mut wait_set = lock_or_recover(&shared.wait_set);
     if let Some(scheduler_index) = wait_set.waiting.remove(&pid) {
         wait_set.woken.push((pid, scheduler_index));

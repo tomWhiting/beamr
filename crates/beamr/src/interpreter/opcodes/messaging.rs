@@ -156,7 +156,19 @@ pub fn wait_timeout(
 ) -> Result<InstructionOutcome, ExecError> {
     let continuation = label_position(module, fail)?;
     let milliseconds = timeout_milliseconds(process, module, timeout)?;
-    let timeout_position = continuation;
+    // BEAM semantics: a message wakeup resumes at the fail label (the
+    // receive loop, so the new message is scanned), while timer expiry falls
+    // through to the instruction AFTER wait_timeout — the `timeout` opcode,
+    // then the after-body. The code position still points at this
+    // wait_timeout instruction while it executes, so the fall-through is the
+    // next instruction pointer.
+    let current = process
+        .code_position()
+        .ok_or(ExecError::InvalidOperand("wait_timeout code position"))?;
+    let timeout_position = CodePosition {
+        module: current.module,
+        instruction_pointer: next_instruction_pointer(current.instruction_pointer)?,
+    };
     process.set_code_position(Some(CodePosition {
         module: module.name,
         instruction_pointer: next_instruction_pointer(continuation.instruction_pointer)?,
@@ -470,6 +482,12 @@ mod tests {
     fn wait_and_wait_timeout_mark_process_waiting_and_record_timeout() {
         let code = module(vec![Instruction::Label { label: 10 }]);
         let mut process = Process::new(1, 32);
+        // wait_timeout reads its own position to compute the timeout
+        // fall-through; pretend it sits at ip 3.
+        process.set_code_position(Some(CodePosition {
+            module: Atom::OK,
+            instruction_pointer: 3,
+        }));
 
         assert_eq!(
             wait_timeout(
@@ -524,21 +542,29 @@ mod tests {
 
     #[test]
     fn dispatch_wait_timeout_records_deadline_and_timeout_cleans_receive_state() {
-        let timeout_code = module(vec![
+        // The erlc receive-after shape: the wait_timeout fail label is the
+        // receive loop, and the after-clause is the wait_timeout
+        // fall-through (`timeout`, then the after-body).
+        let receive_after_code = module(vec![
+            Instruction::Label { label: 10 },
+            Instruction::LoopRec {
+                fail: Operand::Label(20),
+                destination: Operand::X(0),
+            },
+            Instruction::RemoveMessage,
+            Instruction::Return,
+            Instruction::Label { label: 20 },
             Instruction::WaitTimeout {
                 fail: Operand::Label(10),
                 timeout: Operand::Unsigned(100),
             },
-            Instruction::Label { label: 10 },
             Instruction::Timeout,
-            Instruction::Return,
-            Instruction::Label { label: 20 },
             Instruction::Return,
         ]);
         let mut process = Process::new(1, 32);
 
         assert_eq!(
-            run(&mut process, &timeout_code),
+            run(&mut process, &receive_after_code),
             Ok(ExecutionResult::Waiting)
         );
         assert_eq!(process.status(), ProcessStatus::Waiting);
@@ -546,19 +572,20 @@ mod tests {
             process.code_position(),
             Some(CodePosition {
                 module: Atom::OK,
-                instruction_pointer: 2,
+                instruction_pointer: 1,
             }),
-            "a message wakeup resumes at the normal continuation after the wait timeout label"
+            "a message wakeup resumes at the receive loop (loop_rec)"
         );
         assert_eq!(
             process.receive_timeout(),
             Some(ReceiveTimeout {
                 timeout_position: CodePosition {
                     module: Atom::OK,
-                    instruction_pointer: 1,
+                    instruction_pointer: 6,
                 },
                 milliseconds: 100,
-            })
+            }),
+            "timer expiry falls through to the timeout instruction after wait_timeout"
         );
 
         process
@@ -570,32 +597,26 @@ mod tests {
                 .map(|timeout| timeout.timeout_position),
         );
         assert_eq!(
-            run(&mut process, &timeout_code),
+            run(&mut process, &receive_after_code),
             Ok(ExecutionResult::Exited(ExitReason::Normal))
         );
         assert_eq!(process.receive_timeout(), None);
 
-        let message_code = module(vec![
-            Instruction::WaitTimeout {
-                fail: Operand::Label(20),
-                timeout: Operand::Unsigned(100),
-            },
-            Instruction::Return,
-            Instruction::Label { label: 20 },
-            Instruction::Timeout,
-            Instruction::Return,
-        ]);
+        // A message wakeup rescans the loop and completes the receive.
         let mut process = Process::new(2, 32);
         assert_eq!(
-            run(&mut process, &message_code),
+            run(&mut process, &receive_after_code),
             Ok(ExecutionResult::Waiting)
         );
+        process.mailbox_mut().push_owned(Term::small_int(5));
         process
             .transition_to(ProcessStatus::Running)
             .expect("message arrival requeues process");
         assert_eq!(
-            run(&mut process, &message_code),
+            run(&mut process, &receive_after_code),
             Ok(ExecutionResult::Exited(ExitReason::Normal))
         );
+        assert_eq!(process.x_reg(0), Term::small_int(5));
+        assert_eq!(process.receive_timeout(), None);
     }
 }

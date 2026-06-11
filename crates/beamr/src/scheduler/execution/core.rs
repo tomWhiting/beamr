@@ -92,7 +92,7 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             //    wake moves the pid from `waiting` to `woken`; the recheck
             //    also sees the message, but its `waiting` removal finds
             //    nothing, so the process is scheduled exactly once (by the
-            //    woken drain, which also canceled the receive timer).
+            //    woken drain).
             // 3. Delivery lands after the recheck: the wake finds the pid in
             //    `waiting` and schedules it.
             //
@@ -113,7 +113,6 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
                     ws.waiting.remove(&pid).is_some()
                 };
                 if self_woke {
-                    timer_integration::cancel_receive_timer(shared, pid);
                     queue.push_with_priority(pid, priority);
                 }
             }
@@ -491,6 +490,13 @@ fn execute_slice_with_budget(
             }
         }
     }
+    // A receive timer that fired since the last slice is applied here, on
+    // the owning thread: jump to the recorded timeout continuation. Doing
+    // this at slice start (instead of from the timer-expiry thread) means
+    // the jump can never race a slot that is Executing or mid-park, and a
+    // timer that fires while the process handles a non-matching message
+    // still times the receive out on the next slice.
+    timer_integration::apply_expired_receive_timer(shared, process);
     if let Some((_, result_term)) = shared.async_results.remove(&process.pid()) {
         process.set_x_reg(0, result_term);
         advance_past_current_instruction(process);
@@ -982,6 +988,8 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     let mut wait_set = lock_or_recover(&shared.wait_set);
     wait_set.waiting.remove(&pid);
     wait_set.woken.retain(|(woken_pid, _)| *woken_pid != pid);
+    drop(wait_set);
+    let _stale_marks = shared.expired_receive_timers.remove(&pid);
 }
 
 fn close_owned_fd_resources_on_exit(shared: &SharedState, pid: u64) {
