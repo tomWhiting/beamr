@@ -163,7 +163,7 @@ impl Scheduler {
         let published = self.shared.publish_suspension_result_current(
             pid,
             crate::process::SuspensionKind::DirtyCall,
-            super::suspension::SuspensionResultPayload::Dirty(result),
+            super::suspension::SuspensionResultPayload::Dirty(Box::new(result)),
         );
         if published {
             let _resumed = timer_integration::resume_suspended(&self.shared, pid);

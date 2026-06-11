@@ -1908,14 +1908,16 @@ fn dirty_resume_in_the_suspend_park_gap_is_not_lost() {
         let published = shared.publish_suspension_result(
             pid,
             call_id,
-            crate::scheduler::suspension::SuspensionResultPayload::Dirty(
+            crate::scheduler::suspension::SuspensionResultPayload::Dirty(Box::new(
                 crate::scheduler::dirty::DirtyResult {
                     result: Ok(Term::small_int(7)),
                     owned_result: None,
                     exception_class: crate::native::ExceptionClass::Error,
                     exception_stacktrace: Term::NIL,
+                    suspend: None,
+                    trampoline: None,
                 },
-            ),
+            )),
         );
         assert!(published, "in-gap publish matches the current suspension");
         resumed_by_hook.store(
@@ -2574,6 +2576,157 @@ fn result_beats_timeout_and_clears_the_timed_await_metadata() {
         RACE_RUNS.load(Ordering::Acquire),
         1,
         "the timeout re-executed an await whose completion already arrived"
+    );
+    scheduler.shutdown();
+}
+
+// --- Defect 6 (B-5b): a dirty native can re-suspend as a host await and can
+// trampoline a closure — its follow-up requests are honored instead of being
+// discarded by the bridge. ---
+
+static DIRTY_RESUSPEND_RUNS: AtomicUsize = AtomicUsize::new(0);
+static DIRTY_RESUSPEND_PARKED: AtomicBool = AtomicBool::new(false);
+
+fn dirty_resuspend_native(
+    _args: &[Term],
+    context: &mut crate::native::ProcessContext,
+) -> Result<Term, Term> {
+    DIRTY_RESUSPEND_RUNS.fetch_add(1, Ordering::AcqRel);
+    // Detached context: the call id is allocated later, on the owning
+    // thread, when the suspend request is applied.
+    assert_eq!(context.request_await_suspend(None), None);
+    DIRTY_RESUSPEND_PARKED.store(true, Ordering::Release);
+    Ok(Term::NIL)
+}
+
+#[test]
+fn dirty_native_can_resuspend_as_a_gated_host_await() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("dirty_resuspend");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = native_call_module(
+        &registry,
+        module_name,
+        dirty_resuspend_native,
+        Some(crate::scheduler::dirty::DirtySchedulerKind::Cpu),
+    );
+    let scheduler = single_thread_scheduler(&registry);
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || DIRTY_RESUSPEND_PARKED.load(Ordering::Acquire));
+    // Wait for the re-suspension to become current: a HostAwait mirror
+    // replaces the DirtyCall mirror once the owning thread applies the
+    // dirty native's suspend request.
+    wait_until(10_000, || {
+        scheduler
+            .shared
+            .suspensions
+            .get(&pid)
+            .is_some_and(|mirror| mirror.kind == crate::process::SuspensionKind::HostAwait)
+    });
+    // A message must not wake the gated re-suspension (the dirty call
+    // instruction would re-submit the dirty native).
+    assert!(scheduler.enqueue_atom_message(pid, Atom::OK));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(DIRTY_RESUSPEND_RUNS.load(Ordering::Acquire), 1);
+    assert!(!scheduler.shared.exit_tombstones.contains_key(&pid));
+
+    // The pid-resolved completion resumes it with the awaited value.
+    assert!(scheduler.wake_with_result(pid, Term::small_int(55)));
+    wait_until(10_000, || {
+        scheduler.shared.exit_tombstones.contains_key(&pid)
+    });
+    assert_eq!(exit_value(&scheduler, pid), Some(Term::small_int(55)));
+    assert_eq!(
+        DIRTY_RESUSPEND_RUNS.load(Ordering::Acquire),
+        1,
+        "the dirty native was re-submitted"
+    );
+    scheduler.shutdown();
+}
+
+fn dirty_trampoline_resume(
+    _state: crate::native::AionTimeoutContinuation,
+    closure_result: Term,
+    _context: &mut crate::native::ProcessContext<'_>,
+) -> Result<crate::native::stdlib_stubs::maps_bifs::ContinuationStep, Term> {
+    Ok(crate::native::stdlib_stubs::maps_bifs::ContinuationStep::Done(closure_result))
+}
+
+fn dirty_trampoline_native(
+    args: &[Term],
+    context: &mut crate::native::ProcessContext,
+) -> Result<Term, Term> {
+    let fun = args.first().copied().expect("closure argument");
+    context.set_continuation_trampoline(
+        fun,
+        vec![],
+        crate::native::NativeContinuation::AionTimeout(crate::native::AionTimeoutContinuation {
+            state_id: 1,
+            resume: dirty_trampoline_resume,
+        }),
+    );
+    Ok(Term::NIL)
+}
+
+#[test]
+fn dirty_native_can_trampoline_a_closure() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("dirty_trampoline");
+    let callback_atom = atoms.intern("dirty_cb@anon");
+    let callback_id = crate::loader::lambda_unique_id(&atoms, module_name, callback_atom, 0, 0)
+        .expect("callback id");
+    let registry = Arc::new(ModuleRegistry::new());
+    let mut module = test_module(
+        module_name,
+        vec![
+            // Build the closure for lambda 0 into x0, hand it to the dirty
+            // native, return its (trampolined) result.
+            Instruction::MakeFun {
+                operands: vec![Operand::Unsigned(0)],
+            },
+            Instruction::CallExt {
+                arity: Operand::Unsigned(1),
+                import: Operand::Unsigned(0),
+            },
+            Instruction::Return,
+            // Closure body: return 88.
+            Instruction::Label { label: 5 },
+            Instruction::Move {
+                source: Operand::Unsigned(88),
+                destination: Operand::X(0),
+            },
+            Instruction::Return,
+        ],
+    );
+    module.lambdas.push(crate::loader::LambdaEntry {
+        function: callback_atom,
+        arity: 0,
+        label: 5,
+        num_free: 0,
+        unique_id: callback_id,
+    });
+    module.resolved_imports.push(crate::module::ResolvedImport {
+        module: module_name,
+        function: module_name,
+        arity: 1,
+        target: crate::module::ResolvedImportTarget::Native(crate::native::NativeEntry {
+            function: dirty_trampoline_native,
+            dirty_kind: Some(crate::scheduler::dirty::DirtySchedulerKind::Cpu),
+            capability: Capability::Pure,
+        }),
+    });
+    let module = registry.insert(module);
+    let scheduler = single_thread_scheduler(&registry);
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || {
+        scheduler.shared.exit_tombstones.contains_key(&pid)
+    });
+    assert_eq!(
+        exit_value(&scheduler, pid),
+        Some(Term::small_int(88)),
+        "the dirty native's trampolined closure result is the call's result"
     );
     scheduler.shutdown();
 }

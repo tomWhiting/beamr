@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::ets::OwnedTerm;
-use crate::native::{ExceptionClass, NativeFn, ProcessContext};
+use crate::native::{ExceptionClass, NativeContinuation, NativeFn, ProcessContext, SuspendRequest};
 use crate::scheduler::lock_or_recover;
 use crate::term::Term;
 
@@ -83,6 +83,32 @@ pub struct DirtyResult {
     pub exception_class: ExceptionClass,
     /// Stacktrace requested by the dirty native if it returned `Err`.
     pub exception_stacktrace: Term,
+    /// Suspend request the dirty native left on its detached context: the
+    /// owning thread re-parks the process at the dirty call instruction
+    /// under a NEW host-await suspension instead of applying a value.
+    /// Ignored when the native returned `Err` (the exception wins, matching
+    /// `call_native_entry`).
+    pub suspend: Option<SuspendRequest>,
+    /// Trampoline request the dirty native left on its detached context:
+    /// the owning thread sets up the closure call on resume. Must carry a
+    /// continuation (returning straight to the call instruction would
+    /// re-submit the dirty call).
+    pub trampoline: Option<OwnedDirtyTrampoline>,
+}
+
+/// A dirty native's trampoline request with its terms copied into owned
+/// storage, so they survive the detached context's teardown until the owning
+/// thread copies them onto the resuming process heap.
+#[derive(Debug)]
+pub struct OwnedDirtyTrampoline {
+    /// The closure (fun) term to invoke.
+    pub fun: OwnedTerm,
+    /// Arguments to pass to the closure.
+    pub args: Vec<OwnedTerm>,
+    /// Continuation resumed after the closure returns. Must hold no heap
+    /// terms (a detached context's terms would dangle); term-carrying
+    /// continuations are rejected at the dirty worker.
+    pub continuation: NativeContinuation,
 }
 
 /// Native function invocation scheduled onto a dirty scheduler thread.
@@ -303,11 +329,37 @@ fn worker_loop(receiver: Receiver<DirtyMessage>) {
                 };
                 let exception_class = job.context.take_exception_class();
                 let exception_stacktrace = job.context.take_exception_stacktrace();
+                // Follow-up requests a dirty native is allowed to make:
+                // re-suspend (host await) or trampoline a closure call. The
+                // exception path wins over both, matching call_native_entry.
+                let suspend = job.context.take_suspend().filter(|_| result.is_ok());
+                let trampoline = match job.context.take_trampoline().filter(|_| result.is_ok()) {
+                    None => None,
+                    Some(request) => match own_dirty_trampoline(request) {
+                        Ok(owned) => Some(owned),
+                        Err(reason) => {
+                            // Reject malformed requests loudly: the process
+                            // raises instead of silently dropping them.
+                            let _ = job.result_sender.send(DirtyResult {
+                                result: Err(Term::atom(crate::atom::Atom::BADARG)),
+                                owned_result: None,
+                                exception_class: ExceptionClass::Error,
+                                exception_stacktrace: Term::NIL,
+                                suspend: None,
+                                trampoline: None,
+                            });
+                            let _trace = reason;
+                            continue;
+                        }
+                    },
+                };
                 let _ = job.result_sender.send(DirtyResult {
                     result,
                     owned_result,
                     exception_class,
                     exception_stacktrace,
+                    suspend,
+                    trampoline,
                 });
             }
             DirtyMessage::RunTask(task) => {
@@ -315,6 +367,42 @@ fn worker_loop(receiver: Receiver<DirtyMessage>) {
             }
             DirtyMessage::Shutdown => break,
         }
+    }
+}
+
+/// Copy a dirty native's trampoline request into owned storage.
+///
+/// Rejects requests without a continuation (returning to the call
+/// instruction would re-submit the dirty call) and continuations that hold
+/// heap terms (a detached context's terms dangle once the job is dropped).
+fn own_dirty_trampoline(
+    request: crate::native::TrampolineRequest,
+) -> Result<OwnedDirtyTrampoline, &'static str> {
+    let Some(continuation) = request.continuation else {
+        return Err("dirty trampoline requires a continuation");
+    };
+    let mut holds_terms = false;
+    continuation.for_each_term(&mut |_| holds_terms = true);
+    if holds_terms {
+        return Err("dirty trampoline continuation must not hold heap terms");
+    }
+    let fun = own_term(request.fun).map_err(|_| "dirty trampoline fun copy failed")?;
+    let mut args = Vec::with_capacity(request.args.len());
+    for arg in request.args {
+        args.push(own_term(arg).map_err(|_| "dirty trampoline arg copy failed")?);
+    }
+    Ok(OwnedDirtyTrampoline {
+        fun,
+        args,
+        continuation,
+    })
+}
+
+fn own_term(term: Term) -> Result<OwnedTerm, crate::ets::EtsError> {
+    if term.is_list() || term.is_boxed() {
+        crate::ets::copy_term_to_ets(term)
+    } else {
+        Ok(OwnedTerm::immediate(term))
     }
 }
 

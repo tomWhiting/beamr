@@ -820,8 +820,21 @@ fn consume_suspension_event(shared: &SharedState, process: &mut Process) -> Susp
                 advance_past_current_instruction(process);
                 SuspensionGate::Run
             }
-            SuspensionResultPayload::Dirty(dirty_result) => {
-                match apply_dirty_result(process, dirty_result) {
+            SuspensionResultPayload::Dirty(mut dirty_result) => {
+                // Follow-up requests from the dirty native (B-5b): a
+                // re-suspend re-parks at the dirty call instruction under a
+                // NEW host-await suspension; a trampoline sets up the
+                // requested closure call. Only honored on the Ok path (the
+                // exception wins, matching call_native_entry).
+                if dirty_result.result.is_ok() {
+                    if let Some(suspend) = dirty_result.suspend.take() {
+                        return apply_dirty_suspend(shared, process, suspend);
+                    }
+                    if let Some(trampoline) = dirty_result.trampoline.take() {
+                        return apply_dirty_trampoline(shared, process, trampoline);
+                    }
+                }
+                match apply_dirty_result(process, *dirty_result) {
                     Ok(InstructionOutcomeAfterDirty::Continue) => SuspensionGate::Run,
                     Ok(InstructionOutcomeAfterDirty::Exit(reason)) => SuspensionGate::Exit(reason),
                     Err(error) => SuspensionGate::Error(error),
@@ -904,6 +917,113 @@ fn repark_suspended(process: &mut Process, kind: SuspensionKind) -> SliceOutcome
             let _t = process.transition_to(ProcessStatus::Suspended);
             SliceOutcome::Suspended(take_process(process))
         }
+    }
+}
+
+/// Re-park a process whose dirty native requested suspension: install a NEW
+/// host-await suspension at the (unadvanced) dirty call instruction. The
+/// completion arrives through the pid-resolved `Scheduler::wake_with_result`
+/// (or `wake_with_result_for` once the embedder learns the id), the optional
+/// timeout re-executes the dirty call, and — for a message-wakeable request —
+/// any message re-executes the (re-entrant) dirty call.
+fn apply_dirty_suspend(
+    shared: &SharedState,
+    process: &mut Process,
+    suspend: crate::native::SuspendRequest,
+) -> SuspensionGate {
+    let Some(position) = process.code_position() else {
+        return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+            "dirty suspend code position",
+        ));
+    };
+    if let Some(timeout_ms) = suspend.timeout_ms {
+        process.set_receive_timeout(Some(crate::process::ReceiveTimeout {
+            timeout_position: position,
+            milliseconds: timeout_ms,
+        }));
+    }
+    // A detached dirty context cannot allocate from the process counter;
+    // the id is allocated here, on the owning thread.
+    let call_id = suspend
+        .call_id
+        .unwrap_or_else(|| process.allocate_suspension_call_id());
+    process.set_suspension(Some(SuspensionRecord {
+        call_id,
+        kind: SuspensionKind::HostAwait,
+        position: Some(position),
+        wake_on_message: suspend.wake_on_message,
+    }));
+    shared.register_suspension_mirror(
+        process.pid(),
+        call_id,
+        SuspensionKind::HostAwait,
+        suspend.wake_on_message,
+    );
+    SuspensionGate::Repark(SuspensionKind::HostAwait)
+}
+
+/// Set up the closure call a dirty native requested: copy the owned fun and
+/// arguments onto the resuming process heap and run the normal trampoline
+/// path (which pushes the continuation under the suspension protocol's
+/// position-gated readiness check).
+fn apply_dirty_trampoline(
+    shared: &SharedState,
+    process: &mut Process,
+    trampoline: crate::scheduler::dirty::OwnedDirtyTrampoline,
+) -> SuspensionGate {
+    let registry = namespace_registry(shared, process.namespace_id())
+        .unwrap_or_else(|| Arc::clone(&shared.module_registry));
+    let Some(position) = process.code_position() else {
+        return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+            "dirty trampoline code position",
+        ));
+    };
+    let module = if let Some(current) = process
+        .current_module()
+        .filter(|m| m.name == position.module)
+    {
+        Arc::clone(current)
+    } else if let Some(module) = registry.lookup(position.module) {
+        module
+    } else {
+        return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+            "dirty trampoline module",
+        ));
+    };
+    let badarg = |_| crate::error::ExecError::Badarg;
+    let fun = match trampoline
+        .fun
+        .copy_to_heap(process.heap_mut())
+        .map_err(badarg)
+    {
+        Ok(fun) => fun,
+        Err(error) => return SuspensionGate::Error(error),
+    };
+    let mut args = Vec::with_capacity(trampoline.args.len());
+    for arg in &trampoline.args {
+        match arg.copy_to_heap(process.heap_mut()).map_err(badarg) {
+            Ok(arg) => args.push(arg),
+            Err(error) => return SuspensionGate::Error(error),
+        }
+    }
+    match crate::interpreter::opcodes::trampoline::handle_trampoline(
+        process,
+        &module,
+        Some(&registry),
+        crate::native::TrampolineRequest {
+            fun,
+            args,
+            continuation: Some(trampoline.continuation),
+        },
+    ) {
+        // Jump: the closure entry becomes the slice's starting position.
+        Ok(crate::interpreter::InstructionOutcome::Jump(target)) => {
+            process.set_code_position(Some(target));
+            SuspensionGate::Run
+        }
+        // Yield: handle_trampoline already stored the target position.
+        Ok(_) => SuspensionGate::Run,
+        Err(error) => SuspensionGate::Error(error),
     }
 }
 
@@ -1094,12 +1214,14 @@ fn submit_dirty_call(
         let _published = shared.publish_suspension_result(
             process.pid(),
             call_id,
-            SuspensionResultPayload::Dirty(DirtyResult {
+            SuspensionResultPayload::Dirty(Box::new(DirtyResult {
                 result: recorded.outcome.result,
                 exception_class: recorded.outcome.exception_class,
                 exception_stacktrace: recorded.outcome.exception_stacktrace,
                 owned_result: None,
-            }),
+                suspend: None,
+                trampoline: None,
+            })),
         );
         let _resumed = timer_integration::resume_suspended(shared, process.pid());
         return Ok(());
@@ -1160,6 +1282,8 @@ fn submit_dirty_call(
                     owned_result: None,
                     exception_class: ExceptionClass::Error,
                     exception_stacktrace: Term::NIL,
+                    suspend: None,
+                    trampoline: None,
                 },
             };
             // Published under the submitting call's id: the owning thread
@@ -1169,7 +1293,7 @@ fn submit_dirty_call(
             let _published = shared_for_completion.publish_suspension_result(
                 pid,
                 call_id,
-                SuspensionResultPayload::Dirty(result),
+                SuspensionResultPayload::Dirty(Box::new(result)),
             );
             let _resumed = timer_integration::resume_suspended(&shared_for_completion, pid);
         });

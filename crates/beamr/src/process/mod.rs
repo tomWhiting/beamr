@@ -32,14 +32,21 @@ pub const DEFAULT_REDUCTION_BUDGET: u32 = 4000;
 ///
 /// Pending continuations form a stack so natives can nest (a closure called
 /// by `lists:map` may itself call `lists:map`). Each entry records the frame
-/// depth just below its trampoline return frame; the continuation resumes
-/// when the stack is back at that depth, i.e. when its closure call returned.
+/// depth just below its trampoline return frame AND the code position the
+/// trampoline returns to (the BIF call instruction); the continuation
+/// resumes only when the stack is back at that depth at exactly that
+/// position — i.e. when its closure call returned. Depth alone is not
+/// enough: a process re-entering an await elsewhere at equal stack depth
+/// (a tail-called receive inside the closure) would otherwise re-fire the
+/// continuation with garbage in x0.
 #[derive(Clone, Debug)]
 pub struct PendingNativeContinuation {
     /// Saved native state to re-enter.
     pub continuation: NativeContinuation,
     /// Frame count below the trampoline return frame.
     pub resume_depth: usize,
+    /// The BIF call instruction the trampoline return frame jumps back to.
+    pub resume_position: Option<CodePosition>,
 }
 
 /// Why a process is parked beyond a plain receive.
@@ -749,6 +756,7 @@ impl Process {
         self.native_continuations.push(PendingNativeContinuation {
             continuation,
             resume_depth,
+            resume_position: self.code_position,
         });
     }
 
@@ -758,13 +766,19 @@ impl Process {
     }
 
     /// True when the innermost pending continuation's closure has returned
-    /// (its trampoline return frame has been popped) and the native must be
+    /// (its trampoline return frame has been popped, landing the process
+    /// back at the recorded call instruction) and the native must be
     /// re-entered before the next instruction executes.
+    ///
+    /// The position check prevents a stale re-fire: stack depth alone can
+    /// also match at an unrelated await re-entered at equal depth, where
+    /// x0 holds garbage rather than the closure's return value.
     #[must_use]
     pub fn native_continuation_ready(&self) -> bool {
-        self.native_continuations
-            .last()
-            .is_some_and(|pending| self.stack.len() <= pending.resume_depth)
+        self.native_continuations.last().is_some_and(|pending| {
+            self.stack.len() <= pending.resume_depth
+                && pending.resume_position == self.code_position
+        })
     }
 
     /// Drop pending continuations whose trampoline return frames were

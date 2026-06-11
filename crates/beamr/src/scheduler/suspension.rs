@@ -49,7 +49,9 @@ pub(super) enum SuspensionResultPayload {
     /// Host-await result applied into x0 (the await call's return value).
     Host(Term),
     /// Dirty native completion (result/exception, plus follow-up requests).
-    Dirty(DirtyResult),
+    /// Boxed: dirty completions are rare next to host results, and the
+    /// follow-up request fields make the variant large.
+    Dirty(Box<DirtyResult>),
 }
 
 impl SharedState {
