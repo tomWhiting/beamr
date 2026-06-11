@@ -14,10 +14,22 @@ use crate::term::{Term, boxed::BoxedTag};
 use std::sync::Arc;
 
 use crate::replay::RecordedSchedule;
+#[cfg(test)]
+use crate::scheduler::ParkGap;
 use crate::scheduler::{
     DEFAULT_REDUCTION_BUDGET, ProcessMetadata, ProcessSlot, RunQueue, ScheduledProcess,
     SharedState, lock_or_recover, namespace_registry, supervision_integration, timer_integration,
 };
+
+/// Runs the test-only park-gap hook, if installed, at an interleaving point
+/// inside `run_process`'s park sequences.
+#[cfg(test)]
+fn invoke_park_gap_hook(shared: &SharedState, gap: ParkGap, pid: u64) {
+    let hook = lock_or_recover(&shared.park_gap_hook);
+    if let Some(hook) = hook.as_ref() {
+        hook(shared, gap, pid);
+    }
+}
 
 pub(in crate::scheduler) enum SliceOutcome {
     Requeue(Process),
@@ -66,13 +78,45 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             if cleanup_if_tombstoned_after_store(shared, pid) {
                 return;
             }
-            if process_has_queued_messages(shared, pid) {
-                timer_integration::cancel_receive_timer(shared, pid);
-                queue.push_with_priority(pid, priority);
-                return;
+            // Park ordering against a concurrent deliver→wake (the sender
+            // pushes the message under the slot lock, then calls
+            // `wake_process`, which is a no-op unless the pid is registered
+            // in `waiting`). Register BEFORE the final mailbox recheck so
+            // every interleaving resolves to a scheduled process:
+            //
+            // 1. Delivery completes before the registration below: the wake
+            //    no-ops, but the message is already visible (pushed into the
+            //    mailbox, or merged from pending metadata by the store-back
+            //    above), so the recheck sees it and self-wakes.
+            // 2. Delivery lands between registration and the recheck: the
+            //    wake moves the pid from `waiting` to `woken`; the recheck
+            //    also sees the message, but its `waiting` removal finds
+            //    nothing, so the process is scheduled exactly once (by the
+            //    woken drain, which also canceled the receive timer).
+            // 3. Delivery lands after the recheck: the wake finds the pid in
+            //    `waiting` and schedules it.
+            //
+            // Rechecking before registering (the previous order) lost
+            // interleaving 1: a delivery in that gap woke nobody and the
+            // process parked forever.
+            #[cfg(test)]
+            invoke_park_gap_hook(shared, ParkGap::WaitStored, pid);
+            {
+                let mut ws = lock_or_recover(&shared.wait_set);
+                ws.waiting.insert(pid, my_index);
             }
-            let mut ws = lock_or_recover(&shared.wait_set);
-            ws.waiting.insert(pid, my_index);
+            #[cfg(test)]
+            invoke_park_gap_hook(shared, ParkGap::WaitRegistered, pid);
+            if process_has_queued_messages(shared, pid) {
+                let self_woke = {
+                    let mut ws = lock_or_recover(&shared.wait_set);
+                    ws.waiting.remove(&pid).is_some()
+                };
+                if self_woke {
+                    timer_integration::cancel_receive_timer(shared, pid);
+                    queue.push_with_priority(pid, priority);
+                }
+            }
         }
         SliceOutcome::Suspended(process) => {
             // Suspended means a dirty native call is in flight (host-side
@@ -85,6 +129,8 @@ pub(super) fn run_process(shared: &Arc<SharedState>, queue: &RunQueue, pid: u64,
             if cleanup_if_tombstoned_after_store(shared, pid) {
                 return;
             }
+            #[cfg(test)]
+            invoke_park_gap_hook(shared, ParkGap::SuspendStored, pid);
             {
                 let mut ws = lock_or_recover(&shared.wait_set);
                 ws.waiting.insert(pid, my_index);

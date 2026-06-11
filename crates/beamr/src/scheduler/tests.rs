@@ -1105,6 +1105,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
+        park_gap_hook: Mutex::new(None),
         dirty_results: DashMap::new(),
         dirty_in_flight: DashSet::new(),
         file_io_ring: Arc::from(crate::io::create_ring(RingConfig::default())),
@@ -1456,6 +1457,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
+        park_gap_hook: Mutex::new(None),
         dirty_cpu: crate::scheduler::dirty::DirtyPool::new("test-cpu", 1),
         dirty_io: crate::scheduler::dirty::DirtyPool::new("test-io", 1),
         dirty_results: DashMap::new(),
@@ -1650,5 +1652,136 @@ fn idle_threads_park_instead_of_spinning() {
     .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
 
     wait_until(500, || scheduler.idle_park_count() > 0);
+    scheduler.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Park-gap interleavings: deliveries and dirty resumes racing run_process's
+// park sequences. The park_gap_hook runs synchronously at the exact gap, so
+// each test pins one interleaving deterministically.
+// ---------------------------------------------------------------------------
+
+fn receive_then_return_module(registry: &ModuleRegistry, name: Atom) -> Arc<Module> {
+    registry.insert(test_module(
+        name,
+        vec![
+            Instruction::Label { label: 1 },
+            Instruction::LoopRec {
+                fail: Operand::Label(2),
+                destination: Operand::X(0),
+            },
+            Instruction::RemoveMessage,
+            Instruction::Return,
+            Instruction::Label { label: 2 },
+            Instruction::Wait {
+                fail: Operand::Label(1),
+            },
+        ],
+    ))
+}
+
+/// Pushes an atom message exactly the way a racing sender does: under the
+/// slot lock, with `wake_process` left to the caller.
+fn deliver_atom(shared: &SharedState, pid: u64, atom: Atom) {
+    let entry = shared
+        .process_bodies
+        .get(&pid)
+        .unwrap_or_else(|| panic!("process body exists"));
+    let mut slot = lock_or_recover(&entry);
+    match &mut *slot {
+        ProcessSlot::Present(scheduled) => scheduled.0.mailbox_mut().push_owned(Term::atom(atom)),
+        ProcessSlot::Executing(metadata) => metadata.pending_io_messages.push(Term::atom(atom)),
+        ProcessSlot::Absent => panic!("process body absent"),
+    }
+}
+
+#[test]
+fn delivery_in_the_wait_park_gap_is_not_a_lost_wakeup() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("wait_park_gap");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = receive_then_return_module(&registry, module_name);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+
+    // Deliver + wake in the gap between the Wait arm's mailbox recheck and
+    // its wait-set registration (interleaving 1 in the Wait arm comment):
+    // the wake is a no-op because the pid is not registered yet, so only the
+    // registered-before-recheck ordering schedules the process again.
+    let delivered = Arc::new(AtomicBool::new(false));
+    let delivered_by_hook = Arc::clone(&delivered);
+    *lock_or_recover(&scheduler.shared.park_gap_hook) = Some(Box::new(move |shared, gap, pid| {
+        if gap != ParkGap::WaitStored
+            || pid == shared.standard_io_pid
+            || delivered_by_hook.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        deliver_atom(shared, pid, Atom::OK);
+        execution::wake_process(shared, pid);
+    }));
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || {
+        scheduler.shared.exit_tombstones.contains_key(&pid)
+    });
+    assert!(delivered.load(Ordering::Acquire), "park gap was exercised");
+    let exit_value = scheduler
+        .shared
+        .exit_results
+        .get(&pid)
+        .map(|result| result.root());
+    assert_eq!(exit_value, Some(Term::atom(Atom::OK)));
+    scheduler.shutdown();
+}
+
+#[test]
+fn delivery_after_wait_registration_schedules_the_process_once() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("wait_park_gap_late");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = receive_then_return_module(&registry, module_name);
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        Arc::clone(&registry),
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+
+    // Deliver + wake between registration and the mailbox recheck
+    // (interleaving 2): the wake moves the pid to `woken`, and the recheck's
+    // self-wake must back off so the process is scheduled exactly once.
+    let delivered = Arc::new(AtomicBool::new(false));
+    let delivered_by_hook = Arc::clone(&delivered);
+    *lock_or_recover(&scheduler.shared.park_gap_hook) = Some(Box::new(move |shared, gap, pid| {
+        if gap != ParkGap::WaitRegistered
+            || pid == shared.standard_io_pid
+            || delivered_by_hook.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        deliver_atom(shared, pid, Atom::OK);
+        execution::wake_process(shared, pid);
+    }));
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || {
+        scheduler.shared.exit_tombstones.contains_key(&pid)
+    });
+    assert!(delivered.load(Ordering::Acquire), "park gap was exercised");
+    let exit_value = scheduler
+        .shared
+        .exit_results
+        .get(&pid)
+        .map(|result| result.root());
+    assert_eq!(exit_value, Some(Term::atom(Atom::OK)));
     scheduler.shutdown();
 }
