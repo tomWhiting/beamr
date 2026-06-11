@@ -279,6 +279,7 @@ fn make_shared_state() -> Arc<SharedState> {
         bif_registry: Arc::new(crate::native::BifRegistryImpl::new()),
         capability_policy: Arc::new(crate::native::AllCapabilitiesPolicy),
         idle_parks: AtomicUsize::new(0),
+        park_gap_hook: Mutex::new(None),
         dirty_results: DashMap::new(),
         dirty_in_flight: DashSet::new(),
         file_io_ring: Arc::from(crate::io::create_ring(RingConfig::default())),

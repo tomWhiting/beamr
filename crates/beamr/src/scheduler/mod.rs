@@ -186,6 +186,9 @@ pub(super) struct SharedState {
 
     #[cfg(test)]
     idle_parks: AtomicUsize,
+
+    #[cfg(test)]
+    park_gap_hook: Mutex<Option<ParkGapHook>>,
 }
 
 #[cfg(feature = "telemetry")]
@@ -393,6 +396,22 @@ struct WaitSet {
     waiting: std::collections::HashMap<u64, usize>,
     woken: Vec<(u64, usize)>,
 }
+
+/// Test-only injection points inside the park sequences of `run_process`,
+/// used to drive deliver/resume interleavings deterministically.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ParkGap {
+    /// Wait arm: after the store-back, before wait-set registration.
+    WaitStored,
+    /// Wait arm: after wait-set registration, before the mailbox recheck.
+    WaitRegistered,
+    /// Suspended arm: after the store-back, before wait-set registration.
+    SuspendStored,
+}
+
+#[cfg(test)]
+type ParkGapHook = Box<dyn Fn(&SharedState, ParkGap, u64) + Send + Sync>;
 pub(super) struct ScheduledProcess(Process);
 // SAFETY: Process is not Send at the public API boundary. The scheduler is the
 // sole owner of process execution, storing each body behind a mutex-protected
@@ -644,6 +663,8 @@ impl Scheduler {
             _standard_io_server: standard_io_server,
             #[cfg(test)]
             idle_parks: AtomicUsize::new(0),
+            #[cfg(test)]
+            park_gap_hook: Mutex::new(None),
         });
         if !shared.replay_mode {
             let standard_io_pid = shared._standard_io_server.pid();

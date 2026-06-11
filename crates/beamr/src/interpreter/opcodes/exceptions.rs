@@ -61,6 +61,12 @@ pub fn try_case(process: &mut Process, source: &Operand) -> Result<InstructionOu
         process.set_x_reg(0, exception.class);
         process.set_x_reg(1, exception.reason);
         process.set_x_reg(2, exception.stacktrace);
+        // The exception is consumed into x0-x2 here; the handler owns it
+        // from now on. Residual state would otherwise report a later normal
+        // exit as a crash and leak this class into a later `raise`. The raw
+        // stacktrace is intentionally kept: a `build_stacktrace` in the
+        // handler still reads it (try_end/catch_end clear it).
+        process.set_current_exception(None);
     }
     Ok(InstructionOutcome::Continue)
 }
@@ -108,9 +114,22 @@ pub fn raise(
     let stacktrace = core::read_term(process, module, stacktrace)?;
     let reason = core::read_term(process, module, reason)?;
 
-    let class = process
-        .current_exception()
-        .map_or(Term::atom(Atom::ERROR), |exception| exception.class);
+    // The compiler emits this instruction on the catch-clause fallthrough
+    // path, where try_case has just written the caught class to x0 and the
+    // failed class dispatch left it untouched — that register is the only
+    // place the class still lives once try_case consumes the exception.
+    // Anything else in x0 means the instruction ran outside that contract;
+    // default to `error`, mirroring OTP's fallback when the stacktrace
+    // operand carries no class.
+    let x0 = process.x_reg(0);
+    let class = if x0 == Term::atom(Atom::ERROR)
+        || x0 == Term::atom(Atom::THROW)
+        || x0 == Term::atom(Atom::EXIT_CLASS)
+    {
+        x0
+    } else {
+        Term::atom(Atom::ERROR)
+    };
     raise_exception(
         process,
         Exception {
@@ -803,6 +822,78 @@ mod tests {
         assert_eq!(process.current_exception(), None);
         assert_eq!(process.x_reg(0), Term::small_int(55));
         assert_eq!(process.stack().y_reg(0), Ok(Term::NIL));
+    }
+
+    #[test]
+    fn try_case_clears_current_exception_once_consumed_into_registers() {
+        let code = label20_module();
+        let mut process = Process::new(1, 32);
+        try_(&mut process, &code, &Operand::X(0), &Operand::Label(20)).expect("try");
+        raise_exception(
+            &mut process,
+            exception(Atom::THROW, Term::small_int(9), Term::NIL),
+        )
+        .expect("caught");
+        assert!(process.current_exception().is_some());
+        try_case(&mut process, &Operand::X(0)).expect("expose exception");
+        assert_eq!(process.current_exception(), None);
+        assert_eq!(process.x_reg(0), Term::atom(Atom::THROW));
+        assert_eq!(process.x_reg(1), Term::small_int(9));
+        assert_eq!(process.x_reg(2), Term::NIL);
+    }
+
+    #[test]
+    fn raise_after_try_case_preserves_the_caught_class() {
+        // Compiled catch clauses that match no class re-raise with `raise`
+        // right after try_case: class still in x0, reason x1, trace x2.
+        let code = module(vec![
+            Instruction::Label { label: 10 },
+            Instruction::Label { label: 20 },
+        ]);
+        let mut process = Process::new(1, 64);
+        try_(&mut process, &code, &Operand::X(10), &Operand::Label(10)).expect("outer try");
+        try_(&mut process, &code, &Operand::X(20), &Operand::Label(20)).expect("inner try");
+        raise_exception(
+            &mut process,
+            exception(Atom::EXIT_CLASS, Term::small_int(5), Term::NIL),
+        )
+        .expect("caught by inner");
+        try_case(&mut process, &Operand::X(20)).expect("expose exception");
+        assert_eq!(process.current_exception(), None);
+        raise(&mut process, &code, &Operand::X(2), &Operand::X(1)).expect("re-raise");
+        let rethrown = process.current_exception().expect("outer catch pending");
+        assert_eq!(rethrown.class, Term::atom(Atom::EXIT_CLASS));
+        assert_eq!(rethrown.reason, Term::small_int(5));
+    }
+
+    #[test]
+    fn raise_after_handled_exception_does_not_inherit_the_stale_class() {
+        let code = module(vec![
+            Instruction::Label { label: 10 },
+            Instruction::Label { label: 20 },
+        ]);
+        let mut process = Process::new(1, 64);
+        try_(&mut process, &code, &Operand::X(10), &Operand::Label(10)).expect("outer try");
+        try_(&mut process, &code, &Operand::X(20), &Operand::Label(20)).expect("inner try");
+        raise_exception(
+            &mut process,
+            exception(Atom::THROW, Term::small_int(1), Term::NIL),
+        )
+        .expect("caught by inner");
+        try_case(&mut process, &Operand::X(20)).expect("expose exception");
+        // The handler ran on and x0 no longer holds a class: a fresh raise
+        // must not resurrect the handled throw's class.
+        process.set_x_reg(0, Term::small_int(99));
+        raise(
+            &mut process,
+            &code,
+            &Operand::Integer(0),
+            &Operand::Atom(Some(Atom::BADARG)),
+        )
+        .expect("fresh raise");
+        let fresh = process.current_exception().expect("outer catch pending");
+        assert_eq!(fresh.class, Term::atom(Atom::ERROR));
+        assert_eq!(fresh.reason, Term::atom(Atom::BADARG));
     }
 
     #[test]
