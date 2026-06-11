@@ -4,7 +4,7 @@ use crate::native::ProcessContext;
 use crate::process::Process;
 use crate::term::Term;
 use crate::term::binary;
-use crate::term::boxed::{BigInt, Float, write_float, write_map};
+use crate::term::boxed::{BigInt, Float, write_closure, write_float, write_map};
 
 fn context(process: &mut Process) -> ProcessContext<'_> {
     let mut context = ProcessContext::new();
@@ -60,6 +60,75 @@ fn type_and_map_helpers_return_expected_values() {
         Ok(Term::atom(Atom::FALSE))
     );
     assert_eq!(bif_map_size(&[map], &mut ctx), Ok(Term::small_int(1)));
+}
+
+fn closure_term(arity: u8) -> Term {
+    let heap = Box::leak(vec![0u64; 7].into_boxed_slice());
+    write_closure(heap, Atom::OK, 0, arity, 0, 0, &[]).expect("closure")
+}
+
+#[test]
+fn is_function_1_tests_for_funs() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    assert_eq!(
+        bif_is_function_1(&[closure_term(2)], &mut ctx),
+        Ok(Term::atom(Atom::TRUE))
+    );
+    assert_eq!(
+        bif_is_function_1(&[Term::atom(Atom::OK)], &mut ctx),
+        Ok(Term::atom(Atom::FALSE))
+    );
+}
+
+#[test]
+fn is_function_2_requires_an_exact_arity_match() {
+    let mut process = Process::new(1, 128);
+    let mut ctx = context(&mut process);
+    let fun = closure_term(2);
+    assert_eq!(
+        bif_is_function_2(&[fun, Term::small_int(2)], &mut ctx),
+        Ok(Term::atom(Atom::TRUE))
+    );
+    assert_eq!(
+        bif_is_function_2(&[fun, Term::small_int(3)], &mut ctx),
+        Ok(Term::atom(Atom::FALSE))
+    );
+    assert_eq!(
+        bif_is_function_2(&[Term::atom(Atom::OK), Term::small_int(0)], &mut ctx),
+        Ok(Term::atom(Atom::FALSE))
+    );
+}
+
+#[test]
+fn is_function_2_arity_must_be_a_non_negative_integer() {
+    let mut process = Process::new(1, 256);
+    let mut ctx = context(&mut process);
+    let fun = closure_term(2);
+    assert_eq!(
+        bif_is_function_2(&[fun, Term::small_int(-1)], &mut ctx),
+        Err(badarg())
+    );
+    assert_eq!(
+        bif_is_function_2(&[fun, Term::atom(Atom::OK)], &mut ctx),
+        Err(badarg())
+    );
+    assert_eq!(
+        bif_is_function_2(&[fun, float(2.0)], &mut ctx),
+        Err(badarg())
+    );
+    // A non-negative bignum is a valid arity no fun can have -> false.
+    let big = ctx.alloc_bigint(false, &[0, 1]).expect("bignum");
+    assert_eq!(
+        bif_is_function_2(&[fun, big], &mut ctx),
+        Ok(Term::atom(Atom::FALSE))
+    );
+    // A negative bignum is badarg.
+    let negative_big = ctx.alloc_bigint(true, &[0, 1]).expect("bignum");
+    assert_eq!(
+        bif_is_function_2(&[fun, negative_big], &mut ctx),
+        Err(badarg())
+    );
 }
 
 #[test]

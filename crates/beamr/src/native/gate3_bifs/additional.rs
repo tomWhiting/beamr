@@ -6,7 +6,7 @@ use crate::native::bifs::integer_result;
 use crate::term::Term;
 use crate::term::bigint_math::BigIntValue;
 use crate::term::binary::Binary;
-use crate::term::boxed::{Float, Map};
+use crate::term::boxed::{Closure, Float, Map};
 
 /// erlang:round/1 — rounds a number to the nearest integer.
 pub fn bif_round(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
@@ -39,6 +39,41 @@ pub fn bif_is_bitstring(args: &[Term], context: &mut ProcessContext) -> Result<T
         return Err(badarg());
     };
     Ok(bool_term(Binary::new(*value).is_some()))
+}
+
+/// erlang:is_function/1 — true for funs (local closures and exports).
+pub fn bif_is_function_1(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let [value] = args else {
+        return Err(badarg());
+    };
+    Ok(bool_term(Closure::new(*value).is_some()))
+}
+
+/// erlang:is_function/2 — true iff the first argument is a fun with exactly
+/// the stated arity.
+///
+/// OTP semantics: the arity must be a non-negative integer or the call is
+/// `badarg`. A non-negative bignum is a valid arity that no fun can have, so
+/// it yields `false` rather than an error.
+pub fn bif_is_function_2(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
+    let _ = context;
+    let [value, arity] = args else {
+        return Err(badarg());
+    };
+    if let Some(expected) = arity.as_small_int() {
+        if expected < 0 {
+            return Err(badarg());
+        }
+        return Ok(bool_term(
+            Closure::new(*value).is_some_and(|closure| i64::from(closure.arity()) == expected),
+        ));
+    }
+    let big = BigIntValue::from_term(*arity).ok_or_else(badarg)?;
+    if big.is_negative() {
+        return Err(badarg());
+    }
+    Ok(bool_term(false))
 }
 
 /// erlang:is_map_key/2 — returns true when a map contains key.
