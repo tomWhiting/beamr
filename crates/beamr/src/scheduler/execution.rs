@@ -39,6 +39,15 @@ impl Scheduler {
     /// the next opportunity, so an embedder resume is never lost. It is also
     /// identity-gated: it never resumes a dirty call or host await, whose
     /// only legal resume is their published completion.
+    ///
+    /// Call this only for a process the embedder actually hook-suspended
+    /// (its slice hook returned `HookDecision::Suspend`). The stickiness
+    /// has a footgun: a resume issued for a pid that is NOT hook-suspended
+    /// arms the wildcard resume anyway, and the wildcard stays armed until
+    /// the process's next hook suspension or its exit — that next hook
+    /// suspension is consumed immediately (pre-resumed) instead of parking,
+    /// so a premature or duplicate resume silently cancels one future hook
+    /// suspend.
     pub fn resume_process(&self, pid: u64) -> bool {
         let resume_id = match self.shared.suspensions.get(&pid).map(|mirror| *mirror) {
             Some(mirror) if mirror.kind == crate::process::SuspensionKind::Hook => mirror.call_id,
@@ -309,7 +318,8 @@ fn drain_file_io_completions(shared: &SharedState) {
             } else if let crate::native::FileIoContinuation::TcpActiveRecv { fd } = continuation {
                 handle_tcp_active_completion(shared, fd, completion);
             } else {
-                shared.file_io_results.insert(
+                deliver_file_io_result(
+                    shared,
                     pid,
                     crate::native::FileIoCompletion {
                         op_id,
@@ -317,12 +327,33 @@ fn drain_file_io_completions(shared: &SharedState) {
                         completion,
                     },
                 );
-                wake_process(shared, pid);
             }
         } else if shared.file_io_canceled.remove(&op_id).is_none() {
             shared.file_io_orphans.insert(op_id, completion);
         }
     }
+}
+
+/// Insert a file-I/O completion for `pid` and wake the process if parked.
+///
+/// Exit cleanup (`cleanup_exited_process`) can purge the process table and
+/// the pid's `file_io_results` entry between the `file_io_pending` removal
+/// and the insert below; pids are never reused, so a freshly inserted
+/// result would orphan permanently. The post-insert double-check — the same
+/// pattern as `mark_fired_receive_timer` and `publish_suspension_result` —
+/// closes that window: if the pid has vanished from the table, the
+/// just-inserted entry is removed again.
+pub(super) fn deliver_file_io_result(
+    shared: &SharedState,
+    pid: u64,
+    result: crate::native::FileIoCompletion,
+) {
+    shared.file_io_results.insert(pid, result);
+    if shared.process_table.get(pid).is_none() {
+        let _orphan = shared.file_io_results.remove(&pid);
+        return;
+    }
+    wake_process(shared, pid);
 }
 
 fn handle_udp_active_completion(

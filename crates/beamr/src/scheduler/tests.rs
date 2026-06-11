@@ -1665,6 +1665,57 @@ fn fired_timer_mark_for_a_dead_pid_does_not_orphan() {
 }
 
 #[test]
+fn file_io_result_for_a_dead_pid_does_not_orphan() {
+    let registry = Arc::new(ModuleRegistry::new());
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(1),
+            ..SchedulerConfig::default()
+        },
+        registry,
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+    let shared = &scheduler.shared;
+
+    fn file_completion(op_id: u64) -> crate::native::FileIoCompletion {
+        crate::native::FileIoCompletion {
+            op_id,
+            continuation: crate::native::FileIoContinuation::Open,
+            completion: crate::io::ring::IoCompletion {
+                op_id,
+                result: Err(std::io::Error::other("dead pid race")),
+            },
+        }
+    }
+
+    // A pid absent from the process table models the I/O drain losing the
+    // race: it removed the pending entry while the process was alive, then
+    // exit cleanup purged the table and the pid's results before the
+    // insert. Pids are never reused, so without the post-insert
+    // double-check the result would orphan forever.
+    let dead_pid = 4244;
+    execution::deliver_file_io_result(shared, dead_pid, file_completion(1));
+    assert!(
+        shared.file_io_results.get(&dead_pid).is_none(),
+        "file-I/O result for a dead pid must be removed by the double-check"
+    );
+
+    // A live pid keeps its result for the owning thread to consume.
+    let live_pid = 4245;
+    shared.process_table.spawn_with_pid(live_pid);
+    execution::deliver_file_io_result(shared, live_pid, file_completion(2));
+    assert_eq!(
+        shared
+            .file_io_results
+            .get(&live_pid)
+            .map(|entry| entry.op_id),
+        Some(2),
+        "file-I/O result for a live pid must survive"
+    );
+    scheduler.shutdown();
+}
+
+#[test]
 fn mailbox_send_does_not_wake_when_copy_fails() {
     let called = Arc::new(AtomicBool::new(false));
     let called_by_wake = Arc::clone(&called);
@@ -2576,6 +2627,138 @@ fn result_beats_timeout_and_clears_the_timed_await_metadata() {
         RACE_RUNS.load(Ordering::Acquire),
         1,
         "the timeout re-executed an await whose completion already arrived"
+    );
+    scheduler.shutdown();
+}
+
+// --- Reviewer fix F1: publish_suspension_result resolves concurrent
+// publishers newest-id-wins inside the result-slot lock, so a publisher
+// that passed the pre-check and then stalled across a timeout re-entry can
+// never clobber the fresher completion published meanwhile. ---
+
+#[test]
+fn stale_publisher_cannot_clobber_a_fresher_completion() {
+    let registry = Arc::new(ModuleRegistry::new());
+    let scheduler = single_thread_scheduler(&registry);
+    let shared = &scheduler.shared;
+    let host = |value: i64| {
+        crate::scheduler::suspension::SuspensionResultPayload::Host(Term::small_int(value))
+    };
+    let pid = 4246;
+    shared.process_table.spawn_with_pid(pid);
+
+    // Newer replaces older: a stale unconsumed id-1 entry is overwritten by
+    // the re-suspension's id-2 completion.
+    shared.register_suspension_mirror(pid, 1, crate::process::SuspensionKind::HostAwait, false);
+    assert!(shared.publish_suspension_result(pid, 1, host(1)));
+    shared.register_suspension_mirror(pid, 2, crate::process::SuspensionKind::HostAwait, false);
+    assert!(
+        shared.publish_suspension_result(pid, 2, host(2)),
+        "the fresher completion must replace the stale entry"
+    );
+    assert_eq!(
+        shared
+            .suspension_results
+            .get(&pid)
+            .map(|entry| entry.call_id),
+        Some(2)
+    );
+
+    // Older never replaces newer. This models publisher A passing the id-1
+    // pre-check, stalling, and inserting only after the await timed out,
+    // re-suspended as id 2, and publisher B's id-2 completion landed (the
+    // doc-comment interleaving). The stalled pre-check is pinned by
+    // re-registering the id-1 mirror; the resolution inside the result-slot
+    // lock must still refuse the older id and keep B's entry.
+    shared.register_suspension_mirror(pid, 1, crate::process::SuspensionKind::HostAwait, false);
+    assert!(
+        !shared.publish_suspension_result(pid, 1, host(1)),
+        "a stale publisher must report failure instead of clobbering"
+    );
+    assert_eq!(
+        shared
+            .suspension_results
+            .get(&pid)
+            .map(|entry| entry.call_id),
+        Some(2),
+        "the fresher completion must survive the stale publisher"
+    );
+    scheduler.shutdown();
+}
+
+// --- Reviewer fix F2: a hook returning Suspend on the slice that just
+// parked a result-gated await must be ignored — installing the Hook record
+// would invalidate the await's call id, drop its completion, and re-execute
+// the parked native on the eventual resume. ---
+
+static HOOK_STOMP_RUNS: AtomicUsize = AtomicUsize::new(0);
+static HOOK_STOMP_ID: AtomicU64 = AtomicU64::new(0);
+
+fn hook_stomp_await_native(
+    _args: &[Term],
+    context: &mut crate::native::ProcessContext,
+) -> Result<Term, Term> {
+    HOOK_STOMP_RUNS.fetch_add(1, Ordering::AcqRel);
+    let call_id = context
+        .request_await_suspend(None)
+        .expect("attached process allocates a call id");
+    HOOK_STOMP_ID.store(call_id, Ordering::Release);
+    Ok(Term::NIL)
+}
+
+#[test]
+fn hook_suspend_does_not_stomp_an_await_parked_slice() {
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("hook_stomp_await");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = native_call_module(&registry, module_name, hook_stomp_await_native, None);
+    let scheduler = single_thread_scheduler(&registry);
+
+    // Return Suspend exactly on the gated await's parking slice. The native
+    // stores its call id before returning, and on the single scheduler
+    // thread the hook runs synchronously at the end of that same slice, so
+    // the first hook invocation observing the id is the await's own slice.
+    let hook_suspended = Arc::new(AtomicBool::new(false));
+    let hook_latch = Arc::clone(&hook_suspended);
+    scheduler.hook().register(move |_event| {
+        if HOOK_STOMP_ID.load(Ordering::Acquire) != 0 && !hook_latch.swap(true, Ordering::AcqRel) {
+            HookDecision::Suspend
+        } else {
+            HookDecision::Continue
+        }
+    });
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || hook_suspended.load(Ordering::Acquire));
+    wait_until(10_000, || {
+        lock_or_recover(&scheduler.shared.wait_set)
+            .waiting
+            .contains_key(&pid)
+    });
+    assert_eq!(
+        scheduler
+            .shared
+            .suspensions
+            .get(&pid)
+            .map(|mirror| mirror.kind),
+        Some(crate::process::SuspensionKind::HostAwait),
+        "the hook suspend stomped the await's suspension record"
+    );
+
+    // The await's completion still applies, and the native never re-runs.
+    let call_id = HOOK_STOMP_ID.load(Ordering::Acquire);
+    assert!(
+        scheduler.wake_with_result_for(pid, call_id, Term::small_int(77)),
+        "the await's published completion must still be accepted"
+    );
+    wait_until(10_000, || {
+        scheduler.shared.exit_tombstones.contains_key(&pid)
+    });
+    assert_eq!(exit_value(&scheduler, pid), Some(Term::small_int(77)));
+    assert_eq!(
+        HOOK_STOMP_RUNS.load(Ordering::Acquire),
+        1,
+        "the hook stomp re-executed the parked await native"
     );
     scheduler.shutdown();
 }

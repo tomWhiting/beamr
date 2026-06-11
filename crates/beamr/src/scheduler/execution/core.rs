@@ -612,6 +612,16 @@ fn execute_slice_with_budget(
         result,
         Ok(ExecutionResult::Yielded) | Ok(ExecutionResult::Waiting)
     ) && timer_integration::invoke_hook(shared, process, reductions) == HookDecision::Suspend
+        // A hook suspend must NOT target an await-parked slice: a Waiting
+        // slice that parked through request_suspend/request_await_suspend
+        // already carries a result-gated suspension record, and installing
+        // the Hook record over it would invalidate the await's call id —
+        // published completions would be dropped as stale and the eventual
+        // embedder resume would re-execute the parked await native,
+        // double-submitting its host side effect. The hook still observes
+        // the slice; its Suspend decision is ignored and the process parks
+        // under the await it requested.
+        && process.suspension().is_none()
     {
         // Record the hook suspension's identity before parking so an
         // embedder resume_process targets exactly this suspension and a

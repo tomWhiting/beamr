@@ -78,8 +78,14 @@ impl SharedState {
     /// Returns false (dropping the payload) when the process's current
     /// suspension is not `call_id` — the completion is stale, racing a
     /// timeout re-entry or an abandoned request — or when the process has
-    /// exited. The post-insert liveness double-check removes an entry that
-    /// raced `cleanup_exited_process`, so no dead-pid result can strand.
+    /// exited. Concurrent publishers are resolved NEWEST-ID-WINS inside the
+    /// result-slot lock: per-pid call ids are strictly monotonic, so a
+    /// publisher that passed the pre-check and then stalled across a
+    /// timeout re-entry can never overwrite a fresher completion published
+    /// meanwhile — it returns false instead, and the fresher entry
+    /// survives. The post-insert liveness double-check removes an entry
+    /// that raced `cleanup_exited_process`, so no dead-pid result can
+    /// strand.
     pub(super) fn publish_suspension_result(
         &self,
         pid: u64,
@@ -93,8 +99,25 @@ impl SharedState {
         if !matches {
             return false;
         }
-        self.suspension_results
-            .insert(pid, PendingSuspensionResult { call_id, payload });
+        let stored = match self.suspension_results.entry(pid) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                if occupied.get().call_id > call_id {
+                    // A fresher completion landed between the pre-check
+                    // above and this insert: keep it, drop the stale one.
+                    false
+                } else {
+                    occupied.insert(PendingSuspensionResult { call_id, payload });
+                    true
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                vacant.insert(PendingSuspensionResult { call_id, payload });
+                true
+            }
+        };
+        if !stored {
+            return false;
+        }
         if self.process_table.get(pid).is_none() {
             let _orphan = self.suspension_results.remove(&pid);
             return false;
