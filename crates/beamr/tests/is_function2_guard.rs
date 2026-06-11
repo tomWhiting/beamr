@@ -30,10 +30,7 @@ fn load_fixture(atoms: &AtomTable) -> Module {
 
 fn call(module: &Module, atoms: &AtomTable, function: &str) -> Term {
     let function = atoms.intern(function);
-    let label = *module
-        .exports
-        .get(&(function, 0))
-        .expect("export exists");
+    let label = *module.exports.get(&(function, 0)).expect("export exists");
     let entry_ip = module
         .code
         .iter()
@@ -57,10 +54,7 @@ fn guard_passes_for_a_fun_of_the_stated_arity() {
     let atoms = AtomTable::new();
     let module = load_fixture(&atoms);
     let matched = atoms.intern("matched");
-    assert_eq!(
-        call(&module, &atoms, "matching_arity"),
-        Term::atom(matched)
-    );
+    assert_eq!(call(&module, &atoms, "matching_arity"), Term::atom(matched));
 }
 
 #[test]
