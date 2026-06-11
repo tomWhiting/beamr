@@ -309,7 +309,13 @@ fn decode_instruction(
             deallocate: operands[1].clone(),
         },
         114 => type_test(TypeTestOp::IsBoolean, operands),
-        115 => type_test(TypeTestOp::IsFunction2, operands),
+        // is_function2 carries a third operand (the arity); the guard handler
+        // expects the value operand to be the [function, arity] pair.
+        115 => Instruction::TypeTest {
+            op: TypeTestOp::IsFunction2,
+            fail: operands[0].clone(),
+            value: Operand::List(vec![operands[1].clone(), operands[2].clone()]),
+        },
         117 => binary_op(BinaryOp::BsGetInteger2, operands),
         118 => binary_op(BinaryOp::BsGetFloat2, operands),
         119 => binary_op(BinaryOp::BsGetBinary2, operands),
@@ -486,6 +492,31 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, LoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opcode_115_decodes_is_function2_with_function_and_arity_pair() {
+        let instructions = decode_instructions(
+            &[
+                115,  // is_function2/3
+                0x75, // fail label 7
+                0x03, // X0 (function source)
+                0x21, // integer 2 (arity)
+            ],
+            &[],
+            &[],
+        )
+        .expect("decode is_function2")
+        .0;
+
+        assert_eq!(
+            instructions,
+            vec![Instruction::TypeTest {
+                op: TypeTestOp::IsFunction2,
+                fail: Operand::Label(7),
+                value: Operand::List(vec![Operand::X(0), Operand::Integer(2)]),
+            }]
+        );
+    }
 
     #[test]
     fn opcode_65_decodes_to_get_list() {
