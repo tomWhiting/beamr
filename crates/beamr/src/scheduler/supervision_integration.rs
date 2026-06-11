@@ -610,6 +610,11 @@ pub(super) fn build_native_services(
         replay_driver: shared.replay_driver.clone(),
         bif_registry: Some(Arc::clone(&shared.bif_registry)),
         nif_private_data: shared.nif_private_data.clone(),
+        suspension_registrar: Some(Arc::new(
+            crate::scheduler::suspension::SchedulerSuspensionRegistrar {
+                shared: Arc::clone(shared),
+            },
+        )),
         ..crate::interpreter::NativeServices::default()
     }
 }

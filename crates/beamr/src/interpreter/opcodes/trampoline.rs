@@ -209,8 +209,10 @@ pub fn handle_suspend(
     _module: &Module,
     suspend: crate::native::SuspendRequest,
 ) -> Result<InstructionOutcome, ExecError> {
-    // Store the current position as the resume point. When the process is
-    // woken (new message arrives), it will re-execute the select BIF call.
+    // Store the current position as the resume point: a receive-style
+    // suspend re-executes the select BIF call on message arrival; a
+    // result-gated host await resumes here when its completion is applied
+    // (or the timeout re-executes the native).
     let resume = process
         .code_position()
         .ok_or(ExecError::InvalidOperand("suspend code position"))?;
@@ -222,6 +224,23 @@ pub fn handle_suspend(
             milliseconds: timeout_ms,
         }));
     }
+
+    // Record the suspension's call identity. For a result-gated await
+    // (wake_on_message=false) only the matching completion, a file-I/O
+    // completion, or the timeout may resume the process; a message-wakeable
+    // suspend (select, marker awaits) re-executes the native on any wake,
+    // but a completion published for THIS call id is still applied exactly
+    // here — or dropped as stale once the suspension is superseded — never
+    // applied blind at a later park position.
+    let call_id = suspend
+        .call_id
+        .unwrap_or_else(|| process.allocate_suspension_call_id());
+    process.set_suspension(Some(crate::process::SuspensionRecord {
+        call_id,
+        kind: crate::process::SuspensionKind::HostAwait,
+        position: Some(resume),
+        wake_on_message: suspend.wake_on_message,
+    }));
 
     // Transition to Waiting state.
     if process.status() == ProcessStatus::New {
@@ -348,6 +367,8 @@ mod tests {
 
         let suspend = crate::native::SuspendRequest {
             timeout_ms: Some(5000),
+            wake_on_message: false,
+            call_id: Some(7),
         };
         let result = handle_suspend(&mut process, &module, suspend).expect("suspend ok");
         assert_eq!(result, InstructionOutcome::Waiting);
@@ -355,6 +376,42 @@ mod tests {
 
         let timeout = process.receive_timeout().expect("timeout set");
         assert_eq!(timeout.milliseconds, 5000);
+        let record = process.suspension().expect("host-await record installed");
+        assert_eq!(record.call_id, 7);
+        assert_eq!(record.kind, crate::process::SuspensionKind::HostAwait);
+        assert_eq!(
+            record.position,
+            Some(CodePosition {
+                module: Atom::OK,
+                instruction_pointer: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn handle_suspend_message_wakeable_installs_record_with_allocated_id() {
+        let module = module(Atom::OK, vec![Instruction::Return]);
+        let mut process = Process::new(1, 32);
+        process.set_code_position(Some(CodePosition {
+            module: Atom::OK,
+            instruction_pointer: 0,
+        }));
+        process
+            .transition_to(ProcessStatus::Running)
+            .expect("start running");
+
+        let suspend = crate::native::SuspendRequest {
+            timeout_ms: None,
+            wake_on_message: true,
+            call_id: None,
+        };
+        let result = handle_suspend(&mut process, &module, suspend).expect("suspend ok");
+        assert_eq!(result, InstructionOutcome::Waiting);
+        assert_eq!(process.status(), ProcessStatus::Waiting);
+        let record = process.suspension().expect("record installed");
+        assert!(record.wake_on_message);
+        assert_eq!(record.call_id, 1, "id allocated from the process counter");
+        assert_eq!(record.kind, crate::process::SuspensionKind::HostAwait);
     }
 
     #[test]

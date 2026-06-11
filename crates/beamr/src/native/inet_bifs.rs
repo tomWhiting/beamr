@@ -165,7 +165,7 @@ pub fn inet_close(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
     if let Some(completion) = context.take_file_io_completion() {
         return finish_close(completion, context);
     }
-    context.request_suspend(None);
+    context.request_await_suspend(None);
     Ok(Term::atom(Atom::OK))
 }
 

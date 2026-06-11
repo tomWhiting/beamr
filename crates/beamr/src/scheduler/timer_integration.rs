@@ -150,25 +150,38 @@ pub(super) fn has_pending_expired_timer(shared: &SharedState, pid: u64) -> bool 
 /// continuation (the instruction after the parking `wait_timeout`, or the
 /// native resume position for suspend-based timeouts). Ids that match
 /// nothing are stale — their receive completed before the wheel fired — and
-/// are dropped.
-pub(super) fn apply_expired_receive_timer(shared: &SharedState, process: &mut Process) {
+/// are dropped. Returns true when the timeout jump was applied.
+pub(super) fn apply_expired_receive_timer(shared: &SharedState, process: &mut Process) -> bool {
     let Some((_, fired)) = shared.expired_receive_timers.remove(&process.pid()) else {
-        return;
+        return false;
     };
     let (Some(timeout), Some(armed)) = (process.receive_timeout(), process.receive_timer_ref())
     else {
-        return;
+        return false;
     };
     if fired.contains(&armed) {
         process.set_receive_timer_ref(None);
         process.set_code_position(Some(timeout.timeout_position));
+        true
+    } else {
+        false
     }
 }
 
 /// Resume a suspended process: transition it from Suspended to Yielded so the
 /// scheduler picks it up, and move it from the wait set to the woken list.
 /// Returns true if the process was found and resumed.
+///
+/// Result-gated: a process parked under a result-gated suspension is only
+/// flipped when a consumable event (matching completion, fired timer, or
+/// matching resume) is pending — flipping without one would schedule a slice
+/// at an in-flight call instruction. Even when a stale flip slips through a
+/// check/consume race, the slice-start gate re-parks instead of executing,
+/// so the flip can never re-execute the parked call.
 pub(super) fn resume_suspended(shared: &SharedState, pid: u64) -> bool {
+    if shared.suspensions.contains_key(&pid) && !shared.has_consumable_suspension_event(pid) {
+        return false;
+    }
     let transitioned = mutate_process_result(shared, pid, |process| {
         if process.status() == ProcessStatus::Suspended {
             process.transition_to(ProcessStatus::Yielded).is_ok()

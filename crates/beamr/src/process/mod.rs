@@ -42,6 +42,49 @@ pub struct PendingNativeContinuation {
     pub resume_depth: usize,
 }
 
+/// Why a process is parked beyond a plain receive.
+///
+/// Plain receives (BEAM `wait`/`wait_timeout`, and select-style native
+/// suspends that re-execute on message arrival) carry no suspension record:
+/// any message may wake them. The kinds below are *result-gated*: only the
+/// matching completion event (identified by the record's call id) may resume
+/// the process, because re-executing the parked instruction would repeat its
+/// side effect (re-submit a host call, re-enter a dirty native, …).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SuspensionKind {
+    /// A native requested suspension and a host-side completion will deliver
+    /// the result (`Scheduler::wake_with_result*`, file-I/O completions, or a
+    /// receive-timeout re-entry).
+    HostAwait,
+    /// A dirty native call is in flight on a dirty scheduler pool.
+    DirtyCall,
+    /// The reduction-boundary hook suspended the process; an embedder
+    /// `resume_process` call resumes it.
+    Hook,
+}
+
+/// Identity of one result-gated suspension.
+///
+/// `call_id` is allocated from a per-process monotonic counter at suspend
+/// time and never reused, so a completion produced for an earlier suspension
+/// can always be recognized as stale and dropped instead of being applied at
+/// the wrong park position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SuspensionRecord {
+    /// Per-process monotonically increasing suspension identity.
+    pub call_id: u64,
+    /// What kind of completion may consume this suspension.
+    pub kind: SuspensionKind,
+    /// Code position at suspend time (the parked call instruction), used to
+    /// validate that a result is applied exactly where it was produced.
+    pub position: Option<CodePosition>,
+    /// True for message-wakeable host awaits (`request_suspend`: select and
+    /// marker-style awaits, whose natives are re-entrant and re-execute on
+    /// any wake). False for gated awaits (`request_await_suspend`, dirty
+    /// calls, hook suspends), which only their own completion may resume.
+    pub wake_on_message: bool,
+}
+
 /// One isolated BEAM-style process.
 ///
 /// The `Rc` marker intentionally makes `Process` neither [`Send`] nor [`Sync`]:
@@ -75,6 +118,8 @@ pub struct Process {
     dictionary: Vec<(Term, Term)>,
     receive_timeout: Option<ReceiveTimeout>,
     receive_timer_ref: Option<u64>,
+    suspension: Option<SuspensionRecord>,
+    next_suspension_call_id: u64,
     x_regs: [Term; 1024],
     float_regs: [f64; 16],
     native_continuations: Vec<PendingNativeContinuation>,
@@ -120,6 +165,8 @@ impl Clone for Process {
             dictionary: self.dictionary.clone(),
             receive_timeout: self.receive_timeout,
             receive_timer_ref: self.receive_timer_ref,
+            suspension: self.suspension,
+            next_suspension_call_id: self.next_suspension_call_id,
             x_regs: self.x_regs,
             float_regs: self.float_regs,
             native_continuations: self.native_continuations.clone(),
@@ -178,6 +225,8 @@ impl Process {
             dictionary: Vec::new(),
             receive_timeout: None,
             receive_timer_ref: None,
+            suspension: None,
+            next_suspension_call_id: 0,
             x_regs: [Term::NIL; 1024],
             float_regs: [0.0; 16],
             native_continuations: Vec::new(),
@@ -593,6 +642,31 @@ impl Process {
         self.receive_timer_ref
     }
 
+    /// Allocate the next suspension call id from this process's monotonic
+    /// counter. Ids start at 1 and are never reused; 0 is reserved as the
+    /// embedder wildcard in `Scheduler::resume_process`.
+    pub const fn allocate_suspension_call_id(&mut self) -> u64 {
+        self.next_suspension_call_id += 1;
+        self.next_suspension_call_id
+    }
+
+    /// Install the current result-gated suspension record.
+    pub const fn set_suspension(&mut self, record: Option<SuspensionRecord>) {
+        self.suspension = record;
+    }
+
+    /// Current result-gated suspension record, when parked beyond a plain
+    /// receive.
+    #[must_use]
+    pub const fn suspension(&self) -> Option<SuspensionRecord> {
+        self.suspension
+    }
+
+    /// Consume the current suspension record.
+    pub const fn take_suspension(&mut self) -> Option<SuspensionRecord> {
+        self.suspension.take()
+    }
+
     #[cfg(feature = "telemetry")]
     pub(crate) fn mark_receive_wait_started(&mut self) {
         if self.receive_wait_started.is_none() {
@@ -994,6 +1068,7 @@ impl Process {
         self.dictionary.clear();
         self.receive_timeout = None;
         self.receive_timer_ref = None;
+        self.suspension = None;
         self.x_regs = [Term::NIL; 1024];
         self.float_regs = [0.0; 16];
         self.native_continuations.clear();

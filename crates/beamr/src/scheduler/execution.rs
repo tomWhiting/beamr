@@ -30,9 +30,30 @@ impl Scheduler {
         wake_process(&self.shared, pid);
     }
 
-    /// Resume a suspended process, returning true if the process was found in
-    /// the wait set and re-enqueued.
+    /// Resume a hook-suspended process, returning true if the process was
+    /// found in the wait set and re-enqueued.
+    ///
+    /// The resume is *sticky*: when it races the suspension's park sequence
+    /// (or even the hook callback itself), it is recorded against the
+    /// suspension's call id and consumed by the owning scheduler thread at
+    /// the next opportunity, so an embedder resume is never lost. It is also
+    /// identity-gated: it never resumes a dirty call or host await, whose
+    /// only legal resume is their published completion.
     pub fn resume_process(&self, pid: u64) -> bool {
+        let resume_id = match self.shared.suspensions.get(&pid).map(|mirror| *mirror) {
+            Some(mirror) if mirror.kind == crate::process::SuspensionKind::Hook => mirror.call_id,
+            // A dirty call or host await must not be resumable from here.
+            Some(_) => return false,
+            // The resume raced the hook suspension's creation (the hook
+            // callback runs before the record is installed): record a
+            // wildcard consumed by the next hook suspension only.
+            None => super::suspension::RESUME_ANY_HOOK,
+        };
+        self.shared.pending_resumes.insert(pid, resume_id);
+        if self.shared.process_table.get(pid).is_none() {
+            let _orphan = self.shared.pending_resumes.remove(&pid);
+            return false;
+        }
         timer_integration::resume_suspended(&self.shared, pid)
     }
 
@@ -94,16 +115,60 @@ impl Scheduler {
         self.shared.exit_exceptions.remove(&pid).map(|(_, e)| e)
     }
 
-    /// Wake a suspended process with a result term.
-    pub fn wake_with_result(&self, pid: u64, result: Term) {
-        self.shared.async_results.insert(pid, result);
-        wake_process(&self.shared, pid);
+    /// Wake a host-await-suspended process with a result term, resolving the
+    /// target suspension's call id at publish time.
+    ///
+    /// Returns true when the result was published against the process's
+    /// current host-await suspension. Returns false — dropping the result —
+    /// when the process has no live host-await suspension (it never
+    /// suspended, already completed, or the await timed out and its
+    /// suspension was superseded). Embedders that re-submit work from a
+    /// timeout re-entry should prefer [`Scheduler::wake_with_result_for`]
+    /// with the call id returned by `ProcessContext::request_suspend`, which
+    /// is race-free across re-entries.
+    pub fn wake_with_result(&self, pid: u64, result: Term) -> bool {
+        let published = self.shared.publish_suspension_result_current(
+            pid,
+            crate::process::SuspensionKind::HostAwait,
+            super::suspension::SuspensionResultPayload::Host(result),
+        );
+        if published {
+            wake_process(&self.shared, pid);
+        }
+        published
     }
 
-    /// Wake a suspended process with a dirty native completion result.
-    pub fn wake_with_dirty_result(&self, pid: u64, result: DirtyResult) {
-        self.shared.dirty_results.insert(pid, result);
-        let _resumed = timer_integration::resume_suspended(&self.shared, pid);
+    /// Wake a host-await-suspended process with a result term for the exact
+    /// suspension identified by `call_id` (returned by
+    /// `ProcessContext::request_suspend`).
+    ///
+    /// Returns true when published; false when the suspension is no longer
+    /// current (stale completion — dropped, never applied at the wrong park
+    /// position).
+    pub fn wake_with_result_for(&self, pid: u64, call_id: u64, result: Term) -> bool {
+        let published = self.shared.publish_suspension_result(
+            pid,
+            call_id,
+            super::suspension::SuspensionResultPayload::Host(result),
+        );
+        if published {
+            wake_process(&self.shared, pid);
+        }
+        published
+    }
+
+    /// Wake a dirty-call-suspended process with a dirty native completion
+    /// result, resolving the in-flight call's id at publish time.
+    pub fn wake_with_dirty_result(&self, pid: u64, result: DirtyResult) -> bool {
+        let published = self.shared.publish_suspension_result_current(
+            pid,
+            crate::process::SuspensionKind::DirtyCall,
+            super::suspension::SuspensionResultPayload::Dirty(result),
+        );
+        if published {
+            let _resumed = timer_integration::resume_suspended(&self.shared, pid);
+        }
+        published
     }
 
     /// Terminate a process externally, writing an exit tombstone so that
@@ -205,13 +270,18 @@ pub(in crate::scheduler) use core::{
     take_runnable_process,
 };
 pub(in crate::scheduler) fn wake_process(shared: &SharedState, pid: u64) {
-    // A process parked for an in-flight dirty call must stay parked: waking
-    // it schedules a slice that re-executes the dirty call instruction. The
-    // delivery that prompted this wake is already queued; the dirty
-    // completion bridge resumes the process and the merged mailbox is
-    // observed then. Once the result is published the wake is safe (the
-    // resumed slice applies it) even if the in-flight mark is still set.
-    if shared.dirty_in_flight.contains(&pid) && !shared.dirty_results.contains_key(&pid) {
+    // A process parked under a result-gated suspension (dirty call, host
+    // await, hook suspend) must stay parked: waking it schedules a slice
+    // that would re-execute the parked call instruction and repeat its side
+    // effect (double-submitting the dirty call or host request). The
+    // delivery that prompted this wake is already queued; the suspension's
+    // completion resumes the process and the merged mailbox is observed
+    // then. Once a consumable event is published (matching result, file-I/O
+    // completion, fired receive timer, matching resume) the wake is safe:
+    // the slice-start gate consumes the event — and with nothing consumable
+    // the gate re-parks without touching the process, so even a stray wake
+    // is harmless.
+    if shared.suspension_blocks_wake(pid) {
         return;
     }
     // The receive timer is deliberately NOT cancelled here. BEAM keeps the

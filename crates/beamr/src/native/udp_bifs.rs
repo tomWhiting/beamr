@@ -141,7 +141,7 @@ fn udp_recv_impl(
         buf_len,
     });
     context.track_submitted_file_io(op_id, FileIoContinuation::UdpRecv)?;
-    context.request_suspend(timeout_ms);
+    context.request_await_suspend(timeout_ms);
     Ok(Term::atom(Atom::OK))
 }
 

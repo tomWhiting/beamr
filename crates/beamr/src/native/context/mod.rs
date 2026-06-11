@@ -258,12 +258,36 @@ pub enum RemoteSpawnError {
 }
 
 /// Suspend request from a BIF that wants the process to wait.
-///
-/// Used by `select` when no mailbox message matches any handler.
 #[derive(Copy, Clone, Debug)]
 pub struct SuspendRequest {
     /// Optional timeout in milliseconds. `None` means wait indefinitely.
     pub timeout_ms: Option<u64>,
+    /// True for message-wakeable suspends (`request_suspend`: select-style
+    /// mailbox scans and marker-style awaits, whose natives are re-entrant):
+    /// any message arrival wakes the process and the native re-executes.
+    /// False for gated host awaits (`request_await_suspend`): only the
+    /// matching completion (or the timeout) resumes — re-executing the
+    /// native would repeat its host side effect.
+    pub wake_on_message: bool,
+    /// Suspension call id allocated at request time when a process was
+    /// attached. `None` for detached (dirty-thread) contexts: the owning
+    /// scheduler thread allocates the id when it applies the request.
+    pub call_id: Option<u64>,
+}
+
+/// Scheduler-side registry that makes a host-await suspension's call identity
+/// visible to completion publishers (`Scheduler::wake_with_result*`) before
+/// the requesting native even returns, closing the race in which a host
+/// completion arrives while the process is still mid-slice.
+pub trait SuspensionRegistrar: Send + Sync {
+    /// Publish `(pid, call_id)` as the process's current host-await
+    /// suspension. `wake_on_message` mirrors the request flavor so the wake
+    /// gate knows whether plain message arrivals may wake the process.
+    fn register_host_await(&self, pid: u64, call_id: u64, wake_on_message: bool);
+
+    /// Withdraw a registration whose suspend request was abandoned (the
+    /// native raised an exception after requesting suspension).
+    fn cancel_host_await(&self, pid: u64, call_id: u64);
 }
 
 /// Exception classes that BIFs can request when returning `Err(reason)`.
@@ -327,6 +351,7 @@ pub struct ProcessContext<'process> {
     shutdown_requested: bool,
     trampoline: Option<TrampolineRequest>,
     suspend: Option<SuspendRequest>,
+    suspension_registrar: Option<Arc<dyn SuspensionRegistrar>>,
     replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
     wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
     nif_private_data: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -470,6 +495,7 @@ impl<'process> ProcessContext<'process> {
             exception_stacktrace: Term::NIL,
             trampoline: None,
             suspend: None,
+            suspension_registrar: None,
             shutdown_requested: false,
             replay_driver: None,
             wasm_async_nif_facility: None,
@@ -514,6 +540,7 @@ impl<'process> ProcessContext<'process> {
             exception_stacktrace: Term::NIL,
             trampoline: None,
             suspend: None,
+            suspension_registrar: None,
             shutdown_requested: false,
             replay_driver: None,
             wasm_async_nif_facility: None,
@@ -1077,11 +1104,20 @@ impl<'process> ProcessContext<'process> {
     /// Submit an I/O operation for the attached pid and request suspension.
     pub fn submit_io_and_suspend(&mut self, op: IoOp, mode: ResultMode) -> Result<(), IoError> {
         let pid = self.pid.ok_or(IoError::MissingPid)?;
+        if self.io_facility.is_none() {
+            return Err(IoError::Unavailable);
+        }
+        // Register the host-await suspension BEFORE the submission can race a
+        // completion: the bridge publishes the result under the call id it
+        // finds registered for the pid.
+        let _call_id = self.request_await_suspend(None);
         let Some(facility) = self.io_facility.as_ref() else {
             return Err(IoError::Unavailable);
         };
-        facility.submit_and_suspend_for_pid(pid, op, mode)?;
-        self.request_suspend(None);
+        if let Err(error) = facility.submit_and_suspend_for_pid(pid, op, mode) {
+            self.cancel_requested_suspend();
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1130,12 +1166,17 @@ impl<'process> ProcessContext<'process> {
         let pid = self
             .pid
             .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
+        if self.file_io_facility.is_none() {
+            return Err(Term::atom(crate::atom::Atom::BADARG));
+        }
+        // Register the host-await suspension BEFORE the submission can race a
+        // completion arriving on the ring poller thread.
+        let _call_id = self.request_await_suspend(timeout_ms);
         let facility = self
             .file_io_facility
             .as_ref()
             .ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))?;
         let op_id = facility.submit_file_io(pid, op, continuation);
-        self.request_suspend(timeout_ms);
         Ok(op_id)
     }
 
@@ -1355,16 +1396,95 @@ impl<'process> ProcessContext<'process> {
 
     // --- Suspend ---
 
-    /// Request that the process be suspended (waiting for messages).
+    /// Request a message-wakeable suspension.
     ///
-    /// Called by `select` when no mailbox message matches any handler.
-    pub fn request_suspend(&mut self, timeout_ms: Option<u64>) {
-        self.suspend = Some(SuspendRequest { timeout_ms });
+    /// Any message arrival wakes the process and re-executes the native at
+    /// the suspended call instruction (the `select` mailbox-scan protocol,
+    /// and the embedder marker-await pattern built on
+    /// `Scheduler::enqueue_atom_message`). The native must therefore be
+    /// re-entrant. A completion published for the returned call id
+    /// (`Scheduler::wake_with_result*`) is also delivered — applied into x0
+    /// exactly at this suspension, or dropped as stale once the suspension
+    /// is superseded, never applied blind at a later park position.
+    ///
+    /// Natives that submit one-shot host work (a query, a file operation)
+    /// must use [`ProcessContext::request_await_suspend`] instead: a
+    /// re-execution triggered by an unrelated message would re-submit that
+    /// work.
+    ///
+    /// Returns the allocated suspension call id when a process is attached;
+    /// detached (dirty-thread) contexts return `None` and the owning
+    /// scheduler thread allocates the id when it applies the request.
+    pub fn request_suspend(&mut self, timeout_ms: Option<u64>) -> Option<u64> {
+        self.request_suspend_flavor(timeout_ms, true)
+    }
+
+    /// Request a result-gated host-await suspension.
+    ///
+    /// The process parks until the completion identified by the returned
+    /// suspension call id is delivered (`Scheduler::wake_with_result_for`,
+    /// the pid-resolved `Scheduler::wake_with_result`, or a file-I/O
+    /// completion), or until the optional timeout fires and re-executes the
+    /// native at the suspended call instruction. Plain message arrivals do
+    /// NOT wake the process — re-executing the native would repeat its host
+    /// side effect.
+    pub fn request_await_suspend(&mut self, timeout_ms: Option<u64>) -> Option<u64> {
+        self.request_suspend_flavor(timeout_ms, false)
+    }
+
+    fn request_suspend_flavor(
+        &mut self,
+        timeout_ms: Option<u64>,
+        wake_on_message: bool,
+    ) -> Option<u64> {
+        let call_id = self
+            .process
+            .as_deref_mut()
+            .map(Process::allocate_suspension_call_id);
+        self.suspend = Some(SuspendRequest {
+            timeout_ms,
+            wake_on_message,
+            call_id,
+        });
+        if let (Some(pid), Some(call_id), Some(registrar)) =
+            (self.pid, call_id, self.suspension_registrar.as_ref())
+        {
+            registrar.register_host_await(pid, call_id, wake_on_message);
+        }
+        call_id
+    }
+
+    /// Withdraw a pending suspend request whose native call is unwinding
+    /// (e.g. it raised an exception after requesting suspension), so the
+    /// published host-await registration cannot strand a stale call id.
+    pub fn cancel_requested_suspend(&mut self) {
+        let Some(request) = self.suspend.take() else {
+            return;
+        };
+        self.cancel_suspend_request(&request);
+    }
+
+    /// Withdraw the host-await registration of an already-taken suspend
+    /// request (used when the native's exception path unwinds after the
+    /// request was extracted from this context).
+    pub fn cancel_suspend_request(&self, request: &SuspendRequest) {
+        if let (Some(pid), Some(call_id), Some(registrar)) = (
+            self.pid,
+            request.call_id,
+            self.suspension_registrar.as_ref(),
+        ) {
+            registrar.cancel_host_await(pid, call_id);
+        }
     }
 
     /// Take the suspend request, clearing it from the context.
     pub fn take_suspend(&mut self) -> Option<SuspendRequest> {
         self.suspend.take()
+    }
+
+    /// Set the scheduler-side registrar that publishes host-await call ids.
+    pub fn set_suspension_registrar(&mut self, registrar: Option<Arc<dyn SuspensionRegistrar>>) {
+        self.suspension_registrar = registrar;
     }
 
     // --- Exception metadata ---

@@ -96,6 +96,9 @@ pub struct NativeServices {
     /// Embedder-supplied private data recoverable from every native call
     /// (the ERTS `enif_priv_data` equivalent, scoped to one runtime instance).
     pub nif_private_data: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// Scheduler-side registrar publishing host-await suspension call ids so
+    /// completion publishers can resolve them at publish time.
+    pub suspension_registrar: Option<Arc<dyn crate::native::SuspensionRegistrar>>,
 }
 
 /// Result of running a process until it yields, waits, exits, or faults.

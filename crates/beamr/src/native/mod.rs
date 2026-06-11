@@ -89,7 +89,8 @@ pub use code_management_bifs::CodeManagementFacility;
 pub use context::{
     AionTimeoutContinuation, ExceptionClass, FileIoCompletion, FileIoContinuation, FileIoFacility,
     NativeContinuation, ProcessContext, RemoteSpawnError, RemoteSpawnFacility, RemoteSpawnResult,
-    RootedTerms, SuspendRequest, TcpIoFacility, TrampolineRequest, WasmAsyncNifFacility,
+    RootedTerms, SuspendRequest, SuspensionRegistrar, TcpIoFacility, TrampolineRequest,
+    WasmAsyncNifFacility,
 };
 pub use distribution_bifs::GlobalNameFacility;
 pub use ets_bifs::EtsFacility;

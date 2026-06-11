@@ -7,6 +7,7 @@ pub mod run_queue;
 mod spawning;
 pub mod steal;
 mod supervision_integration;
+mod suspension;
 mod test_helpers;
 mod timer_integration;
 pub mod wasm;
@@ -39,7 +40,6 @@ use crate::native::{
 use crate::process::registry::ProcessTable;
 use crate::process::{ExitReason, Process, ProcessStatus};
 use crate::replay::{ReplayDriver, ReplayLog};
-use crate::scheduler::dirty::DirtyResult;
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
 use crate::term::Term;
@@ -152,9 +152,17 @@ pub(super) struct SharedState {
     exit_results: DashMap<u64, OwnedTerm>,
     exit_errors: DashMap<u64, ExecError>,
     exit_exceptions: DashMap<u64, OwnedException>,
-    async_results: DashMap<u64, Term>,
-    dirty_results: DashMap<u64, DirtyResult>,
-    dirty_in_flight: DashSet<u64>,
+    /// pid → current result-gated suspension identity (call id + kind).
+    /// Owning-thread written; read by completion publishers and the wake
+    /// gate. See `suspension.rs`.
+    suspensions: DashMap<u64, suspension::SuspensionMirror>,
+    /// pid → completion published for a specific suspension call id. The
+    /// owning thread applies it at slice start only when the id matches the
+    /// process's current suspension record.
+    suspension_results: DashMap<u64, suspension::PendingSuspensionResult>,
+    /// pid → sticky embedder resume for a hook suspension (call id, or
+    /// `RESUME_ANY_HOOK` when the resume raced the suspension's creation).
+    pending_resumes: DashMap<u64, u64>,
     file_io_ring: Arc<dyn CompletionRing>,
     file_io_pending: DashMap<u64, (u64, FileIoContinuation)>,
     file_io_orphans: DashMap<u64, IoCompletion>,
@@ -640,9 +648,9 @@ impl Scheduler {
             exit_results: DashMap::new(),
             exit_errors: DashMap::new(),
             exit_exceptions: DashMap::new(),
-            async_results: DashMap::new(),
-            dirty_results: DashMap::new(),
-            dirty_in_flight: DashSet::new(),
+            suspensions: DashMap::new(),
+            suspension_results: DashMap::new(),
+            pending_resumes: DashMap::new(),
             file_io_ring,
             file_io_pending: DashMap::new(),
             file_io_orphans: DashMap::new(),
@@ -1032,7 +1040,15 @@ impl Scheduler {
 
 impl IoWakeTarget for SharedState {
     fn wake_with_io_result(&self, pid: u64, term: Term) {
-        self.async_results.insert(pid, term);
+        // Identity-resolved at publish time: the bridge completes the
+        // host-await suspension the submitting native registered. A stale
+        // completion (the await already timed out and re-entered) is
+        // dropped instead of being applied blind.
+        let _published = self.publish_suspension_result_current(
+            pid,
+            crate::process::SuspensionKind::HostAwait,
+            suspension::SuspensionResultPayload::Host(term),
+        );
         execution::wake_process(self, pid);
     }
 

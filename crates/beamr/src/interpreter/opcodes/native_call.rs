@@ -127,6 +127,7 @@ pub(crate) fn call_native_entry(
         context.set_current_native(Some((target_module, target_function, target_arity)));
         context.set_wasm_async_nif_facility(svc.wasm_async_nif_facility.clone());
         context.set_nif_private_data(svc.nif_private_data.clone());
+        context.set_suspension_registrar(svc.suspension_registrar.clone());
     }
 
     // Provide mailbox access for select BIFs before borrowing the process for heap allocation.
@@ -164,6 +165,12 @@ pub(crate) fn call_native_entry(
     let result = match call_result {
         Ok(value) => value,
         Err(reason) => {
+            // The native raised after requesting suspension: withdraw the
+            // published host-await registration so its call id cannot
+            // strand a stale mirror (and silently swallow a completion).
+            if let Some(request) = &suspend {
+                context.cancel_suspend_request(request);
+            }
             let exception = crate::process::Exception {
                 class: Term::atom(exception_class_atom(exception_class)),
                 reason,
