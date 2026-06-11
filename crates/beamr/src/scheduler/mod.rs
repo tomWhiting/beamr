@@ -1011,6 +1011,13 @@ impl Scheduler {
     /// otherwise a completion racing the suspend transition is lost and the
     /// process sleeps forever.
     ///
+    /// The wake applies to plain receives and message-wakeable suspends
+    /// (`ProcessContext::request_suspend`). A process parked under a *gated*
+    /// suspension (`request_await_suspend`, an in-flight dirty call, a hook
+    /// suspend) keeps the message in its mailbox but stays parked until its
+    /// own completion event arrives — waking it would re-execute the parked
+    /// call instruction and repeat its host side effect.
+    ///
     /// Returns false only when no live process exists for `target_pid`.
     #[must_use]
     pub fn enqueue_atom_message(&self, target_pid: u64, atom: crate::atom::Atom) -> bool {

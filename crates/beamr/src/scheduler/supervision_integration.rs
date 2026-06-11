@@ -412,6 +412,11 @@ fn process_exit_signal(
                     wait_set.waiting.remove(&target_pid);
                     wait_set.woken.retain(|(wp, _)| *wp != target_pid);
                 }
+                // Purge per-pid suspension/timer state exactly like
+                // cleanup_exited_process: a killed suspended process must
+                // not strand its mirror or a published completion.
+                let _stale_marks = shared.expired_receive_timers.remove(&target_pid);
+                shared.purge_suspension_state(target_pid);
 
                 cascade_links
                     .into_iter()
