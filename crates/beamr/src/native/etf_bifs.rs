@@ -9,7 +9,7 @@ use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Tuple};
 
 const ETF_BIFS: &[(&str, u8, Capability, NativeFn)] = &[
@@ -89,7 +89,7 @@ pub fn bif_binary_to_term(args: &[Term], context: &mut ProcessContext) -> Result
         return Err(badarg());
     };
     let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
-    let bytes = Binary::new(*binary).ok_or_else(badarg)?.as_bytes();
+    let bytes = BinaryRef::new(*binary).ok_or_else(badarg)?.as_bytes();
     decode_term(bytes, context, atom_table.as_ref()).map_err(|_| badarg())
 }
 
@@ -99,7 +99,7 @@ pub fn bif_binary_to_term_2(args: &[Term], context: &mut ProcessContext) -> Resu
     };
     let atom_table = context.atom_table_arc().ok_or_else(badarg)?;
     let options = parse_decode_options(*options_term, atom_table.as_ref())?;
-    let bytes = Binary::new(*binary).ok_or_else(badarg)?.as_bytes();
+    let bytes = BinaryRef::new(*binary).ok_or_else(badarg)?.as_bytes();
     let decoded = decode_term_with_options(bytes, context, atom_table.as_ref(), options)
         .map_err(|_| badarg())?;
     if options.return_used {

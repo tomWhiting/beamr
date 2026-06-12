@@ -825,7 +825,24 @@ fn consume_suspension_event(shared: &SharedState, process: &mut Process) -> Susp
         process.set_receive_timer_ref(None);
         let _stale_marks = shared.expired_receive_timers.remove(&pid);
         return match result.payload {
-            SuspensionResultPayload::Host(term) => {
+            SuspensionResultPayload::Host(owned) => {
+                // The published result owns its boxed storage; materialize
+                // it on the resuming process heap so x0 never points into
+                // memory with a foreign lifetime. Collect/grow first —
+                // `copy_to_heap` itself cannot trigger GC.
+                if crate::gc::ensure_space(process, owned.total_words(), 256).is_err() {
+                    return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+                        "suspension result heap space",
+                    ));
+                }
+                let term = match owned.copy_to_heap(process.heap_mut()) {
+                    Ok(term) => term,
+                    Err(_error) => {
+                        return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+                            "suspension result term",
+                        ));
+                    }
+                };
                 process.set_x_reg(0, term);
                 advance_past_current_instruction(process);
                 SuspensionGate::Run
@@ -1139,6 +1156,13 @@ fn apply_dirty_result(
     dirty_result: DirtyResult,
 ) -> Result<InstructionOutcomeAfterDirty, crate::error::ExecError> {
     let owned_result = dirty_result.owned_result;
+    // Collect/grow before materializing the owned result on the process
+    // heap — `copy_to_heap` itself cannot trigger GC, so an arbitrarily
+    // large dirty result (e.g. a big binary) must not die on HeapFull.
+    if let Some(owned) = owned_result.as_ref() {
+        crate::gc::ensure_space(process, owned.total_words(), 256)
+            .map_err(|_| crate::error::ExecError::Badarg)?;
+    }
     match dirty_result.result {
         Ok(value) => {
             let value = match owned_result.as_ref() {

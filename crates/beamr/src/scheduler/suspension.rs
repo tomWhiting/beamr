@@ -47,11 +47,31 @@ pub(super) struct PendingSuspensionResult {
 #[derive(Debug)]
 pub(super) enum SuspensionResultPayload {
     /// Host-await result applied into x0 (the await call's return value).
-    Host(Term),
+    ///
+    /// Owned: the publisher's term may point into a heap that does not
+    /// outlive the publish-to-apply window (an embedder-side scratch heap,
+    /// a detached native context's blocks), so it is deep-copied into owned
+    /// storage at publish time and copied onto the owning process heap at
+    /// slice-start apply.
+    Host(crate::ets::OwnedTerm),
     /// Dirty native completion (result/exception, plus follow-up requests).
     /// Boxed: dirty completions are rare next to host results, and the
     /// follow-up request fields make the variant large.
     Dirty(Box<DirtyResult>),
+}
+
+impl SuspensionResultPayload {
+    /// Build an owning host payload from a possibly heap-allocated term.
+    ///
+    /// Returns `None` when the term cannot be deep-copied (an unsupported
+    /// or malformed boxed layout) — publishing such a result would dangle.
+    pub(super) fn host(term: Term) -> Option<Self> {
+        if term.is_list() || term.is_boxed() {
+            crate::ets::copy_term_to_ets(term).ok().map(Self::Host)
+        } else {
+            Some(Self::Host(crate::ets::OwnedTerm::immediate(term)))
+        }
+    }
 }
 
 impl SharedState {

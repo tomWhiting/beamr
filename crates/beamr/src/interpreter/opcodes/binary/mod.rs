@@ -50,6 +50,17 @@ pub fn binary_op(
     }
 }
 
+/// Remaining bits of a bs match context term, or `None` when `term` is not
+/// a match context.
+///
+/// OTP 26+ compilers reuse match contexts: `byte_size`/`bit_size` applied
+/// to a match tail (`<<_, Rest/binary>> = Bin, byte_size(Rest)`) is emitted
+/// as the gc_bif on the context register itself instead of materializing
+/// the tail sub-binary, so those BIFs must measure the context's remainder.
+pub(crate) fn match_context_remaining_bits(term: crate::term::Term) -> Option<usize> {
+    matching::MatchContext::new(term).map(matching::MatchContext::remaining_bits)
+}
+
 pub(super) fn jump_label(
     module: &Module,
     label: &Operand,

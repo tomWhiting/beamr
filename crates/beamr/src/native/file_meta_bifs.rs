@@ -11,7 +11,7 @@ use crate::native::{
     ProcessContext,
 };
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 
 /// Registers Erlang file metadata BIFs.
 pub fn register_file_meta_bifs(
@@ -279,7 +279,7 @@ fn signed_term(value: i64) -> Result<Term, Term> {
 }
 
 fn filename_path(term: Term) -> Result<PathBuf, Term> {
-    let bytes = Binary::new(term).ok_or_else(badarg)?.as_bytes();
+    let bytes = BinaryRef::new(term).ok_or_else(badarg)?.as_bytes();
     let filename = std::str::from_utf8(bytes).map_err(|_| badarg())?;
     Ok(PathBuf::from(filename))
 }

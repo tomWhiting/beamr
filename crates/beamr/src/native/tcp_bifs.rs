@@ -14,7 +14,7 @@ use crate::native::{
     ProcessContext,
 };
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Tuple};
 
 const DEFAULT_BACKLOG: i32 = 128;
@@ -680,7 +680,7 @@ fn parse_host(term: Term) -> Result<String, Term> {
 }
 
 fn binary_bytes(term: Term) -> Result<Vec<u8>, Term> {
-    Ok(Binary::new(term).ok_or_else(badarg)?.as_bytes().to_vec())
+    Ok(BinaryRef::new(term).ok_or_else(badarg)?.as_bytes().to_vec())
 }
 
 fn recv_buf_len(requested_len: usize) -> usize {

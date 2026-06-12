@@ -13,7 +13,7 @@ use crate::native::{
     ProcessContext,
 };
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Tuple};
 
 const DEFAULT_RECV_SIZE: usize = 65_535;
@@ -88,7 +88,10 @@ pub fn udp_send(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
         return error_tuple(context, Atom::CLOSED);
     }
     let addr = SocketAddr::V4(SocketAddrV4::new(parse_ipv4(*host)?, parse_port(*port)?));
-    let bytes = Binary::new(*data).ok_or_else(badarg)?.as_bytes().to_vec();
+    let bytes = BinaryRef::new(*data)
+        .ok_or_else(badarg)?
+        .as_bytes()
+        .to_vec();
     let expected_len = bytes.len();
     context.submit_file_io(
         IoOp::SendMsg {

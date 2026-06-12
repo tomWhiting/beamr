@@ -9,7 +9,7 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::ProcessContext;
 use crate::term::{
     Tag, Term,
-    binary::Binary,
+    binary_ref::BinaryRef,
     boxed::{BigInt, Cons, Float, Map, Tuple},
 };
 
@@ -138,7 +138,7 @@ fn list_to_value(term: Term, atom_table: &AtomTable) -> Result<Value, JsonTermEr
 }
 
 fn boxed_to_value(term: Term, atom_table: &AtomTable) -> Result<Value, JsonTermError> {
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         return binary_to_value(binary);
     }
     if let Some(tuple) = Tuple::new(term) {
@@ -157,7 +157,7 @@ fn boxed_to_value(term: Term, atom_table: &AtomTable) -> Result<Value, JsonTermE
     Err(JsonTermError::UnsupportedTerm("boxed"))
 }
 
-fn binary_to_value(binary: Binary) -> Result<Value, JsonTermError> {
+fn binary_to_value(binary: BinaryRef) -> Result<Value, JsonTermError> {
     match std::str::from_utf8(binary.as_bytes()) {
         Ok(text) => Ok(Value::String(text.to_owned())),
         Err(_) => Ok(Value::String(BASE64_STANDARD.encode(binary.as_bytes()))),
@@ -588,7 +588,7 @@ mod tests {
         let term = value_to_term(&json!({"key": "value"}), &mut context).expect("object to map");
         let map = Map::new(term).expect("map accessor");
         let key = map.key(0).expect("first key");
-        let key_binary = Binary::new(key).expect("key is a binary");
+        let key_binary = crate::term::binary::Binary::new(key).expect("key is a binary");
         assert_eq!(key_binary.as_bytes(), b"key");
     }
 

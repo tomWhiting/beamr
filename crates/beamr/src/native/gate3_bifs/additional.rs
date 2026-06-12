@@ -5,7 +5,7 @@ use crate::native::ProcessContext;
 use crate::native::bifs::integer_result;
 use crate::term::Term;
 use crate::term::bigint_math::BigIntValue;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Closure, Float, Map};
 
 /// erlang:round/1 — rounds a number to the nearest integer.
@@ -38,7 +38,7 @@ pub fn bif_is_bitstring(args: &[Term], context: &mut ProcessContext) -> Result<T
     let [value] = args else {
         return Err(badarg());
     };
-    Ok(bool_term(Binary::new(*value).is_some()))
+    Ok(bool_term(BinaryRef::new(*value).is_some()))
 }
 
 /// erlang:is_function/1 — true for funs (local closures and exports).
@@ -105,7 +105,7 @@ pub fn bif_binary_part(args: &[Term], context: &mut ProcessContext) -> Result<Te
     let [binary_term, offset_term, length_term] = args else {
         return Err(badarg());
     };
-    let binary = Binary::new(*binary_term).ok_or_else(badarg)?;
+    let binary = BinaryRef::new(*binary_term).ok_or_else(badarg)?;
     let offset = offset_term
         .as_small_int()
         .and_then(|value| usize::try_from(value).ok())
@@ -129,8 +129,14 @@ pub fn bif_bit_size(args: &[Term], context: &mut ProcessContext) -> Result<Term,
     let [binary_term] = args else {
         return Err(badarg());
     };
-    let binary = Binary::new(*binary_term).ok_or_else(badarg)?;
-    let bits = binary.len().checked_mul(8).ok_or_else(badarg)?;
+    let bits = match BinaryRef::new(*binary_term) {
+        Some(binary) => binary.len().checked_mul(8).ok_or_else(badarg)?,
+        // Compiler-reused match contexts: `bit_size` of a match tail is
+        // emitted on the context register (see
+        // `match_context_remaining_bits`).
+        None => crate::interpreter::opcodes::binary::match_context_remaining_bits(*binary_term)
+            .ok_or_else(badarg)?,
+    };
     i64::try_from(bits)
         .ok()
         .and_then(Term::try_small_int)

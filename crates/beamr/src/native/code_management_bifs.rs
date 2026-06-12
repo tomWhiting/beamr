@@ -11,7 +11,7 @@ use crate::native::{
 };
 use crate::scheduler::{HotLoadResult, PurgeResult};
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 
 /// Scheduler-backed code management operations used by hot-code BIFs.
 pub trait CodeManagementFacility: Send + Sync {
@@ -75,7 +75,7 @@ pub fn load_module(args: &[Term], context: &mut ProcessContext) -> Result<Term, 
         return Err(badarg());
     };
     let module_name = name_term.as_atom().ok_or_else(badarg)?;
-    let bytes = Binary::new(*bytes_term).ok_or_else(badarg)?.as_bytes();
+    let bytes = BinaryRef::new(*bytes_term).ok_or_else(badarg)?.as_bytes();
     let facility = context.code_management_facility().ok_or_else(badarg)?;
     let result = facility.load_module(bytes).map_err(|_| badarg())?;
     if result.module_name != module_name {

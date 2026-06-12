@@ -136,10 +136,13 @@ impl Scheduler {
     /// with the call id returned by `ProcessContext::request_suspend`, which
     /// is race-free across re-entries.
     pub fn wake_with_result(&self, pid: u64, result: Term) -> bool {
+        let Some(payload) = super::suspension::SuspensionResultPayload::host(result) else {
+            return false;
+        };
         let published = self.shared.publish_suspension_result_current(
             pid,
             crate::process::SuspensionKind::HostAwait,
-            super::suspension::SuspensionResultPayload::Host(result),
+            payload,
         );
         if published {
             wake_process(&self.shared, pid);
@@ -155,11 +158,10 @@ impl Scheduler {
     /// current (stale completion — dropped, never applied at the wrong park
     /// position).
     pub fn wake_with_result_for(&self, pid: u64, call_id: u64, result: Term) -> bool {
-        let published = self.shared.publish_suspension_result(
-            pid,
-            call_id,
-            super::suspension::SuspensionResultPayload::Host(result),
-        );
+        let Some(payload) = super::suspension::SuspensionResultPayload::host(result) else {
+            return false;
+        };
+        let published = self.shared.publish_suspension_result(pid, call_id, payload);
         if published {
             wake_process(&self.shared, pid);
         }
