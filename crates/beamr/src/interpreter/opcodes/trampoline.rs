@@ -193,7 +193,15 @@ pub fn handle_native_continuation(
         // id (request_suspend allocated it from this process). A gated
         // await's completion becomes the BIF's overall result in x0; a
         // message-wakeable suspend re-executes the whole native here.
-        return handle_suspend(process, module, suspend);
+        // Continuation resumes always park at a body-position BIF call
+        // (the trampoline return frame jumps back to it), so a published
+        // result advances past it.
+        return handle_suspend(
+            process,
+            module,
+            suspend,
+            super::native_call::NativeCallReturn::Advance,
+        );
     }
     match step {
         ContinuationStep::Done(result) => {
@@ -221,10 +229,16 @@ pub fn handle_native_continuation(
 }
 
 /// Handle a suspend request by transitioning the process to Waiting state.
+///
+/// `call_return` is the parked native call's completion shape: it decides
+/// how a published host result applied at this park continues execution
+/// (advance past a body call; return to the caller for a tail call,
+/// popping the deferred `call_ext_last` y-frame first).
 pub fn handle_suspend(
     process: &mut Process,
     _module: &Module,
     suspend: crate::native::SuspendRequest,
+    call_return: super::native_call::NativeCallReturn,
 ) -> Result<InstructionOutcome, ExecError> {
     // Store the current position as the resume point: a receive-style
     // suspend re-executes the select BIF call on message arrival; a
@@ -252,11 +266,23 @@ pub fn handle_suspend(
     let call_id = suspend
         .call_id
         .unwrap_or_else(|| process.allocate_suspension_call_id());
+    let continuation = match call_return {
+        super::native_call::NativeCallReturn::Advance => {
+            crate::process::ResumeContinuation::Advance
+        }
+        super::native_call::NativeCallReturn::TailReturn { pop_frame: false } => {
+            crate::process::ResumeContinuation::Return
+        }
+        super::native_call::NativeCallReturn::TailReturn { pop_frame: true } => {
+            crate::process::ResumeContinuation::DeallocateAndReturn
+        }
+    };
     process.set_suspension(Some(crate::process::SuspensionRecord {
         call_id,
         kind: crate::process::SuspensionKind::HostAwait,
         position: Some(resume),
         wake_on_message: suspend.wake_on_message,
+        continuation,
     }));
 
     // Transition to Waiting state.
@@ -387,7 +413,13 @@ mod tests {
             wake_on_message: false,
             call_id: Some(7),
         };
-        let result = handle_suspend(&mut process, &module, suspend).expect("suspend ok");
+        let result = handle_suspend(
+            &mut process,
+            &module,
+            suspend,
+            super::super::native_call::NativeCallReturn::Advance,
+        )
+        .expect("suspend ok");
         assert_eq!(result, InstructionOutcome::Waiting);
         assert_eq!(process.status(), ProcessStatus::Waiting);
 
@@ -422,7 +454,13 @@ mod tests {
             wake_on_message: true,
             call_id: None,
         };
-        let result = handle_suspend(&mut process, &module, suspend).expect("suspend ok");
+        let result = handle_suspend(
+            &mut process,
+            &module,
+            suspend,
+            super::super::native_call::NativeCallReturn::Advance,
+        )
+        .expect("suspend ok");
         assert_eq!(result, InstructionOutcome::Waiting);
         assert_eq!(process.status(), ProcessStatus::Waiting);
         let record = process.suspension().expect("record installed");

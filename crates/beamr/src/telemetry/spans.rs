@@ -11,7 +11,7 @@ use crate::atom::{Atom, AtomTable};
 use crate::process::Process;
 use crate::term::{
     Term,
-    binary::Binary,
+    binary_ref::BinaryRef,
     boxed::{BigInt, Closure, Cons, Float, Map, Reference, Tuple},
 };
 
@@ -247,7 +247,7 @@ fn estimate_term_size(term: Term, depth: usize, seen: &mut HashSet<usize>) -> us
     if !term.is_boxed() {
         return WORD_BYTES;
     }
-    if let Some(binary) = Binary::new(term) {
+    if let Some(binary) = BinaryRef::new(term) {
         return WORD_BYTES * 2 + binary.len();
     }
     if let Some(tuple) = Tuple::new(term) {

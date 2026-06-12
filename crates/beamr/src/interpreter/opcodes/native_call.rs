@@ -22,6 +22,32 @@ use super::core::{
 };
 use super::trampoline;
 
+/// How a native call hands control back when it completes (returns a value,
+/// raises, or trampolines) — suspension parks never consume this: a parked
+/// call either re-executes its instruction or applies a published result
+/// under the suspension record's own continuation.
+#[derive(Clone, Copy, Debug)]
+pub enum NativeCallReturn {
+    /// Body-position call: fall through to the next instruction.
+    Advance,
+    /// Tail-position call: return to the caller. `pop_frame` is true for a
+    /// `call_ext_last` site whose y-frame pop was deferred to completion
+    /// (so a suspension's wake re-execution cannot double-pop the stack).
+    TailReturn { pop_frame: bool },
+}
+
+impl NativeCallReturn {
+    /// Pop the deferred `call_ext_last` y-frame, if this call carries one.
+    /// Must run on every COMPLETION path (value, exception, trampoline,
+    /// replay) and never on a suspension park.
+    fn pop_deferred_frame(self, process: &mut Process) -> Result<(), ExecError> {
+        if let Self::TailReturn { pop_frame: true } = self {
+            let _frame = process.stack_mut().pop_frame().map_err(ExecError::from)?;
+        }
+        Ok(())
+    }
+}
+
 /// Executes a native BIF `entry` for the `mfa` target with full service
 /// support — capability audit, replay, dirty scheduling, mailbox snapshots,
 /// and trampolines. Shared by resolved-import calls and export-fun dispatch.
@@ -30,7 +56,7 @@ pub(crate) fn call_native_entry(
     module: &Module,
     entry: crate::native::NativeEntry,
     mfa: (Atom, Atom, u8),
-    save_return: bool,
+    call_return: NativeCallReturn,
     ctx: &ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
     let (target_module, target_function, target_arity) = mfa;
@@ -60,7 +86,7 @@ pub(crate) fn call_native_entry(
             StderrViolationHandler.on_violation(audit_event);
         }
         let result = capability_denied_result(process)?;
-        return complete_native_value(process, result, save_return);
+        return complete_native_value(process, result, call_return);
     }
 
     let mut args = Vec::with_capacity(usize::from(target_arity));
@@ -90,7 +116,7 @@ pub(crate) fn call_native_entry(
         let recorded = driver
             .next_native_call(process.pid(), target_module, target_function, target_arity)
             .map_err(ExecError::from)?;
-        return apply_replayed_native_result(process, recorded.outcome, save_return);
+        return apply_replayed_native_result(process, recorded.outcome, call_return);
     }
     let mut context = match ctx.timers {
         Some(timers) => ProcessContext::with_timer_services(process.pid(), Arc::clone(timers)),
@@ -171,6 +197,10 @@ pub(crate) fn call_native_entry(
             if let Some(request) = &suspend {
                 context.cancel_suspend_request(request);
             }
+            // The raise completes the tail call: settle the deferred
+            // y-frame pop so the unwind sees the same stack an eager
+            // `call_ext_last` pop would have left.
+            call_return.pop_deferred_frame(process)?;
             let exception = crate::process::Exception {
                 class: Term::atom(exception_class_atom(exception_class)),
                 reason,
@@ -190,13 +220,18 @@ pub(crate) fn call_native_entry(
     }
 
     // Check for suspend request before trampoline (suspend takes priority
-    // when no message matched).
+    // when no message matched). The park keeps the deferred y-frame: wake
+    // re-execution re-runs this call instruction against the SAME stack,
+    // and a published host result settles the frame via the suspension
+    // record's continuation.
     if let Some(suspend) = suspend {
-        return trampoline::handle_suspend(process, module, suspend);
+        return trampoline::handle_suspend(process, module, suspend, call_return);
     }
 
-    // Check for trampoline request from the BIF.
+    // Check for trampoline request from the BIF. The trampoline completes
+    // the native call: settle the deferred frame first.
     if let Some(trampoline_req) = trampoline_req {
+        call_return.pop_deferred_frame(process)?;
         return trampoline::handle_trampoline(process, module, ctx.registry, trampoline_req);
     }
 
@@ -205,10 +240,12 @@ pub(crate) fn call_native_entry(
         return Ok(InstructionOutcome::Exit(crate::process::ExitReason::Normal));
     }
     charge_reduction(process)?;
-    if save_return {
-        Ok(InstructionOutcome::Continue)
-    } else {
-        return_(process)
+    match call_return {
+        NativeCallReturn::Advance => Ok(InstructionOutcome::Continue),
+        NativeCallReturn::TailReturn { .. } => {
+            call_return.pop_deferred_frame(process)?;
+            return_(process)
+        }
     }
 }
 
@@ -227,14 +264,16 @@ fn capability_denied_result(process: &mut Process) -> Result<Term, ExecError> {
 fn complete_native_value(
     process: &mut Process,
     result: Term,
-    save_return: bool,
+    call_return: NativeCallReturn,
 ) -> Result<InstructionOutcome, ExecError> {
     process.set_x_reg(0, result);
     charge_reduction(process)?;
-    if save_return {
-        Ok(InstructionOutcome::Continue)
-    } else {
-        return_(process)
+    match call_return {
+        NativeCallReturn::Advance => Ok(InstructionOutcome::Continue),
+        NativeCallReturn::TailReturn { .. } => {
+            call_return.pop_deferred_frame(process)?;
+            return_(process)
+        }
     }
 }
 
@@ -260,19 +299,22 @@ fn should_replay_select(ctx: &ExtCallContext<'_>, module: Atom, function: Atom, 
 fn apply_replayed_native_result(
     process: &mut Process,
     outcome: crate::replay::NativeOutcome,
-    save_return: bool,
+    call_return: NativeCallReturn,
 ) -> Result<InstructionOutcome, ExecError> {
     match outcome.result {
         Ok(value) => {
             process.set_x_reg(0, value);
             charge_reduction(process)?;
-            if save_return {
-                Ok(InstructionOutcome::Continue)
-            } else {
-                return_(process)
+            match call_return {
+                NativeCallReturn::Advance => Ok(InstructionOutcome::Continue),
+                NativeCallReturn::TailReturn { .. } => {
+                    call_return.pop_deferred_frame(process)?;
+                    return_(process)
+                }
             }
         }
         Err(reason) => {
+            call_return.pop_deferred_frame(process)?;
             let exception = crate::process::Exception {
                 class: Term::atom(exception_class_atom(outcome.exception_class)),
                 reason,

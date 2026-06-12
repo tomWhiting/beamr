@@ -12,7 +12,7 @@ use crate::native::{
     ProcessContext,
 };
 use crate::term::Term;
-use crate::term::binary::Binary;
+use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Tuple};
 
 const DEFAULT_FILE_PERMISSIONS: u32 = 0o644;
@@ -322,7 +322,7 @@ fn finish_seek(completion: FileIoCompletion, context: &mut ProcessContext) -> Re
 }
 
 fn filename_path(term: Term) -> Result<PathBuf, Term> {
-    let bytes = Binary::new(term).ok_or_else(badarg)?.as_bytes();
+    let bytes = BinaryRef::new(term).ok_or_else(badarg)?.as_bytes();
     let filename = std::str::from_utf8(bytes).map_err(|_| badarg())?;
     Ok(PathBuf::from(filename))
 }
@@ -441,7 +441,7 @@ fn parse_count(term: Term) -> Result<usize, Term> {
 }
 
 fn binary_bytes(term: Term) -> Result<Vec<u8>, Term> {
-    Ok(Binary::new(term).ok_or_else(badarg)?.as_bytes().to_vec())
+    Ok(BinaryRef::new(term).ok_or_else(badarg)?.as_bytes().to_vec())
 }
 
 fn set_seek_position(

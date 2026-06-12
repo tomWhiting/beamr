@@ -2608,11 +2608,14 @@ fn result_beats_timeout_and_clears_the_timed_await_metadata() {
             return;
         }
         let call_id = RACE_ID.load(Ordering::Acquire);
-        assert!(shared.publish_suspension_result(
-            pid,
-            call_id,
-            crate::scheduler::suspension::SuspensionResultPayload::Host(Term::small_int(33)),
-        ));
+        assert!(
+            shared.publish_suspension_result(
+                pid,
+                call_id,
+                crate::scheduler::suspension::SuspensionResultPayload::host(Term::small_int(33))
+                    .expect("immediate host payload"),
+            )
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
         timer_integration::tick_timers(shared);
     }));
@@ -2642,7 +2645,8 @@ fn stale_publisher_cannot_clobber_a_fresher_completion() {
     let scheduler = single_thread_scheduler(&registry);
     let shared = &scheduler.shared;
     let host = |value: i64| {
-        crate::scheduler::suspension::SuspensionResultPayload::Host(Term::small_int(value))
+        crate::scheduler::suspension::SuspensionResultPayload::host(Term::small_int(value))
+            .expect("immediate host payload")
     };
     let pid = 4246;
     shared.process_table.spawn_with_pid(pid);

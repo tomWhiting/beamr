@@ -14,7 +14,8 @@ use crate::{
     term::{
         Term,
         binary::Binary,
-        boxed::{self, BigInt, Closure, Cons, Float, Map, Reference, Tuple},
+        boxed::{self, BigInt, Closure, Cons, Float, Map, ProcBin, Reference, SubBinary, Tuple},
+        shared_binary,
     },
 };
 
@@ -373,6 +374,12 @@ fn copy_boxed(term: Term, heap: &mut Heap) -> Result<Term, SendError> {
     if let Some(binary) = Binary::new(term) {
         return copy_binary(binary, heap);
     }
+    if let Some(proc_bin) = ProcBin::new(term) {
+        return copy_proc_bin(&proc_bin, heap);
+    }
+    if let Some(sub_binary) = SubBinary::new(term) {
+        return copy_sub_binary(&sub_binary, heap);
+    }
 
     Err(SendError::InvalidBoxedTerm)
 }
@@ -455,6 +462,30 @@ fn copy_binary(binary: Binary, heap: &mut Heap) -> Result<Term, SendError> {
         2 + crate::term::binary::packed_word_count(bytes.len()),
     )?;
     crate::term::binary::write_binary(words, bytes).ok_or(SendError::InvalidBoxedTerm)
+}
+
+/// Off-heap binaries are shared, not copied: the receiver gets its own
+/// ProcBin heap object holding a fresh strong reference to the immutable
+/// off-heap bytes.
+fn copy_proc_bin(proc_bin: &ProcBin, heap: &mut Heap) -> Result<Term, SendError> {
+    let shared = proc_bin.shared_binary();
+    if shared.len() <= shared_binary::REFC_BINARY_THRESHOLD {
+        // An undersized ProcBin (not produced by the threshold-aware
+        // allocators, but representable) copies inline like a heap binary.
+        let words = alloc_words(heap, shared_binary::alloc_binary_word_count(shared.len()))?;
+        return shared_binary::alloc_binary(words, shared.as_bytes())
+            .ok_or(SendError::InvalidBoxedTerm);
+    }
+    let words = alloc_words(heap, shared_binary::alloc_binary_word_count(shared.len()))?;
+    shared_binary::write_proc_bin(words, &shared).ok_or(SendError::InvalidBoxedTerm)
+}
+
+/// Sub-binaries copy only their visible byte range (threshold-aware), so the
+/// receiver never retains the parent binary's full storage.
+fn copy_sub_binary(sub_binary: &SubBinary, heap: &mut Heap) -> Result<Term, SendError> {
+    let bytes = sub_binary.as_bytes();
+    let words = alloc_words(heap, shared_binary::alloc_binary_word_count(bytes.len()))?;
+    shared_binary::alloc_binary(words, bytes).ok_or(SendError::InvalidBoxedTerm)
 }
 
 fn alloc_words(heap: &mut Heap, word_count: usize) -> Result<&mut [u64], SendError> {

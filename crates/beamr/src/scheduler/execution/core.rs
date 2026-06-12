@@ -632,6 +632,7 @@ fn execute_slice_with_budget(
             kind: SuspensionKind::Hook,
             position: process.code_position(),
             wake_on_message: false,
+            continuation: crate::process::ResumeContinuation::Advance,
         }));
         shared.register_suspension_mirror(process.pid(), call_id, SuspensionKind::Hook, false);
         let _t = process.transition_to(ProcessStatus::Suspended);
@@ -688,6 +689,7 @@ fn execute_slice_with_budget(
                 kind: SuspensionKind::DirtyCall,
                 position: process.code_position(),
                 wake_on_message: false,
+                continuation: crate::process::ResumeContinuation::Advance,
             }));
             shared.register_suspension_mirror(
                 process.pid(),
@@ -825,10 +827,26 @@ fn consume_suspension_event(shared: &SharedState, process: &mut Process) -> Susp
         process.set_receive_timer_ref(None);
         let _stale_marks = shared.expired_receive_timers.remove(&pid);
         return match result.payload {
-            SuspensionResultPayload::Host(term) => {
+            SuspensionResultPayload::Host(owned) => {
+                // The published result owns its boxed storage; materialize
+                // it on the resuming process heap so x0 never points into
+                // memory with a foreign lifetime. Collect/grow first —
+                // `copy_to_heap` itself cannot trigger GC.
+                if crate::gc::ensure_space(process, owned.total_words(), 256).is_err() {
+                    return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+                        "suspension result heap space",
+                    ));
+                }
+                let term = match owned.copy_to_heap(process.heap_mut()) {
+                    Ok(term) => term,
+                    Err(_error) => {
+                        return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+                            "suspension result term",
+                        ));
+                    }
+                };
                 process.set_x_reg(0, term);
-                advance_past_current_instruction(process);
-                SuspensionGate::Run
+                continue_past_applied_result(process, record.continuation)
             }
             SuspensionResultPayload::Dirty(mut dirty_result) => {
                 // Follow-up requests from the dirty native (B-5b): a
@@ -957,11 +975,22 @@ fn apply_dirty_suspend(
     let call_id = suspend
         .call_id
         .unwrap_or_else(|| process.allocate_suspension_call_id());
+    // Dirty tail calls (`call_ext_last`/`call_ext_only`) had their y-frame
+    // popped eagerly before submission, so a host result applied at this
+    // park returns to the caller without another pop.
+    let continuation = match parked_instruction(shared, process, position) {
+        Some(
+            crate::loader::Instruction::CallExtLast { .. }
+            | crate::loader::Instruction::CallExtOnly { .. },
+        ) => crate::process::ResumeContinuation::Return,
+        _ => crate::process::ResumeContinuation::Advance,
+    };
     process.set_suspension(Some(SuspensionRecord {
         call_id,
         kind: SuspensionKind::HostAwait,
         position: Some(position),
         wake_on_message: suspend.wake_on_message,
+        continuation,
     }));
     shared.register_suspension_mirror(
         process.pid(),
@@ -970,6 +999,25 @@ fn apply_dirty_suspend(
         suspend.wake_on_message,
     );
     SuspensionGate::Repark(SuspensionKind::HostAwait)
+}
+
+/// The instruction a suspension parked at, cloned out of the owning module.
+fn parked_instruction(
+    shared: &SharedState,
+    process: &Process,
+    position: CodePosition,
+) -> Option<crate::loader::Instruction> {
+    let module = if let Some(current) = process
+        .current_module()
+        .filter(|module| module.name == position.module)
+    {
+        Arc::clone(current)
+    } else {
+        let registry = namespace_registry(shared, process.namespace_id())
+            .unwrap_or_else(|| Arc::clone(&shared.module_registry));
+        registry.lookup(position.module)?
+    };
+    module.code.get(position.instruction_pointer).cloned()
 }
 
 /// Set up the closure call a dirty native requested: copy the owned fun and
@@ -1139,6 +1187,13 @@ fn apply_dirty_result(
     dirty_result: DirtyResult,
 ) -> Result<InstructionOutcomeAfterDirty, crate::error::ExecError> {
     let owned_result = dirty_result.owned_result;
+    // Collect/grow before materializing the owned result on the process
+    // heap — `copy_to_heap` itself cannot trigger GC, so an arbitrarily
+    // large dirty result (e.g. a big binary) must not die on HeapFull.
+    if let Some(owned) = owned_result.as_ref() {
+        crate::gc::ensure_space(process, owned.total_words(), 256)
+            .map_err(|_| crate::error::ExecError::Badarg)?;
+    }
     match dirty_result.result {
         Ok(value) => {
             let value = match owned_result.as_ref() {
@@ -1191,6 +1246,58 @@ fn advance_past_current_instruction(process: &mut Process) {
             instruction_pointer: pos.instruction_pointer.saturating_add(1),
         }));
     }
+}
+
+/// Continue execution after a published host result was applied into x0 at
+/// a parked call instruction.
+///
+/// Body-position parks resume at the next instruction. Tail-position parks
+/// (`call_ext_only` / `call_ext_last`) treat the applied result as the
+/// function's return value: the process returns to the caller — popping
+/// the deferred `call_ext_last` y-frame first — instead of running off the
+/// end of the function. An empty stack means the applied result IS the
+/// process's final value.
+fn continue_past_applied_result(
+    process: &mut Process,
+    continuation: crate::process::ResumeContinuation,
+) -> SuspensionGate {
+    match continuation {
+        crate::process::ResumeContinuation::Advance => {
+            advance_past_current_instruction(process);
+            SuspensionGate::Run
+        }
+        crate::process::ResumeContinuation::Return => return_to_caller(process),
+        crate::process::ResumeContinuation::DeallocateAndReturn => {
+            if process.stack_mut().pop_frame().is_err() {
+                return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+                    "suspension result deferred frame",
+                ));
+            }
+            return_to_caller(process)
+        }
+    }
+}
+
+/// Pop the caller's return frame and jump there (the slice-start mirror of
+/// the interpreter's `return` instruction).
+fn return_to_caller(process: &mut Process) -> SuspensionGate {
+    if process.stack().is_empty() {
+        return SuspensionGate::Exit(ExitReason::Normal);
+    }
+    let return_point = match process.stack_mut().pop_frame() {
+        Ok(return_point) => return_point,
+        Err(_error) => {
+            return SuspensionGate::Error(crate::error::ExecError::InvalidOperand(
+                "suspension result return frame",
+            ));
+        }
+    };
+    process.set_current_module(Arc::clone(&return_point.module_version));
+    process.set_code_position(Some(CodePosition {
+        module: return_point.module,
+        instruction_pointer: return_point.ip,
+    }));
+    SuspensionGate::Run
 }
 
 fn exception_class_atom(class: ExceptionClass) -> Atom {

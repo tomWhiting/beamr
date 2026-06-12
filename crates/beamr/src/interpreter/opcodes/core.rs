@@ -129,7 +129,14 @@ pub fn call_ext(
     save_return: bool,
     ctx: &ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
-    call_external_target(process, module, arity, import, save_return, return_ip, ctx)
+    let call_return = if save_return {
+        ExtCallReturn::Body { return_ip }
+    } else {
+        ExtCallReturn::Tail {
+            deferred_frame_pop: false,
+        }
+    };
+    call_external_target(process, module, arity, import, call_return, ctx)
 }
 
 pub fn call_last(
@@ -153,8 +160,35 @@ pub fn call_ext_last(
     deallocate: &Operand,
     ctx: &ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
-    deallocate_frame(process, deallocate)?;
-    call_external_target(process, module, arity, import, false, 0, ctx)
+    // A clean (non-dirty) native may suspend and RE-EXECUTE this very
+    // instruction on wake (the `request_suspend` contract). The y-frame pop
+    // must therefore be deferred until the call completes: an eager pop
+    // runs again on re-execution, double-popping the stack, and the
+    // native's eventual return then lands at the caller's own call site
+    // with the result in x0 (the "bad function term {ok, ...}" class).
+    // Code targets and dirty natives keep the eager pop — they never
+    // re-execute this instruction through the clean-native suspend path.
+    let import_index = operand_usize(import, "import index")?;
+    let defer_frame_pop = matches!(
+        module
+            .resolved_imports
+            .get(import_index)
+            .map(|resolved| &resolved.target),
+        Some(ResolvedImportTarget::Native(entry)) if entry.dirty_kind.is_none()
+    );
+    if !defer_frame_pop {
+        deallocate_frame(process, deallocate)?;
+    }
+    call_external_target(
+        process,
+        module,
+        arity,
+        import,
+        ExtCallReturn::Tail {
+            deferred_frame_pop: defer_frame_pop,
+        },
+        ctx,
+    )
 }
 
 pub fn return_(process: &mut Process) -> Result<InstructionOutcome, ExecError> {
@@ -391,15 +425,32 @@ fn update_record_pair_operands(operands: &[Operand]) -> Result<&[Operand], ExecE
     Ok(&operands[4..])
 }
 
+/// How an external call returns to its caller.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ExtCallReturn {
+    /// Body-position call: push a return frame (code targets) or fall
+    /// through to `return_ip`'s instruction (natives) on completion.
+    Body { return_ip: usize },
+    /// Tail-position call: return to the caller on completion.
+    /// `deferred_frame_pop` is true for a `call_ext_last` clean-native call
+    /// whose y-frame pop is deferred until the native completes (so a
+    /// suspension's wake re-execution cannot double-pop the stack).
+    Tail { deferred_frame_pop: bool },
+}
+
 fn call_external_target(
     process: &mut Process,
     module: &Module,
     arity: &Operand,
     import: &Operand,
-    save_return: bool,
-    return_ip: usize,
+    call_return: ExtCallReturn,
     ctx: &ExtCallContext<'_>,
 ) -> Result<InstructionOutcome, ExecError> {
+    let save_return = matches!(call_return, ExtCallReturn::Body { .. });
+    let return_ip = match call_return {
+        ExtCallReturn::Body { return_ip } => return_ip,
+        ExtCallReturn::Tail { .. } => 0,
+    };
     let arity = operand_u8(arity, "external call arity")?;
     let import_index = operand_usize(import, "import index")?;
     let resolved = module
@@ -504,14 +555,24 @@ fn call_external_target(
             function: resolved.function,
             arity: resolved.arity,
         }),
-        ResolvedImportTarget::Native(entry) => super::native_call::call_native_entry(
-            process,
-            module,
-            entry,
-            (resolved.module, resolved.function, resolved.arity),
-            save_return,
-            ctx,
-        ),
+        ResolvedImportTarget::Native(entry) => {
+            let native_return = match call_return {
+                ExtCallReturn::Body { .. } => super::native_call::NativeCallReturn::Advance,
+                ExtCallReturn::Tail { deferred_frame_pop } => {
+                    super::native_call::NativeCallReturn::TailReturn {
+                        pop_frame: deferred_frame_pop,
+                    }
+                }
+            };
+            super::native_call::call_native_entry(
+                process,
+                module,
+                entry,
+                (resolved.module, resolved.function, resolved.arity),
+                native_return,
+                ctx,
+            )
+        }
     }
 }
 

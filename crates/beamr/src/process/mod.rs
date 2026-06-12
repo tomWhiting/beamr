@@ -70,6 +70,28 @@ pub enum SuspensionKind {
     Hook,
 }
 
+/// How execution continues when a host completion is applied into x0 at a
+/// parked call instruction (which is then NOT re-executed).
+///
+/// Body-position native calls resume at the next instruction. Tail-position
+/// native calls (`call_ext_only`, `call_ext_last`) have no next instruction
+/// — the applied result IS the function's return value, so the process must
+/// return to the caller instead of running off the end of the function.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResumeContinuation {
+    /// Body-position call: resume at the instruction after the park.
+    #[default]
+    Advance,
+    /// Tail call with no live stack frame at the park (`call_ext_only`, or
+    /// a `call_ext_last` whose frame was already popped before the park):
+    /// return to the caller.
+    Return,
+    /// Tail call parked with its y-frame intact (`call_ext_last`, whose
+    /// frame pop is deferred across the suspension so wake re-execution is
+    /// idempotent): pop the frame, then return to the caller.
+    DeallocateAndReturn,
+}
+
 /// Identity of one result-gated suspension.
 ///
 /// `call_id` is allocated from a per-process monotonic counter at suspend
@@ -90,6 +112,8 @@ pub struct SuspensionRecord {
     /// any wake). False for gated awaits (`request_await_suspend`, dirty
     /// calls, hook suspends), which only their own completion may resume.
     pub wake_on_message: bool,
+    /// How a host completion applied at this park continues execution.
+    pub continuation: ResumeContinuation,
 }
 
 /// One isolated BEAM-style process.

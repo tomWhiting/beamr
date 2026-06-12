@@ -63,6 +63,17 @@ impl OwnedTerm {
     pub fn allocation_count(&self) -> usize {
         self.allocations.len()
     }
+
+    /// Total heap words `copy_to_heap` will allocate for this term: the
+    /// owned-side copier and the heap-side copier write identical boxed
+    /// layouts object for object.
+    #[must_use]
+    pub fn total_words(&self) -> usize {
+        self.allocations
+            .iter()
+            .map(|allocation| allocation.len())
+            .sum()
+    }
 }
 
 /// Deep-copy a process term into ETS-owned memory.

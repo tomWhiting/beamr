@@ -19,7 +19,6 @@ use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
 use crate::term::Term;
-use crate::term::binary::Binary;
 use crate::term::binary_ref::BinaryRef;
 use crate::term::boxed::{Cons, Float, Tuple};
 use crate::term::pid_ref::PidRef;
@@ -759,8 +758,16 @@ pub fn bif_iolist_size(args: &[Term], context: &mut ProcessContext) -> Result<Te
 }
 
 fn binary_size(term: Term) -> Result<Term, Term> {
-    let binary = Binary::new(term).ok_or_else(badarg)?;
-    i64::try_from(binary.len())
+    let bytes = match BinaryRef::new(term) {
+        Some(binary) => binary.len(),
+        // Compiler-reused match contexts: `byte_size` of a match tail is
+        // emitted on the context register (see
+        // `match_context_remaining_bits`).
+        None => crate::interpreter::opcodes::binary::match_context_remaining_bits(term)
+            .ok_or_else(badarg)?
+            .div_ceil(u8::BITS as usize),
+    };
+    i64::try_from(bytes)
         .ok()
         .and_then(Term::try_small_int)
         .ok_or_else(badarg)

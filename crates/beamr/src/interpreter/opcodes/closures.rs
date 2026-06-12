@@ -150,14 +150,14 @@ fn call_export_fun(
             crate::native::BifRegistry::lookup(bifs.as_ref(), target_module, target_function, arity)
         })
     {
-        // save_return=true: the BIF runs inline and execution continues at
-        // the instruction after the call, like a body call.
+        // The BIF runs inline and execution continues at the instruction
+        // after the call, like a body call.
         return super::native_call::call_native_entry(
             process,
             module,
             entry,
             (target_module, target_function, arity),
-            true,
+            super::native_call::NativeCallReturn::Advance,
             ctx,
         );
     }

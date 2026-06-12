@@ -1051,10 +1051,13 @@ impl IoWakeTarget for SharedState {
         // host-await suspension the submitting native registered. A stale
         // completion (the await already timed out and re-entered) is
         // dropped instead of being applied blind.
+        let Some(payload) = suspension::SuspensionResultPayload::host(term) else {
+            return;
+        };
         let _published = self.publish_suspension_result_current(
             pid,
             crate::process::SuspensionKind::HostAwait,
-            suspension::SuspensionResultPayload::Host(term),
+            payload,
         );
         execution::wake_process(self, pid);
     }
