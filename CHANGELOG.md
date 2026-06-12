@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Correctness
+
+- Off-heap (ProcBin) and sub-binary terms survive the whole BIF surface: `byte_size`/`bit_size`/`binary_part`/`is_bitstring`/`iolist_size`, `binary_to_term`, `code:load_binary` bytes, file/TCP/UDP byte and filename extraction, and the JSON bridge previously accepted only inline heap binaries (≤ 64 bytes) and raised `badarg` on anything larger — the cause of "binaries over 64 bytes kill a resumed workflow with bad argument". All now go through the representation-agnostic `BinaryRef` accessor. `byte_size`/`bit_size` additionally accept bs match contexts: OTP 26+ compilers emit the gc_bif on the reused match-context register for match tails (`<<_, Rest/binary>> = B, byte_size(Rest)`) instead of materializing the tail sub-binary.
+- Message sends copy ProcBin terms by sharing their refcounted off-heap bytes and copy sub-binaries' visible ranges threshold-aware; both previously failed delivery with `InvalidBoxedTerm`.
+- Published host suspension results (`Scheduler::wake_with_result`/`wake_with_result_for` and the IO-bridge completion seam) are deep-copied into owned storage at publish time and materialized on the owning process heap at slice-start apply — a boxed result term no longer points into publisher storage of foreign lifetime across the publish-to-apply window. Heap space is collected/grown before the apply copy on both the host and dirty completion paths, so arbitrarily large results cannot die on `HeapFull`.
+- `call_ext_last` native tail calls are suspension-safe: the y-frame pop is deferred until a clean (non-dirty) native call completes, so a suspending native's wake re-execution no longer double-pops the stack — previously the eventual return landed at the caller's own call site with the result in x0, crashing with `bad function term {ok, ...}` whenever the suspending call's argument expression contained a cross-module call (`fn() { ffi.sleep(duration.to_milliseconds(d)) }`). Code targets and dirty natives keep the eager pop.
+- Host results applied at tail-call parks (`call_ext_only`/`call_ext_last`) return to the caller — popping the deferred frame first — instead of advancing past the function's last instruction; the suspension record carries the park's resume continuation, chosen at suspend time. Scope: threaded scheduler — the WASM scheduler's completion apply still advances blindly (known follow-up, consistent with its pid-keyed completion map).
+
+### Compatibility
+
+- `SuspensionRecord` gained a `continuation` field and `interpreter::opcodes::trampoline::handle_suspend` takes the parked call's completion shape; embedders constructing these VM-internal types directly must update. The embedder-facing `Scheduler`/`ProcessContext` APIs are unchanged.
+
 ## 0.5.0
 
 ### Correctness
