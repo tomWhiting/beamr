@@ -2608,12 +2608,14 @@ fn result_beats_timeout_and_clears_the_timed_await_metadata() {
             return;
         }
         let call_id = RACE_ID.load(Ordering::Acquire);
-        assert!(shared.publish_suspension_result(
-            pid,
-            call_id,
-            crate::scheduler::suspension::SuspensionResultPayload::host(Term::small_int(33))
-                .expect("immediate host payload"),
-        ));
+        assert!(
+            shared.publish_suspension_result(
+                pid,
+                call_id,
+                crate::scheduler::suspension::SuspensionResultPayload::host(Term::small_int(33))
+                    .expect("immediate host payload"),
+            )
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
         timer_integration::tick_timers(shared);
     }));
