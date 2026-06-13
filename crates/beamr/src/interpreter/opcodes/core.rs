@@ -285,6 +285,7 @@ pub fn put_list(
     tail: &Operand,
     destination: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
+    ensure_space(process, 2, 256).map_err(gc_error_to_exec)?;
     let head = read_term(process, module, head)?;
     let tail = read_term(process, module, tail)?;
     let ptr = process.heap_mut().alloc(2).map_err(ExecError::from)?;
@@ -303,14 +304,15 @@ pub fn put_tuple2(
     let Operand::List(element_operands) = elements else {
         return Err(ExecError::InvalidOperand("put_tuple2 elements"));
     };
+    let words = element_operands
+        .len()
+        .checked_add(1)
+        .ok_or(ExecError::InvalidOperand("tuple size"))?;
+    ensure_space(process, words, 256).map_err(gc_error_to_exec)?;
     let mut values = Vec::with_capacity(element_operands.len());
     for operand in element_operands {
         values.push(read_term(process, module, operand)?);
     }
-    let words = values
-        .len()
-        .checked_add(1)
-        .ok_or(ExecError::InvalidOperand("tuple size"))?;
     let ptr = process.heap_mut().alloc(words).map_err(ExecError::from)?;
     let heap = heap_slice(ptr, words);
     let term = write_tuple(heap, &values).ok_or(ExecError::Badarg)?;

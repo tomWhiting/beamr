@@ -701,6 +701,91 @@ fn stack_heap_and_data_opcodes_work() {
 }
 
 #[test]
+fn put_list_survives_heap_exhaustion_via_gc_and_grow() {
+    // Build 200 cons cells on a heap that starts at 233 words (room for ~116
+    // cons cells). Without the ensure_space safety net in put_list, the 117th
+    // cons cell would fail with HeapFull. With the fix, the heap grows via
+    // GC and the full list builds successfully.
+    let mut code = Vec::new();
+    // Deliberately undercount the reservation: reserve only 4 words.
+    code.push(Instruction::TestHeap {
+        heap_need: Operand::Unsigned(4),
+        live: Operand::Unsigned(0),
+    });
+    // Seed: x(0) = nil
+    code.push(Instruction::Move {
+        source: Operand::Atom(None),
+        destination: Operand::X(0),
+    });
+    // Build 200 cons cells: x(0) = [i | x(0)]
+    for i in 0..200 {
+        code.push(Instruction::PutList {
+            head: Operand::Integer(i),
+            tail: Operand::X(0),
+            destination: Operand::X(0),
+        });
+    }
+    code.push(Instruction::Return);
+    let module = module(Atom::OK, code);
+    let mut process = Process::new(1, 233);
+
+    let result = run(&mut process, &module);
+    assert_eq!(result, Ok(ExecutionResult::Exited(ExitReason::Normal)));
+
+    // Walk the list and verify all 200 elements are present (reversed: 199..0).
+    let mut cursor = process.x_reg(0);
+    for expected in (0..200).rev() {
+        let cons = Cons::new(cursor).expect("list element is cons");
+        assert_eq!(cons.head(), Term::small_int(expected));
+        cursor = cons.tail();
+    }
+    assert_eq!(cursor, Term::NIL);
+}
+
+#[test]
+fn put_tuple2_survives_heap_exhaustion_via_gc_and_grow() {
+    // Build a 100-element tuple (101 heap words) on a near-full heap.
+    // Without the ensure_space safety net, the alloc would fail with HeapFull.
+    let elements: Vec<Operand> = (0..100).map(|i| Operand::Integer(i)).collect();
+    let mut code = vec![
+        // Fill most of the heap with dummy cons cells first.
+        Instruction::TestHeap {
+            heap_need: Operand::Unsigned(220),
+            live: Operand::Unsigned(0),
+        },
+    ];
+    // Burn 220 words (110 cons cells).
+    code.push(Instruction::Move {
+        source: Operand::Atom(None),
+        destination: Operand::X(0),
+    });
+    for i in 0..110 {
+        code.push(Instruction::PutList {
+            head: Operand::Integer(i),
+            tail: Operand::X(0),
+            destination: Operand::X(0),
+        });
+    }
+    // Now try to build a 100-element tuple — needs 101 words but only ~13
+    // remain in the nursery. The ensure_space in put_tuple2 must trigger GC.
+    code.push(Instruction::PutTuple2 {
+        destination: Operand::X(1),
+        elements: Operand::List(elements),
+    });
+    code.push(Instruction::Return);
+    let module = module(Atom::OK, code);
+    let mut process = Process::new(1, 233);
+
+    let result = run(&mut process, &module);
+    assert_eq!(result, Ok(ExecutionResult::Exited(ExitReason::Normal)));
+
+    let tuple = Tuple::new(process.x_reg(1)).expect("put_tuple2 creates tuple");
+    assert_eq!(tuple.arity(), 100);
+    assert_eq!(tuple.get(0), Some(Term::small_int(0)));
+    assert_eq!(tuple.get(99), Some(Term::small_int(99)));
+}
+
+#[test]
 fn update_record_copies_tuple_and_applies_pairs() {
     let module = module(
         Atom::OK,
