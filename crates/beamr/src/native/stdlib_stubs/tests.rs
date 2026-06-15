@@ -391,6 +391,7 @@ fn register_stdlib_stubs_registers_all_expected_mfas() {
         ("erlang", "integer_to_binary", 1),
         ("erlang", "integer_to_binary", 2),
         ("erlang", "integer_to_list", 1),
+        ("erlang", "integer_to_list", 2),
         ("erlang", "iolist_to_binary", 1),
         ("erlang", "list_to_bitstring", 1),
         ("erlang", "list_to_tuple", 1),

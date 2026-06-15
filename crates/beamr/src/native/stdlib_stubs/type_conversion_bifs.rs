@@ -87,6 +87,18 @@ pub fn bif_integer_to_list(args: &[Term], context: &mut ProcessContext) -> Resul
     make_list(context, text.bytes().map(i64::from))
 }
 
+pub fn bif_integer_to_list_radix(
+    args: &[Term],
+    context: &mut ProcessContext,
+) -> Result<Term, Term> {
+    let [integer_term, radix_term] = args else {
+        return Err(badarg());
+    };
+    let radix = parse_radix(*radix_term)?;
+    let text = format_integer_term(*integer_term, radix)?;
+    make_list(context, text.bytes().map(i64::from))
+}
+
 pub fn bif_iolist_to_binary(args: &[Term], context: &mut ProcessContext) -> Result<Term, Term> {
     let [iodata] = args else {
         return Err(badarg());

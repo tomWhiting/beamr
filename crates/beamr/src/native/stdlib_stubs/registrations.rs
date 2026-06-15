@@ -52,8 +52,9 @@ use super::string_bifs::{
 };
 use super::type_conversion_bifs::{
     bif_binary_to_float, bif_binary_to_integer, bif_binary_to_integer_radix, bif_float,
-    bif_integer_to_binary, bif_integer_to_binary_radix, bif_integer_to_list, bif_iolist_to_binary,
-    bif_list_to_bitstring, bif_list_to_tuple, bif_tuple_to_list,
+    bif_integer_to_binary, bif_integer_to_binary_radix, bif_integer_to_list,
+    bif_integer_to_list_radix, bif_iolist_to_binary, bif_list_to_bitstring, bif_list_to_tuple,
+    bif_tuple_to_list,
 };
 use super::uri_bifs::{
     bif_maps_get_2, bif_maps_get_3, bif_uri_string_dissect_query, bif_uri_string_parse,
@@ -118,6 +119,14 @@ const STDLIB_STUBS: &[StubBif] = &[
         Capability::Pure,
         None,
         bif_integer_to_list,
+    ),
+    (
+        "erlang",
+        "integer_to_list",
+        2,
+        Capability::Pure,
+        None,
+        bif_integer_to_list_radix,
     ),
     (
         "erlang",

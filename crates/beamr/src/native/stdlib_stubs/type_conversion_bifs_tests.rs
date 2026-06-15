@@ -216,6 +216,48 @@ fn integer_to_list_formats_decimal_chars() {
 }
 
 #[test]
+fn integer_to_list_radix_formats_hex() {
+    let mut process = Process::new(1, 128);
+    let mut context = context(&mut process);
+    let result =
+        bif_integer_to_list_radix(&[Term::small_int(255), Term::small_int(16)], &mut context)
+            .expect("list");
+    let expected: Vec<Term> = b"FF"
+        .iter()
+        .map(|byte| Term::small_int(i64::from(*byte)))
+        .collect();
+    assert_eq!(list_to_vec(result), expected);
+}
+
+#[test]
+fn integer_to_list_radix_formats_binary_base() {
+    let mut process = Process::new(1, 128);
+    let mut context = context(&mut process);
+    let result =
+        bif_integer_to_list_radix(&[Term::small_int(10), Term::small_int(2)], &mut context)
+            .expect("list");
+    let expected: Vec<Term> = b"1010"
+        .iter()
+        .map(|byte| Term::small_int(i64::from(*byte)))
+        .collect();
+    assert_eq!(list_to_vec(result), expected);
+}
+
+#[test]
+fn integer_to_list_radix_negative_hex() {
+    let mut process = Process::new(1, 128);
+    let mut context = context(&mut process);
+    let result =
+        bif_integer_to_list_radix(&[Term::small_int(-26), Term::small_int(16)], &mut context)
+            .expect("list");
+    let expected: Vec<Term> = b"-1A"
+        .iter()
+        .map(|byte| Term::small_int(i64::from(*byte)))
+        .collect();
+    assert_eq!(list_to_vec(result), expected);
+}
+
+#[test]
 fn iolist_to_binary_flattens_byte_list_and_binary_chunks() {
     let mut process = Process::new(1, 128);
     let mut context = context(&mut process);
