@@ -29,16 +29,15 @@ pub fn recv_marker_bind(
     process: &mut Process,
     module: &Module,
     marker: &Operand,
-    label: &Operand,
+    reference: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
+    // `recv_marker_bind Mark Ref` binds the reference term held in `Ref` to the
+    // mailbox position previously reserved into `Mark` by `recv_marker_reserve`.
     let marker_position = marker_position(process, module, marker)?;
-    if let Ok(marker_key) = core::read_term(process, module, label) {
-        process
-            .mailbox_mut()
-            .bind_recv_marker(marker_key, marker_position);
-    } else {
-        let _ = core::operand_label(label)?;
-    }
+    let marker_key = core::read_term(process, module, reference)?;
+    process
+        .mailbox_mut()
+        .bind_recv_marker(marker_key, marker_position);
     Ok(InstructionOutcome::Continue)
 }
 
@@ -136,6 +135,10 @@ mod tests {
         );
         assert_eq!(process.x_reg(0).as_small_int(), Some(2));
 
+        // `recv_marker_bind Mark Ref` binds the reference term in `Ref` (here a
+        // stand-in atom in X(1)) to the mailbox position reserved into X(0).
+        let reference = Term::atom(Atom::OK);
+        process.set_x_reg(1, reference);
         process
             .mailbox_mut()
             .push_owned_for_test(Term::small_int(30));
@@ -145,7 +148,7 @@ mod tests {
                 &module,
                 &Instruction::RecvMarkerBind {
                     marker: Operand::X(0),
-                    label: Operand::Label(7),
+                    reference: Operand::X(1),
                 },
                 1,
                 None,
@@ -157,7 +160,7 @@ mod tests {
                 &mut process,
                 &module,
                 &Instruction::RecvMarkerUse {
-                    marker: Operand::X(0)
+                    marker: Operand::X(1)
                 },
                 1,
                 None,
@@ -175,7 +178,7 @@ mod tests {
                 &mut process,
                 &module,
                 &Instruction::RecvMarkerClear {
-                    marker: Operand::X(0)
+                    marker: Operand::X(1)
                 },
                 1,
                 None,

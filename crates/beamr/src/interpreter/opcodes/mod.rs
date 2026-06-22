@@ -337,8 +337,8 @@ fn dispatch_common(
             messaging::wait_timeout(process, module, fail, timeout)
         }
         Instruction::RecvMarkerReserve { dest } => recv::recv_marker_reserve(process, dest),
-        Instruction::RecvMarkerBind { marker, label } => {
-            recv::recv_marker_bind(process, module, marker, label)
+        Instruction::RecvMarkerBind { marker, reference } => {
+            recv::recv_marker_bind(process, module, marker, reference)
         }
         Instruction::RecvMarkerClear { marker } => recv::recv_marker_clear(process, module, marker),
         Instruction::RecvMarkerUse { marker } => recv::recv_marker_use(process, module, marker),

@@ -285,9 +285,9 @@ impl TranslationPlan {
                     validate_write_operand(dest)?;
                     block_starts.insert(index + 1);
                 }
-                Instruction::RecvMarkerBind { marker, label } => {
+                Instruction::RecvMarkerBind { marker, reference } => {
                     validate_read_operand(marker)?;
-                    validate_label_operand(label)?;
+                    validate_read_operand(reference)?;
                     block_starts.insert(index + 1);
                 }
                 Instruction::RecvMarkerClear { marker } | Instruction::RecvMarkerUse { marker } => {
@@ -336,8 +336,7 @@ impl TranslationPlan {
                 Instruction::LoopRec { fail, .. }
                 | Instruction::LoopRecEnd { fail }
                 | Instruction::Wait { fail }
-                | Instruction::WaitTimeout { fail, .. }
-                | Instruction::RecvMarkerBind { label: fail, .. } => {
+                | Instruction::WaitTimeout { fail, .. } => {
                     ensure_known_label(&labels, fail)?;
                 }
                 Instruction::MapOp { op, operands } => {

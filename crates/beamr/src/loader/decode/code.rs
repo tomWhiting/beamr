@@ -389,15 +389,15 @@ fn decode_instruction(
         172 => Instruction::InitYregs {
             registers: operands[0].clone(),
         },
-        173 => Instruction::RecvMarkerReserve {
+        173 => Instruction::RecvMarkerBind {
+            marker: operands[0].clone(),
+            reference: operands[1].clone(),
+        },
+        174 => Instruction::RecvMarkerClear {
+            marker: operands[0].clone(),
+        },
+        175 => Instruction::RecvMarkerReserve {
             dest: operands[0].clone(),
-        },
-        174 => Instruction::RecvMarkerBind {
-            marker: operands[0].clone(),
-            label: operands[1].clone(),
-        },
-        175 => Instruction::RecvMarkerClear {
-            marker: operands[0].clone(),
         },
         176 => Instruction::RecvMarkerUse {
             marker: operands[0].clone(),
@@ -625,11 +625,14 @@ mod tests {
 
     #[test]
     fn opcodes_173_to_176_decode_to_recv_marker_instructions() {
+        // Opcode numbers and arities match OTP 28 (`beam_opcodes:opname/1`):
+        // 173=recv_marker_bind/2, 174=recv_marker_clear/1,
+        // 175=recv_marker_reserve/1, 176=recv_marker_use/1.
         let instructions = decode_instructions(
             &[
-                173, 0x03, // recv_marker_reserve X0
-                174, 0x03, 0x75, // recv_marker_bind X0, label 7
-                175, 0x13, // recv_marker_clear X1
+                173, 0x03, 0x13, // recv_marker_bind X0, X1
+                174, 0x13, // recv_marker_clear X1
+                175, 0x03, // recv_marker_reserve X0
                 176, 0x13, // recv_marker_use X1
             ],
             &[],
@@ -641,15 +644,15 @@ mod tests {
         assert_eq!(
             instructions,
             vec![
-                Instruction::RecvMarkerReserve {
-                    dest: Operand::X(0),
-                },
                 Instruction::RecvMarkerBind {
                     marker: Operand::X(0),
-                    label: Operand::Label(7),
+                    reference: Operand::X(1),
                 },
                 Instruction::RecvMarkerClear {
                     marker: Operand::X(1),
+                },
+                Instruction::RecvMarkerReserve {
+                    dest: Operand::X(0),
                 },
                 Instruction::RecvMarkerUse {
                     marker: Operand::X(1),
@@ -661,21 +664,21 @@ mod tests {
     #[test]
     fn recv_marker_instruction_opcodes_are_available_for_opcode_max_validation() {
         assert_eq!(
-            instruction_opcode(&Instruction::RecvMarkerReserve {
-                dest: Operand::X(0)
+            instruction_opcode(&Instruction::RecvMarkerBind {
+                marker: Operand::X(0),
+                reference: Operand::X(1),
             }),
             Some(173)
         );
         assert_eq!(
-            instruction_opcode(&Instruction::RecvMarkerBind {
-                marker: Operand::X(0),
-                label: Operand::Label(7),
+            instruction_opcode(&Instruction::RecvMarkerClear {
+                marker: Operand::X(0)
             }),
             Some(174)
         );
         assert_eq!(
-            instruction_opcode(&Instruction::RecvMarkerClear {
-                marker: Operand::X(0)
+            instruction_opcode(&Instruction::RecvMarkerReserve {
+                dest: Operand::X(0)
             }),
             Some(175)
         );
