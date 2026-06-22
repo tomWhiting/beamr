@@ -94,7 +94,6 @@ fn otp_24_recv_marker_fixture_decodes_all_marker_opcodes() {
 }
 
 #[test]
-#[ignore] // fixture is AI-generated with incomplete code section (labels 7,9 missing)
 fn compiled_recv_marker_receive_returns_sent_message() {
     let atoms = Arc::new(AtomTable::with_common_atoms());
     let bifs = bif_registry(&atoms);
@@ -112,7 +111,6 @@ fn compiled_recv_marker_receive_returns_sent_message() {
 }
 
 #[test]
-#[ignore] // fixture is AI-generated with incomplete code section
 fn compiled_recv_marker_receive_timeout_path_returns_timeout_atom() {
     let atoms = Arc::new(AtomTable::with_common_atoms());
     let timeout = atoms.intern("timeout");
