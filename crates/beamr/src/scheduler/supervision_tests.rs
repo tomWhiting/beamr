@@ -757,6 +757,51 @@ fn normal_exit_signal_queues_message_for_executing_trapping_process() {
 }
 
 #[test]
+fn exit_signal_normal_queues_message_for_executing_trapping_process() {
+    // Regression for the `exit_signal` (erlang:exit/2) Executing-arm normal-exit
+    // drop bug: `exit_signal(From, Target, normal)` to a trapping process that is
+    // MID-SLICE (`ProcessSlot::Executing`) MUST still deliver `{'EXIT', From,
+    // normal}`, exactly as the Present arm does. The Executing arm previously
+    // gated message delivery on `reason != Normal`, silently dropping
+    // `{EXIT, From, normal}` — diverging from OTP (a trapping process receives
+    // `{'EXIT', Pid, normal}` for `erlang:exit/2` with reason `normal`) and from
+    // the Present arm. The target must NOT be tombstoned or killed (a normal exit
+    // never kills), and the message must be drained into the mailbox at the slice
+    // boundary by `store_runnable_process`. Exercises the
+    // `SchedulerSupervisionFacility::exit_signal` path (NOT the link cascade).
+    use crate::native::supervision::SupervisionFacility;
+
+    let shared = make_shared_state();
+    let from = insert_process(&shared, 1);
+    let target = insert_process(&shared, 2);
+    set_trap_exit(&shared, target, true);
+
+    let process = make_executing(&shared, target);
+
+    let facility = supervision_integration::SchedulerSupervisionFacility {
+        shared: Arc::clone(&shared),
+    };
+    facility
+        .exit_signal(from, target, ExitReason::Normal)
+        .unwrap_or_else(|_| panic!("exit_signal must succeed"));
+
+    assert!(
+        !shared.exit_tombstones.contains_key(&target),
+        "a normal exit_signal must not tombstone a trapping executing target"
+    );
+    assert!(
+        is_alive(&shared, target),
+        "a trapped normal exit_signal must not kill the executing target"
+    );
+    store_runnable_process(&shared, process);
+    let msg = read_mailbox_tuple(&shared, target)
+        .unwrap_or_else(|| panic!("normal EXIT message must be delivered on store-back"));
+    assert_eq!(msg[0], Term::atom(Atom::EXIT));
+    assert_eq!(msg[1], Term::pid(from));
+    assert_eq!(msg[2], Term::atom(Atom::NORMAL));
+}
+
+#[test]
 fn take_links_from_reads_executing_sentinel_links() {
     let shared = make_shared_state();
     let source = insert_process(&shared, 1);
