@@ -109,16 +109,22 @@ fn spawn_collector(scheduler: &Arc<Scheduler>, atoms: &AtomTable) -> u64 {
     pid
 }
 
-fn run_until_exit_bounded(scheduler: &Arc<Scheduler>, pid: u64) -> (ExitReason, Term) {
+fn run_until_exit_bounded(
+    scheduler: &Arc<Scheduler>,
+    pid: u64,
+) -> (ExitReason, beamr::ets::OwnedTerm) {
     let (sender, completion) = std::sync::mpsc::channel();
     let scheduler_for_wait = Arc::clone(scheduler);
     std::thread::spawn(move || {
         let _ = sender.send(scheduler_for_wait.run_until_exit(pid));
     });
-    let (reason, result) = completion
+    // Return the OWNED term, not `result.root()`: a boxed exit value (e.g. a
+    // DOWN tuple) lives in the `OwnedTerm`'s storage, so handing back a bare
+    // `Term` would dangle once the local `OwnedTerm` drops. Callers that need
+    // the term call `.root()` while this value is still alive.
+    completion
         .recv_timeout(Duration::from_secs(30))
-        .unwrap_or_else(|_| panic!("process {pid} never exited"));
-    (reason, result.root())
+        .unwrap_or_else(|_| panic!("process {pid} never exited"))
 }
 
 /// Poll `predicate` until it yields `Some`, or panic after `timeout`.
@@ -436,10 +442,15 @@ fn monitor_native_delivers_down_on_normal_exit() {
 #[test]
 fn beam_process_receives_down_for_native_target() {
     // R2 "from a BEAM process": a real BEAM process monitoring a native process
-    // is woken by the DOWN delivered through `deliver_down_messages`. Returning
-    // (rather than blocking forever) proves receipt; the exact field decode is
-    // covered by the native-watcher cases above, since a reference sub-term does
-    // not survive the exit-value deep copy.
+    // is delivered the DOWN through `deliver_down_messages`. The collector's
+    // `receive Msg -> Msg end` returns that DOWN as its exit value, so we can
+    // decode it and assert every field — ref, kind, pid, reason — exactly as
+    // R2's acceptance criterion requires.
+    //
+    // The reference sub-term DOES survive the exit-value deep copy: the exit
+    // boundary copies via `capture_term` -> `copy_term_to_ets`, which copies
+    // reference terms (see `ets/copy.rs`'s `Reference` arm). So the ref read
+    // back here is the same one `monitor` returned.
     let (atoms, scheduler, crash, stop) = setup();
     let watcher = spawn_collector(&scheduler, &atoms);
     let native = scheduler
@@ -447,14 +458,49 @@ fn beam_process_receives_down_for_native_target() {
         .expect("spawn native");
     std::thread::sleep(Duration::from_millis(50));
 
-    scheduler.monitor(watcher, native).expect("monitor native");
+    let reference = scheduler.monitor(watcher, native).expect("monitor native");
     assert!(scheduler.enqueue_atom_message(native, crash));
 
-    let (reason, _message) = run_until_exit_bounded(&scheduler, watcher);
+    let (reason, message) = run_until_exit_bounded(&scheduler, watcher);
     assert_eq!(
         reason,
         ExitReason::Normal,
-        "the BEAM watcher received the DOWN for the native target"
+        "the BEAM watcher returned after receiving the DOWN for the native target"
+    );
+
+    // Decode the returned DOWN as {'DOWN', Ref, 'process', Pid, Reason}.
+    // `message` keeps the owned exit storage alive for the duration of the
+    // decode below.
+    let tuple =
+        Tuple::new(message.root()).expect("the BEAM watcher's exit value is the DOWN tuple");
+    assert_eq!(tuple.arity(), 5, "DOWN is a 5-tuple");
+    assert_eq!(
+        tuple.get(0),
+        Some(Term::atom(Atom::DOWN)),
+        "field 0 is the 'DOWN' tag"
+    );
+    assert_eq!(
+        tuple.get(2),
+        Some(Term::atom(Atom::PROCESS)),
+        "field 2 is the 'process' kind"
+    );
+    assert_eq!(
+        tuple.get(3).and_then(Term::as_pid),
+        Some(native),
+        "field 3 is the native target pid"
+    );
+    assert_eq!(
+        tuple.get(4).and_then(Term::as_atom),
+        Some(Atom::ERROR),
+        "field 4 is the abnormal (error) reason"
+    );
+    assert_eq!(
+        tuple
+            .get(1)
+            .and_then(beamr::term::boxed::Reference::new)
+            .map(|reference| reference.id()),
+        Some(reference),
+        "field 1 is the reference returned by monitor()"
     );
     scheduler.shutdown();
 }
@@ -554,6 +600,34 @@ fn trap_exit_native_receives_normal_exit_message() {
     trap_exit_case("stop", Atom::NORMAL);
 }
 
+// FOLLOW-UP: the EXECUTING-arm native trap_exit drain is NOT directly exercised
+// here. Both R4 tests above have the supervisor PARKED (`ProcessSlot::Present`)
+// when the linked child's exit arrives, so the signal is delivered straight to
+// the mailbox via `process_exit_signal`'s Present arm. The untested path is the
+// EXECUTING arm: when the trap_exit native supervisor is MID-SLICE
+// (`ProcessSlot::Executing`) as the child exits, the signal is queued into
+// `metadata.pending_exit_messages` (the `ProcessSlot::Executing` branch of
+// `process_exit_signal` in scheduler/supervision_integration.rs) and drained at
+// the slice boundary by `store_runnable_process`
+// (scheduler/execution/core.rs) into the mailbox, observed next slice — without
+// killing the process.
+//
+// This gap is left documented rather than filled with a flaky/hanging test, per
+// the brief. Forcing a native process to be `Executing` at the instant its
+// child's exit propagates requires pinning it mid-slice, and there is no test
+// hook to do so. The only available lever is to busy-spin inside the handler to
+// hold the slot open; that was tried and rejected: a non-yielding spin
+// saturates a scheduler worker thread and — under the concurrent test harness —
+// starves the other tests in this binary into spurious failures, so it is both
+// unsafe and effectively non-deterministic.
+//
+// The drain MECHANISM is not native-specific and IS otherwise covered: the
+// `pending_exit_messages` queue-and-drain path makes no native/bytecode
+// distinction (the same `Executing` arm and `store_runnable_process` serve the
+// bytecode trap_exit path), and the Present-arm native delivery is covered by
+// the two tests above. Closing this gap cleanly needs a scheduler hook that
+// parks a native process in `Executing` deterministically — tracked separately.
+
 // ── R5: factory builds fresh, independent handlers ──────────────────────────
 
 #[test]
@@ -635,7 +709,7 @@ fn supervisor_restarts_crashed_native_child_via_factory() {
     let (reason, result) = run_until_exit_bounded(&scheduler, collector);
     assert_eq!(reason, ExitReason::Normal);
     assert_eq!(
-        result,
+        result.root(),
         Term::atom(ping),
         "the restarted native child receives and replies to a message"
     );

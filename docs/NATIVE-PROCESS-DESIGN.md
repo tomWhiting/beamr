@@ -174,6 +174,15 @@ suite stays green). Plus, per the hands-on model: an **independent/adversarial r
 concurrency invariants (tombstone-check, park-gap reuse, clock discipline, self-send, no-bytecode-regression)
 before any piece is accepted.
 
+## Status / follow-ups
+- **NATIVE-001 LANDED** on beamr main (merge `10f00b9`, 2026-06-22) — independently adversarially reviewed
+  (MINOR-only); all five landmine invariants verified; real scheduler integration (not a shim); no bytecode
+  regression. Built hands-on, delegated implementation + independent review.
+- **Follow-up (from NATIVE-001 review, MINOR):** R6 item 5 — a full *scheduler-level* record→replay test of a
+  native↔BEAM exchange was substituted with facility-level replay tests (receive side is provably identical to
+  bytecode; send side verified at the facility). Coverage gap, not a known defect. Close when a live-record
+  harness is available (or fold into NATIVE-003's test pass).
+
 ## After it lands
 Migrate CORE-007 (haematite shard actor) and liminal channel/conversation actors from faked sync structs
 to real native beamr processes; then revise + re-dispatch WASM-001 (OPFS) against the settled actor model.
