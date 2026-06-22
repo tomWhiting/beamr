@@ -198,11 +198,34 @@ fn pipe_read_fd() -> RawFd {
     fds[0]
 }
 
-fn fd_is_closed(fd: RawFd) -> bool {
-    let mut byte = [0_u8; 1];
-    // SAFETY: `byte` is a valid writable buffer for one-byte read attempts.
-    let rc = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), 1) };
-    rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+/// Captures the kernel identity (`st_dev`, `st_ino`) of an open descriptor.
+/// Each `pipe(2)` instance has a unique inode, so this uniquely identifies the
+/// descriptor independently of its fd *number*.
+fn fd_identity(fd: RawFd) -> (libc::dev_t, libc::ino_t) {
+    // SAFETY: `fstat` fully writes the stat buffer on success; we zero-init it
+    // first so a failure path never reads uninitialized memory.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::fstat(fd, &mut st) };
+    assert_eq!(rc, 0, "expected an open fd to fstat successfully");
+    (st.st_dev, st.st_ino)
+}
+
+/// Reuse-immune closure check: returns `true` iff the descriptor that had
+/// identity `original` is now closed, even under cargo's parallel test runner
+/// where another thread may concurrently recycle the freed fd number.
+///
+/// - `fstat` fails (EBADF) -> the number is closed -> original closed.
+/// - `fstat` succeeds with a *different* identity -> the number was recycled to
+///   a new file/pipe, which still proves the original was closed.
+/// - `fstat` succeeds with the *same* identity -> genuinely still open.
+fn fd_closed_since(fd: RawFd, original: (libc::dev_t, libc::ino_t)) -> bool {
+    // SAFETY: see `fd_identity`.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::fstat(fd, &mut st) };
+    if rc != 0 {
+        return true;
+    }
+    (st.st_dev, st.st_ino) != original
 }
 
 fn ets_metadata(name: Option<Atom>, owner: u64) -> EtsTableMetadata {
@@ -323,18 +346,20 @@ fn cleanup_exited_process_does_not_explicitly_close_fd_resources_owned_elsewhere
     let pid = insert_process(&shared, 1);
     let inner = Arc::new(FdInner::new(pipe_read_fd(), 999));
     let fd = allocate_fd_resource_for_process(&shared, pid, Arc::clone(&inner));
+    let fd_id = fd_identity(fd);
 
     cleanup_exited_process(&shared, pid, ExitReason::Normal);
 
-    assert!(!fd_is_closed(fd));
+    assert!(!fd_closed_since(fd, fd_id));
     drop(inner);
-    assert!(fd_is_closed(fd));
+    assert!(fd_closed_since(fd, fd_id));
 }
 
 #[test]
 fn process_terminate_closes_owned_fd_resources_before_heap_reset() {
     let mut process = Process::new(42, 64);
     let fd = pipe_read_fd();
+    let fd_id = fd_identity(fd);
     let ptr = process
         .heap_mut()
         .alloc(FD_RESOURCE_WORDS)
@@ -347,7 +372,7 @@ fn process_terminate_closes_owned_fd_resources_before_heap_reset() {
 
     process.terminate(ExitReason::Normal);
 
-    assert!(fd_is_closed(fd));
+    assert!(fd_closed_since(fd, fd_id));
 }
 
 #[test]

@@ -405,16 +405,40 @@ mod tests {
         fds[0]
     }
 
-    fn fd_is_closed(fd: RawFd) -> bool {
-        let mut byte = [0_u8; 1];
-        // SAFETY: `byte` is a valid writable buffer for one-byte read attempts.
-        let rc = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), 1) };
-        rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+    /// Captures the kernel identity (`st_dev`, `st_ino`) of an open descriptor.
+    /// Each `pipe(2)` instance has a unique inode, so this uniquely identifies
+    /// the descriptor independently of its fd *number*.
+    fn fd_identity(fd: RawFd) -> (libc::dev_t, libc::ino_t) {
+        // SAFETY: `fstat` fully writes the stat buffer on success; we zero-init
+        // it first so a failure path never reads uninitialized memory.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::fstat(fd, &mut st) };
+        assert_eq!(rc, 0, "expected an open fd to fstat successfully");
+        (st.st_dev, st.st_ino)
+    }
+
+    /// Reuse-immune closure check: returns `true` iff the descriptor that had
+    /// identity `original` is now closed, even under cargo's parallel test
+    /// runner where another thread may concurrently recycle the freed fd number.
+    ///
+    /// - `fstat` fails (EBADF) -> the number is closed -> original closed.
+    /// - `fstat` succeeds with a *different* identity -> the number was recycled
+    ///   to a new file/pipe, which still proves the original was closed.
+    /// - `fstat` succeeds with the *same* identity -> genuinely still open.
+    fn fd_closed_since(fd: RawFd, original: (libc::dev_t, libc::ino_t)) -> bool {
+        // SAFETY: see `fd_identity`.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::fstat(fd, &mut st) };
+        if rc != 0 {
+            return true;
+        }
+        (st.st_dev, st.st_ino) != original
     }
 
     #[test]
     fn write_and_access_fd_resource_round_trips_fd_and_owner() {
         let fd = pipe_read_fd();
+        let fd_id = fd_identity(fd);
         let inner = Arc::new(FdInner::new(fd, 42));
         let retained = Arc::clone(&inner);
         let mut heap = [0_u64; FD_RESOURCE_WORDS];
@@ -432,16 +456,17 @@ mod tests {
 
         release_fd_inner_arc(heap.as_ptr());
         drop(inner);
-        assert!(fd_is_closed(fd));
+        assert!(fd_closed_since(fd, fd_id));
     }
 
     #[test]
     fn write_fd_resource_rejects_too_small_heap_slice() {
         let fd = pipe_read_fd();
+        let fd_id = fd_identity(fd);
         let inner = Arc::new(FdInner::new(fd, 7));
         let mut heap = [0_u64; 1];
         assert!(write_fd_resource(&mut heap, inner).is_none());
-        assert!(fd_is_closed(fd));
+        assert!(fd_closed_since(fd, fd_id));
     }
 
     #[test]
@@ -462,9 +487,10 @@ mod tests {
     #[test]
     fn last_arc_drop_closes_fd() {
         let fd = pipe_read_fd();
+        let fd_id = fd_identity(fd);
         let inner = Arc::new(FdInner::new(fd, 1));
         drop(inner);
-        assert!(fd_is_closed(fd));
+        assert!(fd_closed_since(fd, fd_id));
     }
 
     #[test]
