@@ -130,6 +130,29 @@ impl<'a> NativeContext<'a> {
         !self.process.mailbox().is_empty()
     }
 
+    /// True when this native process is trapping exits.
+    #[must_use]
+    pub fn trap_exit(&self) -> bool {
+        self.process.trap_exit()
+    }
+
+    /// Enable or disable exit trapping for this native process — the native
+    /// equivalent of `process_flag(trap_exit, true)`. Returns the previous
+    /// value.
+    ///
+    /// When trapping is enabled, an exit signal from a linked process is
+    /// converted into an `{'EXIT', source, reason}` message and delivered to
+    /// this process's mailbox (drained at the slice boundary by the SAME
+    /// shared store-back the bytecode path uses) instead of terminating it —
+    /// so a native handler can supervise linked children. This flips the flag
+    /// on the underlying `Process`, the single source of truth the pid-keyed
+    /// `propagate_exit` path consults; it adds no native-specific trap state.
+    pub fn set_trap_exit(&mut self, value: bool) -> bool {
+        let previous = self.process.trap_exit();
+        self.process.set_trap_exit(value);
+        previous
+    }
+
     /// Remove and return the next mailbox message in arrival order, or `None`
     /// when the mailbox is empty.
     ///

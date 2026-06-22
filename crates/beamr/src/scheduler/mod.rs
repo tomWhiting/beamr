@@ -788,6 +788,58 @@ impl Scheduler {
         process_links_contain(&self.shared, left, right)
             && process_links_contain(&self.shared, right, left)
     }
+    /// Whether the process is native (carries a Rust handler).
+    ///
+    /// `Some(true)` for a parked native process, `Some(false)` for a parked
+    /// bytecode process, and `None` when the process is absent (its body has
+    /// been removed by `cleanup_exited_process`) or currently mid-slice (its
+    /// `Process` is checked out, so native-ness is not observable from the
+    /// metadata shadow). A `None` after an expected exit therefore confirms
+    /// the body was removed from `process_bodies`.
+    #[must_use]
+    pub fn is_native(&self, pid: u64) -> Option<bool> {
+        process_is_native(&self.shared, pid)
+    }
+    /// Establish a unidirectional monitor from `watcher_pid` to `target_pid`,
+    /// returning the monitor reference.
+    ///
+    /// Delegates to the existing pid-keyed [`SupervisionFacility`] used by the
+    /// `monitor/2` BIF, so a `{'DOWN', ref, process, pid, reason}` message is
+    /// delivered to the watcher via the same `deliver_down_messages` path when
+    /// the target exits — there is no native-specific monitor handling. Works
+    /// uniformly for bytecode and native targets.
+    pub fn monitor(
+        &self,
+        watcher_pid: u64,
+        target_pid: u64,
+    ) -> Result<u64, crate::native::supervision::SupervisionError> {
+        let facility = supervision_integration::SchedulerSupervisionFacility {
+            shared: Arc::clone(&self.shared),
+        };
+        crate::native::supervision::SupervisionFacility::monitor(&facility, watcher_pid, target_pid)
+            .map(|result| result.reference)
+    }
+    /// Send an exit signal to `target_pid` with `reason`, the embedding-side
+    /// equivalent of `erlang:exit/2`.
+    ///
+    /// Delegates to the existing pid-keyed [`SupervisionFacility`]: an abnormal
+    /// reason terminates a non-trapping target through `cleanup_exited_process`
+    /// (propagating to its links and monitors) or is delivered as an
+    /// `{'EXIT', from, reason}` message to a trapping target. No native-specific
+    /// path is involved.
+    pub fn exit_signal(
+        &self,
+        from_pid: u64,
+        target_pid: u64,
+        reason: ExitReason,
+    ) -> Result<(), crate::native::supervision::SupervisionError> {
+        let facility = supervision_integration::SchedulerSupervisionFacility {
+            shared: Arc::clone(&self.shared),
+        };
+        crate::native::supervision::SupervisionFacility::exit_signal(
+            &facility, from_pid, target_pid, reason,
+        )
+    }
     #[must_use]
     pub fn process_namespace(&self, pid: u64) -> Option<NamespaceId> {
         process_namespace(&self.shared, pid)
@@ -890,6 +942,15 @@ fn process_trap_exit(shared: &SharedState, pid: u64) -> Option<bool> {
         ProcessSlot::Present(scheduled) => Some(scheduled.0.trap_exit()),
         ProcessSlot::Executing(metadata) => Some(metadata.trap_exit),
         ProcessSlot::Absent => None,
+    }
+}
+fn process_is_native(shared: &SharedState, pid: u64) -> Option<bool> {
+    let entry = shared.process_bodies.get(&pid)?;
+    match &*lock_or_recover(&entry) {
+        ProcessSlot::Present(scheduled) => Some(scheduled.0.is_native()),
+        // Mid-slice the `Process` is checked out; native-ness lives on it, not
+        // on the metadata shadow. Absent means the body is being swapped.
+        ProcessSlot::Executing(_) | ProcessSlot::Absent => None,
     }
 }
 fn process_links_contain(shared: &SharedState, pid: u64, linked_pid: u64) -> bool {
