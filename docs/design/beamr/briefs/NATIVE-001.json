@@ -1,0 +1,259 @@
+{
+  "id": "NATIVE-001",
+  "cluster": "native",
+  "title": "Native process core (NativeHandler, run_native_slice dispatch, spawn_native, send round-trip)",
+  "depends_on": [],
+  "blocked_by": [],
+  "checklist": [
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C5",
+    "C6",
+    "C7",
+    "C8"
+  ],
+  "stories": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5"
+  ],
+  "purpose": "Deliver the missing primitive at the heart of the actor thesis: let a Rust struct/closure run as a first-class, scheduler-supervised beamr process — real pid, mailbox, send/receive — without being BEAM bytecode. This brief implements Shape B from NATIVE-PROCESS-DESIGN.md: a native process IS a crate::process::Process that additionally carries an optional Rust handler, so it keeps heap, Mailbox, logical_clock, the ProcessMetadata swap, the 3-phase park-gap protocol, and exit-tombstones all unchanged and already correct. The only genuinely new behaviour is what executes during a slice — if the process has a native handler, the scheduler runs the handler instead of the bytecode interpreter. This confines new code to one dispatch branch (run_native_slice), one spawn path (spawn_native), and one trait (NativeHandler), and neutralises four of the five terrain-map landmines by construction because the native process travels the same concurrency machinery as a bytecode process. The single native-specific obligation — checking the exit-tombstone BEFORE invoking the handler so supervision kills are honoured — is encoded here as an explicit acceptance criterion. When this lands, haematite's shard actor and liminal's channel/conversation actors can stop being faked with synchronous structs.",
+  "task": "Create crates/beamr/src/native/native_process.rs defining: the NativeHandler trait (fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome; Send + 'static); the NativeOutcome enum (Continue, Wait, Stop(ExitReason)); and NativeContext<'a> exposing self_pid() -> u64, mailbox draining over the existing Mailbox API (current_message / advance_save_pointer / remove_current_message), send(target_pid, Term) routed through the existing LocalSendFacility, and spawn_native(...). Add an optional native handler field to crate::process::Process (process/mod.rs) plus a pub fn is_native(&self) -> bool; the handler travels with the Process body through the slot and is excluded from any structural clone. Create crates/beamr/src/scheduler/execution/native_slice.rs implementing run_native_slice(shared, &mut process) -> SliceOutcome that (1) checks the exit-tombstone FIRST, (2) builds the native services (local_send, spawn) over Arc<SharedState>, (3) constructs NativeContext, (4) calls handler.handle(ctx), (5) maps NativeOutcome to SliceOutcome (Continue->Requeue, Wait->Wait, Stop->Exited). Add the dispatch branch in run_process (scheduler/execution/core.rs:46-62) immediately after take_runnable_process, gated on process.is_native(). Add spawn_native to the SpawnFacility trait (native/spawn.rs) and implement it in SchedulerSpawnFacility (scheduler/supervision_integration.rs:1130-1217) mirroring spawn: next_pid -> process_table.spawn_with_pid -> build a Process carrying the handler -> insert ProcessSlot::Present -> woken.push((pid,0)). Route NativeContext::send through the existing native::local_send::LocalSendFacility with sender-clock ticking exactly like interpreter/opcodes/messaging.rs:101-120. Declare native_process in native/mod.rs.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "NativeHandler trait, NativeOutcome, and NativeContext model",
+      "spec": "THE SYSTEM SHALL define a public trait NativeHandler: Send + 'static with a single method fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome, called when the process is scheduled (it has mail, was woken, or just spawned). THE SYSTEM SHALL define a public enum NativeOutcome with exactly three variants: Continue (re-queue immediately), Wait (nothing to do; park until a message arrives), and Stop(ExitReason) (terminate with the given reason). THE SYSTEM SHALL define a public struct NativeContext<'a> exposing self_pid() -> u64, mailbox draining via the existing Mailbox API, send(target_pid: u64, message: Term), and spawn_native(...). THE SYSTEM SHALL NOT introduce any new synchronisation primitive (no new Mutex/Condvar/channel) in this model — NativeContext borrows the running Process and shared services for the duration of one slice only.",
+      "acceptance": [
+        "NativeHandler is a public trait in beamr::native::native_process with bound Send + 'static and a single method handle(&mut self, &mut NativeContext) -> NativeOutcome",
+        "NativeOutcome is a public enum with exactly the variants Continue, Wait, Stop(ExitReason) — confirmed by grep for 'enum NativeOutcome' in native/native_process.rs",
+        "NativeContext exposes self_pid(&self) -> u64, send(&mut self, u64, Term), and spawn_native(...) — confirmed by grep in native/native_process.rs",
+        "NativeContext mailbox access is implemented over the existing Mailbox methods current_message / advance_save_pointer / remove_current_message (mailbox/mod.rs:121-140) and introduces no new mailbox method",
+        "grep for 'Mutex::new\\|Condvar\\|mpsc\\|crossbeam' in native/native_process.rs returns no matches"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/native/native_process.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C1"
+      ],
+      "stories": [
+        "S1"
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Process carries an optional native handler and reports is_native()",
+      "spec": "THE SYSTEM SHALL add an optional native-handler field to crate::process::Process (process/mod.rs:138) and a public method fn is_native(&self) -> bool that returns true exactly when that field is populated. A native Process SHALL never set a code position, x-registers, or stack — those remain default/empty; its status transitions (New -> Running -> Waiting -> Exiting) SHALL reuse the existing machinery unchanged. THE SYSTEM SHALL NOT add a new ProcessSlot variant — a native process is a Process carrying a handler that lives in the existing ProcessSlot::Present / Executing / Absent slots (process_slot.rs:100-104). The handler SHALL travel with the Process body through the slot and SHALL be excluded from any structural clone of Process (a clone produces a non-native copy).",
+      "acceptance": [
+        "Process has a private optional native-handler field and a public fn is_native(&self) -> bool — confirmed by grep for 'fn is_native' in process/mod.rs",
+        "A freshly built bytecode Process returns is_native() == false; a Process built via spawn_native returns is_native() == true",
+        "No new variant is added to ProcessSlot — grep for 'enum ProcessSlot' in scheduler/process_slot.rs still shows exactly Present, Executing, Absent (plus existing doc-only entries)",
+        "A native Process has empty x-registers and no code position set immediately after construction",
+        "Process structural clone yields is_native() == false (handler not cloned) — confirmed by a #[cfg(test)] assertion",
+        "Audit confirms Process::clone (process/mod.rs:207) is never invoked on a LIVE native process in any scheduler path (spawn, replay snapshot, store/take swap) — a clone silently dropping a handler would turn a native process into a dead no-op; if any such path exists it MUST rebuild via the NATIVE-002 factory, not drop the handler silently. Document the audit result in the implementation."
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/process/mod.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C2"
+      ],
+      "stories": [
+        "S1"
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "run_native_slice dispatch branch with exit-tombstone check FIRST",
+      "spec": "THE SYSTEM SHALL add a dispatch branch in run_process (scheduler/execution/core.rs:46-62), immediately after take_runnable_process, that calls run_native_slice(shared, &mut process) when process.is_native() is true, leaving the bytecode (execute_slice) and replay branches untouched. run_native_slice SHALL, as its FIRST action before invoking the handler, check the exit-tombstone for this pid; IF a kill is pending it SHALL return SliceOutcome::Exited(reason) and SHALL NOT call handler.handle. Otherwise it SHALL build the native services, construct NativeContext, call handler.handle(ctx), and map the NativeOutcome to a SliceOutcome (Continue -> Requeue, Wait -> Wait, Stop -> Exited). THE SYSTEM SHALL NOT alter the existing Requeue / Wait / Suspended / Exited handling in run_process — both paths share it.",
+      "acceptance": [
+        "run_process contains a branch `if process.is_native() { run_native_slice(...) }` placed before the existing replay/execute_slice branch at scheduler/execution/core.rs:46-62",
+        "run_native_slice checks the exit-tombstone (the same tombstone_reason path used at core.rs:64) BEFORE any call to handler.handle — confirmed by source order in scheduler/execution/native_slice.rs",
+        "A #[cfg(test)] test spawns a native process, marks an exit-tombstone for its pid, runs one slice, and asserts the outcome is SliceOutcome::Exited and that the handler's handle() was never invoked",
+        "NativeOutcome::Continue maps to SliceOutcome::Requeue, NativeOutcome::Wait to SliceOutcome::Wait, NativeOutcome::Stop(reason) to SliceOutcome::Exited(reason)",
+        "The existing bytecode-path match arms (Requeue/Wait/Suspended/Exited at core.rs:69-212) are unchanged"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/scheduler/execution/native_slice.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/scheduler/execution/core.rs",
+          "crates/beamr/src/scheduler/execution/mod.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C3"
+      ],
+      "stories": [
+        "S2"
+      ]
+    },
+    {
+      "id": "R4",
+      "title": "Native park/wait reuses the existing 3-phase park-gap path (no separate park)",
+      "spec": "WHEN a native handler returns NativeOutcome::Wait, THE SYSTEM SHALL route it to the existing SliceOutcome::Wait arm (scheduler/execution/core.rs:77) so the native process stores back, registers in the waiting set, and re-checks its mailbox under the same store -> register -> recheck ordering as the bytecode path. THE SYSTEM SHALL NOT invent a separate park path or a native-specific waiting registration. A message delivered concurrently with a native park (the deliver-then-wake race) SHALL NOT be lost: every interleaving SHALL resolve to a scheduled process exactly as documented at core.rs:77-92.",
+      "acceptance": [
+        "NativeOutcome::Wait is mapped to SliceOutcome::Wait and no new waiting-set registration code is added — grep in native_slice.rs shows no direct manipulation of shared.wait_set",
+        "A #[cfg(test)] test parks a native process on an empty mailbox, then delivers a message racing the park, and asserts the message is observed (no loss) and the process is rescheduled",
+        "A native process that returns Wait with a non-empty mailbox is still rescheduled (self-wake on recheck), matching the bytecode park-gap semantics",
+        "No file under crates/beamr/src gains a second park/registration code path for native processes"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/scheduler/execution/native_slice.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C4"
+      ],
+      "stories": [
+        "S2",
+        "S3"
+      ]
+    },
+    {
+      "id": "R5",
+      "title": "spawn_native facility and scheduler implementation",
+      "spec": "THE SYSTEM SHALL add spawn_native to the SpawnFacility trait (native/spawn.rs:36) and implement it in SchedulerSpawnFacility (scheduler/supervision_integration.rs:1130-1217), mirroring the existing spawn: allocate next_pid, call process_table.spawn_with_pid(pid), build a Process that carries the supplied native handler (instead of build_process's bytecode setup), insert ProcessSlot::Present(ScheduledProcess(process)) into process_bodies, and push (pid, 0) onto the woken set. Links SHALL reuse the existing add_link_to_slot path. spawn_native SHALL return the new pid as a u64 on success and a SpawnError on failure. NativeContext::spawn_native SHALL delegate to this same facility so a native process can spawn native children.",
+      "acceptance": [
+        "SpawnFacility (native/spawn.rs) declares a spawn_native method returning Result<u64, SpawnError>",
+        "SchedulerSpawnFacility implements spawn_native by mirroring spawn (next_pid -> process_table.spawn_with_pid -> ProcessSlot::Present insert -> woken.push((pid,0))) — confirmed by grep in scheduler/supervision_integration.rs",
+        "spawn_native does NOT call build_process / set an instruction pointer for the native body",
+        "A #[cfg(test)] test calls spawn_native through the real scheduler and asserts the returned pid is registered in process_table and its slot is Present with is_native() == true",
+        "A native handler can call ctx.spawn_native(...) and the child appears in process_bodies",
+        "spawn_native with link_to set adds the link via the existing add_link_to_slot path"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/native/spawn.rs",
+          "crates/beamr/src/scheduler/supervision_integration.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C5"
+      ],
+      "stories": [
+        "S1",
+        "S4"
+      ]
+    },
+    {
+      "id": "R6",
+      "title": "Native sends route through LocalSendFacility with sender-clock ticking (replay-safe)",
+      "spec": "WHEN a native handler calls NativeContext::send(target_pid, message), THE SYSTEM SHALL tick the sending Process's logical clock and pass sender_clock through a native::local_send::LocalSendRequest to the existing LocalSendFacility, exactly as interpreter/opcodes/messaging.rs:101-120 does for bytecode send. THE SYSTEM SHALL NOT bypass LocalSendFacility via any side channel. Native RECEIVES are clock-observed under the slot lock by the existing LocalSendFacility Present arm (scheduler/supervision_integration.rs:757-808) with no new arm, because the receiver genuinely is a Process. A native<->BEAM message exchange driven through the real scheduler SHALL replay deterministically under replay_mode.",
+      "acceptance": [
+        "NativeContext::send constructs a LocalSendRequest and calls services.local_send.send_local(...) — confirmed by grep for 'LocalSendRequest' in native/native_process.rs or native_slice.rs",
+        "NativeContext::send ticks the Process logical clock (process.tick_logical_clock()) before delivery, matching messaging.rs:105-116",
+        "grep for 'mailbox_mut\\|push_owned\\|wake_process' in native/native_process.rs returns no matches (sends must not deliver directly, only via the facility)",
+        "A #[cfg(test)] test exchanges a Term native->BEAM and BEAM->native and asserts both are delivered; the receiver-side clock is observed via the existing LocalSendFacility Present arm (no new arm in supervision_integration.rs)",
+        "A #[cfg(test)] replay-determinism test records a native<->BEAM exchange and replays it under replay_mode with identical scheduling/outcome"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/native/native_process.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C6"
+      ],
+      "stories": [
+        "S3",
+        "S5"
+      ]
+    },
+    {
+      "id": "R7",
+      "title": "Self-send is delivered via the pending_local_messages merge at store-back",
+      "spec": "WHEN a native handler sends to its own pid while it is Executing (its body taken out of process_bodies for the slice), THE SYSTEM SHALL deliver the message via the existing pending_local_messages merge at store-back (scheduler/execution/core.rs:388-397) rather than locking its own Absent slot, so the handler reads it on its next slice via the mailbox. THE SYSTEM SHALL NOT add a native-specific self-send code path — the existing Executing-slot merge applies verbatim because the native process is a Process.",
+      "acceptance": [
+        "A #[cfg(test)] test has a native handler call ctx.send(ctx.self_pid(), msg) and asserts msg is present in the mailbox on the next slice",
+        "No native-specific self-send branch is added — grep in native_process.rs / native_slice.rs shows self-sends still flow through LocalSendFacility / pending_local_messages, not a special case",
+        "The self-sent message is merged at the store-back point (core.rs:388-397), confirmed by the test observing it only after the slice ends and the process is re-run"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/native/native_process.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C7"
+      ],
+      "stories": [
+        "S3"
+      ]
+    },
+    {
+      "id": "R8",
+      "title": "End-to-end echo/ping gate test and no-bytecode-regression",
+      "spec": "THE SYSTEM SHALL include an end-to-end test (the acceptance bar) in which a native echo/ping process spawned through the real scheduler receives a Term FROM a BEAM process AND FROM Rust, replies, and the reply is observed. THE SYSTEM SHALL additionally exercise the park/wait path (no message -> parks -> wakes on delivery), the self-send path, and a native<->BEAM replay-determinism check. THE SYSTEM SHALL NOT change the behaviour of the BEAM bytecode execution path — the existing beamr test suite SHALL stay green.",
+      "acceptance": [
+        "A test spawns a native echo process via the real scheduler, sends it a Term from a BEAM process, and asserts the reply is observed in the BEAM process mailbox",
+        "The same native echo process replies to a Term sent from Rust (via ctx.send / the facility) and the reply is observed",
+        "A test asserts the native process parks on an empty mailbox and wakes on a subsequent delivery (park/wait path)",
+        "The full pre-existing `cargo test -p beamr` suite passes unchanged (no bytecode-path behavioural change)",
+        "cargo test -p beamr runs the new round-trip, park, self-send, and replay-determinism tests and they pass"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/tests/native_process.rs"
+        ],
+        "modify": [],
+        "delete": []
+      },
+      "checklist": [
+        "C8"
+      ],
+      "stories": [
+        "S2",
+        "S3",
+        "S4",
+        "S5"
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the behaviour of the BEAM bytecode execution path (existing test suite must stay green)",
+    "SHALL NOT add a new ProcessSlot variant — a native process is a Process carrying a handler (per NATIVE-PROCESS-DESIGN.md Shape B)",
+    "SHALL NOT invent a separate park/wait path for native processes — NativeOutcome::Wait routes through the existing 3-phase park-gap (store -> register -> recheck)",
+    "SHALL NOT deliver native sends via any side channel — all sends route through the existing LocalSendFacility so sender-clock ticking and replay validation are reused",
+    "SHALL NOT add new synchronisation primitives (no new Mutex/Condvar/channel) — heap-copy + wake-notifier + run-queue requeue already exist",
+    "SHALL NOT support exchanging raw closures (num_free > 0) to an Executing native receiver — the pre-existing ETF closure-encoding gap is out of scope; native actors exchange immediates/refs/scalars (the gen_server pattern)"
+  ],
+  "verification": [
+    "cargo fmt --check",
+    "cargo check -p beamr",
+    "cargo test -p beamr",
+    "cargo clippy -p beamr --all-targets -- -D warnings",
+    "no NEW file under crates/beamr/src exceeds 500 lines (the existing core.rs and supervision_integration.rs already exceed it; all new code lands in new files native_process.rs / native_slice.rs, and edits to oversized files stay minimal — a thin dispatch branch / spawn impl that delegates)",
+    "grep for unwrap()/expect() outside #[cfg(test)] returns no matches in new files (native/native_process.rs, scheduler/execution/native_slice.rs)",
+    "end-to-end: a native echo/ping process spawned through the real scheduler receives a Term from a BEAM process AND from Rust, replies, and the reply is observed",
+    "killing a native process via an exit-tombstone while it would otherwise run causes it to terminate (handler never invoked)",
+    "a native process parking on an empty mailbox uses the same 3-phase park-gap path; a message racing the park is not lost",
+    "a native<->BEAM exchange replays deterministically under replay_mode"
+  ]
+}

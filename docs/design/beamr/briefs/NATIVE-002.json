@@ -1,0 +1,198 @@
+{
+  "id": "NATIVE-002",
+  "cluster": "native",
+  "title": "Native process supervision (links, monitors, exit signals, trap_exit, restart)",
+  "depends_on": [
+    "NATIVE-001"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C9",
+    "C10",
+    "C11",
+    "C12",
+    "C13",
+    "C14"
+  ],
+  "stories": [
+    "S6",
+    "S7",
+    "S8",
+    "S9",
+    "S10"
+  ],
+  "purpose": "Make a native process a full participant in beamr's supervision fabric: links, monitors, exit-signal propagation, trap_exit, and supervisor restart. Most of this is free under Shape B because a native process lives in an ordinary ProcessSlot and the supervision machinery is pid-keyed — propagate_exit (supervision_integration.rs:43) and deliver_down_messages (supervision_integration.rs:488) do not care whether the target is bytecode or native. The genuinely new work is small and specific: NativeOutcome::Stop must drive cleanup_exited_process (core.rs:1458) so a native crash propagates exit signals to linked processes; a trap_exit native process must drain its pending_exit_messages (process_slot.rs:56) and receive {EXIT, source, reason} via its mailbox so a handler can supervise children; and — the one feature that genuinely requires new surface — spawn_native must accept a factory (Fn() -> Box<dyn NativeHandler>, or a clonable spec) so a supervisor can reconstruct a crashed native child on restart, because a Box<dyn NativeHandler> consumed by a dead process cannot be reused. When this lands, a beamr supervisor can supervise native actors exactly as it supervises bytecode ones, which is the prerequisite for migrating haematite's shard actor and liminal's conversation actors onto real supervised native processes.",
+  "task": "Wire NativeOutcome::Stop (mapped to SliceOutcome::Exited in NATIVE-001) through the existing cleanup_exited_process (scheduler/execution/core.rs:1458) so exit-signal propagation (supervision_integration.rs:43, supervision/link.rs:139) and DOWN delivery (supervision_integration.rs:488) reach linked/monitoring processes — this is mostly verification that the pid-keyed paths already cover native targets, plus any glue. Extend the native slice so a trap_exit native process drains pending_exit_messages (scheduler/process_slot.rs:56) and the handler receives {EXIT, source, reason} via the mailbox before its next handle() call; reuse the same exit-message construction the bytecode trap_exit path uses. Change spawn_native (native/spawn.rs + scheduler/supervision_integration.rs) to accept a native handler FACTORY (a boxed Fn() -> Box<dyn NativeHandler> or a Clone-able spec) rather than a single Box<dyn NativeHandler>, store the factory so the supervisor restart path can call it to build a fresh handler for the restarted pid, and update NATIVE-001 call sites accordingly. Add tests under crates/beamr/tests/native_supervision.rs covering link propagation, monitor DOWN, trap_exit receipt, and supervisor restart of a crashed native child.",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Native process participates in links; exit signals propagate across native<->BEAM",
+      "spec": "WHEN a native process is linked to a BEAM process (or vice versa) and one of the pair exits abnormally, THE SYSTEM SHALL propagate the exit signal to the other via the existing pid-keyed propagate_exit (scheduler/supervision_integration.rs:43) and deliver_exit_signal (supervision/link.rs:139) paths, with no native-specific propagation code. A native process SHALL register links via the existing add_link_to_slot path used by spawn (already wired in NATIVE-001 spawn_native). THE SYSTEM SHALL NOT add a new ProcessSlot variant and SHALL NOT add a parallel link-propagation path for native targets.",
+      "acceptance": [
+        "A #[cfg(test)] test links a native<->BEAM pair, crashes the native process with an abnormal reason, and asserts the BEAM process receives the exit signal (dies with the same reason unless trapping)",
+        "A #[cfg(test)] test links a native<->BEAM pair, crashes the BEAM process abnormally, and asserts the native process is terminated by the propagated exit signal",
+        "Exit propagation reuses propagate_exit (supervision_integration.rs:43) — grep shows no new native-specific link-propagation function",
+        "Linking is established via the existing add_link_to_slot path, not a new native link store"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/tests/native_supervision.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/scheduler/execution/native_slice.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C9"
+      ],
+      "stories": [
+        "S6"
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "Native process can be monitored; DOWN is delivered on exit",
+      "spec": "WHEN a process monitors a native process and that native process exits, THE SYSTEM SHALL deliver a {'DOWN', ref, 'process', pid, reason} message to the monitoring process via the existing pid-keyed deliver_down_messages path (scheduler/supervision_integration.rs:488), with no native-specific monitor code. A native process SHALL also be able to monitor another process (native or BEAM) through the existing supervision facility exposed to NATIVE-001's NativeContext/services where required.",
+      "acceptance": [
+        "A #[cfg(test)] test monitors a native process from a BEAM process, exits the native process, and asserts a DOWN message arrives with the correct ref, pid, and reason",
+        "DOWN delivery reuses deliver_down_messages (supervision_integration.rs:488) — grep shows no new native-specific DOWN-delivery function",
+        "A native process exiting normally delivers DOWN with reason 'normal'; exiting abnormally delivers DOWN with the abnormal reason"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/tests/native_supervision.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C10"
+      ],
+      "stories": [
+        "S7"
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "NativeOutcome::Stop drives cleanup_exited_process and signal propagation",
+      "spec": "WHEN a native handler returns NativeOutcome::Stop(reason), THE SYSTEM SHALL terminate the process through the existing SliceOutcome::Exited handling, which calls cleanup_exited_process (scheduler/execution/core.rs:1458) and thereby releases the process's resources and propagates exit signals to linked processes and DOWN to monitors. THE SYSTEM SHALL NOT bypass cleanup_exited_process for native exits and SHALL NOT introduce a separate native teardown path.",
+      "acceptance": [
+        "A #[cfg(test)] test has a native handler return NativeOutcome::Stop(reason) and asserts the pid is removed from process_table and process_bodies after the slice",
+        "The same test asserts a linked partner receives the exit signal, confirming Stop flows through cleanup_exited_process (core.rs:1458)",
+        "Native exit teardown reuses cleanup_exited_process — grep shows no native-specific teardown function that duplicates resource cleanup",
+        "A native process that returns Stop(ExitReason::Normal) does not kill non-trapping links (normal exits are not propagated as kills)"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/scheduler/execution/native_slice.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C11"
+      ],
+      "stories": [
+        "S6",
+        "S8"
+      ]
+    },
+    {
+      "id": "R4",
+      "title": "trap_exit native process drains pending_exit_messages and receives {EXIT, source, reason}",
+      "spec": "WHEN a native process has trap_exit set and a linked process exits, THE SYSTEM SHALL convert the incoming exit signal into a {'EXIT', source, reason} message and deliver it to the native process's mailbox (rather than killing it), draining pending_exit_messages (scheduler/process_slot.rs:56) at slice boundary using the same exit-message construction the bytecode trap_exit path uses. The native handler SHALL then observe {'EXIT', source, reason} via the normal mailbox-draining API on its next handle() call. THE SYSTEM SHALL NOT terminate a trap_exit native process on a normal linked exit.",
+      "acceptance": [
+        "A #[cfg(test)] test sets trap_exit on a native process, links it to a child, crashes the child, and asserts the native handler receives an {'EXIT', child_pid, reason} message via its mailbox",
+        "The trapped native process is NOT terminated by the trapped exit (it continues to be scheduled)",
+        "pending_exit_messages (process_slot.rs:56) is drained into the mailbox at the slice boundary using the existing exit-message construction (no duplicated message-building logic)",
+        "A normal linked exit delivered to a trap_exit native process arrives as {'EXIT', pid, 'normal'} and does not kill it"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/scheduler/execution/native_slice.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C12"
+      ],
+      "stories": [
+        "S8",
+        "S9"
+      ]
+    },
+    {
+      "id": "R5",
+      "title": "spawn_native accepts a handler factory so a crashed child can be reconstructed",
+      "spec": "THE SYSTEM SHALL change spawn_native (native/spawn.rs and scheduler/supervision_integration.rs) to accept a native handler FACTORY — a boxed Fn() -> Box<dyn NativeHandler> (Send + Sync + 'static) or an equivalent Clone-able spec — instead of a single Box<dyn NativeHandler>, and SHALL retain the factory so the restart path can build a fresh handler for the restarted pid. THE SYSTEM SHALL build the initial handler by invoking the factory once at spawn. THE SYSTEM SHALL NOT require the NativeHandler itself to be Clone (handlers carry per-instance state); reconstruction is the factory's responsibility. NATIVE-001 spawn_native call sites SHALL be updated to pass a factory.",
+      "acceptance": [
+        "spawn_native's signature takes a factory (Fn() -> Box<dyn NativeHandler>, Send + Sync + 'static) or a Clone-able spec — confirmed by grep for 'spawn_native' in native/spawn.rs",
+        "The factory is stored alongside the process so it can be invoked again on restart — confirmed by grep in scheduler/supervision_integration.rs",
+        "NativeHandler is NOT required to be Clone — grep for 'NativeHandler: Clone' returns no matches",
+        "A #[cfg(test)] test calls the factory twice and gets two independent handler instances with independent state",
+        "spawn_native invokes the factory exactly once at initial spawn"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/native/spawn.rs",
+          "crates/beamr/src/scheduler/supervision_integration.rs",
+          "crates/beamr/src/native/native_process.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C13"
+      ],
+      "stories": [
+        "S10"
+      ]
+    },
+    {
+      "id": "R6",
+      "title": "A supervisor restarts a crashed native child",
+      "spec": "WHEN a native child supervised by a beamr supervisor crashes, THE SYSTEM SHALL allow the supervisor to restart it by invoking the stored handler factory (R5) to build a fresh handler and spawning a replacement native process under the supervisor's restart policy, reusing the existing supervision restart machinery. THE SYSTEM SHALL NOT require a bespoke native restart policy — native children participate in the same restart flow as bytecode children. The restarted child SHALL start from fresh handler state (the factory's output), not the crashed instance's state.",
+      "acceptance": [
+        "A #[cfg(test)] end-to-end test supervises a native child, crashes it, and asserts the supervisor spawns a replacement native process (new pid, is_native() == true) via the stored factory",
+        "The restarted native child has fresh handler state produced by the factory (not the crashed instance's state)",
+        "Restart reuses the existing supervision restart flow — no native-specific restart policy is added",
+        "After restart, the replacement child receives and replies to a message, proving it is fully scheduled and live"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/tests/native_supervision.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C14"
+      ],
+      "stories": [
+        "S10"
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the behaviour of the BEAM bytecode execution path (existing test suite must stay green)",
+    "SHALL NOT add a new ProcessSlot variant — a native process is a Process carrying a handler (per NATIVE-PROCESS-DESIGN.md Shape B)",
+    "SHALL NOT add a parallel, native-specific link/monitor/exit-propagation path — reuse the pid-keyed propagate_exit and deliver_down_messages",
+    "SHALL NOT require NativeHandler to implement Clone — restart reconstructs via the factory, not by cloning a handler instance",
+    "SHALL NOT introduce a bespoke native restart policy — native children use the existing supervisor restart flow",
+    "SHALL NOT bypass cleanup_exited_process for native exits"
+  ],
+  "verification": [
+    "cargo fmt --check",
+    "cargo check -p beamr",
+    "cargo test -p beamr",
+    "cargo clippy -p beamr --all-targets -- -D warnings",
+    "no NEW file under crates/beamr/src exceeds 500 lines (existing core.rs/supervision_integration.rs already exceed it; new code lands in new files, edits to oversized files stay minimal)",
+    "grep for unwrap()/expect() outside #[cfg(test)] returns no matches in new files",
+    "end-to-end: link a native<->BEAM pair, crash one, assert exit-signal propagation reaches the other",
+    "end-to-end: monitor a native process, exit it, assert a DOWN message is delivered",
+    "end-to-end: a trap_exit native process receives {EXIT, source, reason} via its mailbox and is not killed",
+    "end-to-end: a supervisor restarts a crashed native child via the stored handler factory and the replacement is live"
+  ]
+}

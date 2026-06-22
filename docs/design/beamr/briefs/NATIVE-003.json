@@ -1,0 +1,178 @@
+{
+  "id": "NATIVE-003",
+  "cluster": "native",
+  "title": "Ergonomic actor API, public surface, and worked actor-per-shard example",
+  "depends_on": [
+    "NATIVE-001",
+    "NATIVE-002"
+  ],
+  "blocked_by": [],
+  "checklist": [
+    "C17",
+    "C18",
+    "C19",
+    "C20",
+    "C21"
+  ],
+  "stories": [
+    "S11",
+    "S12",
+    "S13",
+    "S14",
+    "S15"
+  ],
+  "purpose": "Put a gen_server-style ergonomic layer over the raw NativeHandler primitive so downstream crates write actors, not scheduler internals. NATIVE-001 and NATIVE-002 deliver the delicate core (a Rust handler running as a supervised process with links/monitors/restart), but the raw trait still asks the author to hand-drain the mailbox, match request/reply refs by hand, and reach for scheduler types. This brief adds an Actor/gen_server abstraction with call (request/reply correlated by a ref) and cast (fire-and-forget), a public spawn entry that returns a u64 pid plus a typed sender handle, and clean re-exports from lib.rs so callers depend only on the beamr crate root. It ships a worked, copy-ready actor-per-shard skeleton and docs that haematite (CORE-007 shard actor) and liminal (channel/conversation actors) lift directly to replace their faked synchronous structs. This is the lower-risk, delegable layer — no scheduler-internal concurrency is touched; it is a thin, well-typed facade over the primitives already proven by NATIVE-001/002's gate tests.",
+  "task": "Create crates/beamr/src/native/actor.rs defining an Actor trait (a gen_server-style layer over NativeHandler) with associated request/reply/cast message types and handle_call / handle_cast methods, plus an adapter that implements NativeHandler for any Actor by draining the mailbox, decoding call/cast envelopes, dispatching to handle_call/handle_cast, and routing call replies back to the caller correlated by a ref. Implement call(target_pid, request) -> reply (request/reply with a unique ref, awaiting the correlated response) and cast(target_pid, request) (fire-and-forget) as helpers over NATIVE-001's NativeContext::send. Add a public spawn entry (e.g. native::actor::spawn_actor) returning a struct with the u64 pid and a typed sender handle (a small Clone-able handle wrapping the pid that offers typed call/cast). Re-export the public native-actor surface from crates/beamr/src/lib.rs (Actor, NativeHandler, NativeContext, NativeOutcome, spawn_actor, the sender handle). Add a worked actor-per-shard example under crates/beamr/examples/actor_per_shard.rs (or a documented module) showing a sharded key/value actor with call/cast, plus rustdoc on the public items. Keep every new file under 500 lines and free of unwrap()/expect() outside #[cfg(test)].",
+  "requirements": [
+    {
+      "id": "R1",
+      "title": "Actor (gen_server-style) trait layered over NativeHandler",
+      "spec": "THE SYSTEM SHALL define a public Actor trait that provides a gen_server-style surface over NativeHandler: associated message types and methods handle_call(&mut self, request, ctx) -> reply and handle_cast(&mut self, request, ctx). THE SYSTEM SHALL provide an adapter that implements NativeHandler for any Actor by draining the mailbox via the existing NativeContext API, decoding each message as a call or cast envelope, dispatching to handle_call / handle_cast, and returning the appropriate NativeOutcome (Continue while work remains, Wait when the mailbox is empty, Stop on a terminal reason). THE SYSTEM SHALL NOT reimplement scheduling, parking, or send routing — the adapter delegates entirely to the NATIVE-001 primitives.",
+      "acceptance": [
+        "Actor is a public trait in beamr::native::actor with handle_call and handle_cast methods — confirmed by grep for 'trait Actor' in native/actor.rs",
+        "An adapter implements NativeHandler for any type implementing Actor — confirmed by grep for 'impl<A.*NativeHandler' or equivalent in native/actor.rs",
+        "The adapter returns NativeOutcome::Wait when the mailbox drains empty and NativeOutcome::Continue while messages remain",
+        "The adapter routes sends only via NativeContext::send (grep shows no direct mailbox/wake calls in native/actor.rs)",
+        "A #[cfg(test)] test drives an Actor through the real scheduler and observes handle_call and handle_cast being invoked"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/src/native/actor.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/native/mod.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C17"
+      ],
+      "stories": [
+        "S11"
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "call helper: request/reply correlated by a unique ref",
+      "spec": "THE SYSTEM SHALL provide a call(target_pid, request) helper that performs a request/reply exchange: it allocates a unique ref, sends a call envelope carrying {ref, reply_to, request} via NATIVE-001's send routing, and returns the reply correlated by that ref. THE SYSTEM SHALL correlate replies by ref so concurrent in-flight calls do not cross replies. THE SYSTEM SHALL route the reply back through the existing LocalSendFacility (per NATIVE-001) so sender-clock/replay discipline holds. THE SYSTEM SHALL exchange refs/immediates/scalars only (per the documented ETF closure-encoding limitation), NOT raw closures.",
+      "acceptance": [
+        "call(target_pid, request) returns the reply produced by the target's handle_call for that request",
+        "A #[cfg(test)] test issues two concurrent calls with distinct refs and asserts each receives its own (non-crossed) reply",
+        "The call envelope carries a unique ref and a reply_to pid — confirmed by grep in native/actor.rs",
+        "The reply is delivered via the existing LocalSendFacility (no side channel) — grep shows the reply uses NativeContext::send / the facility",
+        "A call/reply round-trip between two native actors replays deterministically under replay_mode"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/native/actor.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C18"
+      ],
+      "stories": [
+        "S12"
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "cast helper: fire-and-forget",
+      "spec": "THE SYSTEM SHALL provide a cast(target_pid, request) helper that sends a cast envelope to the target actor and returns immediately without awaiting a reply, routing through NATIVE-001's send. THE SYSTEM SHALL deliver the cast to the target's handle_cast on its next slice. A cast to a dead or absent pid SHALL be silently dropped (correct BEAM semantics), matching the LocalSendFacility Absent/missing behaviour. THE SYSTEM SHALL NOT block the caller waiting for cast acknowledgement.",
+      "acceptance": [
+        "cast(target_pid, request) returns without awaiting a reply",
+        "A #[cfg(test)] test casts to an actor and asserts handle_cast is invoked with the request on the actor's next slice",
+        "A cast to a non-existent pid does not error and does not panic (silent drop, matching LocalSendFacility Absent semantics)",
+        "cast routes through NativeContext::send / the LocalSendFacility — grep shows no direct mailbox manipulation"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/native/actor.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C19"
+      ],
+      "stories": [
+        "S13"
+      ]
+    },
+    {
+      "id": "R4",
+      "title": "Public spawn entry returning a pid + typed sender handle, re-exported from lib.rs",
+      "spec": "THE SYSTEM SHALL provide a public spawn entry (e.g. native::actor::spawn_actor) that spawns an Actor as a native process (via NATIVE-002's factory-based spawn_native so the actor is restart-capable) and returns a value carrying the u64 pid and a typed, Clone-able sender handle offering typed call/cast methods bound to that pid. THE SYSTEM SHALL re-export the public native-actor surface from crates/beamr/src/lib.rs — at minimum Actor, NativeHandler, NativeContext, NativeOutcome, the spawn entry, and the sender handle — so callers depend only on the beamr crate root. THE SYSTEM SHALL NOT leak scheduler-internal types (SliceOutcome, ProcessSlot, SharedState) in the public actor API.",
+      "acceptance": [
+        "spawn_actor returns a value exposing a u64 pid and a typed sender handle — confirmed by grep in native/actor.rs",
+        "The sender handle is Clone and offers typed call/cast methods — confirmed by grep for 'derive(Clone)' / 'fn call' / 'fn cast' on the handle type",
+        "spawn_actor spawns via the NATIVE-002 factory-based spawn_native so the actor can be restarted",
+        "beamr::native::actor::Actor, spawn_actor, and the sender handle are importable from the beamr crate root — confirmed by pub use lines in lib.rs",
+        "The public actor API signatures do not reference SliceOutcome, ProcessSlot, or SharedState — confirmed by grep over native/actor.rs public items"
+      ],
+      "files": {
+        "create": [],
+        "modify": [
+          "crates/beamr/src/native/actor.rs",
+          "crates/beamr/src/lib.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C20"
+      ],
+      "stories": [
+        "S14"
+      ]
+    },
+    {
+      "id": "R5",
+      "title": "Worked actor-per-shard example and public-API docs",
+      "spec": "THE SYSTEM SHALL ship a worked, copy-ready actor-per-shard skeleton (a sharded key/value actor demonstrating spawn_actor, call, cast, and a supervisor-restartable child) under crates/beamr/examples/actor_per_shard.rs, plus rustdoc on every public actor item describing the gen_server pattern and the immediates/refs/scalars exchange constraint. THE SYSTEM SHALL document that a native actor exchanges immediates/refs/scalars (not raw closures) for guaranteed delivery while the receiver is Executing (the pre-existing ETF closure-encoding limitation). The example SHALL compile and run as part of the test/build gate. THE SYSTEM SHALL NOT depend on haematite or liminal — the example is self-contained within beamr.",
+      "acceptance": [
+        "crates/beamr/examples/actor_per_shard.rs exists, compiles, and demonstrates spawn_actor + call + cast over a sharded key/value actor",
+        "The example builds under `cargo build -p beamr --examples` (or runs under `cargo run -p beamr --example actor_per_shard`)",
+        "Every public item in native/actor.rs has rustdoc — confirmed by `cargo doc -p beamr` producing no missing-docs warnings for the actor module",
+        "The docs state the immediates/refs/scalars exchange constraint (no raw closures to an Executing receiver)",
+        "The example depends only on beamr (no haematite/liminal imports) — confirmed by grep over the example file"
+      ],
+      "files": {
+        "create": [
+          "crates/beamr/examples/actor_per_shard.rs"
+        ],
+        "modify": [
+          "crates/beamr/src/native/actor.rs"
+        ],
+        "delete": []
+      },
+      "checklist": [
+        "C21"
+      ],
+      "stories": [
+        "S15"
+      ]
+    }
+  ],
+  "boundaries": [
+    "SHALL NOT change the behaviour of the BEAM bytecode execution path (existing test suite must stay green)",
+    "SHALL NOT add a new ProcessSlot variant — a native process is a Process carrying a handler (per NATIVE-PROCESS-DESIGN.md Shape B)",
+    "SHALL NOT touch scheduler-internal concurrency — the actor layer is a thin facade over the NATIVE-001/002 primitives",
+    "SHALL NOT leak scheduler-internal types (SliceOutcome, ProcessSlot, SharedState) in the public actor API",
+    "SHALL NOT route sends or replies via any side channel — call/cast/reply all go through NativeContext::send / the existing LocalSendFacility",
+    "SHALL NOT support exchanging raw closures to an Executing receiver (the pre-existing ETF closure-encoding limitation); actors exchange immediates/refs/scalars",
+    "SHALL NOT depend on haematite or liminal — the worked example is self-contained within beamr"
+  ],
+  "verification": [
+    "cargo fmt --check",
+    "cargo check -p beamr",
+    "cargo test -p beamr",
+    "cargo clippy -p beamr --all-targets -- -D warnings",
+    "no NEW file under crates/beamr/src exceeds 500 lines (existing core.rs/supervision_integration.rs already exceed it; new code lands in new files, edits to oversized files stay minimal)",
+    "grep for unwrap()/expect() outside #[cfg(test)] returns no matches in new files (native/actor.rs, examples/actor_per_shard.rs)",
+    "end-to-end: call(pid, request) returns the correct correlated reply; two concurrent calls do not cross replies",
+    "end-to-end: cast(pid, request) reaches handle_cast and does not block the caller",
+    "Actor, spawn_actor, and the sender handle are importable from the beamr crate root",
+    "cargo build -p beamr --examples builds the actor_per_shard example"
+  ]
+}
