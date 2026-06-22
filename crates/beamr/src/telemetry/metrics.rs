@@ -16,6 +16,7 @@ struct Instruments {
     gc_collections: Counter<u64>,
     gc_duration: Histogram<f64>,
     messages_sent: Counter<u64>,
+    messages_dropped: Counter<u64>,
     memory_heap_words: Gauge<u64>,
     process_message_queue_len: Gauge<u64>,
     process_reductions: Counter<u64>,
@@ -53,6 +54,14 @@ impl Instruments {
             messages_sent: meter
                 .u64_counter("beamr.messages.sent")
                 .with_description("Total number of Beamr messages sent")
+                .with_unit("{message}")
+                .build(),
+            messages_dropped: meter
+                .u64_counter("beamr.messages.dropped")
+                .with_description(
+                    "Total Beamr local messages dropped on delivery (e.g. ETF codec gap or \
+                     mailbox failure on the deferred cross-heap path)",
+                )
                 .with_unit("{message}")
                 .build(),
             memory_heap_words: meter
@@ -127,6 +136,15 @@ pub(crate) fn record_gc_collection(kind: &'static str, duration: Duration) {
 /// Record one successfully sent message.
 pub(crate) fn record_message_sent() {
     instruments().messages_sent.add(1, &[]);
+}
+
+/// Record one local message dropped on delivery. The `reason` attribute names the
+/// drop site (e.g. `"etf_encode"`, `"mailbox_present"`) so a regression in the
+/// deferred cross-heap delivery path is observable rather than silent.
+pub(crate) fn record_message_dropped(reason: &'static str) {
+    instruments()
+        .messages_dropped
+        .add(1, &[KeyValue::new("reason", reason)]);
 }
 
 /// Record sampled process state at a scheduler slice boundary.

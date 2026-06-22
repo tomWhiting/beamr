@@ -146,10 +146,11 @@ impl WorkloadFixture {
 }
 
 fn native_services(jit_cache: Option<Arc<JitCache>>) -> NativeServices {
-    NativeServices {
-        jit_cache,
-        ..NativeServices::default()
-    }
+    // `NativeServices` is `#[non_exhaustive]`, so external crates build it from
+    // `default()` and set fields, rather than via a struct literal.
+    let mut services = NativeServices::default();
+    services.jit_cache = jit_cache;
+    services
 }
 
 fn compile_fixture(fixture: &WorkloadFixture) -> Arc<JitCache> {

@@ -152,6 +152,7 @@ fn make_executing(shared: &SharedState, pid: u64) -> Process {
                 pending_down_messages: Vec::new(),
                 pending_io_messages: Vec::new(),
                 pending_distribution_payloads: Vec::new(),
+                pending_local_messages: Vec::new(),
                 pending_ets_transfer_messages: Vec::new(),
                 pending_udp_messages: Vec::new(),
                 pending_tcp_messages: Vec::new(),
@@ -864,4 +865,68 @@ fn connection_down_delivers_noconnection_to_all_remote_links_on_node() {
         Term::atom(Atom::NOCONNECTION)
     );
     assert!(is_alive(&shared, other_node));
+}
+
+/// BLOCKER regression: a reference-bearing message sent to an *Executing*
+/// receiver must survive the ETF encode -> store-back decode round trip. Before
+/// the fix, decode.rs had no reference arm, so the message decoded as an error
+/// and was silently dropped at the store-back `else { continue; }`. This test
+/// drives the real `SchedulerLocalSendFacility` (via `build_native_services`)
+/// against an Executing receiver — i.e. it exercises the
+/// `ProcessSlot::Executing` ETF deferral arm — then stores the receiver back
+/// and asserts the `{Ref, ping}` tuple (with an intact ref id) is delivered.
+#[test]
+fn reference_message_to_executing_receiver_round_trips_via_etf() {
+    let shared = make_shared_state();
+    let sender_pid = insert_process(&shared, 1);
+    let receiver_pid = insert_process(&shared, 2);
+
+    // Build `{Ref, ping}` on a live sender heap; `send_local` reads the term
+    // during the call, so this Process must outlive the call.
+    let ping = shared.atom_table.intern("ping");
+    let mut sender = Process::new(sender_pid, 64);
+    let ref_id = 0x0123_4567_89ab_cdef_u64;
+    let ref_ptr = sender.heap_mut().alloc(2).expect("reference words");
+    // SAFETY: alloc returned exactly the two words write_reference needs.
+    let ref_words = unsafe { std::slice::from_raw_parts_mut(ref_ptr, 2) };
+    let reference = boxed::write_reference(ref_words, ref_id).expect("reference fits");
+    let tuple_ptr = sender.heap_mut().alloc(3).expect("tuple words");
+    // SAFETY: alloc returned exactly the three words write_tuple needs.
+    let tuple_words = unsafe { std::slice::from_raw_parts_mut(tuple_ptr, 3) };
+    let message =
+        boxed::write_tuple(tuple_words, &[reference, Term::atom(ping)]).expect("tuple fits");
+
+    // Force the receiver into the Executing branch so the ETF deferral path runs.
+    let receiver = make_executing(&shared, receiver_pid);
+
+    let services = supervision_integration::build_native_services(&shared, NamespaceId::DEFAULT);
+    let facility = services.local_send.expect("local send facility wired");
+    facility
+        .send_local(crate::native::local_send::LocalSendRequest {
+            target_pid: receiver_pid,
+            sender_pid,
+            message,
+            sender_clock: 1,
+            replay_driver: None,
+        })
+        .expect("local send to executing receiver succeeds");
+
+    // Store the receiver back: this drains pending_local_messages, decoding the
+    // ETF payload onto the receiver heap.
+    store_runnable_process(&shared, receiver);
+
+    let msg = read_mailbox_tuple(&shared, receiver_pid)
+        .unwrap_or_else(|| panic!("executing receiver gets the ref-bearing message"));
+    assert_eq!(msg.len(), 2, "message should be a 2-tuple {{Ref, ping}}");
+    let decoded_ref =
+        boxed::Reference::new(msg[0]).unwrap_or_else(|| panic!("first element is a reference"));
+    assert_eq!(
+        decoded_ref.id(),
+        ref_id,
+        "reference id must survive the ETF round trip through the Executing path"
+    );
+    assert_eq!(msg[1], Term::atom(ping));
+
+    // Keep the sender heap alive until after the facility call has copied/encoded.
+    drop(sender);
 }

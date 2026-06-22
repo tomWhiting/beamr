@@ -746,7 +746,7 @@ fn put_list_survives_heap_exhaustion_via_gc_and_grow() {
 fn put_tuple2_survives_heap_exhaustion_via_gc_and_grow() {
     // Build a 100-element tuple (101 heap words) on a near-full heap.
     // Without the ensure_space safety net, the alloc would fail with HeapFull.
-    let elements: Vec<Operand> = (0..100).map(|i| Operand::Integer(i)).collect();
+    let elements: Vec<Operand> = (0..100).map(Operand::Integer).collect();
     let mut code = vec![
         // Fill most of the heap with dummy cons cells first.
         Instruction::TestHeap {

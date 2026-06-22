@@ -60,10 +60,10 @@ fn call(module: &Module, atoms: Arc<AtomTable>, function: &str, args: &[Term]) -
         module: module.name,
         instruction_pointer: entry_ip,
     }));
-    let services = NativeServices {
-        atom_table: Some(atoms),
-        ..NativeServices::default()
-    };
+    // `NativeServices` is `#[non_exhaustive]`, so external crates build it from
+    // `default()` and set fields, rather than via a struct literal.
+    let mut services = NativeServices::default();
+    services.atom_table = Some(atoms);
 
     assert_eq!(
         run_with_native_services(&mut process, module, &ModuleRegistry::new(), &services),

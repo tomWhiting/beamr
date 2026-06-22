@@ -22,10 +22,10 @@ fn bif_and_literal_heavy_workload_does_not_grow_monotonically() {
     let atom_table = Arc::new(AtomTable::new());
     let module = workload_module(&atom_table);
     let registry = ModuleRegistry::new();
-    let services = NativeServices {
-        atom_table: Some(Arc::clone(&atom_table)),
-        ..NativeServices::default()
-    };
+    // `NativeServices` is `#[non_exhaustive]`, so external crates build it from
+    // `default()` and set fields, rather than via a struct literal.
+    let mut services = NativeServices::default();
+    services.atom_table = Some(Arc::clone(&atom_table));
     let mut process = Process::new(1, 512);
     process.reset_reductions(500_000);
     process.heap_mut().set_max_capacity(64 * 1024);

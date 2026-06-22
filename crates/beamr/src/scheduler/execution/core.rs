@@ -299,6 +299,7 @@ pub(in crate::scheduler) fn take_runnable_process(
                 pending_down_messages: Vec::new(),
                 pending_io_messages: Vec::new(),
                 pending_distribution_payloads: Vec::new(),
+                pending_local_messages: Vec::new(),
                 pending_ets_transfer_messages: Vec::new(),
                 pending_udp_messages: Vec::new(),
                 pending_tcp_messages: Vec::new(),
@@ -375,6 +376,16 @@ pub(in crate::scheduler) fn store_runnable_process(shared: &SharedState, mut pro
                 process.mailbox_mut().push_owned(message);
             }
             for payload in metadata.pending_distribution_payloads.drain(..) {
+                let mut context = crate::native::ProcessContext::new();
+                context.attach_process(&mut process, 0);
+                let Ok(message) =
+                    crate::etf::decode::decode_term(&payload, &mut context, &shared.atom_table)
+                else {
+                    continue;
+                };
+                process.mailbox_mut().push_owned(message);
+            }
+            for payload in metadata.pending_local_messages.drain(..) {
                 let mut context = crate::native::ProcessContext::new();
                 context.attach_process(&mut process, 0);
                 let Ok(message) =

@@ -6,10 +6,12 @@ use crate::interpreter::InstructionOutcome;
 use crate::interpreter::opcodes::core;
 use crate::loader::decode::compact::Operand;
 use crate::module::Module;
+use crate::native::local_send::{LocalSendError, LocalSendFacility, LocalSendRequest};
 use std::sync::{Arc, Mutex};
 
 use crate::process::{CodePosition, Process, ProcessStatus, ReceiveTimeout};
 use crate::replay::{RecordedDeliveryKind, ReplayDriver};
+use crate::term::Term;
 use crate::term::pid_ref::PidRef;
 
 /// Send x(1) to the process identified by x(0) when the caller supplies a receiver.
@@ -18,6 +20,7 @@ pub fn send(
     receiver: Option<&mut Process>,
     distribution: Option<&dyn DistributionSendFacility>,
     replay_driver: Option<&Arc<Mutex<ReplayDriver>>>,
+    local_send: Option<&dyn LocalSendFacility>,
 ) -> Result<InstructionOutcome, ExecError> {
     let target_term = process.x_reg(0);
     let target = PidRef::new(target_term).ok_or(ExecError::Badarg)?;
@@ -34,6 +37,13 @@ pub fn send(
     }
     let target_pid = target.pid_number();
     if let Some(receiver) = receiver.filter(|receiver| receiver.pid() == target_pid) {
+        // In-hand delivery path: the scheduler/unit test supplied the target
+        // body by reference. Unchanged from the pre-facility behaviour.
+        //
+        // NOTE: this branch is vestigial for production. Live cross-process local
+        // delivery now goes through `LocalSendFacility`; the scheduler passes
+        // `receiver = None`, so this path is exercised only by unit tests that hand
+        // a target `Process` directly to `dispatch_with_receiver`.
         let previous_sender_clock = process.logical_clock();
         let previous_receiver_clock = receiver.logical_clock();
         let sender_clock = process.tick_logical_clock();
@@ -82,9 +92,87 @@ pub fn send(
                 .transition_to(ProcessStatus::Running)
                 .map_err(|_| ExecError::Badarg)?;
         }
+    } else if target_pid == process.pid() {
+        // Self-send: the sender's own body is taken out of the slot during its
+        // slice (it is Executing), so it must be delivered to the in-hand
+        // process directly rather than via the facility/slot. Both clocks are
+        // this process's clock.
+        send_to_self(process, message, replay_driver)?;
+    } else if let Some(facility) = local_send {
+        // Cross-process local send: route through the scheduler-implemented
+        // facility, which performs the slot-locked delivery, the Present-case
+        // clock/replay work, and the wake.
+        let previous_sender_clock = process.logical_clock();
+        let sender_clock = process.tick_logical_clock();
+        let sender_pid = process.pid();
+        if let Err(LocalSendError::ReplayMismatch(detail)) = facility.send_local(LocalSendRequest {
+            target_pid,
+            sender_pid,
+            message,
+            sender_clock,
+            replay_driver,
+        }) {
+            process.set_logical_clock(previous_sender_clock);
+            return Err(ExecError::ReplayMismatch(detail));
+        }
+        #[cfg(feature = "telemetry")]
+        crate::telemetry::metrics::record_message_sent();
     }
+    // No `local_send` facility (e.g. bare `run()` with no scheduler) falls
+    // through here, preserving the pre-facility silent-set-x0 behaviour.
     process.set_x_reg(0, message);
     Ok(InstructionOutcome::Continue)
+}
+
+/// Deliver a message from a process to itself, performing the single-process
+/// clock observation and replay check on the in-hand process.
+fn send_to_self(
+    process: &mut Process,
+    message: Term,
+    replay_driver: Option<&Arc<Mutex<ReplayDriver>>>,
+) -> Result<(), ExecError> {
+    let self_pid = process.pid();
+    let previous_clock = process.logical_clock();
+    let sender_clock = process.tick_logical_clock();
+    let receiver_clock = process.observe_message_clock(sender_clock);
+    if let Some(driver) = replay_driver {
+        let mut guard = match driver.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        let recorded = match guard.next_message_delivery(
+            RecordedDeliveryKind::Message,
+            Some(self_pid),
+            self_pid,
+            message,
+        ) {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                process.set_logical_clock(previous_clock);
+                return Err(error.into());
+            }
+        };
+        if recorded.sender_clock != sender_clock || recorded.receiver_clock != receiver_clock {
+            process.set_logical_clock(previous_clock);
+            return Err(ExecError::ReplayMismatch(format!(
+                "message delivery clock mismatch: expected sender/receiver clocks ({}, {}), recorded ({}, {})",
+                sender_clock, receiver_clock, recorded.sender_clock, recorded.receiver_clock
+            )));
+        }
+    }
+    #[cfg(feature = "telemetry")]
+    process
+        .mailbox()
+        .sender()
+        .send_traced(self_pid, self_pid, message, process.heap_mut())
+        .map_err(send_error)?;
+    #[cfg(not(feature = "telemetry"))]
+    process
+        .mailbox()
+        .sender()
+        .send(message, process.heap_mut())
+        .map_err(send_error)?;
+    Ok(())
 }
 
 fn distribution_send_error(error: DistributionSendError) -> ExecError {
@@ -290,7 +378,7 @@ mod tests {
         sender.set_x_reg(1, message);
 
         assert_eq!(
-            send(&mut sender, Some(&mut receiver), None, None),
+            send(&mut sender, Some(&mut receiver), None, None, None),
             Ok(InstructionOutcome::Continue)
         );
 
@@ -318,7 +406,13 @@ mod tests {
         ]))));
 
         assert_eq!(
-            send(&mut sender, Some(&mut receiver), None, Some(&replay_driver),),
+            send(
+                &mut sender,
+                Some(&mut receiver),
+                None,
+                Some(&replay_driver),
+                None
+            ),
             Ok(InstructionOutcome::Continue)
         );
 
@@ -346,7 +440,13 @@ mod tests {
         ]))));
 
         assert!(matches!(
-            send(&mut sender, Some(&mut receiver), None, Some(&replay_driver),),
+            send(
+                &mut sender,
+                Some(&mut receiver),
+                None,
+                Some(&replay_driver),
+                None
+            ),
             Err(ExecError::ReplayMismatch(_))
         ));
 
@@ -363,7 +463,7 @@ mod tests {
         sender.set_x_reg(1, Term::atom(Atom::OK));
 
         assert_eq!(
-            send(&mut sender, None, None, None),
+            send(&mut sender, None, None, None, None),
             Ok(InstructionOutcome::Continue)
         );
         assert_eq!(sender.x_reg(0), Term::atom(Atom::OK));
@@ -378,7 +478,7 @@ mod tests {
         sender.set_x_reg(1, Term::atom(Atom::OK));
 
         assert_eq!(
-            send(&mut sender, None, None, None),
+            send(&mut sender, None, None, None, None),
             Err(ExecError::NoConnection)
         );
     }
@@ -530,7 +630,7 @@ mod tests {
         sender.set_x_reg(1, Term::atom(Atom::OK));
 
         assert_eq!(
-            send(&mut sender, Some(&mut receiver), None, None),
+            send(&mut sender, Some(&mut receiver), None, None, None),
             Ok(InstructionOutcome::Continue)
         );
         assert_eq!(receiver.status(), ProcessStatus::Running);

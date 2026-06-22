@@ -36,6 +36,7 @@ use crate::timer::TimerWheel;
 
 /// Bundle of native services injected by the scheduler into BIF execution.
 #[derive(Default)]
+#[non_exhaustive]
 pub struct NativeServices {
     /// Atom table used for BEAM term ordering and atom conversion BIFs.
     pub atom_table: Option<Arc<AtomTable>>,
@@ -45,6 +46,8 @@ pub struct NativeServices {
     pub net_kernel: Option<Arc<NetKernel>>,
     /// Distribution send facility for remote PID messaging.
     pub distribution_send: Option<Arc<dyn DistributionSendFacility>>,
+    /// Local send facility for cross-process local PID messaging via the scheduler.
+    pub local_send: Option<Arc<dyn crate::native::local_send::LocalSendFacility>>,
     /// Timer wheel for asynchronous timer BIFs.
     pub timers: Option<Arc<Mutex<TimerWheel>>>,
     /// Spawn facility for process creation BIFs.

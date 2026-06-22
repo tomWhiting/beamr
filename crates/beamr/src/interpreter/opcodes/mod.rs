@@ -102,10 +102,11 @@ pub fn dispatch_with_services(
 
 /// Dispatch one already-fetched instruction with an optional send target process.
 ///
-/// The single-process execution loop calls [`dispatch`] and therefore treats a
-/// missing send target as BEAM's silent drop. Scheduler integration can pass the
-/// resolved target process here until process ownership/run-queue infrastructure
-/// provides a richer execution context.
+/// NOTE: live cross-process delivery now flows through `LocalSendFacility` (wired
+/// via `NativeServices::local_send`), not through this in-hand `receiver`. The
+/// `receiver` parameter and the matching `Send`-opcode branch in `messaging.rs`
+/// are retained only for unit tests that drive `Send` with a target body supplied
+/// by reference; production scheduler integration passes `None` here.
 pub fn dispatch_with_receiver(
     process: &mut Process,
     module: &Module,
@@ -323,6 +324,8 @@ fn dispatch_common(
                 .and_then(|services| services.distribution_send.as_deref()),
             ctx.services
                 .and_then(|services| services.replay_driver.as_ref()),
+            ctx.services
+                .and_then(|services| services.local_send.as_deref()),
         ),
         Instruction::LoopRec { fail, destination } => {
             messaging::loop_rec(process, module, fail, destination)

@@ -57,6 +57,7 @@ pub mod group_leader;
 pub mod inet_bifs;
 pub mod io_message;
 pub mod links;
+pub mod local_send;
 #[cfg(feature = "fs")]
 pub mod meridian_ffi;
 pub mod otp_stubs;
@@ -97,6 +98,7 @@ pub use ets_bifs::EtsFacility;
 pub use group_leader::GroupLeaderFacility;
 pub use io_message::IoMessageFacility;
 pub use links::LinkFacility;
+pub use local_send::{LocalSendError, LocalSendFacility, LocalSendRequest};
 pub use process_info_bifs::{
     ProcessInfoFacility, ProcessInfoItem, ProcessInfoStatus, ProcessInfoValue, ProcessMonitorInfo,
 };

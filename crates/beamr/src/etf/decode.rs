@@ -215,6 +215,18 @@ fn decode_after_tag(
             let len = cursor.read_u32()? as usize;
             decode_big_integer(cursor, len, context, budget)
         }
+        // NOTE: asymmetry with `encode_closure`. The encoder serialises a
+        // 0-capture Closure as EXPORT_EXT, encoding the function *index* in the
+        // function-atom slot. Here we reconstruct a 3-tuple `{module, function,
+        // arity}` rather than a Closure, because a faithful Closure cannot be
+        // rebuilt from the wire: the encoder drops the closure's `generation` and
+        // `unique_id`, and EXPORT_EXT is also standard ETF for `fun M:F/A`, whose
+        // natural decoded shape is the M/F/A triple (the existing round-trip tests
+        // assert exactly this). Free-variable closures are not affected: the
+        // encoder rejects them outright (num_free != 0 => UnsupportedTerm), and on
+        // the deferred local-send path that rejection is now surfaced loudly by the
+        // Executing-arm telemetry/debug_assert in supervision_integration.rs rather
+        // than silently dropping the message.
         tag if tag == tags::EXPORT_EXT => {
             let module = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
             let function = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
@@ -266,6 +278,12 @@ fn decode_after_tag(
             budget,
             tag == tags::NEW_PID_EXT,
         ),
+        tag if tag == tags::NEWER_REFERENCE_EXT => {
+            decode_newer_reference(cursor, context, atom_table, options, depth, budget)
+        }
+        tag if tag == tags::REFERENCE_EXT => {
+            decode_reference(cursor, context, atom_table, options, depth, budget)
+        }
         other => Err(DecodeError::UnsupportedTag(other)),
     }
 }
@@ -292,6 +310,62 @@ fn decode_pid(
     }
     context
         .alloc_external_pid(node, id, serial)
+        .map_err(|_| DecodeError::HeapAllocationFailed)
+}
+
+/// Decode a `NEWER_REFERENCE_EXT` (tag 90) term — the layout emitted by
+/// `encode_reference`: a u16 id-word count, a node atom, a u32 creation, then
+/// `count` big-endian u32 id words (most-significant first). Our encoder always
+/// splits a local reference's u64 id into exactly two words and emits the
+/// `NONODE_NOHOST` node; we mirror `copy_reference` by reconstructing a *local*
+/// reference from the folded id on the receiver heap. (Real Erlang references
+/// may carry up to three id words; we fold all of them into a u64, keeping the
+/// low 64 bits, which round-trips everything our encoder can produce.)
+fn decode_newer_reference(
+    cursor: &mut Cursor<'_>,
+    context: &mut ProcessContext<'_>,
+    atom_table: &AtomTable,
+    options: DecodeOptions,
+    depth: usize,
+    budget: RuntimeDecodeBudget,
+) -> Result<Term, DecodeError> {
+    let word_count = usize::from(cursor.read_u16()?);
+    // Node atom — decoded for format-conformance (and atom-safety in safe mode),
+    // then discarded: local references store only the id, exactly as the encoder
+    // and `copy_reference` treat them.
+    let node = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
+    if node.as_atom().is_none() {
+        return Err(DecodeError::UnsupportedTag(tags::NEWER_REFERENCE_EXT));
+    }
+    let _creation = cursor.read_u32()?;
+    let mut id: u64 = 0;
+    for _ in 0..word_count {
+        id = (id << u32::BITS) | u64::from(cursor.read_u32()?);
+    }
+    context
+        .alloc_reference(id)
+        .map_err(|_| DecodeError::HeapAllocationFailed)
+}
+
+/// Decode a legacy `REFERENCE_EXT` (tag 114) term for interop: a node atom, a
+/// single u32 id, and a u8 creation. Reconstructed as a local reference, mirroring
+/// `decode_newer_reference`.
+fn decode_reference(
+    cursor: &mut Cursor<'_>,
+    context: &mut ProcessContext<'_>,
+    atom_table: &AtomTable,
+    options: DecodeOptions,
+    depth: usize,
+    budget: RuntimeDecodeBudget,
+) -> Result<Term, DecodeError> {
+    let node = decode_one(cursor, context, atom_table, options, depth + 1, budget)?;
+    if node.as_atom().is_none() {
+        return Err(DecodeError::UnsupportedTag(tags::REFERENCE_EXT));
+    }
+    let id = u64::from(cursor.read_u32()?);
+    let _creation = cursor.read_u8()?;
+    context
+        .alloc_reference(id)
         .map_err(|_| DecodeError::HeapAllocationFailed)
 }
 
@@ -525,7 +599,9 @@ mod tests {
     use crate::etf::encode::{EncodeOptions, encode_term, encode_term_with_options};
     use crate::process::Process;
     use crate::term::binary::Binary;
-    use crate::term::boxed::{BigInt, Tuple, write_closure, write_tuple};
+    use crate::term::boxed::{
+        BigInt, Reference, Tuple, write_closure, write_reference, write_tuple,
+    };
 
     fn context(process: &mut Process) -> ProcessContext<'_> {
         let mut context = ProcessContext::new();
@@ -743,6 +819,121 @@ mod tests {
             Binary::new(decoded.term).expect("binary").as_bytes(),
             &[1, 2, 3]
         );
+    }
+
+    #[test]
+    fn reference_round_trips_through_encode_decode() {
+        // A local reference must survive encode_term -> decode_term with an
+        // identical id (the BLOCKER: decode.rs previously had no reference arm,
+        // so a ref sent to an Executing receiver encoded fine then failed to
+        // decode and was silently dropped).
+        let atoms = AtomTable::with_common_atoms();
+        let id = 0x1234_5678_9abc_def0_u64;
+        let mut ref_heap = [0_u64; 2];
+        let reference = write_reference(&mut ref_heap, id).expect("reference fits");
+
+        let bytes = encode_term(reference, &atoms).expect("encode reference");
+        assert_eq!(
+            bytes.get(1),
+            Some(&tags::NEWER_REFERENCE_EXT),
+            "encoder should emit NEWER_REFERENCE_EXT"
+        );
+
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode reference");
+
+        let decoded_ref = Reference::new(decoded).expect("decoded term should be a Reference");
+        assert_eq!(decoded_ref.id(), id, "reference id must be preserved");
+    }
+
+    #[test]
+    fn legacy_reference_ext_decodes_to_local_reference() {
+        // Interop: the classic REFERENCE_EXT (tag 114) layout — node atom, u32
+        // id, u8 creation — decodes to a local reference carrying the id.
+        let atoms = AtomTable::with_common_atoms();
+        let bytes = [
+            tags::VERSION,
+            tags::REFERENCE_EXT,
+            tags::SMALL_ATOM_UTF8_EXT,
+            8,
+            b'n',
+            b'o',
+            b'n',
+            b'o',
+            b'd',
+            b'e',
+            b'@',
+            b'x',
+            0,
+            0,
+            0,
+            42, // u32 id
+            0,  // u8 creation
+        ];
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode legacy reference");
+        let decoded_ref = Reference::new(decoded).expect("decoded term should be a Reference");
+        assert_eq!(decoded_ref.id(), 42);
+    }
+
+    #[test]
+    fn reference_in_tuple_round_trips() {
+        // The real gen_server shape: a `{Ref, Payload}` tuple must round-trip,
+        // exercising the reference arm reached via decode_one inside a tuple.
+        let atoms = AtomTable::with_common_atoms();
+        let id = 0xdead_beef_u64;
+        let mut ref_heap = [0_u64; 2];
+        let reference = write_reference(&mut ref_heap, id).expect("reference fits");
+        let mut tuple_heap = [0_u64; 3];
+        let tuple =
+            write_tuple(&mut tuple_heap, &[reference, Term::atom(Atom::OK)]).expect("tuple fits");
+
+        let bytes = encode_term(tuple, &atoms).expect("encode tuple");
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode tuple");
+
+        let decoded_tuple = Tuple::new(decoded).expect("tuple result");
+        let decoded_ref =
+            Reference::new(decoded_tuple.get(0).expect("ref element")).expect("element is a ref");
+        assert_eq!(decoded_ref.id(), id);
+        assert_eq!(decoded_tuple.get(1), Some(Term::atom(Atom::OK)));
+    }
+
+    #[test]
+    fn zero_capture_closure_round_trips_to_documented_tuple() {
+        // Documented asymmetry: a 0-capture closure encodes as EXPORT_EXT and
+        // decodes to a {module, function, arity} tuple (NOT a Closure). This
+        // pins the intentional behaviour described on the EXPORT_EXT decode arm.
+        let atoms = AtomTable::with_common_atoms();
+        let module = atoms.intern("round_trip_module");
+        let function = atoms.intern("round_trip_function");
+        let arity = 2;
+        let mut closure_heap = [0_u64; 7];
+        let closure = write_closure(
+            &mut closure_heap,
+            module,
+            u64::from(function.index()),
+            arity,
+            1,
+            0,
+            &[],
+        )
+        .expect("closure fits");
+
+        let bytes = encode_term(closure, &atoms).expect("encode closure");
+        assert_eq!(bytes.get(1), Some(&tags::EXPORT_EXT));
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+        let decoded = decode_term(&bytes, &mut ctx, &atoms).expect("decode closure");
+
+        let tuple = Tuple::new(decoded).expect("documented tuple shape");
+        assert_eq!(tuple.get(0), Some(Term::atom(module)));
+        assert_eq!(tuple.get(1), Some(Term::atom(function)));
+        assert_eq!(tuple.get(2), Some(Term::small_int(i64::from(arity))));
     }
 
     #[test]
