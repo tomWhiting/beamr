@@ -468,7 +468,14 @@ fn process_exit_signal(
                     .into_iter()
                     .map(|linked_pid| (target_pid, linked_pid, propagated_reason))
                     .collect()
-            } else if reason != ExitReason::Normal && metadata.trap_exit {
+            } else if metadata.trap_exit {
+                // Process traps exits: queue {EXIT, SourcePid, Reason} for
+                // delivery when the slice completes. This mirrors the Present
+                // arm's `else if target.trap_exit()` and MUST include NORMAL
+                // exits (OTP delivers {'EXIT', Pid, normal} for a normal
+                // linked exit to a trapping process). `should_die` has already
+                // peeled off Kill and abnormal-non-trapping cases, so reaching
+                // here means a trapping target for any non-kill reason.
                 metadata
                     .pending_exit_messages
                     .push((PendingExitSource::Local(source_pid), reason));

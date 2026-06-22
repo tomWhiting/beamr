@@ -137,16 +137,21 @@ fn scheduler_with(atoms: &Arc<AtomTable>, registry: Arc<ModuleRegistry>) -> Arc<
     )
 }
 
-fn run_until_exit_bounded(scheduler: &Arc<Scheduler>, pid: u64) -> (ExitReason, Term) {
+fn run_until_exit_bounded(
+    scheduler: &Arc<Scheduler>,
+    pid: u64,
+) -> (ExitReason, beamr::ets::OwnedTerm) {
     let (sender, completion) = std::sync::mpsc::channel();
     let scheduler_for_wait = Arc::clone(scheduler);
     std::thread::spawn(move || {
         let _ = sender.send(scheduler_for_wait.run_until_exit(pid));
     });
-    let (reason, result) = completion
+    // Return the OWNED term, not `result.root()`: a boxed exit value lives in
+    // the `OwnedTerm`'s storage, so handing back a bare `Term` would dangle
+    // once the local `OwnedTerm` drops. Callers `.root()` it while it's alive.
+    completion
         .recv_timeout(Duration::from_secs(30))
-        .unwrap_or_else(|_| panic!("process {pid} never exited"));
-    (reason, result.root())
+        .unwrap_or_else(|_| panic!("process {pid} never exited"))
 }
 
 #[test]
@@ -191,7 +196,7 @@ fn beam_to_native_to_beam_round_trip() {
     let (reason, result) = run_until_exit_bounded(&scheduler, collector_pid);
     assert_eq!(reason, ExitReason::Normal);
     assert_eq!(
-        result,
+        result.root(),
         Term::atom(ping),
         "the BEAM collector must observe the native echo's reply"
     );
@@ -232,7 +237,7 @@ fn native_replies_to_message_sent_from_rust() {
 
     let (reason, result) = run_until_exit_bounded(&scheduler, collector_pid);
     assert_eq!(reason, ExitReason::Normal);
-    assert_eq!(result, Term::atom(ping));
+    assert_eq!(result.root(), Term::atom(ping));
 
     scheduler.shutdown();
 }
@@ -267,7 +272,7 @@ fn native_parks_on_empty_mailbox_then_wakes_on_delivery() {
     let (reason, result) = run_until_exit_bounded(&scheduler, collector_pid);
     assert_eq!(reason, ExitReason::Normal);
     assert_eq!(
-        result,
+        result.root(),
         Term::atom(ping),
         "a delivery after the native process parked must wake it (no loss)"
     );
@@ -339,7 +344,7 @@ fn native_self_send_is_delivered_next_slice() {
     let (reason, result) = run_until_exit_bounded(&scheduler, collector_pid);
     assert_eq!(reason, ExitReason::Normal);
     assert_eq!(
-        result,
+        result.root(),
         Term::atom(marker_atom),
         "the self-sent marker must reach the collector via the next slice"
     );
@@ -411,7 +416,7 @@ fn native_handler_spawns_working_native_child() {
     let (reason, result) = run_until_exit_bounded(&scheduler, collector_pid);
     assert_eq!(reason, ExitReason::Normal);
     assert_eq!(
-        result,
+        result.root(),
         Term::atom(ping),
         "the native child spawned via ctx.spawn_native must deliver the reply"
     );

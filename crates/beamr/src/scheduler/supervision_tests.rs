@@ -720,7 +720,16 @@ fn exit_signal_queues_message_for_executing_trapping_process() {
 }
 
 #[test]
-fn normal_exit_signal_does_not_queue_message_for_executing_trapping_process() {
+fn normal_exit_signal_queues_message_for_executing_trapping_process() {
+    // Regression for the Executing-arm normal-exit drop bug: a NORMAL linked
+    // exit to a trapping process that is MID-SLICE (`ProcessSlot::Executing`)
+    // MUST still deliver `{'EXIT', Pid, normal}`, exactly as the Present arm
+    // does. The Executing arm previously gated message delivery on
+    // `reason != Normal`, so it silently dropped `{EXIT, src, normal}` —
+    // diverging from OTP (a trapping process receives `{'EXIT', Pid, normal}`
+    // for a normal linked exit) and from the Present arm. The child must NOT be
+    // tombstoned or killed (a normal exit never kills), and the message must be
+    // drained into the mailbox at the slice boundary by `store_runnable_process`.
     let shared = make_shared_state();
     let parent = insert_process(&shared, 1);
     let child = insert_process(&shared, 2);
@@ -733,10 +742,18 @@ fn normal_exit_signal_does_not_queue_message_for_executing_trapping_process() {
 
     assert!(
         !shared.exit_tombstones.contains_key(&child),
-        "normal exit should not tombstone a linked executing child"
+        "a normal exit must not tombstone a linked trapping executing child"
+    );
+    assert!(
+        is_alive(&shared, child),
+        "a trapped normal exit must not kill the executing child"
     );
     store_runnable_process(&shared, process);
-    assert_eq!(read_mailbox_tuple(&shared, child), None);
+    let msg = read_mailbox_tuple(&shared, child)
+        .unwrap_or_else(|| panic!("normal EXIT message must be delivered on store-back"));
+    assert_eq!(msg[0], Term::atom(Atom::EXIT));
+    assert_eq!(msg[1], Term::pid(parent));
+    assert_eq!(msg[2], Term::atom(Atom::NORMAL));
 }
 
 #[test]

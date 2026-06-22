@@ -625,7 +625,12 @@ fn trap_exit_native_receives_normal_exit_message() {
 // `pending_exit_messages` queue-and-drain path makes no native/bytecode
 // distinction (the same `Executing` arm and `store_runnable_process` serve the
 // bytecode trap_exit path), and the Present-arm native delivery is covered by
-// the two tests above. Closing this gap cleanly needs a scheduler hook that
+// the two tests above. The in-crate unit tests
+// `scheduler::supervision_tests::{exit_signal_queues_message_for_executing_trapping_process,
+// normal_exit_signal_queues_message_for_executing_trapping_process}` drive the
+// Executing arm deterministically (via `make_executing`) for BOTH abnormal and
+// normal reasons, asserting `{'EXIT', Pid, reason}` is queued and drained.
+// Closing the remaining native-specific gap cleanly needs a scheduler hook that
 // parks a native process in `Executing` deterministically — tracked separately.
 
 // ── R5: factory builds fresh, independent handlers ──────────────────────────
