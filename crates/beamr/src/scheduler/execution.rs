@@ -95,8 +95,7 @@ impl Scheduler {
     /// it.
     pub fn run_until_exit(&self, pid: u64) -> (ExitReason, OwnedTerm) {
         loop {
-            if let Some(entry) = self.shared.exit_tombstones.get(&pid) {
-                let reason = *entry;
+            if let Some(reason) = self.shared.exit_tombstones.get(&pid) {
                 let result = self
                     .shared
                     .exit_results
@@ -121,11 +120,17 @@ impl Scheduler {
     /// The read is non-consuming: the tombstone is left in place, so this can
     /// be called repeatedly and does not disturb `run_until_exit` or any other
     /// reader. Exit tombstones are written once at process teardown and are
-    /// never removed for the lifetime of the scheduler, so a peek after a
-    /// process has exited reliably observes the reason — including for a
-    /// process terminated externally via [`Scheduler::terminate_process`].
+    /// retained with a *bounded* guarantee: the most recent
+    /// [`TOMBSTONE_CAPACITY`](super::exit_tombstones::TOMBSTONE_CAPACITY)
+    /// exits are kept, evicting the oldest on overflow (FIFO). A peek after a
+    /// process has exited therefore reliably observes the reason — including
+    /// for a process terminated externally via
+    /// [`Scheduler::terminate_process`] — *unless* more than
+    /// `TOMBSTONE_CAPACITY` further processes have exited since, in which case
+    /// the now-evicted tombstone reads back as `None`. The cap (64Ki) is sized
+    /// so this is unreachable for any realistic supervisor poll latency.
     pub fn peek_exit_reason(&self, pid: u64) -> Option<ExitReason> {
-        self.shared.exit_tombstones.get(&pid).map(|entry| *entry)
+        self.shared.exit_tombstones.get(&pid)
     }
 
     /// Retrieve the execution error that caused a process to exit, if any.

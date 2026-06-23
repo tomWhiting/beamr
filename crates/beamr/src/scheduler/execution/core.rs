@@ -460,7 +460,7 @@ pub(in crate::scheduler) fn cleanup_if_tombstoned_after_store(
 }
 
 fn tombstone_reason(shared: &SharedState, pid: u64) -> Option<ExitReason> {
-    shared.exit_tombstones.get(&pid).map(|reason| *reason)
+    shared.exit_tombstones.get(&pid)
 }
 
 fn process_has_queued_messages(shared: &SharedState, pid: u64) -> bool {
@@ -1466,7 +1466,7 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     pid: u64,
     reason: ExitReason,
 ) {
-    shared.exit_tombstones.insert(pid, reason);
+    shared.insert_exit_tombstone(pid, reason);
     #[cfg(feature = "telemetry")]
     crate::telemetry::lifecycle::record_process_exited(&shared.atom_table, pid, reason);
     let _deleted_tables = shared.transfer_or_delete_tables_owned_by(pid);

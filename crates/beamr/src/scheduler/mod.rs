@@ -1,6 +1,7 @@
 pub mod dirty;
 mod execution;
 mod exit_capture;
+mod exit_tombstones;
 mod module_management;
 mod process_slot;
 pub mod run_queue;
@@ -148,7 +149,7 @@ pub(super) struct SharedState {
     wait_set: Mutex<WaitSet>,
     wake_condvar: Condvar,
     process_bodies: DashMap<u64, Mutex<ProcessSlot>>,
-    exit_tombstones: DashMap<u64, ExitReason>,
+    exit_tombstones: exit_tombstones::BoundedTombstones,
     exit_results: DashMap<u64, OwnedTerm>,
     exit_errors: DashMap<u64, ExecError>,
     exit_exceptions: DashMap<u64, OwnedException>,
@@ -227,6 +228,22 @@ impl TelemetryMetricState {
 }
 
 impl SharedState {
+    /// Insert an exit tombstone for `pid`, evicting the oldest tombstone (and
+    /// its paired satellite entries) if the bounded store is over capacity.
+    ///
+    /// This is the single write path for tombstones. Eviction removes the
+    /// evicted pid's `exit_results` / `exit_errors` / `exit_exceptions` along
+    /// with its tombstone, so a satellite can never outlive the tombstone it
+    /// pairs with and the "tombstone observed ⇒ paired result already present"
+    /// invariant the readers rely on is preserved.
+    pub(super) fn insert_exit_tombstone(&self, pid: u64, reason: ExitReason) {
+        if let Some(evicted) = self.exit_tombstones.insert(pid, reason) {
+            self.exit_results.remove(&evicted);
+            self.exit_errors.remove(&evicted);
+            self.exit_exceptions.remove(&evicted);
+        }
+    }
+
     pub(super) fn create_table(&self, metadata: EtsTableMetadata) -> EtsTableId {
         self.ets_registry.create_table(metadata)
     }
@@ -644,7 +661,7 @@ impl Scheduler {
             wait_set: Mutex::new(WaitSet::default()),
             wake_condvar: Condvar::new(),
             process_bodies: DashMap::new(),
-            exit_tombstones: DashMap::new(),
+            exit_tombstones: exit_tombstones::BoundedTombstones::new(),
             exit_results: DashMap::new(),
             exit_errors: DashMap::new(),
             exit_exceptions: DashMap::new(),

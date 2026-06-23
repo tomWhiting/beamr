@@ -70,7 +70,7 @@ fn fail_replay_timer(shared: &SharedState, error: crate::replay::ReplayMismatch)
     for entry in &shared.process_bodies {
         let pid = *entry.key();
         shared.exit_errors.insert(pid, exec_error.clone());
-        shared.exit_tombstones.insert(pid, ExitReason::Error);
+        shared.insert_exit_tombstone(pid, ExitReason::Error);
         let _removed = shared.process_table.remove(pid);
     }
     shared

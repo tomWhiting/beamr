@@ -303,9 +303,7 @@ pub(crate) fn process_remote_exit_signal(
                 drop(entry);
                 wake_process(shared, target_pid);
             } else if reason != ExitReason::Normal {
-                shared
-                    .exit_tombstones
-                    .insert(target_pid, link::terminal_reason(reason));
+                shared.insert_exit_tombstone(target_pid, link::terminal_reason(reason));
             }
         }
         ProcessSlot::Absent => {}
@@ -392,7 +390,7 @@ fn process_exit_signal(
                 target.terminate(propagated_reason);
 
                 // Record tombstone and remove resources owned by the terminated process.
-                shared.exit_tombstones.insert(target_pid, propagated_reason);
+                shared.insert_exit_tombstone(target_pid, propagated_reason);
                 let _deleted_tables = shared.transfer_or_delete_tables_owned_by(target_pid);
                 {
                     let mut ls = lock_or_recover(&shared.link_set);
@@ -454,7 +452,7 @@ fn process_exit_signal(
                     .copied()
                     .filter(|linked_pid| *linked_pid != source_pid)
                     .collect();
-                shared.exit_tombstones.insert(target_pid, propagated_reason);
+                shared.insert_exit_tombstone(target_pid, propagated_reason);
                 let _deleted_tables = shared.transfer_or_delete_tables_owned_by(target_pid);
                 {
                     let mut ls = lock_or_recover(&shared.link_set);
@@ -1939,7 +1937,7 @@ impl SupervisionFacility for SchedulerSupervisionFacility {
         let mut ms = lock_or_recover(&self.shared.monitor_set);
 
         // Check if target is already dead.
-        if let Some(reason) = self.shared.exit_tombstones.get(&target_pid).map(|r| *r) {
+        if let Some(reason) = self.shared.exit_tombstones.get(&target_pid) {
             // Allocate reference from monitor set.
             let reference = ms.allocate_reference_pub();
 
@@ -2079,7 +2077,7 @@ impl SupervisionFacility for SchedulerSupervisionFacility {
 }
 
 fn shared_exit_tombstone(shared: &SharedState, pid: u64, reason: ExitReason) {
-    shared.exit_tombstones.insert(pid, reason);
+    shared.insert_exit_tombstone(pid, reason);
     let _deleted_tables = shared.transfer_or_delete_tables_owned_by(pid);
     let mut ls = lock_or_recover(&shared.link_set);
     ls.process_exited_tombstone(pid, reason);

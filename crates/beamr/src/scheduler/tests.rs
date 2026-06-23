@@ -1079,7 +1079,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         wait_set: Mutex::new(WaitSet::default()),
         wake_condvar: Condvar::new(),
         process_bodies: DashMap::new(),
-        exit_tombstones: DashMap::new(),
+        exit_tombstones: exit_tombstones::BoundedTombstones::new(),
         exit_results: DashMap::new(),
         exit_errors: DashMap::new(),
         exit_exceptions: DashMap::new(),
@@ -1432,7 +1432,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         wait_set: Mutex::new(WaitSet::default()),
         wake_condvar: Condvar::new(),
         process_bodies: DashMap::new(),
-        exit_tombstones: DashMap::new(),
+        exit_tombstones: exit_tombstones::BoundedTombstones::new(),
         exit_results: DashMap::new(),
         exit_errors: DashMap::new(),
         exit_exceptions: DashMap::new(),
@@ -2999,6 +2999,69 @@ fn peek_exit_reason_observes_external_termination_without_consuming() {
     assert_eq!(reason, ExitReason::Kill);
     // And peek still works after run_until_exit (which leaves the tombstone).
     assert_eq!(scheduler.peek_exit_reason(pid), Some(ExitReason::Kill));
+
+    scheduler.shutdown();
+}
+
+/// (d) `run_until_exit` returns the correct reason for a process that just
+/// exited even under bounded-tombstone cap pressure.
+///
+/// The bounded store evicts in insertion order (FIFO). The pid we wait on has
+/// its tombstone written *last* (it is the newest entry), so FIFO eviction —
+/// which only ever reclaims the OLDEST entries — can never remove it out from
+/// under a blocked reader. Here we saturate the store with `TOMBSTONE_CAPACITY`
+/// synthetic older tombstones first, then externally terminate the real
+/// process; its tombstone becomes the newest, the synthetic ones are evicted
+/// instead, and `run_until_exit` still returns the right reason.
+#[test]
+fn run_until_exit_correct_under_tombstone_cap_pressure() {
+    use super::exit_tombstones::TOMBSTONE_CAPACITY;
+
+    PEEK_PARKED.store(false, Ordering::Release);
+    let atoms = AtomTable::new();
+    let module_name = atoms.intern("run_until_exit_cap_pressure");
+    let registry = Arc::new(ModuleRegistry::new());
+    let module = native_call_module(&registry, module_name, peek_park_native, None);
+    let scheduler = single_thread_scheduler(&registry);
+
+    let pid = scheduler.spawn_process(&module);
+    wait_until(10_000, || PEEK_PARKED.load(Ordering::Acquire));
+    wait_until(10_000, || scheduler.trap_exit(pid).is_some());
+
+    // Saturate the bounded store with synthetic OLDER tombstones using a pid
+    // range that cannot collide with the live process's pid. After this the
+    // store is at capacity and the live pid is still absent from it.
+    let synthetic_base = pid + 1_000_000;
+    for offset in 0..(TOMBSTONE_CAPACITY as u64) {
+        scheduler
+            .shared
+            .insert_exit_tombstone(synthetic_base + offset, ExitReason::Normal);
+    }
+    assert_eq!(
+        scheduler.peek_exit_reason(pid),
+        None,
+        "live process has no tombstone yet, even with the store saturated"
+    );
+
+    // Externally terminate the real process: its tombstone is now the NEWEST
+    // entry. This pushes the store over capacity, evicting the OLDEST synthetic
+    // tombstone — never the just-written one for `pid`.
+    scheduler.terminate_process(pid, ExitReason::Kill);
+
+    // The blocking reader observes the real exit and returns the right reason,
+    // despite full cap pressure.
+    let (reason, _value) = scheduler.run_until_exit(pid);
+    assert_eq!(
+        reason,
+        ExitReason::Kill,
+        "run_until_exit must return the real exit reason under cap pressure"
+    );
+    // The oldest synthetic tombstone was evicted to make room for the newest.
+    assert_eq!(
+        scheduler.peek_exit_reason(synthetic_base),
+        None,
+        "the oldest synthetic tombstone is the one evicted, not the live pid's"
+    );
 
     scheduler.shutdown();
 }

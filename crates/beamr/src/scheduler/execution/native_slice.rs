@@ -34,7 +34,7 @@ pub(in crate::scheduler) fn run_native_slice(
     // the handler — so a supervision kill is honoured and `handle` never runs
     // for a process already marked dead. This is the SAME tombstone path used
     // at the post-slice check in `run_process`.
-    if let Some(reason) = shared.exit_tombstones.get(&pid).map(|reason| *reason) {
+    if let Some(reason) = shared.exit_tombstones.get(&pid) {
         return SliceOutcome::Exited(reason, OwnedTerm::immediate(Term::NIL));
     }
 

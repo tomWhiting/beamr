@@ -277,7 +277,7 @@ fn make_shared_state() -> Arc<SharedState> {
         wait_set: std::sync::Mutex::new(WaitSet::default()),
         wake_condvar: std::sync::Condvar::new(),
         process_bodies: DashMap::new(),
-        exit_tombstones: DashMap::new(),
+        exit_tombstones: exit_tombstones::BoundedTombstones::new(),
         exit_results: DashMap::new(),
         exit_errors: DashMap::new(),
         exit_exceptions: DashMap::new(),
@@ -528,12 +528,12 @@ fn kill_propagates_killed_and_non_trapping_processes_die() {
     assert!(!is_alive(&shared, c), "cascade kills C too");
 
     assert_eq!(
-        shared.exit_tombstones.get(&b).map(|r| *r),
+        shared.exit_tombstones.get(&b),
         Some(ExitReason::Killed),
         "B tombstone should be Killed"
     );
     assert_eq!(
-        shared.exit_tombstones.get(&c).map(|r| *r),
+        shared.exit_tombstones.get(&c),
         Some(ExitReason::Killed),
         "C tombstone should be Killed"
     );
