@@ -43,7 +43,12 @@ pub(super) fn register_receive_timer(shared: &SharedState, process: &mut Process
     }
     let delay = Duration::from_millis(timeout.milliseconds);
     let pid = process.pid();
-    let timer_ref = lock_or_recover(&shared.timers).schedule(delay, pid, Term::NIL);
+    let timer_ref = lock_or_recover(&shared.timers).schedule(
+        delay,
+        pid,
+        Term::NIL,
+        crate::timer::TimerKind::ReceiveTimeout,
+    );
     process.set_receive_timer_ref(Some(timer_ref.id()));
 }
 
@@ -106,8 +111,62 @@ fn expire_timers(shared: &SharedState, expired: Vec<crate::timer::ExpiredTimer>)
         if shared.process_table.get(pid).is_none() {
             continue;
         }
-        mark_fired_receive_timer(shared, pid, timer.reference.id());
+        match timer.kind {
+            crate::timer::TimerKind::ReceiveTimeout => {
+                mark_fired_receive_timer(shared, pid, timer.reference.id());
+            }
+            crate::timer::TimerKind::Deliver => {
+                // A plain mailbox push of the recorded message in recorded
+                // order — no time reads, no nondeterminism — so it is replay
+                // safe when reached from `tick_replay_timers`.
+                if deliver_term_to_mailbox(shared, pid, timer.message) {
+                    super::execution::wake_process(shared, pid);
+                }
+            }
+        }
     }
+}
+
+/// Test-only seam: drive `expire_timers` with an explicitly-ticked expired
+/// set so timer-kind routing (Deliver delivery vs ReceiveTimeout marking) can
+/// be asserted deterministically via `TimerWheel::tick_at`, without depending
+/// on a live scheduler thread's wall-clock `tick()`.
+#[cfg(test)]
+pub(super) fn expire_timers_for_test(
+    shared: &SharedState,
+    expired: Vec<crate::timer::ExpiredTimer>,
+) {
+    expire_timers(shared, expired);
+}
+
+/// Push `term` into the live process `pid`'s mailbox using the same
+/// Executing-slot-safe pattern as [`Scheduler::enqueue_atom_message`]: a
+/// `Present` process receives it directly, an `Executing` process receives it
+/// through its pending metadata (merged into the mailbox at slice store-back),
+/// and an `Absent` slot drops it. Returns true when the term was queued (the
+/// caller then wakes the process). Shared by `enqueue_atom_message` and the
+/// `Deliver`-timer branch so the slot dispatch lives in exactly one place.
+///
+/// [`Scheduler::enqueue_atom_message`]: super::Scheduler::enqueue_atom_message
+pub(super) fn deliver_term_to_mailbox(shared: &SharedState, pid: u64, term: Term) -> bool {
+    let Some(entry) = shared.process_bodies.get(&pid) else {
+        return false;
+    };
+    let mut slot = lock_or_recover(&entry);
+    let delivered = match &mut *slot {
+        ProcessSlot::Present(ScheduledProcess(process)) => {
+            process.mailbox_mut().push_owned(term);
+            true
+        }
+        ProcessSlot::Executing(metadata) => {
+            metadata.pending_io_messages.push(term);
+            true
+        }
+        ProcessSlot::Absent => false,
+    };
+    drop(slot);
+    drop(entry);
+    delivered
 }
 
 /// Insert a fired-timer mark for `pid` and wake the process if it is parked.

@@ -72,7 +72,8 @@ pub(in crate::scheduler) fn run_native_slice(
     };
 
     let replay_driver = shared.replay_driver.clone();
-    let mut context = NativeContext::new(process, local_send, spawn, replay_driver);
+    let timers = Some(shared.timers.clone());
+    let mut context = NativeContext::new(process, local_send, spawn, replay_driver, timers);
     let outcome = handler.handle(&mut context);
     let replay_error = context.take_replay_error();
     drop(context);
@@ -223,7 +224,7 @@ mod tests {
 
         let mut sender = Process::new(2, DEFAULT_HEAP_SIZE);
         {
-            let mut ctx = NativeContext::new(&mut sender, local_send, spawn, replay_driver);
+            let mut ctx = NativeContext::new(&mut sender, local_send, spawn, replay_driver, None);
             ctx.send(receiver_pid, message);
             assert!(
                 ctx.take_replay_error().is_none(),
@@ -274,7 +275,7 @@ mod tests {
 
         let mut sender = Process::new(2, DEFAULT_HEAP_SIZE);
         {
-            let mut ctx = NativeContext::new(&mut sender, local_send, spawn, replay_driver);
+            let mut ctx = NativeContext::new(&mut sender, local_send, spawn, replay_driver, None);
             ctx.send(receiver_pid, message);
             assert!(
                 ctx.take_replay_error().is_some(),

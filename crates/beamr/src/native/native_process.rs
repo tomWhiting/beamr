@@ -23,6 +23,7 @@ use crate::native::spawn::{SpawnError, SpawnFacility};
 use crate::process::{ExitReason, Process};
 use crate::replay::ReplayDriver;
 use crate::term::Term;
+use crate::timer::{TimerKind, TimerRef, TimerWheel};
 
 /// Factory that reconstructs a handler instance.
 ///
@@ -98,22 +99,29 @@ pub struct NativeContext<'a> {
     local_send: Arc<dyn LocalSendFacility>,
     spawn: Arc<dyn SpawnFacility>,
     replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
+    timers: Option<Arc<Mutex<TimerWheel>>>,
     replay_error: Option<ExecError>,
 }
 
 impl<'a> NativeContext<'a> {
     /// Build a context over the running `Process` and the slice services.
+    ///
+    /// `timers` is the scheduler's shared timer wheel; when `None` (e.g. in
+    /// unit tests that exercise only sends), the timer methods are inert and
+    /// return `None`.
     pub(crate) fn new(
         process: &'a mut Process,
         local_send: Arc<dyn LocalSendFacility>,
         spawn: Arc<dyn SpawnFacility>,
         replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
+        timers: Option<Arc<Mutex<TimerWheel>>>,
     ) -> Self {
         Self {
             process,
             local_send,
             spawn,
             replay_driver,
+            timers,
             replay_error: None,
         }
     }
@@ -227,6 +235,63 @@ impl<'a> NativeContext<'a> {
     ) -> Result<u64, SpawnError> {
         self.spawn
             .spawn_native(self.process.pid(), factory, link_to)
+    }
+
+    /// Schedule `message` to be delivered to *this* process's mailbox after
+    /// `delay` (a self-tick). Returns the timer reference, or `None` when the
+    /// context was built without a timer wheel.
+    ///
+    /// The timer is a `Deliver` timer: when it fires the scheduler pushes
+    /// `message` into this process's mailbox (via the same Executing-slot-safe
+    /// path that `send`/IO delivery use) and wakes it, so a handler that
+    /// returns [`NativeOutcome::Wait`] is rescheduled when the tick lands.
+    pub fn schedule(&mut self, delay: std::time::Duration, message: Term) -> Option<TimerRef> {
+        let target_pid = self.self_pid();
+        self.send_after(delay, target_pid, message)
+    }
+
+    /// Schedule `message` to be delivered to `target_pid`'s mailbox after
+    /// `delay`. Returns the timer reference, or `None` when the context was
+    /// built without a timer wheel.
+    ///
+    /// # Replay determinism
+    ///
+    /// Unlike [`Self::send`], scheduling a timer is NOT itself a replay-recorded
+    /// or replay-validated event — and deliberately so, to stay identical to the
+    /// `erlang:send_after`/`start_timer` BIF path (`ProcessContext::schedule_timer`),
+    /// which also does not record the scheduling call. The replayed event is the
+    /// timer *expiry*: under replay `tick_replay_timers` discards the live wheel's
+    /// wall-clock fires and instead replays the recorded `TimerExpiry` set through
+    /// `expire_timers`, so the delivered message and its ordering come from the log,
+    /// not from wall-clock timing. The scheduled entry left in the live wheel is
+    /// inert under replay (its real fire is discarded). Native timers are therefore
+    /// exactly as replay-deterministic as BIF timers; what they do NOT add is the
+    /// per-call determinism *validation* that `send` performs, because timer
+    /// scheduling has no recorded counterpart to validate against.
+    pub fn send_after(
+        &mut self,
+        delay: std::time::Duration,
+        target_pid: u64,
+        message: Term,
+    ) -> Option<TimerRef> {
+        let timers = self.timers.as_ref()?;
+        Some(
+            timers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .schedule(delay, target_pid, message, TimerKind::Deliver),
+        )
+    }
+
+    /// Cancel a pending timer scheduled through this context, returning its
+    /// remaining duration. `None` when there is no timer wheel or the timer
+    /// already fired or was already cancelled.
+    pub fn cancel_timer(&mut self, reference: TimerRef) -> Option<std::time::Duration> {
+        let timers = self.timers.as_ref()?;
+        timers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancel(reference)
     }
 
     /// Take any replay-determinism error recorded by [`Self::send`] during the

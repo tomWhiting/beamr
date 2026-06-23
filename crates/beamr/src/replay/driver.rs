@@ -530,6 +530,9 @@ impl From<(u64, u64, Term, Instant)> for ReplayEvent {
                 target_pid,
                 message,
                 expires_at,
+                // This tuple convenience constructor predates Deliver timers
+                // and is used only for receive-timeout expiries.
+                kind: crate::timer::TimerKind::ReceiveTimeout,
             }],
         })
     }

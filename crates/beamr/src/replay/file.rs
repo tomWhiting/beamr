@@ -12,7 +12,9 @@ use crate::term::Term;
 use crate::timer::{ExpiredTimer, TimerRef};
 
 const MAGIC: &[u8; 8] = b"BMRRPLY\0";
-const FORMAT_VERSION: u16 = 1;
+// Version 2 adds a timer-kind discriminant byte to each recorded timer expiry
+// so Deliver and ReceiveTimeout timers replay through their correct paths.
+const FORMAT_VERSION: u16 = 2;
 const FLAG_ZSTD: u8 = 0x01;
 const FLAG_CLI_RESULT: u8 = 0x02;
 const KNOWN_FLAGS: u8 = FLAG_ZSTD | FLAG_CLI_RESULT;
@@ -246,9 +248,31 @@ fn encode_timer(
         write_u64(out, expired.reference.id());
         write_u64(out, expired.target_pid);
         write_term(out, atoms, expired.message)?;
+        out.push(timer_kind_to_byte(expired.kind));
         write_u64(out, 0);
     }
     Ok(())
+}
+
+/// Serialize a timer kind as a single discriminant byte. Round-tripped by
+/// `timer_kind_from_byte`; an unknown byte fails the decode rather than
+/// silently defaulting, so a corrupt log cannot misroute a Deliver timer to
+/// the receive-timeout path (or vice versa) during replay.
+const fn timer_kind_to_byte(kind: crate::timer::TimerKind) -> u8 {
+    match kind {
+        crate::timer::TimerKind::ReceiveTimeout => 0,
+        crate::timer::TimerKind::Deliver => 1,
+    }
+}
+
+fn timer_kind_from_byte(byte: u8) -> Result<crate::timer::TimerKind, ReplayLogFileError> {
+    match byte {
+        0 => Ok(crate::timer::TimerKind::ReceiveTimeout),
+        1 => Ok(crate::timer::TimerKind::Deliver),
+        _ => Err(ReplayLogFileError::InvalidFormat(
+            "invalid timer kind discriminant",
+        )),
+    }
 }
 
 fn encode_native(
@@ -327,11 +351,16 @@ fn decode_timer(
     let now = std::time::Instant::now();
     let mut expired = Vec::with_capacity(count);
     for _ in 0..count {
+        let reference = TimerRef::from_id(read_u64(cursor)?);
+        let target_pid = read_u64(cursor)?;
+        let message = read_term(cursor, atoms, heaps)?;
+        let kind = timer_kind_from_byte(read_u8(cursor)?)?;
         expired.push(ExpiredTimer {
-            reference: TimerRef::from_id(read_u64(cursor)?),
-            target_pid: read_u64(cursor)?,
-            message: read_term(cursor, atoms, heaps)?,
+            reference,
+            target_pid,
+            message,
             expires_at: now,
+            kind,
         });
         let _expires_offset = read_u64(cursor)?;
     }
