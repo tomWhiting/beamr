@@ -30,6 +30,23 @@ impl TimerRef {
     }
 }
 
+/// What the scheduler does with a timer when it fires.
+///
+/// The wheel itself is agnostic to this distinction — it stores the kind and
+/// echoes it back on the [`ExpiredTimer`] so the scheduler's `expire_timers`
+/// can route each fired timer to the correct path: a receive-timeout
+/// code-position jump, or a real mailbox delivery of `message`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TimerKind {
+    /// Backs `receive ... after`: firing marks the target's receive timer so
+    /// the scheduler applies the timeout-label jump on the next slice. The
+    /// timer's `message` is NOT delivered.
+    ReceiveTimeout,
+    /// Backs `send_after`/`start_timer` and native timer scheduling: firing
+    /// delivers `message` to `target_pid`'s mailbox.
+    Deliver,
+}
+
 /// Timer entry metadata stored in the wheel index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimerEntry {
@@ -39,6 +56,8 @@ pub struct TimerEntry {
     pub message: Term,
     /// Absolute expiry instant.
     pub expires_at: Instant,
+    /// What the scheduler does with this timer when it fires.
+    pub kind: TimerKind,
     bucket: usize,
     slot: usize,
 }
@@ -54,6 +73,8 @@ pub struct ExpiredTimer {
     pub message: Term,
     /// Absolute expiry instant.
     pub expires_at: Instant,
+    /// What the scheduler does with this timer when it fires.
+    pub kind: TimerKind,
 }
 
 /// Millisecond-granularity O(1) timer wheel for one-shot timers.
@@ -88,8 +109,14 @@ impl TimerWheel {
     }
 
     /// Schedule `message` for `target_pid` after `delay` from now.
-    pub fn schedule(&mut self, delay: Duration, target_pid: u64, message: Term) -> TimerRef {
-        self.schedule_at(Instant::now(), delay, target_pid, message)
+    pub fn schedule(
+        &mut self,
+        delay: Duration,
+        target_pid: u64,
+        message: Term,
+        kind: TimerKind,
+    ) -> TimerRef {
+        self.schedule_at(Instant::now(), delay, target_pid, message, kind)
     }
 
     /// Reserve a unique timer reference for callers that must include it in the message.
@@ -104,8 +131,9 @@ impl TimerWheel {
         delay: Duration,
         target_pid: u64,
         message: Term,
+        kind: TimerKind,
     ) -> Option<TimerRef> {
-        self.schedule_reserved_at(reference, Instant::now(), delay, target_pid, message)
+        self.schedule_reserved_at(reference, Instant::now(), delay, target_pid, message, kind)
     }
 
     /// Deterministic reserved-reference scheduling variant.
@@ -116,6 +144,7 @@ impl TimerWheel {
         delay: Duration,
         target_pid: u64,
         message: Term,
+        kind: TimerKind,
     ) -> Option<TimerRef> {
         if self.entries.contains_key(&reference) {
             return None;
@@ -134,6 +163,7 @@ impl TimerWheel {
                 target_pid,
                 message,
                 expires_at,
+                kind,
                 bucket,
                 slot,
             },
@@ -148,9 +178,10 @@ impl TimerWheel {
         delay: Duration,
         target_pid: u64,
         message: Term,
+        kind: TimerKind,
     ) -> TimerRef {
         let reference = self.allocate_ref();
-        self.schedule_reserved_at(reference, now, delay, target_pid, message)
+        self.schedule_reserved_at(reference, now, delay, target_pid, message, kind)
             .unwrap_or(reference)
     }
 
@@ -237,6 +268,7 @@ impl TimerWheel {
                         target_pid: entry.target_pid,
                         message: entry.message,
                         expires_at: entry.expires_at,
+                        kind: entry.kind,
                     });
                 }
             } else {
@@ -281,7 +313,7 @@ impl Default for TimerWheel {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::TimerWheel;
+    use super::{TimerKind, TimerWheel};
     use crate::atom::Atom;
     use crate::term::Term;
 
@@ -289,8 +321,13 @@ mod tests {
     fn timer_schedule_and_tick_expire_due_timers() {
         let start = Instant::now();
         let mut wheel = TimerWheel::with_bucket_count(8);
-        let reference =
-            wheel.schedule_at(start, Duration::from_millis(10), 12, Term::atom(Atom::OK));
+        let reference = wheel.schedule_at(
+            start,
+            Duration::from_millis(10),
+            12,
+            Term::atom(Atom::OK),
+            TimerKind::Deliver,
+        );
 
         assert!(wheel.tick_at(start + Duration::from_millis(9)).is_empty());
         let expired = wheel.tick_at(start + Duration::from_millis(10));
@@ -299,6 +336,7 @@ mod tests {
         assert_eq!(expired[0].reference, reference);
         assert_eq!(expired[0].target_pid, 12);
         assert_eq!(expired[0].message, Term::atom(Atom::OK));
+        assert_eq!(expired[0].kind, TimerKind::Deliver);
         assert!(wheel.is_empty());
     }
 
@@ -306,7 +344,13 @@ mod tests {
     fn timer_cancellation_is_constant_time_and_returns_remaining_time() {
         let start = Instant::now();
         let mut wheel = TimerWheel::with_bucket_count(4);
-        let reference = wheel.schedule_at(start, Duration::from_millis(100), 1, Term::small_int(1));
+        let reference = wheel.schedule_at(
+            start,
+            Duration::from_millis(100),
+            1,
+            Term::small_int(1),
+            TimerKind::ReceiveTimeout,
+        );
 
         assert_eq!(
             wheel.cancel_at(reference, start + Duration::from_millis(40)),
@@ -320,7 +364,13 @@ mod tests {
     fn timer_cancellation_after_fire_returns_none() {
         let start = Instant::now();
         let mut wheel = TimerWheel::with_bucket_count(4);
-        let reference = wheel.schedule_at(start, Duration::from_millis(1), 1, Term::small_int(1));
+        let reference = wheel.schedule_at(
+            start,
+            Duration::from_millis(1),
+            1,
+            Term::small_int(1),
+            TimerKind::Deliver,
+        );
 
         assert_eq!(wheel.tick_at(start + Duration::from_millis(1)).len(), 1);
         assert_eq!(
@@ -342,6 +392,7 @@ mod tests {
                 Duration::from_millis(10),
                 1,
                 Term::small_int(1),
+                TimerKind::Deliver,
             ),
             Some(reference)
         );
@@ -352,6 +403,7 @@ mod tests {
                 Duration::from_millis(20),
                 1,
                 Term::small_int(2),
+                TimerKind::Deliver,
             ),
             None
         );
@@ -372,6 +424,7 @@ mod tests {
                 Duration::from_millis(index % 100),
                 index,
                 Term::small_int(index as i64),
+                TimerKind::Deliver,
             );
         }
 

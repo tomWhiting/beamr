@@ -1099,23 +1099,8 @@ impl Scheduler {
     /// Returns false only when no live process exists for `target_pid`.
     #[must_use]
     pub fn enqueue_atom_message(&self, target_pid: u64, atom: crate::atom::Atom) -> bool {
-        let Some(entry) = self.shared.process_bodies.get(&target_pid) else {
-            return false;
-        };
-        let mut slot = lock_or_recover(&entry);
-        let delivered = match &mut *slot {
-            ProcessSlot::Present(scheduled) => {
-                scheduled.0.mailbox_mut().push_owned(Term::atom(atom));
-                true
-            }
-            ProcessSlot::Executing(metadata) => {
-                metadata.pending_io_messages.push(Term::atom(atom));
-                true
-            }
-            ProcessSlot::Absent => false,
-        };
-        drop(slot);
-        drop(entry);
+        let delivered =
+            timer_integration::deliver_term_to_mailbox(&self.shared, target_pid, Term::atom(atom));
         if delivered {
             execution::wake_process(&self.shared, target_pid);
         }

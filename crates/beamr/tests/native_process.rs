@@ -356,6 +356,98 @@ fn native_self_send_is_delivered_next_slice() {
     scheduler.shutdown();
 }
 
+/// On its first slice this handler schedules a self-tick `delay` in the future
+/// via `ctx.schedule` and parks (`Wait`). The tick must NOT be in the mailbox
+/// in the scheduling slice (it is a future delivery), so `has_messages()` is
+/// recorded as `early_tick` if it is wrongly already present. When the tick is
+/// delivered the scheduler wakes the process; on that next slice the handler
+/// drains the tick, forwards it to the collector, and stops.
+struct SelfTicker {
+    reply_to: u64,
+    tick: Term,
+    delay: Duration,
+    scheduled: bool,
+    early_tick: Arc<AtomicBool>,
+}
+
+impl NativeHandler for SelfTicker {
+    fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        if !self.scheduled {
+            let reference = ctx.schedule(self.delay, self.tick);
+            assert!(
+                reference.is_some(),
+                "a scheduler-backed native context must hand out a timer ref"
+            );
+            // The self-tick is a FUTURE delivery: nothing may be in the
+            // mailbox yet in the slice that scheduled it.
+            if ctx.has_messages() {
+                self.early_tick.store(true, Ordering::SeqCst);
+            }
+            self.scheduled = true;
+            return NativeOutcome::Wait;
+        }
+        if let Some(message) = ctx.recv() {
+            ctx.send(self.reply_to, message);
+            return NativeOutcome::Stop(ExitReason::Normal);
+        }
+        NativeOutcome::Wait
+    }
+}
+
+#[test]
+fn native_self_tick_is_delivered_after_delay() {
+    // The key test: a native process schedules a self-tick via ctx.schedule and
+    // is woken by the delivered tick on a LATER slice. The real scheduler thread
+    // drives the wheel (timer_integration::tick_timers), so no manual driving or
+    // sleep-polling is needed — the test only waits for the collector to exit.
+    //
+    // Falsifiable: before this change ctx had no timer access (and Deliver
+    // timers were never delivered to a mailbox), so the tick would never arrive,
+    // the collector would never receive it, and run_until_exit would time out.
+    let atoms = Arc::new(AtomTable::with_common_atoms());
+    let tick_atom = atoms.intern("tick");
+    let registry = Arc::new(ModuleRegistry::new());
+    registry.insert(collector_module(&atoms));
+    let scheduler = scheduler_with(&atoms, Arc::clone(&registry));
+
+    let collector_mod = atoms.intern("native_collector");
+    let loop_fn = atoms.intern("loop");
+
+    let collector_pid = scheduler
+        .spawn(collector_mod, loop_fn, Vec::new())
+        .expect("spawn collector");
+    std::thread::sleep(Duration::from_millis(50));
+
+    let early_tick = Arc::new(AtomicBool::new(false));
+    let early_for_handler = Arc::clone(&early_tick);
+    let tick = Term::atom(tick_atom);
+    let _ticker_pid = scheduler
+        .spawn_native(Box::new(move || {
+            Box::new(SelfTicker {
+                reply_to: collector_pid,
+                tick,
+                delay: Duration::from_millis(30),
+                scheduled: false,
+                early_tick: Arc::clone(&early_for_handler),
+            })
+        }))
+        .expect("spawn self-ticker");
+
+    let (reason, result) = run_until_exit_bounded(&scheduler, collector_pid);
+    assert_eq!(reason, ExitReason::Normal);
+    assert_eq!(
+        result.root(),
+        Term::atom(tick_atom),
+        "the scheduled self-tick must be delivered to the native process and forwarded"
+    );
+    assert!(
+        !early_tick.load(Ordering::SeqCst),
+        "the self-tick must NOT be present in the slice that scheduled it"
+    );
+
+    scheduler.shutdown();
+}
+
 /// A native handler that, on its first slice, spawns a native child via
 /// `ctx.spawn_native` and sends it a message, then stops.
 struct Parent {

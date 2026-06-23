@@ -959,7 +959,7 @@ impl<'process> ProcessContext<'process> {
             timers
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .schedule(delay, target_pid, message),
+                .schedule(delay, target_pid, message, crate::timer::TimerKind::Deliver),
         )
     }
 
@@ -976,7 +976,13 @@ impl<'process> ProcessContext<'process> {
         let timers = self.timers.as_ref()?;
         let mut timers = timers.lock().unwrap_or_else(|error| error.into_inner());
         let reference = timers.reserve_reference();
-        timers.schedule_reserved(reference, delay, target_pid, message(reference))
+        timers.schedule_reserved(
+            reference,
+            delay,
+            target_pid,
+            message(reference),
+            crate::timer::TimerKind::Deliver,
+        )
     }
 
     /// Reserve a timer reference without scheduling it yet.
@@ -1002,7 +1008,13 @@ impl<'process> ProcessContext<'process> {
         timers
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .schedule_reserved(reference, delay, target_pid, message)
+            .schedule_reserved(
+                reference,
+                delay,
+                target_pid,
+                message,
+                crate::timer::TimerKind::Deliver,
+            )
     }
 
     /// Cancel a timer via the runtime timer wheel.

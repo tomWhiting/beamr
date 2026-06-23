@@ -46,12 +46,22 @@ fn replay_log_save_load_round_trips_all_event_variants() {
         }),
         ReplayEvent::TimerExpiry(RecordedTimerExpiry {
             now,
-            expired: vec![ExpiredTimer {
-                reference: TimerRef::from_id(9),
-                target_pid: 3,
-                message: Term::small_int(20),
-                expires_at: now,
-            }],
+            expired: vec![
+                ExpiredTimer {
+                    reference: TimerRef::from_id(9),
+                    target_pid: 3,
+                    message: Term::small_int(20),
+                    expires_at: now,
+                    kind: crate::timer::TimerKind::ReceiveTimeout,
+                },
+                ExpiredTimer {
+                    reference: TimerRef::from_id(10),
+                    target_pid: 4,
+                    message: Term::small_int(21),
+                    expires_at: now,
+                    kind: crate::timer::TimerKind::Deliver,
+                },
+            ],
         }),
         ReplayEvent::NativeCall(RecordedNativeCall {
             pid: 3,
@@ -117,9 +127,16 @@ fn assert_timer_fields_round_trip(loaded: &ReplayEvent, original: &ReplayEvent) 
     match (loaded, original) {
         (ReplayEvent::TimerExpiry(loaded), ReplayEvent::TimerExpiry(original)) => {
             assert_eq!(loaded.expired.len(), original.expired.len());
-            assert_eq!(loaded.expired[0].reference, original.expired[0].reference);
-            assert_eq!(loaded.expired[0].target_pid, original.expired[0].target_pid);
-            assert_eq!(loaded.expired[0].message, original.expired[0].message);
+            for (loaded_timer, original_timer) in loaded.expired.iter().zip(original.expired.iter())
+            {
+                assert_eq!(loaded_timer.reference, original_timer.reference);
+                assert_eq!(loaded_timer.target_pid, original_timer.target_pid);
+                assert_eq!(loaded_timer.message, original_timer.message);
+                // The timer-kind discriminant must survive the round-trip:
+                // misrouting a Deliver timer to the receive-timeout path (or
+                // vice versa) during replay would break determinism.
+                assert_eq!(loaded_timer.kind, original_timer.kind);
+            }
         }
         other => panic!("unexpected timer events: {other:?}"),
     }
