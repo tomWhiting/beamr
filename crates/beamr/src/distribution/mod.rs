@@ -26,11 +26,17 @@ use tokio::runtime::Runtime;
 
 pub use resolver::{NodeResolver, ResolveError, ResolveFuture, Resolver, StaticResolver};
 
+/// Default distribution authentication cookie used when none is configured.
+pub const DEFAULT_COOKIE: &str = "beamr-cookie";
+
 /// Configuration for beamr distribution services.
 #[derive(Clone)]
 pub struct DistributionConfig {
     /// Resolver used to map node names to distribution listen addresses.
     pub resolver: Resolver,
+    /// Shared secret presented in the OTP handshake challenge/response. Both
+    /// peers must agree on this value or the handshake is rejected.
+    pub cookie: String,
 }
 
 /// Synchronous net-kernel facade used by native BIFs.
@@ -131,6 +137,7 @@ impl Default for DistributionConfig {
     fn default() -> Self {
         Self {
             resolver: Arc::new(StaticResolver::new(HashMap::new())),
+            cookie: DEFAULT_COOKIE.to_owned(),
         }
     }
 }
@@ -140,6 +147,7 @@ impl fmt::Debug for DistributionConfig {
         formatter
             .debug_struct("DistributionConfig")
             .field("resolver", &"<node resolver>")
+            .field("cookie", &"<redacted>")
             .finish()
     }
 }

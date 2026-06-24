@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use beamr::atom::AtomTable;
-use beamr::distribution::DistributionConfig;
 use beamr::distribution::pg::RemoteMember;
 use beamr::distribution::resolver::{NodeResolver, ResolveError, ResolveFuture};
+use beamr::distribution::{DEFAULT_COOKIE, DistributionConfig};
 use beamr::module::ModuleRegistry;
 use beamr::native::BifRegistryImpl;
 use beamr::process::ExitReason;
@@ -60,7 +60,10 @@ fn scheduler(
         SchedulerConfig {
             thread_count: Some(1),
             node_name: Some(node_name.to_owned()),
-            distribution: Some(DistributionConfig { resolver }),
+            distribution: Some(DistributionConfig {
+                resolver,
+                cookie: DEFAULT_COOKIE.to_owned(),
+            }),
             ..SchedulerConfig::default()
         },
         module_registry,
@@ -150,16 +153,10 @@ async fn pg_join_visible_on_peer_and_purged_on_node_down() {
     resolver.insert("a@127.0.0.1", listen_a.local_addr());
     resolver.insert("b@127.0.0.1", listen_b.local_addr());
 
+    // Identity is established by the OTP handshake during connect/accept: B
+    // attributes A's inbound stream to A's advertised node name, so the
+    // PG_UPDATE applies under the correct node and the down-hook keys on it.
     let a_node_atom = node_a.local_node().name;
-    let b_node_atom = node_b.local_node().name;
-    // B must attribute A's inbound stream to A's node atom so the PG_UPDATE
-    // applies under the correct node and the down-hook keys on it.
-    node_b
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(a_node_atom));
-    node_a
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(b_node_atom));
 
     // Establish A -> B so A's broadcast has a connected node to transmit to.
     node_a
@@ -238,10 +235,8 @@ async fn pg_join_is_connected_only_and_not_replayed() {
     resolver.insert("a@127.0.0.1", listen_a.local_addr());
     resolver.insert("b@127.0.0.1", listen_b.local_addr());
 
+    // Identity established by the handshake on accept; no address-trust seam.
     let a_node_atom = node_a.local_node().name;
-    node_b
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(a_node_atom));
 
     let scope = node_a.pg_registry().default_scope();
     let group = atom_table.intern("connected_only");
@@ -336,10 +331,8 @@ async fn process_exit_purges_local_and_propagates_leave() {
     resolver.insert("a@127.0.0.1", listen_a.local_addr());
     resolver.insert("b@127.0.0.1", listen_b.local_addr());
 
+    // Identity established by the handshake on accept; no address-trust seam.
     let a_node_atom = node_a.local_node().name;
-    node_b
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(a_node_atom));
 
     node_a
         .distribution_connections()
@@ -428,13 +421,8 @@ async fn pg_join_broadcasts_to_every_connected_node() {
     resolver.insert("b@127.0.0.1", listen_b.local_addr());
     resolver.insert("c@127.0.0.1", listen_c.local_addr());
 
+    // Identity established by the handshake on accept; no address-trust seam.
     let a_node_atom = node_a.local_node().name;
-    node_b
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(a_node_atom));
-    node_c
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(a_node_atom));
 
     node_a
         .distribution_connections()
@@ -502,10 +490,8 @@ async fn pg_local_leave_transmits_and_removes_remote_member() {
     resolver.insert("a@127.0.0.1", listen_a.local_addr());
     resolver.insert("b@127.0.0.1", listen_b.local_addr());
 
+    // Identity established by the handshake on accept; no address-trust seam.
     let a_node_atom = node_a.local_node().name;
-    node_b
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(a_node_atom));
 
     node_a
         .distribution_connections()

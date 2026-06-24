@@ -235,7 +235,13 @@ mod tests {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let resolver = Arc::new(StaticResolver::new(HashMap::new()));
         (
-            ConnectionManager::new(Arc::clone(&atom_table), resolver),
+            ConnectionManager::new(
+                Arc::clone(&atom_table),
+                resolver,
+                "test-cookie",
+                "local@test",
+                0,
+            ),
             atom_table,
         )
     }

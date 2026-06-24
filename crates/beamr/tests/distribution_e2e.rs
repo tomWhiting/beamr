@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use beamr::atom::{Atom, AtomTable};
-use beamr::distribution::DistributionConfig;
 use beamr::distribution::resolver::{NodeResolver, ResolveError, ResolveFuture};
+use beamr::distribution::{DEFAULT_COOKIE, DistributionConfig};
 use beamr::module::ModuleRegistry;
 use beamr::native::BifRegistryImpl;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
@@ -50,7 +50,10 @@ fn scheduler(
         SchedulerConfig {
             thread_count: Some(1),
             node_name: Some(node_name.to_owned()),
-            distribution: Some(DistributionConfig { resolver }),
+            distribution: Some(DistributionConfig {
+                resolver,
+                cookie: DEFAULT_COOKIE.to_owned(),
+            }),
             ..SchedulerConfig::default()
         },
         module_registry,
@@ -88,14 +91,11 @@ async fn loopback_cross_node_pid_send_round_trip() {
     resolver.insert("a@127.0.0.1", listen_a.local_addr());
     resolver.insert("b@127.0.0.1", listen_b.local_addr());
 
+    // Identity is now established by the OTP handshake during connect/accept —
+    // no address-trust seam. The connection table is keyed by each peer's
+    // advertised handshake name.
     let a_node_atom = node_a.local_node().name;
     let b_node_atom = node_b.local_node().name;
-    node_a
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(b_node_atom));
-    node_b
-        .distribution_connections()
-        .register_inbound_identifier(move |_| Some(a_node_atom));
 
     let pid_a = node_a.spawn_test_process(false);
     let pid_b = node_b.spawn_test_process(false);

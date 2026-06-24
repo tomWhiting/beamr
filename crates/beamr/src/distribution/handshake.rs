@@ -8,6 +8,8 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, Read, Write};
 
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
 const TAG_NEW_NAME: u8 = b'N';
 const TAG_STATUS: u8 = b's';
 const TAG_CHALLENGE_REPLY: u8 = b'r';
@@ -340,6 +342,116 @@ pub fn respond_handshake<S: Read + Write>(
     HandshakeResult::new(remote.name, remote.creation, remote.flags, negotiated_flags)
 }
 
+/// Runs the outbound OTP 23+ distribution handshake over an async stream.
+///
+/// Async twin of [`initiate_handshake`]: identical packet order (N→s→N→r→a) and
+/// reuse of every pure codec helper, differing only in that packets are written
+/// and read with the async 2-byte length-prefix framing. The handshake completes
+/// on the raw stream before any distribution data frames are exchanged.
+pub async fn initiate_handshake_async<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &HandshakeNode,
+    cookie: &str,
+    challenge: u32,
+) -> Result<HandshakeResult, HandshakeError> {
+    write_packet_async(stream, &encode_name(local, None)?).await?;
+
+    let status = parse_status_payload(&read_packet_async(stream).await?)?;
+    if !is_success_status(&status) {
+        return Err(HandshakeError::BadStatus(status));
+    }
+
+    let remote = parse_name_packet_payload(&read_packet_async(stream).await?, true)?;
+    let negotiated_flags = DistributionFlags::negotiate(local.flags, remote.flags)?;
+
+    let remote_digest = challenge_digest(
+        cookie,
+        remote.challenge.ok_or_else(|| {
+            HandshakeError::MalformedPacket("challenge packet omitted challenge value".into())
+        })?,
+    );
+    write_packet_async(stream, &encode_challenge_reply(challenge, remote_digest)).await?;
+
+    let ack = parse_challenge_ack_payload(&read_packet_async(stream).await?)?;
+    let expected_ack = challenge_digest(cookie, challenge);
+    if !constant_time_eq(&ack, &expected_ack) {
+        return Err(HandshakeError::DigestMismatch);
+    }
+
+    HandshakeResult::new(remote.name, remote.creation, remote.flags, negotiated_flags)
+}
+
+/// Runs the inbound OTP 23+ distribution handshake over an async stream.
+///
+/// Async twin of [`respond_handshake`]: identical packet order (N→s→N→r→a) and
+/// reuse of every pure codec helper, differing only in the async framing.
+pub async fn respond_handshake_async<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    local: &HandshakeNode,
+    cookie: &str,
+    challenge: u32,
+) -> Result<HandshakeResult, HandshakeError> {
+    let remote = parse_name_packet_payload(&read_packet_async(stream).await?, false)?;
+    let negotiated_flags = match DistributionFlags::negotiate(local.flags, remote.flags) {
+        Ok(flags) => flags,
+        Err(error) => {
+            send_status_ignore_io_error_async(stream, "not_allowed").await;
+            return Err(error);
+        }
+    };
+
+    write_packet_async(stream, &encode_status("ok")?).await?;
+    write_packet_async(stream, &encode_name(local, Some(challenge))?).await?;
+
+    let reply = parse_challenge_reply_payload(&read_packet_async(stream).await?)?;
+    let expected_digest = challenge_digest(cookie, challenge);
+    if !constant_time_eq(&reply.digest, &expected_digest) {
+        send_status_ignore_io_error_async(stream, "not_allowed").await;
+        return Err(HandshakeError::DigestMismatch);
+    }
+
+    let ack_digest = challenge_digest(cookie, reply.challenge);
+    write_packet_async(stream, &encode_challenge_ack(ack_digest)).await?;
+
+    HandshakeResult::new(remote.name, remote.creation, remote.flags, negotiated_flags)
+}
+
+async fn write_packet_async<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> Result<(), HandshakeError> {
+    let length = u16::try_from(payload.len()).map_err(|_| {
+        HandshakeError::MalformedPacket("handshake packet exceeds 16-bit length prefix".into())
+    })?;
+    writer.write_all(&length.to_be_bytes()).await?;
+    writer.write_all(payload).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn read_packet_async<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Vec<u8>, HandshakeError> {
+    let mut length_bytes = [0_u8; 2];
+    reader.read_exact(&mut length_bytes).await?;
+    let length = u16::from_be_bytes(length_bytes) as usize;
+    if length == 0 {
+        return Err(HandshakeError::MalformedPacket(
+            "empty handshake packet".into(),
+        ));
+    }
+
+    let mut payload = vec![0_u8; length];
+    reader.read_exact(&mut payload).await?;
+    Ok(payload)
+}
+
+async fn send_status_ignore_io_error_async<W: AsyncWrite + Unpin>(writer: &mut W, status: &str) {
+    if let Ok(payload) = encode_status(status) {
+        let _ = write_packet_async(writer, &payload).await;
+    }
+}
+
 /// Computes the OTP distribution digest: MD5(cookie text concatenated with challenge text).
 pub fn challenge_digest(cookie: &str, challenge: u32) -> [u8; DIGEST_LEN] {
     let input = format!("{cookie}{challenge}");
@@ -436,8 +548,26 @@ fn encode_challenge_ack(digest: [u8; DIGEST_LEN]) -> Vec<u8> {
 }
 
 fn read_status_packet<R: Read>(reader: &mut R) -> Result<String, HandshakeError> {
-    let payload = read_packet(reader)?;
-    require_tag(&payload, TAG_STATUS)?;
+    parse_status_payload(&read_packet(reader)?)
+}
+
+fn read_name_packet<R: Read>(
+    reader: &mut R,
+    requires_challenge: bool,
+) -> Result<NamePacket, HandshakeError> {
+    parse_name_packet_payload(&read_packet(reader)?, requires_challenge)
+}
+
+fn read_challenge_reply_packet<R: Read>(reader: &mut R) -> Result<ChallengeReply, HandshakeError> {
+    parse_challenge_reply_payload(&read_packet(reader)?)
+}
+
+fn read_challenge_ack_packet<R: Read>(reader: &mut R) -> Result<[u8; DIGEST_LEN], HandshakeError> {
+    parse_challenge_ack_payload(&read_packet(reader)?)
+}
+
+fn parse_status_payload(payload: &[u8]) -> Result<String, HandshakeError> {
+    require_tag(payload, TAG_STATUS)?;
     let status = std::str::from_utf8(&payload[1..])
         .map_err(|_| HandshakeError::MalformedPacket("status is not valid UTF-8".into()))?;
     if status.is_empty() {
@@ -446,11 +576,10 @@ fn read_status_packet<R: Read>(reader: &mut R) -> Result<String, HandshakeError>
     Ok(status.to_owned())
 }
 
-fn read_name_packet<R: Read>(
-    reader: &mut R,
+fn parse_name_packet_payload(
+    payload: &[u8],
     requires_challenge: bool,
 ) -> Result<NamePacket, HandshakeError> {
-    let payload = read_packet(reader)?;
     if payload.first().copied() != Some(TAG_NEW_NAME) {
         let actual = payload.first().copied().ok_or_else(|| {
             HandshakeError::MalformedPacket("name packet was empty after framing".into())
@@ -461,24 +590,22 @@ fn read_name_packet<R: Read>(
         });
     }
 
-    parse_name_payload(&payload, requires_challenge)
+    parse_name_payload(payload, requires_challenge)
 }
 
-fn read_challenge_reply_packet<R: Read>(reader: &mut R) -> Result<ChallengeReply, HandshakeError> {
-    let payload = read_packet(reader)?;
-    require_exact_len(&payload, 1 + 4 + DIGEST_LEN, "challenge reply")?;
-    require_tag(&payload, TAG_CHALLENGE_REPLY)?;
+fn parse_challenge_reply_payload(payload: &[u8]) -> Result<ChallengeReply, HandshakeError> {
+    require_exact_len(payload, 1 + 4 + DIGEST_LEN, "challenge reply")?;
+    require_tag(payload, TAG_CHALLENGE_REPLY)?;
 
     let challenge = u32::from_be_bytes(slice_to_array(&payload[1..5])?);
     let digest = slice_to_array(&payload[5..21])?;
     Ok(ChallengeReply { challenge, digest })
 }
 
-fn read_challenge_ack_packet<R: Read>(reader: &mut R) -> Result<[u8; DIGEST_LEN], HandshakeError> {
-    let payload = read_packet(reader)?;
+fn parse_challenge_ack_payload(payload: &[u8]) -> Result<[u8; DIGEST_LEN], HandshakeError> {
     match payload.first().copied() {
         Some(TAG_CHALLENGE_ACK) => {
-            require_exact_len(&payload, 1 + DIGEST_LEN, "challenge ack")?;
+            require_exact_len(payload, 1 + DIGEST_LEN, "challenge ack")?;
             slice_to_array(&payload[1..17])
         }
         Some(TAG_STATUS) => {
@@ -629,7 +756,7 @@ fn send_status_ignore_io_error<W: Write>(writer: &mut W, status: &str) {
 mod tests {
     use super::{
         DistributionFlags, HandshakeError, HandshakeNode, challenge_digest, initiate_handshake,
-        respond_handshake,
+        initiate_handshake_async, respond_handshake, respond_handshake_async,
     };
     use std::collections::VecDeque;
     use std::io::{self, Read, Write};
@@ -678,6 +805,93 @@ mod tests {
             responder_result.negotiated_flags(),
             DistributionFlags::offered()
         );
+    }
+
+    #[tokio::test]
+    async fn async_handshake_round_trip_over_loopback() {
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("inspect listener address");
+
+        let responder_node = HandshakeNode::with_default_flags("right@localhost", 2)
+            .expect("responder node name should be valid");
+        let responder = tokio::spawn(async move {
+            let (mut stream, _peer) = listener.accept().await.expect("accept inbound stream");
+            respond_handshake_async(&mut stream, &responder_node, COOKIE, RESPONDER_CHALLENGE).await
+        });
+
+        let local = HandshakeNode::with_default_flags("left@localhost", 1)
+            .expect("local node name should be valid");
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("connect to responder");
+        let initiator_result =
+            initiate_handshake_async(&mut client, &local, COOKIE, INITIATOR_CHALLENGE)
+                .await
+                .expect("initiator handshake should succeed");
+        let responder_result = responder
+            .await
+            .expect("responder task should not panic")
+            .expect("responder handshake should succeed");
+
+        assert_eq!(initiator_result.remote_name(), "right@localhost");
+        assert_eq!(initiator_result.remote_creation(), 2);
+        assert_eq!(responder_result.remote_name(), "left@localhost");
+        assert_eq!(responder_result.remote_creation(), 1);
+        assert_eq!(
+            initiator_result.negotiated_flags(),
+            DistributionFlags::offered()
+        );
+        assert_eq!(
+            responder_result.negotiated_flags(),
+            DistributionFlags::offered()
+        );
+    }
+
+    #[tokio::test]
+    async fn async_handshake_rejects_wrong_cookie() {
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("inspect listener address");
+
+        let responder_node = HandshakeNode::with_default_flags("right@localhost", 2)
+            .expect("responder node name should be valid");
+        let responder = tokio::spawn(async move {
+            let (mut stream, _peer) = listener.accept().await.expect("accept inbound stream");
+            respond_handshake_async(
+                &mut stream,
+                &responder_node,
+                "different-cookie",
+                RESPONDER_CHALLENGE,
+            )
+            .await
+        });
+
+        let local = HandshakeNode::with_default_flags("left@localhost", 1)
+            .expect("local node name should be valid");
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("connect to responder");
+        let initiator_error =
+            initiate_handshake_async(&mut client, &local, COOKIE, INITIATOR_CHALLENGE)
+                .await
+                .expect_err("initiator should reject a bad challenge ack");
+        let responder_error = responder
+            .await
+            .expect("responder task should not panic")
+            .expect_err("responder should reject a bad digest");
+
+        assert_eq!(
+            initiator_error,
+            HandshakeError::BadStatus("not_allowed".into())
+        );
+        assert_eq!(responder_error, HandshakeError::DigestMismatch);
     }
 
     #[test]

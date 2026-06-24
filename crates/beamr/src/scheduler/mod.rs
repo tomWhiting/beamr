@@ -618,8 +618,19 @@ impl Scheduler {
             None => (None, None, None),
         };
         let distribution = config.distribution.unwrap_or_default();
-        let distribution_connections =
-            ConnectionManager::new(Arc::clone(&atom_table), Arc::clone(&distribution.resolver));
+        let dist_local_node_name = config
+            .node_name
+            .as_deref()
+            .unwrap_or(DEFAULT_NODE_NAME)
+            .to_owned();
+        let dist_local_creation = config.creation.unwrap_or(0);
+        let distribution_connections = ConnectionManager::new(
+            Arc::clone(&atom_table),
+            Arc::clone(&distribution.resolver),
+            distribution.cookie.clone(),
+            dist_local_node_name,
+            dist_local_creation,
+        );
         // Build the async outbound distribution sender (skipped under replay,
         // which has no runtime). Bind its owned runtime handle to the connection
         // manager so the read/accept tasks are driven in production, where there
@@ -650,8 +661,13 @@ impl Scheduler {
             atom_table.intern(local_node_name),
             config.creation.unwrap_or(0),
         );
-        let connection_manager =
-            ConnectionManager::new(Arc::clone(&atom_table), distribution.resolver.clone());
+        let connection_manager = ConnectionManager::new(
+            Arc::clone(&atom_table),
+            distribution.resolver.clone(),
+            distribution.cookie.clone(),
+            local_node_name.to_owned(),
+            config.creation.unwrap_or(0),
+        );
         let net_kernel = Arc::new(NetKernel::new(connection_manager));
         let pg_registry = Arc::new(PgRegistry::new(atom_table.as_ref()));
         let standard_io_server =
@@ -963,6 +979,19 @@ impl Scheduler {
     #[must_use]
     pub fn distribution_connections(&self) -> ConnectionManager {
         self.shared.distribution_connections.clone()
+    }
+    /// Start accepting inbound distribution connections on `addr`.
+    ///
+    /// Accepted peers run the OTP handshake (authenticated by the configured
+    /// cookie) before being registered under their advertised node name. The
+    /// returned [`AcceptHandle`](crate::distribution::connection::AcceptHandle)
+    /// owns the accept loop: the caller must keep it alive, as dropping it aborts
+    /// the loop and stops accepting new connections.
+    pub async fn start_distribution_listener(
+        &self,
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<crate::distribution::connection::AcceptHandle> {
+        self.shared.distribution_connections.listen(addr).await
     }
     #[must_use]
     pub fn pg_registry(&self) -> Arc<PgRegistry> {

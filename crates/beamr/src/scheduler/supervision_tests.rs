@@ -255,11 +255,17 @@ fn make_shared_state() -> Arc<SharedState> {
     let distribution_connections = crate::distribution::connection::ConnectionManager::new(
         Arc::clone(&atom_table),
         Arc::clone(&distribution.resolver),
+        distribution.cookie.clone(),
+        "local@test",
+        0,
     );
     let net_kernel = Arc::new(crate::distribution::NetKernel::new(
         crate::distribution::connection::ConnectionManager::new(
             Arc::clone(&atom_table),
             distribution.resolver.clone(),
+            distribution.cookie.clone(),
+            "local@test",
+            0,
         ),
     ));
 

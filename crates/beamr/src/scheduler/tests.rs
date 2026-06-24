@@ -1119,11 +1119,17 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
     let distribution_connections = crate::distribution::connection::ConnectionManager::new(
         Arc::clone(&atom_table),
         Arc::clone(&distribution.resolver),
+        distribution.cookie.clone(),
+        "local@test",
+        0,
     );
     let net_kernel = Arc::new(crate::distribution::NetKernel::new(
         crate::distribution::connection::ConnectionManager::new(
             Arc::clone(&atom_table),
             distribution.resolver.clone(),
+            distribution.cookie.clone(),
+            "local@test",
+            0,
         ),
     ));
     let module_v1 = registry.insert(test_module(
@@ -1490,6 +1496,9 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
     let distribution_connections = crate::distribution::connection::ConnectionManager::new(
         Arc::clone(&atom_table),
         Arc::clone(&distribution.resolver),
+        distribution.cookie.clone(),
+        "local@test",
+        0,
     );
     let shared = Arc::new(SharedState {
         shutdown: AtomicBool::new(false),
@@ -1556,8 +1565,13 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         net_kernel: {
             let dist = DistributionConfig::default();
             let at = Arc::new(crate::atom::AtomTable::new());
-            let cm =
-                crate::distribution::connection::ConnectionManager::new(at, dist.resolver.clone());
+            let cm = crate::distribution::connection::ConnectionManager::new(
+                at,
+                dist.resolver.clone(),
+                dist.cookie.clone(),
+                "local@test",
+                0,
+            );
             Arc::new(crate::distribution::NetKernel::new(cm))
         },
         jit_profiler: Arc::new(crate::jit::JitProfiler::new(1000)),
