@@ -5,7 +5,7 @@
 //! depending on per-process dictionaries.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{
@@ -81,7 +81,16 @@ struct PgState {
 pub struct PgRegistry {
     default_scope: Scope,
     state: Mutex<PgState>,
-    propagation: Arc<dyn PgPropagation>,
+    /// Swappable propagation backend.
+    ///
+    /// Held behind an `RwLock` so the real `SchedulerPgPropagation` can be
+    /// installed via [`PgRegistry::set_propagation`] *after* `SharedState`
+    /// exists. `PgRegistry` is itself a field of `SharedState`, so the
+    /// propagation cannot be supplied at construction without an `Arc` cycle;
+    /// the registry is built with a `NullPgPropagation` and the real backend
+    /// (holding a `Weak<SharedState>`) is swapped in once `SharedState` is
+    /// constructed.
+    propagation: RwLock<Arc<dyn PgPropagation>>,
 }
 
 impl PgRegistry {
@@ -103,8 +112,31 @@ impl PgRegistry {
                 scopes,
                 groups: HashMap::new(),
             }),
-            propagation,
+            propagation: RwLock::new(propagation),
         }
+    }
+
+    /// Replace the propagation backend.
+    ///
+    /// Used by the scheduler to install the real `SchedulerPgPropagation` once
+    /// `SharedState` exists, resolving the construction-order/`Arc`-cycle
+    /// problem (see the [`PgRegistry::propagation`] field documentation).
+    pub fn set_propagation(&self, propagation: Arc<dyn PgPropagation>) {
+        *self
+            .propagation
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = propagation;
+    }
+
+    /// Snapshot the current propagation backend, releasing the lock before the
+    /// caller broadcasts so a blocking send never runs under the `RwLock`.
+    fn propagation(&self) -> Arc<dyn PgPropagation> {
+        Arc::clone(
+            &self
+                .propagation
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     /// Return the default pg scope atom.
@@ -131,7 +163,10 @@ impl PgRegistry {
                 .insert(pid)
         };
         if inserted {
-            self.propagation
+            // Broadcast outside the PgState lock (already dropped above) and
+            // with the propagation RwLock released — `propagation()` snapshots
+            // the backend so a blocking send never runs under either lock.
+            self.propagation()
                 .broadcast(PgUpdate::Join { scope, group, pid });
         }
     }
@@ -146,7 +181,7 @@ impl PgRegistry {
             }
         };
         if removed {
-            self.propagation
+            self.propagation()
                 .broadcast(PgUpdate::Leave { scope, group, pid });
         }
     }
@@ -231,8 +266,9 @@ impl PgRegistry {
             }
             updates
         };
+        let propagation = self.propagation();
         for update in updates {
-            self.propagation.broadcast(update);
+            propagation.broadcast(update);
         }
     }
 

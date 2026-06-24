@@ -3,6 +3,7 @@ mod execution;
 mod exit_capture;
 mod exit_tombstones;
 mod module_management;
+mod pg_propagation;
 mod process_slot;
 pub mod run_queue;
 mod spawning;
@@ -712,6 +713,26 @@ impl Scheduler {
         #[cfg(feature = "telemetry")]
         shared.record_vm_health_metrics();
         supervision_integration::register_distribution_control_handler(&shared);
+        // Install the real cross-node pg propagation now that `shared` exists.
+        // Both the propagation backend and the connection-down hook hold a
+        // `Weak<SharedState>` (not `Arc`) so they never keep the scheduler alive:
+        // `SharedState` owns `pg_registry`, which owns the propagation, which would
+        // otherwise own `SharedState` back and form a leak-forever cycle.
+        shared
+            .pg_registry
+            .set_propagation(Arc::new(pg_propagation::SchedulerPgPropagation {
+                shared: Arc::downgrade(&shared),
+            }));
+        // On node failure, drop every remote pg member that belonged to the lost
+        // node so group membership reflects the surviving cluster.
+        let pg_down_weak = Arc::downgrade(&shared);
+        shared
+            .distribution_connections
+            .register_connection_down(move |event| {
+                if let Some(shared) = pg_down_weak.upgrade() {
+                    shared.pg_registry.purge_remote_node(event.node);
+                }
+            });
         if !shared.replay_mode
             && let (Some(ring), Some(registry)) = (&shared.io_ring, &shared.io_registry)
         {
@@ -924,6 +945,10 @@ impl Scheduler {
     #[must_use]
     pub fn distribution_connections(&self) -> ConnectionManager {
         self.shared.distribution_connections.clone()
+    }
+    #[must_use]
+    pub fn pg_registry(&self) -> Arc<PgRegistry> {
+        Arc::clone(&self.shared.pg_registry)
     }
     pub fn set_output_sink(&self, sink: Arc<dyn IoSink>) {
         *lock_or_recover(&self.shared.output_sink) = sink;

@@ -4,6 +4,7 @@
 use std::fmt;
 
 use crate::atom::{Atom, AtomTable};
+use crate::distribution::pg::PgUpdate;
 use crate::etf::decode::{DecodeError, decode_term};
 use crate::etf::encode::{EncodeError, encode_term};
 use crate::native::ProcessContext;
@@ -17,6 +18,25 @@ use crate::term::pid_ref::PidRef;
 pub const SEND: i64 = 2;
 /// Distribution control opcode for registered-name send.
 pub const REG_SEND: i64 = 6;
+
+/// beamr-private distribution control opcode for process-group membership
+/// propagation (`Join`/`Leave`).
+///
+/// The OTP distribution protocol assigns control opcodes 1..=31 (the highest
+/// understood by beamr is `SPAWN_REPLY = 31`, see
+/// [`control_lifecycle::ControlOp::from_opcode`]). `101` is well above that
+/// range and is not used by OTP, so it cannot collide with a standard control
+/// message. It is deliberately beamr-private: a stock Erlang/OTP node would
+/// never emit it, and a beamr node ignores any opcode it does not recognise,
+/// so an unupgraded peer simply drops the frame instead of misinterpreting it.
+pub const PG_UPDATE: i64 = 101;
+
+/// Discriminant written as the second element of a `PG_UPDATE` control tuple to
+/// mark a join.
+const PG_JOIN_TAG: i64 = 1;
+/// Discriminant written as the second element of a `PG_UPDATE` control tuple to
+/// mark a leave.
+const PG_LEAVE_TAG: i64 = 2;
 
 /// Error raised when a remote send cannot be completed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,6 +84,49 @@ pub enum ControlMessage {
     Send { to_pid: u64 },
     /// `{6, FromPid, Cookie, ToName}` — stores extracted name atom.
     RegSend { to_name: Atom },
+    /// `{101, 1, Scope, Group, MemberExternalPid}` — a remote process-group join.
+    ///
+    /// `node`/`pid_number`/`serial` are extracted from the member PID, which is
+    /// always encoded as an external PID carrying the originating node's name so
+    /// that the receiver records a fully-qualified [`RemoteMember`] rather than a
+    /// node-less local PID.
+    PgJoin {
+        /// Scope atom the member joined.
+        scope: Atom,
+        /// Group atom the member joined.
+        group: Atom,
+        /// Originating node atom (from the member's external PID).
+        node: Atom,
+        /// Member PID number on the originating node.
+        pid_number: u64,
+        /// Member PID serial on the originating node.
+        serial: u64,
+    },
+    /// `{101, 2, Scope, Group, MemberExternalPid}` — a remote process-group leave.
+    PgLeave {
+        /// Scope atom the member left.
+        scope: Atom,
+        /// Group atom the member left.
+        group: Atom,
+        /// Originating node atom (from the member's external PID).
+        node: Atom,
+        /// Member PID number on the originating node.
+        pid_number: u64,
+        /// Member PID serial on the originating node.
+        serial: u64,
+    },
+}
+
+/// Scheduler-side sink for inbound process-group membership controls.
+///
+/// Implemented over the scheduler's `PgRegistry` so that a decoded `PG_UPDATE`
+/// frame applies directly to the local registry's remote-member view without a
+/// mailbox round-trip.
+pub trait PgDelivery: Send + Sync {
+    /// Apply a remote join to the local registry.
+    fn apply_pg_join(&self, scope: Atom, group: Atom, node: Atom, pid_number: u64, serial: u64);
+    /// Apply a remote leave to the local registry.
+    fn apply_pg_leave(&self, scope: Atom, group: Atom, node: Atom, pid_number: u64, serial: u64);
 }
 
 /// Errors while decoding or handling a distribution control frame.
@@ -119,6 +182,43 @@ pub fn encode_reg_send_frame(
         ])
         .map_err(|_| EncodeError::UnsupportedTerm)?;
     encode_frame(control, message, atom_table)
+}
+
+/// Encode a framed `PG_UPDATE` control with an empty payload.
+///
+/// The control tuple is `{101, Tag, Scope, Group, MemberExternalPid}` where
+/// `Tag` is `1` for a join or `2` for a leave. The member is always encoded as
+/// an **external** PID carrying `local_node` as its node component: a plain
+/// local PID would decode on the receiver with `node = None` and corrupt the
+/// recorded [`RemoteMember`]. The payload is `[]` (`NIL`) — `PG_UPDATE` carries
+/// no message body.
+pub fn encode_pg_update_frame(
+    update: PgUpdate,
+    local_node: Atom,
+    atom_table: &AtomTable,
+) -> Result<Vec<u8>, EncodeError> {
+    let (tag, scope, group, pid) = match update {
+        PgUpdate::Join { scope, group, pid } => (PG_JOIN_TAG, scope, group, pid),
+        PgUpdate::Leave { scope, group, pid } => (PG_LEAVE_TAG, scope, group, pid),
+    };
+    let mut process = Process::new(0, 64);
+    let mut context = ProcessContext::new();
+    context.attach_process(&mut process, 0);
+    // Serial 0: local immediate PIDs have no serial component, and the wire
+    // identity for a locally-originated member is (local_node, pid_number, 0).
+    let member = context
+        .alloc_external_pid(local_node, pid, 0)
+        .map_err(|_| EncodeError::UnsupportedTerm)?;
+    let control = context
+        .alloc_tuple(&[
+            Term::small_int(PG_UPDATE),
+            Term::small_int(tag),
+            Term::atom(scope),
+            Term::atom(group),
+            member,
+        ])
+        .map_err(|_| EncodeError::UnsupportedTerm)?;
+    encode_frame(control, Term::NIL, atom_table)
 }
 
 fn encode_frame(
@@ -187,6 +287,48 @@ pub fn decode_control(
                 .ok_or(ControlError::InvalidControl)?;
             Ok(ControlMessage::RegSend { to_name })
         }
+        Some(PG_UPDATE) if tuple.arity() == 5 => decode_pg_update(&tuple),
+        _ => Err(ControlError::InvalidControl),
+    }
+}
+
+/// Decode a `{101, Tag, Scope, Group, MemberExternalPid}` control tuple.
+fn decode_pg_update(tuple: &Tuple) -> Result<ControlMessage, ControlError> {
+    let tag = tuple
+        .get(1)
+        .and_then(Term::as_small_int)
+        .ok_or(ControlError::InvalidControl)?;
+    let scope = tuple
+        .get(2)
+        .and_then(Term::as_atom)
+        .ok_or(ControlError::InvalidControl)?;
+    let group = tuple
+        .get(3)
+        .and_then(Term::as_atom)
+        .ok_or(ControlError::InvalidControl)?;
+    let member = PidRef::new(tuple.get(4).ok_or(ControlError::InvalidControl)?)
+        .ok_or(ControlError::InvalidControl)?;
+    // The member MUST be an external PID carrying the originating node. A local
+    // PID (node = None) means the sender failed to encode the node and the
+    // resulting RemoteMember would be unattributable, so reject it.
+    let node = member.node().ok_or(ControlError::InvalidControl)?;
+    let pid_number = member.pid_number();
+    let serial = member.serial();
+    match tag {
+        PG_JOIN_TAG => Ok(ControlMessage::PgJoin {
+            scope,
+            group,
+            node,
+            pid_number,
+            serial,
+        }),
+        PG_LEAVE_TAG => Ok(ControlMessage::PgLeave {
+            scope,
+            group,
+            node,
+            pid_number,
+            serial,
+        }),
         _ => Err(ControlError::InvalidControl),
     }
 }
@@ -198,6 +340,7 @@ pub fn handle_frame(
     atom_table: &AtomTable,
     delivery: &dyn ControlDelivery,
     registry: Option<&dyn ControlRegistry>,
+    pg: Option<&dyn PgDelivery>,
 ) -> Result<bool, ControlError> {
     match decode_control(control_etf, atom_table)? {
         ControlMessage::Send { to_pid } => Ok(delivery.deliver_payload(to_pid, payload_etf)),
@@ -209,6 +352,32 @@ pub fn handle_frame(
                 return Ok(false);
             };
             Ok(delivery.deliver_payload(pid, payload_etf))
+        }
+        ControlMessage::PgJoin {
+            scope,
+            group,
+            node,
+            pid_number,
+            serial,
+        } => {
+            let Some(pg) = pg else {
+                return Ok(false);
+            };
+            pg.apply_pg_join(scope, group, node, pid_number, serial);
+            Ok(true)
+        }
+        ControlMessage::PgLeave {
+            scope,
+            group,
+            node,
+            pid_number,
+            serial,
+        } => {
+            let Some(pg) = pg else {
+                return Ok(false);
+            };
+            pg.apply_pg_leave(scope, group, node, pid_number, serial);
+            Ok(true)
         }
     }
 }
@@ -561,7 +730,7 @@ mod tests {
         let delivery = TestDelivery::new();
 
         assert_eq!(
-            handle_frame(control, payload, &atom_table, &delivery, None),
+            handle_frame(control, payload, &atom_table, &delivery, None, None),
             Ok(true)
         );
         let messages = delivery
@@ -591,7 +760,14 @@ mod tests {
         let registry = TestRegistry(name, 9);
 
         assert_eq!(
-            handle_frame(control, payload, &atom_table, &delivery, Some(&registry)),
+            handle_frame(
+                control,
+                payload,
+                &atom_table,
+                &delivery,
+                Some(&registry),
+                None
+            ),
             Ok(true)
         );
         let messages = delivery
@@ -602,6 +778,211 @@ mod tests {
             messages.get(&9).and_then(|values| values.first()).copied(),
             Some(Term::atom(Atom::OK))
         );
+    }
+
+    // ── PG_UPDATE tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn pg_update_opcode_is_outside_otp_control_range() {
+        // The chosen opcode must not collide with any standard OTP control op
+        // (the table tops out at SPAWN_REPLY = 31), so `from_opcode` rejects it.
+        const _: () = assert!(PG_UPDATE > SPAWN_REPLY);
+        assert!(
+            crate::distribution::control_lifecycle::ControlOp::from_opcode(PG_UPDATE).is_none()
+        );
+    }
+
+    #[test]
+    fn pg_update_join_round_trips_preserving_node_pid_serial() {
+        let atom_table = AtomTable::with_common_atoms();
+        let local_node = atom_table.intern("node-a@host");
+        let scope = atom_table.intern("pg");
+        let group = atom_table.intern("workers");
+
+        let frame = encode_pg_update_frame(
+            PgUpdate::Join {
+                scope,
+                group,
+                pid: 4242,
+            },
+            local_node,
+            &atom_table,
+        )
+        .expect("pg join frame encodes");
+        let (control, payload) = split_frame(&frame).expect("frame splits");
+        assert!(
+            payload
+                == encode_term(Term::NIL, &atom_table)
+                    .expect("nil encodes")
+                    .as_slice()
+        );
+
+        let decoded = decode_control(control, &atom_table).expect("control decodes");
+        assert_eq!(
+            decoded,
+            ControlMessage::PgJoin {
+                scope,
+                group,
+                node: local_node,
+                pid_number: 4242,
+                serial: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn pg_update_leave_round_trips_preserving_node_pid_serial() {
+        let atom_table = AtomTable::with_common_atoms();
+        let local_node = atom_table.intern("node-a@host");
+        let scope = atom_table.intern("pg");
+        let group = atom_table.intern("workers");
+
+        let frame = encode_pg_update_frame(
+            PgUpdate::Leave {
+                scope,
+                group,
+                pid: 7,
+            },
+            local_node,
+            &atom_table,
+        )
+        .expect("pg leave frame encodes");
+        let (control, _payload) = split_frame(&frame).expect("frame splits");
+
+        let decoded = decode_control(control, &atom_table).expect("control decodes");
+        assert_eq!(
+            decoded,
+            ControlMessage::PgLeave {
+                scope,
+                group,
+                node: local_node,
+                pid_number: 7,
+                serial: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn handle_frame_routes_pg_join_to_delivery() {
+        let atom_table = AtomTable::with_common_atoms();
+        let local_node = atom_table.intern("node-a@host");
+        let scope = atom_table.intern("pg");
+        let group = atom_table.intern("workers");
+
+        let frame = encode_pg_update_frame(
+            PgUpdate::Join {
+                scope,
+                group,
+                pid: 11,
+            },
+            local_node,
+            &atom_table,
+        )
+        .expect("pg join frame encodes");
+        let (control, payload) = split_frame(&frame).expect("frame splits");
+
+        let delivery = TestDelivery::new();
+        let pg = RecordingPgDelivery::default();
+        assert_eq!(
+            handle_frame(control, payload, &atom_table, &delivery, None, Some(&pg)),
+            Ok(true)
+        );
+        let recorded = pg.joins.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(recorded.as_slice(), &[(scope, group, local_node, 11, 0)]);
+    }
+
+    #[test]
+    fn handle_frame_routes_pg_leave_to_delivery() {
+        let atom_table = AtomTable::with_common_atoms();
+        let local_node = atom_table.intern("node-a@host");
+        let scope = atom_table.intern("pg");
+        let group = atom_table.intern("workers");
+
+        let frame = encode_pg_update_frame(
+            PgUpdate::Leave {
+                scope,
+                group,
+                pid: 13,
+            },
+            local_node,
+            &atom_table,
+        )
+        .expect("pg leave frame encodes");
+        let (control, payload) = split_frame(&frame).expect("frame splits");
+
+        let delivery = TestDelivery::new();
+        let pg = RecordingPgDelivery::default();
+        assert_eq!(
+            handle_frame(control, payload, &atom_table, &delivery, None, Some(&pg)),
+            Ok(true)
+        );
+        let recorded = pg.leaves.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(recorded.as_slice(), &[(scope, group, local_node, 13, 0)]);
+    }
+
+    #[test]
+    fn pg_control_without_pg_sink_is_dropped() {
+        let atom_table = AtomTable::with_common_atoms();
+        let local_node = atom_table.intern("node-a@host");
+        let scope = atom_table.intern("pg");
+        let group = atom_table.intern("workers");
+
+        let frame = encode_pg_update_frame(
+            PgUpdate::Join {
+                scope,
+                group,
+                pid: 11,
+            },
+            local_node,
+            &atom_table,
+        )
+        .expect("pg join frame encodes");
+        let (control, payload) = split_frame(&frame).expect("frame splits");
+
+        let delivery = TestDelivery::new();
+        assert_eq!(
+            handle_frame(control, payload, &atom_table, &delivery, None, None),
+            Ok(false)
+        );
+    }
+
+    /// `(scope, group, node, pid_number, serial)` recorded per pg delivery.
+    type PgRecord = (Atom, Atom, Atom, u64, u64);
+
+    #[derive(Default)]
+    struct RecordingPgDelivery {
+        joins: Mutex<Vec<PgRecord>>,
+        leaves: Mutex<Vec<PgRecord>>,
+    }
+
+    impl PgDelivery for RecordingPgDelivery {
+        fn apply_pg_join(
+            &self,
+            scope: Atom,
+            group: Atom,
+            node: Atom,
+            pid_number: u64,
+            serial: u64,
+        ) {
+            self.joins
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((scope, group, node, pid_number, serial));
+        }
+
+        fn apply_pg_leave(
+            &self,
+            scope: Atom,
+            group: Atom,
+            node: Atom,
+            pid_number: u64,
+            serial: u64,
+        ) {
+            self.leaves
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((scope, group, node, pid_number, serial));
+        }
     }
 
     // ── SPAWN_REQUEST / SPAWN_REPLY tests ───────────────────────────────

@@ -88,6 +88,7 @@ pub(super) fn register_distribution_control_handler(shared: &Arc<SharedState>) {
                 &shared_for_handler.atom_table,
                 &facility,
                 Some(&facility),
+                Some(&facility),
             );
         });
 }
@@ -666,7 +667,7 @@ impl DistributionSendFacility for SchedulerDistributionSendFacility {
     }
 }
 
-fn block_on_distribution_send(
+pub(super) fn block_on_distribution_send(
     manager: &crate::distribution::connection::ConnectionManager,
     node: Atom,
     node_name: &str,
@@ -752,6 +753,20 @@ impl ControlDelivery for SchedulerDistributionSendFacility {
 impl ControlRegistry for SchedulerDistributionSendFacility {
     fn whereis(&self, name: Atom) -> Option<u64> {
         self.shared.process_registry.get(&name).map(|entry| *entry)
+    }
+}
+
+impl crate::distribution::control::PgDelivery for SchedulerDistributionSendFacility {
+    fn apply_pg_join(&self, scope: Atom, group: Atom, node: Atom, pid_number: u64, serial: u64) {
+        self.shared
+            .pg_registry
+            .apply_remote_join(scope, group, node, pid_number, serial);
+    }
+
+    fn apply_pg_leave(&self, scope: Atom, group: Atom, node: Atom, pid_number: u64, serial: u64) {
+        self.shared
+            .pg_registry
+            .apply_remote_leave(scope, group, node, pid_number, serial);
     }
 }
 
