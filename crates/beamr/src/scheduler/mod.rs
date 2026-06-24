@@ -997,6 +997,18 @@ impl Scheduler {
     pub fn pg_registry(&self) -> Arc<PgRegistry> {
         Arc::clone(&self.shared.pg_registry)
     }
+    /// The scheduler's shared atom table.
+    ///
+    /// Distribution-facing embedders need this to intern names into the SAME
+    /// atoms the scheduler uses internally: pg group/scope atoms and the node
+    /// atoms returned by [`ConnectionManager::connected_nodes`] are indices into
+    /// this table, so a separately-constructed table would not match. Mirrors the
+    /// accessor [`WasmScheduler::atom_table`](crate::scheduler::WasmScheduler::atom_table)
+    /// already exposes.
+    #[must_use]
+    pub fn atom_table(&self) -> &Arc<AtomTable> {
+        &self.shared.atom_table
+    }
     pub fn set_output_sink(&self, sink: Arc<dyn IoSink>) {
         *lock_or_recover(&self.shared.output_sink) = sink;
     }
