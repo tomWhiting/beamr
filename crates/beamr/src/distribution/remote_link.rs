@@ -96,6 +96,10 @@ impl ControlRouter {
             to: target,
             reason: Some(reason),
         });
+        // FUTURE: wire ControlRouter::send_exit onto DistSender once an
+        // EXIT-control encoder + link/monitor semantics land. The sender is
+        // frame-agnostic, so it reuses the same enqueue path; these EXIT controls
+        // are buffered here until then.
     }
 
     /// Snapshot recorded messages in send order.

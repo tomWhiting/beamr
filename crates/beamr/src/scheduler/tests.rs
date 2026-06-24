@@ -35,8 +35,8 @@ use crate::process::registry::ProcessTable;
 use crate::process::{CodePosition, ExitReason, Priority};
 use crate::replay::{RecordedSchedule, ReplayEvent, ReplayLog};
 use crate::scheduler::execution::{
-    SliceOutcome, cleanup_if_tombstoned_after_store, execute_slice, store_runnable_process,
-    take_runnable_process,
+    SliceOutcome, cleanup_exited_process, cleanup_if_tombstoned_after_store, execute_slice,
+    store_runnable_process, take_runnable_process,
 };
 use crate::supervision::link::LinkSet;
 use crate::supervision::monitor::MonitorSet;
@@ -124,6 +124,34 @@ fn block_on_ready(future: ResolveFuture<'_>) -> Result<std::net::SocketAddr, Res
         Poll::Ready(result) => result,
         Poll::Pending => panic!("resolver test future should be ready immediately"),
     }
+}
+
+#[test]
+fn cleanup_exited_process_purges_pg_membership_without_connection() {
+    // A dying process must drop its pg membership locally even when no
+    // distribution connection exists — the local purge runs synchronously inside
+    // `cleanup_exited_process`, and the propagated leave is a no-op (no peers).
+    let scheduler = Scheduler::new(SchedulerConfig::default(), Arc::new(ModuleRegistry::new()))
+        .expect("scheduler should start");
+    let registry = scheduler.pg_registry();
+    let scope = registry.default_scope();
+    let group = scheduler.shared.atom_table.intern("exiting_workers");
+    let pid = 555_u64;
+
+    registry.join(scope, group, pid);
+    assert_eq!(
+        registry.local_members(scope, group),
+        vec![pid],
+        "pid should be a local member before exit"
+    );
+
+    cleanup_exited_process(&scheduler.shared, pid, ExitReason::Normal);
+
+    assert!(
+        registry.local_members(scope, group).is_empty(),
+        "cleanup_exited_process must purge the pid's pg membership locally"
+    );
+    scheduler.shutdown();
 }
 
 #[test]
@@ -972,6 +1000,53 @@ fn shutdown_is_idempotent() {
     scheduler.shutdown();
 }
 
+/// FIX 2 regression: a non-replay scheduler's `SharedState` must actually drop
+/// when the `Scheduler` drops. The distribution control-frame handler is stored
+/// inside `SharedState`'s own `ConnectionManager`; if it captured a strong
+/// `Arc<SharedState>` (as it did before the fix) the cycle `SharedState ->
+/// distribution_connections -> control_frame_handler -> Arc<SharedState>` would
+/// leak the scheduler forever. We hold ONLY a `Weak`, drop the scheduler, and
+/// assert the `Weak` can no longer upgrade and reports a zero strong count.
+///
+/// This is a plain (non-async) `#[test]`, but `Scheduler::drop` runs the full
+/// teardown — including the owned `DistSender` runtime drop — so it also exercises
+/// FIX 1's dedicated-thread runtime drop reaching zero strong refs without panic.
+#[test]
+fn scheduler_shared_state_drops_without_leak() {
+    let registry = Arc::new(ModuleRegistry::new());
+    let scheduler = Scheduler::new(
+        SchedulerConfig {
+            thread_count: Some(2),
+            ..SchedulerConfig::default()
+        },
+        registry,
+    )
+    .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
+
+    // A non-replay scheduler must have built the dist sender and registered the
+    // control-frame handler (the leak site under test).
+    assert!(
+        !scheduler.shared.replay_mode,
+        "test must run a non-replay scheduler (replay skips the control handler)"
+    );
+
+    // Downgrade to a Weak so this test holds NO strong reference of its own.
+    let weak: std::sync::Weak<SharedState> = Arc::downgrade(&scheduler.shared);
+
+    scheduler.shutdown();
+    drop(scheduler);
+
+    assert!(
+        weak.upgrade().is_none(),
+        "SharedState leaked: a strong Arc cycle outlived the Scheduler"
+    );
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "SharedState strong count must reach zero after the Scheduler drops"
+    );
+}
+
 #[test]
 fn single_process_runs_to_completion_and_is_removed() {
     let atoms = AtomTable::new();
@@ -1044,11 +1119,17 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
     let distribution_connections = crate::distribution::connection::ConnectionManager::new(
         Arc::clone(&atom_table),
         Arc::clone(&distribution.resolver),
+        distribution.cookie.clone(),
+        "local@test",
+        0,
     );
     let net_kernel = Arc::new(crate::distribution::NetKernel::new(
         crate::distribution::connection::ConnectionManager::new(
             Arc::clone(&atom_table),
             distribution.resolver.clone(),
+            distribution.cookie.clone(),
+            "local@test",
+            0,
         ),
     ));
     let module_v1 = registry.insert(test_module(
@@ -1091,6 +1172,7 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         hook: Hook::new(),
         distribution,
         distribution_connections,
+        dist_sender: None,
         control_router: crate::distribution::remote_link::ControlRouter::new(),
         process_registry: DashMap::new(),
         timers: Arc::new(Mutex::new(TimerWheel::new())),
@@ -1414,6 +1496,9 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
     let distribution_connections = crate::distribution::connection::ConnectionManager::new(
         Arc::clone(&atom_table),
         Arc::clone(&distribution.resolver),
+        distribution.cookie.clone(),
+        "local@test",
+        0,
     );
     let shared = Arc::new(SharedState {
         shutdown: AtomicBool::new(false),
@@ -1444,6 +1529,7 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         hook: Hook::new(),
         distribution,
         distribution_connections,
+        dist_sender: None,
         control_router: crate::distribution::remote_link::ControlRouter::new(),
         process_registry: DashMap::new(),
         timers: Arc::new(Mutex::new(TimerWheel::new())),
@@ -1479,8 +1565,13 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         net_kernel: {
             let dist = DistributionConfig::default();
             let at = Arc::new(crate::atom::AtomTable::new());
-            let cm =
-                crate::distribution::connection::ConnectionManager::new(at, dist.resolver.clone());
+            let cm = crate::distribution::connection::ConnectionManager::new(
+                at,
+                dist.resolver.clone(),
+                dist.cookie.clone(),
+                "local@test",
+                0,
+            );
             Arc::new(crate::distribution::NetKernel::new(cm))
         },
         jit_profiler: Arc::new(crate::jit::JitProfiler::new(1000)),

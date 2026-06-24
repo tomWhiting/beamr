@@ -394,6 +394,9 @@ fn nodes_returns_connected_node_atoms() {
     let manager = ConnectionManager::new(
         Arc::clone(&table),
         Arc::new(StaticResolver::new(std::collections::HashMap::new())),
+        "test-cookie",
+        "local@test",
+        0,
     );
     let net_kernel = Arc::new(NetKernel::new(manager.clone()));
     let mut process = Process::new(1, 128);
@@ -434,6 +437,9 @@ fn disconnect_node_removes_node_from_nodes() {
     let manager = ConnectionManager::new(
         Arc::clone(&table),
         Arc::new(StaticResolver::new(std::collections::HashMap::new())),
+        "test-cookie",
+        "local@test",
+        0,
     );
     let net_kernel = Arc::new(NetKernel::new(manager.clone()));
     let mut process = Process::new(1, 128);

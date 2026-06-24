@@ -1488,6 +1488,20 @@ pub(in crate::scheduler) fn cleanup_exited_process(
     // completions, sticky resumes, file-I/O completions — so a dead pid can
     // neither leak entries nor have a late completion misattributed.
     shared.purge_suspension_state(pid);
+    // Purge this pid from every pg group: the local removal runs synchronously
+    // inside (an empty-group scan for non-pg processes is cheap and does no I/O),
+    // and each resulting leave is propagated asynchronously through the installed
+    // `SchedulerPgPropagation`/`DistSender`, so the exit path never blocks.
+    //
+    // CONTENTION NOTE: this acquires the GLOBAL `PgState` mutex on EVERY process
+    // death — even for the common case of a process that joined no pg group,
+    // where the scan finds nothing. Under high process churn concurrent with a
+    // busy pg registry this is a single global-lock acquire on the hot exit path.
+    // Accepted for now: the held critical section is a cheap membership scan with
+    // no I/O, and exits are not the system's throughput-critical path. Revisit
+    // (e.g. a per-pid "is in any group" fast-path flag to skip the lock) only if
+    // profiling shows this lock as a real contention point.
+    shared.pg_registry.remove_pid_from_all_scopes(pid);
 }
 
 fn close_owned_fd_resources_on_exit(shared: &SharedState, pid: u64) {

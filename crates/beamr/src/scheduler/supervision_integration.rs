@@ -75,18 +75,31 @@ pub(super) fn propagate_exit(shared: &SharedState, pid: u64, reason: ExitReason)
 }
 
 pub(super) fn register_distribution_control_handler(shared: &Arc<SharedState>) {
-    let shared_for_handler = Arc::clone(shared);
+    // Capture a `Weak`, NOT an `Arc`: the handler is stored inside
+    // `ConnectionManagerInner.control_frame_handler`, and `SharedState` owns that
+    // `ConnectionManager`. A strong capture would form the permanent cycle
+    // `SharedState -> distribution_connections -> control_frame_handler ->
+    // Arc<SharedState>`, leaking every scheduler's `SharedState` forever. Mirror
+    // the connection-down hook in `scheduler/mod.rs` (the pg-purge closure): hold
+    // a `Weak` and `upgrade()` per inbound frame, dropping the frame if the
+    // scheduler has already gone.
+    let shared_for_handler = Arc::downgrade(shared);
     shared
         .distribution_connections
         .register_control_frame_handler(move |control, payload| {
+            let Some(shared) = shared_for_handler.upgrade() else {
+                // Scheduler dropped: there is nothing left to deliver to.
+                return;
+            };
             let facility = SchedulerDistributionSendFacility {
-                shared: Arc::clone(&shared_for_handler),
+                shared: Arc::clone(&shared),
             };
             let _ = crate::distribution::control::handle_frame(
                 control,
                 payload,
-                &shared_for_handler.atom_table,
+                &shared.atom_table,
                 &facility,
+                Some(&facility),
                 Some(&facility),
             );
         });
@@ -666,7 +679,7 @@ impl DistributionSendFacility for SchedulerDistributionSendFacility {
     }
 }
 
-fn block_on_distribution_send(
+pub(super) fn block_on_distribution_send(
     manager: &crate::distribution::connection::ConnectionManager,
     node: Atom,
     node_name: &str,
@@ -752,6 +765,20 @@ impl ControlDelivery for SchedulerDistributionSendFacility {
 impl ControlRegistry for SchedulerDistributionSendFacility {
     fn whereis(&self, name: Atom) -> Option<u64> {
         self.shared.process_registry.get(&name).map(|entry| *entry)
+    }
+}
+
+impl crate::distribution::control::PgDelivery for SchedulerDistributionSendFacility {
+    fn apply_pg_join(&self, scope: Atom, group: Atom, node: Atom, pid_number: u64, serial: u64) {
+        self.shared
+            .pg_registry
+            .apply_remote_join(scope, group, node, pid_number, serial);
+    }
+
+    fn apply_pg_leave(&self, scope: Atom, group: Atom, node: Atom, pid_number: u64, serial: u64) {
+        self.shared
+            .pg_registry
+            .apply_remote_leave(scope, group, node, pid_number, serial);
     }
 }
 

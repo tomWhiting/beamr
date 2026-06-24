@@ -3,6 +3,7 @@ mod execution;
 mod exit_capture;
 mod exit_tombstones;
 mod module_management;
+mod pg_propagation;
 mod process_slot;
 pub mod run_queue;
 mod spawning;
@@ -20,6 +21,7 @@ use crate::distribution::DistributionConfig;
 use crate::distribution::connection::ConnectionManager;
 use crate::distribution::pg::PgRegistry;
 use crate::distribution::remote_link::ControlRouter;
+use crate::distribution::sender::DistSender;
 use crate::distribution::{DEFAULT_NODE_NAME, NetKernel, Node};
 pub use wasm::{WasmAsyncCompletion, WasmRunSummary, WasmScheduledTimer, WasmScheduler};
 
@@ -174,6 +176,10 @@ pub(super) struct SharedState {
     hook: Hook,
     distribution: DistributionConfig,
     distribution_connections: ConnectionManager,
+    /// Async outbound distribution sender. `None` under replay (no runtime).
+    /// Holds the `ConnectionManager`, never `Arc<SharedState>`, so it does not
+    /// form a reference cycle with the scheduler.
+    dist_sender: Option<DistSender>,
     control_router: ControlRouter,
     process_registry: DashMap<crate::atom::Atom, u64>,
     timers: Arc<Mutex<TimerWheel>>,
@@ -612,8 +618,31 @@ impl Scheduler {
             None => (None, None, None),
         };
         let distribution = config.distribution.unwrap_or_default();
-        let distribution_connections =
-            ConnectionManager::new(Arc::clone(&atom_table), Arc::clone(&distribution.resolver));
+        let dist_local_node_name = config
+            .node_name
+            .as_deref()
+            .unwrap_or(DEFAULT_NODE_NAME)
+            .to_owned();
+        let dist_local_creation = config.creation.unwrap_or(0);
+        let distribution_connections = ConnectionManager::new(
+            Arc::clone(&atom_table),
+            Arc::clone(&distribution.resolver),
+            distribution.cookie.clone(),
+            dist_local_node_name,
+            dist_local_creation,
+        );
+        // Build the async outbound distribution sender (skipped under replay,
+        // which has no runtime). Bind its owned runtime handle to the connection
+        // manager so the read/accept tasks are driven in production, where there
+        // is no ambient tokio runtime.
+        let dist_sender = if replay_enabled {
+            None
+        } else {
+            DistSender::new(distribution_connections.clone())
+        };
+        if let Some(sender) = &dist_sender {
+            distribution_connections.set_runtime_handle(sender.handle());
+        }
         let namespace_store = DashMap::new();
         namespace_store.insert(NamespaceId::DEFAULT, Arc::clone(&module_registry));
         let file_io_ring: Arc<dyn CompletionRing> = if replay_enabled {
@@ -632,8 +661,13 @@ impl Scheduler {
             atom_table.intern(local_node_name),
             config.creation.unwrap_or(0),
         );
-        let connection_manager =
-            ConnectionManager::new(Arc::clone(&atom_table), distribution.resolver.clone());
+        let connection_manager = ConnectionManager::new(
+            Arc::clone(&atom_table),
+            distribution.resolver.clone(),
+            distribution.cookie.clone(),
+            local_node_name.to_owned(),
+            config.creation.unwrap_or(0),
+        );
         let net_kernel = Arc::new(NetKernel::new(connection_manager));
         let pg_registry = Arc::new(PgRegistry::new(atom_table.as_ref()));
         let standard_io_server =
@@ -678,6 +712,7 @@ impl Scheduler {
             hook: Hook::new(),
             distribution,
             distribution_connections,
+            dist_sender,
             control_router: ControlRouter::new(),
             process_registry: DashMap::new(),
             timers: Arc::new(Mutex::new(TimerWheel::new())),
@@ -712,6 +747,26 @@ impl Scheduler {
         #[cfg(feature = "telemetry")]
         shared.record_vm_health_metrics();
         supervision_integration::register_distribution_control_handler(&shared);
+        // Install the real cross-node pg propagation now that `shared` exists.
+        // Both the propagation backend and the connection-down hook hold a
+        // `Weak<SharedState>` (not `Arc`) so they never keep the scheduler alive:
+        // `SharedState` owns `pg_registry`, which owns the propagation, which would
+        // otherwise own `SharedState` back and form a leak-forever cycle.
+        shared
+            .pg_registry
+            .set_propagation(Arc::new(pg_propagation::SchedulerPgPropagation {
+                shared: Arc::downgrade(&shared),
+            }));
+        // On node failure, drop every remote pg member that belonged to the lost
+        // node so group membership reflects the surviving cluster.
+        let pg_down_weak = Arc::downgrade(&shared);
+        shared
+            .distribution_connections
+            .register_connection_down(move |event| {
+                if let Some(shared) = pg_down_weak.upgrade() {
+                    shared.pg_registry.purge_remote_node(event.node);
+                }
+            });
         if !shared.replay_mode
             && let (Some(ring), Some(registry)) = (&shared.io_ring, &shared.io_registry)
         {
@@ -924,6 +979,23 @@ impl Scheduler {
     #[must_use]
     pub fn distribution_connections(&self) -> ConnectionManager {
         self.shared.distribution_connections.clone()
+    }
+    /// Start accepting inbound distribution connections on `addr`.
+    ///
+    /// Accepted peers run the OTP handshake (authenticated by the configured
+    /// cookie) before being registered under their advertised node name. The
+    /// returned [`AcceptHandle`](crate::distribution::connection::AcceptHandle)
+    /// owns the accept loop: the caller must keep it alive, as dropping it aborts
+    /// the loop and stops accepting new connections.
+    pub async fn start_distribution_listener(
+        &self,
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<crate::distribution::connection::AcceptHandle> {
+        self.shared.distribution_connections.listen(addr).await
+    }
+    #[must_use]
+    pub fn pg_registry(&self) -> Arc<PgRegistry> {
+        Arc::clone(&self.shared.pg_registry)
     }
     pub fn set_output_sink(&self, sink: Arc<dyn IoSink>) {
         *lock_or_recover(&self.shared.output_sink) = sink;

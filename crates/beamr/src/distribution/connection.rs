@@ -11,10 +11,14 @@ use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Handle;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::atom::{Atom, AtomTable};
+use crate::distribution::handshake::{
+    HandshakeNode, initiate_handshake_async, respond_handshake_async,
+};
 use crate::distribution::resolver::NodeResolver;
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -54,6 +58,10 @@ pub enum ConnectionDownReason {
     ReadError,
     /// A write operation reported an error.
     WriteError,
+    /// A write exceeded its deadline (peer connected but not reading; kernel
+    /// send buffer full). Treated as a terminal write failure by the outbound
+    /// sender so a wedged peer cannot stall the shared drain.
+    WriteTimeout,
     /// The local node explicitly closed the connection.
     ManualDisconnect,
 }
@@ -68,7 +76,6 @@ pub struct ConnectionDownEvent {
 }
 
 type ConnectionDownCallback = dyn Fn(ConnectionDownEvent) + Send + Sync + 'static;
-type InboundIdentifier = dyn Fn(SocketAddr) -> Option<Atom> + Send + Sync + 'static;
 type ControlFrameHandler = dyn Fn(&[u8], &[u8]) + Send + Sync + 'static;
 
 /// Per-manager callback registration for connection-down notifications.
@@ -183,6 +190,17 @@ impl DistConnection {
         result
     }
 
+    /// Mark this connection down because a write exceeded its deadline.
+    ///
+    /// The outbound sender's drain bounds each `write_raw` with a timeout so a
+    /// wedged peer cannot stall propagation for the whole cluster. On timeout the
+    /// write future is dropped without `write_raw` observing a failure, so the
+    /// drain calls this to drive the same connection-down path (hook + remote
+    /// purge) a genuine write error would. Idempotent via the inner `mark_down`.
+    pub fn mark_down_write_timeout(self: &Arc<Self>) {
+        self.mark_down(ConnectionDownReason::WriteTimeout);
+    }
+
     fn mark_down(self: &Arc<Self>, reason: ConnectionDownReason) {
         if self.down.swap(true, Ordering::AcqRel) {
             return;
@@ -232,9 +250,56 @@ struct ConnectionManagerInner {
     resolver: Arc<dyn NodeResolver + Send + Sync>,
     connect_timeout: Duration,
     connection_down_hook: ConnectionDownHook,
-    inbound_identifier: RwLock<Option<Arc<InboundIdentifier>>>,
     control_frame_handler: RwLock<Option<Arc<ControlFrameHandler>>>,
-    pending_inbound: DashMap<SocketAddr, TcpStream>,
+    /// Shared handshake secret. Both peers must agree on this value or the OTP
+    /// challenge/response is rejected and the connection is dropped.
+    cookie: String,
+    /// This node's advertised distribution name, sent in the handshake name
+    /// packet so the peer keys its connection table by our identity.
+    local_node_name: String,
+    /// This node's creation value, sent alongside the name in the handshake.
+    local_creation: u32,
+    /// Runtime handle that drives the read/accept tasks. In production the
+    /// scheduler binds the [`DistSender`](crate::distribution::sender::DistSender)
+    /// runtime here so the receive side is driven even though no ambient runtime
+    /// exists. When unset (e.g. `#[tokio::test]`), the tasks fall back to the
+    /// ambient runtime via bare `tokio::spawn`.
+    runtime_handle: RwLock<Option<Handle>>,
+}
+
+impl ConnectionManagerInner {
+    /// Spawn `future` on the bound runtime handle when one is set, else on the
+    /// ambient runtime. Used for the read/accept lifecycle tasks.
+    fn spawn_lifecycle<F>(&self, future: F) -> JoinHandle<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = self
+            .runtime_handle
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        match handle {
+            Some(handle) => handle.spawn(future),
+            None => tokio::spawn(future),
+        }
+    }
+
+    /// Build the local handshake descriptor advertised to peers.
+    fn handshake_node(&self) -> Result<HandshakeNode, ConnectError> {
+        HandshakeNode::with_default_flags(self.local_node_name.clone(), self.local_creation)
+            .map_err(|error| ConnectError::Io(error.to_string()))
+    }
+
+    /// Produce a per-handshake challenge value. The challenge is drawn from a
+    /// cryptographically secure random source, so it is unpredictable per
+    /// session. This is the canonical OTP behavior: the shared cookie still
+    /// provides authentication, while an unpredictable challenge adds
+    /// defense-in-depth against replay (an attacker cannot precompute the
+    /// digest for a challenge they cannot guess).
+    fn gen_challenge(&self) -> u32 {
+        rand::random::<u32>()
+    }
 }
 
 impl ConnectionManagerInner {
@@ -263,9 +328,26 @@ pub struct ConnectionManager {
 
 impl ConnectionManager {
     /// Create a connection manager with the default five-second connect timeout.
+    ///
+    /// `cookie`, `local_node_name`, and `local_creation` are the local node's
+    /// OTP handshake identity: the cookie authenticates peers, while the name and
+    /// creation are advertised so a peer keys its connection table by this node.
     #[must_use]
-    pub fn new(atom_table: Arc<AtomTable>, resolver: Arc<dyn NodeResolver + Send + Sync>) -> Self {
-        Self::with_connect_timeout(atom_table, resolver, DEFAULT_CONNECT_TIMEOUT)
+    pub fn new(
+        atom_table: Arc<AtomTable>,
+        resolver: Arc<dyn NodeResolver + Send + Sync>,
+        cookie: impl Into<String>,
+        local_node_name: impl Into<String>,
+        local_creation: u32,
+    ) -> Self {
+        Self::with_connect_timeout(
+            atom_table,
+            resolver,
+            cookie,
+            local_node_name,
+            local_creation,
+            DEFAULT_CONNECT_TIMEOUT,
+        )
     }
 
     /// Create a connection manager with a caller-specified connect timeout.
@@ -273,6 +355,9 @@ impl ConnectionManager {
     pub fn with_connect_timeout(
         atom_table: Arc<AtomTable>,
         resolver: Arc<dyn NodeResolver + Send + Sync>,
+        cookie: impl Into<String>,
+        local_node_name: impl Into<String>,
+        local_creation: u32,
         connect_timeout: Duration,
     ) -> Self {
         Self {
@@ -282,11 +367,27 @@ impl ConnectionManager {
                 resolver,
                 connect_timeout,
                 connection_down_hook: ConnectionDownHook::new(),
-                inbound_identifier: RwLock::new(None),
                 control_frame_handler: RwLock::new(None),
-                pending_inbound: DashMap::new(),
+                cookie: cookie.into(),
+                local_node_name: local_node_name.into(),
+                local_creation,
+                runtime_handle: RwLock::new(None),
             }),
         }
+    }
+
+    /// Bind a tokio runtime handle for the read/accept lifecycle tasks.
+    ///
+    /// The scheduler calls this with the owned `DistSender` runtime handle so the
+    /// receive side is driven in production (where no ambient runtime exists).
+    /// Must be called before any connection is established; existing tasks keep
+    /// the runtime they were spawned on.
+    pub fn set_runtime_handle(&self, handle: Handle) {
+        *self
+            .inner
+            .runtime_handle
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Some(handle);
     }
 
     /// Return the configured outbound TCP connection timeout.
@@ -309,26 +410,6 @@ impl ConnectionManager {
         self.inner.connection_down_hook.register(callback);
     }
 
-    /// Register a temporary inbound identification seam.
-    ///
-    /// B-115 replaces this with the distribution handshake. Until then, accepted streams remain
-    /// pending unless this seam identifies the peer address as a node atom.
-    pub fn register_inbound_identifier<F>(&self, identifier: F)
-    where
-        F: Fn(SocketAddr) -> Option<Atom> + Send + Sync + 'static,
-    {
-        let mut slot = self
-            .inner
-            .inbound_identifier
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        let identifier: Arc<dyn Fn(SocketAddr) -> Option<Atom> + Send + Sync> =
-            Arc::new(identifier);
-        *slot = Some(identifier.clone());
-        drop(slot);
-        self.identify_pending_inbound(&identifier);
-    }
-
     /// Register a handler for framed distribution control messages read from active links.
     pub fn register_control_frame_handler<F>(&self, handler: F)
     where
@@ -342,26 +423,10 @@ impl ConnectionManager {
         *slot = Some(Arc::new(handler));
     }
 
-    /// Remove the temporary inbound identification seam.
-    pub fn unregister_inbound_identifier(&self) {
-        let mut slot = self
-            .inner
-            .inbound_identifier
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        *slot = None;
-    }
-
     /// Number of active, identified distribution connections.
     #[must_use]
     pub fn connection_count(&self) -> usize {
         self.inner.connections.len()
-    }
-
-    /// Number of inbound TCP streams waiting for B-115 handshake identification.
-    #[must_use]
-    pub fn pending_inbound_count(&self) -> usize {
-        self.inner.pending_inbound.len()
     }
 
     /// Look up an active distribution connection by node-name atom.
@@ -410,8 +475,17 @@ impl ConnectionManager {
     pub async fn start(
         listen_addr: SocketAddr,
         resolver: Arc<dyn NodeResolver + Send + Sync>,
+        cookie: impl Into<String>,
+        local_node_name: impl Into<String>,
+        local_creation: u32,
     ) -> io::Result<(Self, AcceptHandle)> {
-        let manager = Self::new(Arc::new(AtomTable::with_common_atoms()), resolver);
+        let manager = Self::new(
+            Arc::new(AtomTable::with_common_atoms()),
+            resolver,
+            cookie,
+            local_node_name,
+            local_creation,
+        );
         let handle = manager.listen(listen_addr).await?;
         Ok((manager, handle))
     }
@@ -423,7 +497,7 @@ impl ConnectionManager {
         let shutdown = Arc::new(Notify::new());
         let task_shutdown = Arc::clone(&shutdown);
         let manager = self.clone();
-        let task = tokio::spawn(async move {
+        let task = self.inner.spawn_lifecycle(async move {
             manager.accept_loop(listener, task_shutdown).await;
         });
         Ok(AcceptHandle {
@@ -433,7 +507,14 @@ impl ConnectionManager {
         })
     }
 
-    /// Resolve `node_name`, open a TCP connection, and add it to the active table.
+    /// Resolve `node_name`, open a TCP connection, run the OTP distribution
+    /// handshake, and add the authenticated link to the active table.
+    ///
+    /// The connection is keyed by the name the peer advertises in the handshake
+    /// — not by `node_name`/the resolver key — so identity is established by the
+    /// authenticated handshake rather than by trusting the dialed address. On any
+    /// handshake failure the stream is dropped (closing the TCP connection) and a
+    /// [`ConnectError::Io`] is returned.
     pub async fn connect(&self, node_name: &str) -> Result<Arc<DistConnection>, ConnectError> {
         let addr = self
             .inner
@@ -441,7 +522,7 @@ impl ConnectionManager {
             .resolve(node_name)
             .await
             .map_err(|_| ConnectError::ResolveFailure)?;
-        let stream = match tokio::time::timeout(
+        let mut stream = match tokio::time::timeout(
             self.inner.connect_timeout,
             TcpStream::connect(addr),
         )
@@ -454,8 +535,21 @@ impl ConnectionManager {
             Ok(Err(error)) => return Err(ConnectError::Io(error.to_string())),
             Err(_) => return Err(ConnectError::Timeout),
         };
-        let node = self.inner.atom_table.intern(node_name);
         let peer_addr = stream.peer_addr().unwrap_or(addr);
+
+        let local = self.inner.handshake_node()?;
+        let result = initiate_handshake_async(
+            &mut stream,
+            &local,
+            &self.inner.cookie,
+            self.inner.gen_challenge(),
+        )
+        .await
+        .map_err(|error| ConnectError::Io(error.to_string()))?;
+        // Drop the stream here on the (already-handled) error paths above closes
+        // the TCP connection; on success the authenticated remote name becomes
+        // the connection-table key.
+        let node = self.inner.atom_table.intern(result.remote_name());
         Ok(self.register_connection(node, peer_addr, stream))
     }
 
@@ -492,7 +586,7 @@ impl ConnectionManager {
 
     fn spawn_read_lifecycle(&self, connection: Arc<DistConnection>, mut read_half: OwnedReadHalf) {
         let manager = Arc::clone(&self.inner);
-        tokio::spawn(async move {
+        self.inner.spawn_lifecycle(async move {
             loop {
                 let mut header = [0_u8; 8];
                 match read_half.read_exact(&mut header).await {
@@ -551,36 +645,40 @@ impl ConnectionManager {
         }
     }
 
-    fn handle_accepted(&self, stream: TcpStream, peer_addr: SocketAddr) {
-        let identifier = self
-            .inner
-            .inbound_identifier
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
-        if let Some(node) = identifier
-            .as_ref()
-            .and_then(|identifier| identifier(peer_addr))
-        {
-            self.register_connection(node, peer_addr, stream);
-        } else {
-            self.inner.pending_inbound.insert(peer_addr, stream);
-        }
-    }
-
-    fn identify_pending_inbound(&self, identifier: &Arc<InboundIdentifier>) {
-        let identified: Vec<_> = self
-            .inner
-            .pending_inbound
-            .iter()
-            .filter_map(|entry| identifier(*entry.key()).map(|node| (*entry.key(), node)))
-            .collect();
-
-        for (peer_addr, node) in identified {
-            if let Some((_, stream)) = self.inner.pending_inbound.remove(&peer_addr) {
-                self.register_connection(node, peer_addr, stream);
+    /// Run the inbound OTP handshake on an accepted stream, then register it.
+    ///
+    /// The handshake is asynchronous, so it is spawned onto the bound runtime via
+    /// [`ConnectionManagerInner::spawn_lifecycle`] — the same mechanism the
+    /// read/accept lifecycle uses — so it is driven even in production where no
+    /// ambient tokio runtime exists on worker threads. The handshake completes on
+    /// the raw stream (2-byte length-prefixed packets) before the connection is
+    /// registered and its data-frame read loop starts. On success the connection
+    /// is keyed by the peer's authenticated handshake name; on failure the stream
+    /// is dropped, closing the TCP connection.
+    fn handle_accepted(&self, mut stream: TcpStream, peer_addr: SocketAddr) {
+        let manager = self.clone();
+        self.inner.spawn_lifecycle(async move {
+            let local = match manager.inner.handshake_node() {
+                Ok(local) => local,
+                Err(_) => return,
+            };
+            match respond_handshake_async(
+                &mut stream,
+                &local,
+                &manager.inner.cookie,
+                manager.inner.gen_challenge(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    let node = manager.inner.atom_table.intern(result.remote_name());
+                    manager.register_connection(node, peer_addr, stream);
+                }
+                Err(_) => {
+                    drop(stream);
+                }
             }
-        }
+        });
     }
 }
 
@@ -589,12 +687,78 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
 
     use super::*;
+    use crate::distribution::handshake::HandshakeNode;
     use crate::distribution::resolver::StaticResolver;
 
+    const TEST_COOKIE: &str = "test-cookie";
+
     fn manager_with_resolver(resolver: Arc<StaticResolver>) -> ConnectionManager {
-        ConnectionManager::new(Arc::new(AtomTable::with_common_atoms()), resolver)
+        ConnectionManager::new(
+            Arc::new(AtomTable::with_common_atoms()),
+            resolver,
+            TEST_COOKIE,
+            "local@127.0.0.1",
+            1,
+        )
+    }
+
+    /// Accept a single inbound stream on `listener` and respond to the OTP
+    /// handshake advertising `name`, mirroring a real peer's accept side so the
+    /// outbound `connect` under test can complete its handshake.
+    fn spawn_responder(
+        listener: TcpListener,
+        name: &'static str,
+        cookie: &'static str,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let Ok((mut stream, _peer)) = listener.accept().await else {
+                return;
+            };
+            let local = HandshakeNode::with_default_flags(name, 7)
+                .expect("responder node name should be valid");
+            let _ = crate::distribution::handshake::respond_handshake_async(
+                &mut stream,
+                &local,
+                cookie,
+                99,
+            )
+            .await;
+            // Keep the accepted stream alive so the connection is not torn down
+            // while the test inspects the outbound side.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        })
+    }
+
+    /// Accept one inbound stream, complete the handshake advertising `name`, and
+    /// hand the accepted (still-open) stream back to the caller so a test can
+    /// later drop it to simulate the peer going away after a successful link.
+    fn spawn_responder_handoff(
+        listener: TcpListener,
+        name: &'static str,
+    ) -> tokio::sync::oneshot::Receiver<TcpStream> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let Ok((mut stream, _peer)) = listener.accept().await else {
+                return;
+            };
+            let local = HandshakeNode::with_default_flags(name, 7)
+                .expect("responder node name should be valid");
+            if crate::distribution::handshake::respond_handshake_async(
+                &mut stream,
+                &local,
+                TEST_COOKIE,
+                99,
+            )
+            .await
+            .is_ok()
+            {
+                let _ = sender.send(stream);
+            }
+        });
+        receiver
     }
 
     #[tokio::test]
@@ -618,9 +782,7 @@ mod tests {
         let addr = listener.local_addr().unwrap_or_else(|error| {
             panic!("failed to inspect local listener: {error}");
         });
-        tokio::spawn(async move {
-            let _accepted = listener.accept().await;
-        });
+        let _responder = spawn_responder(listener, "remote@127.0.0.1", TEST_COOKIE);
 
         let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
             "remote@127.0.0.1".to_string(),
@@ -642,6 +804,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_keys_table_by_remote_handshake_name_not_resolver_key() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("failed to bind local listener: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
+        // The peer advertises a DIFFERENT name than the resolver key the dialer
+        // used, proving identity comes from the authenticated handshake.
+        let _responder = spawn_responder(listener, "advertised@127.0.0.1", TEST_COOKIE);
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "dialed@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let connection = manager
+            .connect("dialed@127.0.0.1")
+            .await
+            .unwrap_or_else(|error| panic!("connect failed: {error}"));
+
+        let advertised = manager.inner.atom_table.intern("advertised@127.0.0.1");
+        let dialed = manager.inner.atom_table.intern("dialed@127.0.0.1");
+        assert_eq!(connection.node(), advertised);
+        assert!(manager.get_connection(advertised).is_some());
+        assert!(
+            manager.get_connection(dialed).is_none(),
+            "connection must not be keyed by the resolver key"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_wrong_cookie_and_records_no_entry() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("failed to bind local listener: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
+        // Responder uses a different cookie, so the handshake digest mismatches.
+        let _responder = spawn_responder(listener, "remote@127.0.0.1", "other-cookie");
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let result = manager.connect("remote@127.0.0.1").await;
+
+        assert!(
+            matches!(result, Err(ConnectError::Io(_))),
+            "connect must fail with Io on cookie mismatch"
+        );
+        assert_eq!(manager.connection_count(), 0);
+        let remote = manager.inner.atom_table.intern("remote@127.0.0.1");
+        assert!(manager.get_connection(remote).is_none());
+    }
+
+    #[tokio::test]
+    async fn inbound_wrong_cookie_registers_no_entry() {
+        // A listening manager authenticates with TEST_COOKIE. A peer that
+        // initiates the handshake with a DIFFERENT cookie must be rejected by
+        // the register-side accept loop (the `handle_accepted` Err -> drop arm)
+        // and must NOT receive a connection-table entry.
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::new()));
+        let manager = manager_with_resolver(resolver);
+        let accept = manager
+            .listen("127.0.0.1:0".parse().unwrap_or_else(|error| {
+                panic!("failed to parse listen address: {error}");
+            }))
+            .await
+            .unwrap_or_else(|error| panic!("failed to start accept loop: {error}"));
+
+        let mut client = TcpStream::connect(accept.local_addr())
+            .await
+            .unwrap_or_else(|error| panic!("failed to open inbound stream: {error}"));
+        let client_node = HandshakeNode::with_default_flags("client@127.0.0.1", 5)
+            .expect("client node name should be valid");
+        // The client uses the WRONG cookie, so the digest mismatches and the
+        // listening manager's responder rejects the handshake.
+        let result = crate::distribution::handshake::initiate_handshake_async(
+            &mut client,
+            &client_node,
+            "wrong-cookie",
+            42,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "inbound handshake with wrong cookie must fail"
+        );
+
+        // The inbound handshake runs on a spawned task, so poll (rather than a
+        // fixed sleep) to confirm the rejection never produces a table entry.
+        let node = manager.inner.atom_table.intern("client@127.0.0.1");
+        for _ in 0..40 {
+            assert_eq!(
+                manager.connection_count(),
+                0,
+                "wrong-cookie peer must never register a connection"
+            );
+            assert!(
+                manager.get_connection(node).is_none(),
+                "wrong-cookie peer must not appear in the connection table"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(client);
+    }
+
+    #[tokio::test]
     async fn connect_node_is_idempotent_and_lists_node() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -649,9 +922,7 @@ mod tests {
         let addr = listener
             .local_addr()
             .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
-        tokio::spawn(async move {
-            let _accepted = listener.accept().await;
-        });
+        let _responder = spawn_responder(listener, "remote@127.0.0.1", TEST_COOKIE);
 
         let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
             "remote@127.0.0.1".to_string(),
@@ -678,7 +949,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inbound_connection_waits_for_identification_seam() {
+    async fn inbound_peer_registers_under_its_handshake_name() {
         let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::new()));
         let manager = manager_with_resolver(resolver);
         let accept = manager
@@ -688,20 +959,38 @@ mod tests {
             .await
             .unwrap_or_else(|error| panic!("failed to start accept loop: {error}"));
 
-        let pending_stream = TcpStream::connect(accept.local_addr())
+        // The inbound peer initiates the handshake advertising "client@127.0.0.1".
+        // The manager must register it under that authenticated name with NO
+        // address-identity seam.
+        let mut client = TcpStream::connect(accept.local_addr())
             .await
-            .unwrap_or_else(|error| panic!("failed to open pending inbound stream: {error}"));
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        assert_eq!(manager.connection_count(), 0);
-        assert_eq!(manager.pending_inbound_count(), 1);
+            .unwrap_or_else(|error| panic!("failed to open inbound stream: {error}"));
+        let client_node = HandshakeNode::with_default_flags("client@127.0.0.1", 5)
+            .expect("client node name should be valid");
+        crate::distribution::handshake::initiate_handshake_async(
+            &mut client,
+            &client_node,
+            TEST_COOKIE,
+            42,
+        )
+        .await
+        .expect("inbound peer handshake should succeed");
 
         let node = manager.inner.atom_table.intern("client@127.0.0.1");
-        manager.register_inbound_identifier(move |_| Some(node));
-        tokio::time::sleep(Duration::from_millis(25)).await;
-
-        assert!(manager.get_connection(node).is_some());
-        assert_eq!(manager.pending_inbound_count(), 0);
-        drop(pending_stream);
+        let mut connected = false;
+        for _ in 0..40 {
+            if manager.get_connection(node).is_some() {
+                connected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            connected,
+            "inbound peer should register under its handshake name"
+        );
+        assert_eq!(manager.connected_nodes(), vec![node]);
+        drop(client);
     }
 
     #[tokio::test]
@@ -714,7 +1003,7 @@ mod tests {
         let addr = listener.local_addr().unwrap_or_else(|error| {
             panic!("failed to inspect local listener: {error}");
         });
-        let accepted = tokio::spawn(async move { listener.accept().await });
+        let remote_stream = spawn_responder_handoff(listener, "remote@127.0.0.1");
 
         let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
             "remote@127.0.0.1".to_string(),
@@ -732,9 +1021,9 @@ mod tests {
             .await
             .unwrap_or_else(|error| panic!("connect failed: {error}"));
 
-        let Ok(Ok((remote_stream, _))) = accepted.await else {
-            panic!("listener did not accept test connection");
-        };
+        let remote_stream = remote_stream
+            .await
+            .expect("responder did not complete handshake");
         drop(remote_stream);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -750,10 +1039,7 @@ mod tests {
         let addr = listener
             .local_addr()
             .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
-        tokio::spawn(async move {
-            let _accepted = listener.accept().await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        });
+        let _responder = spawn_responder(listener, "remote@127.0.0.1", TEST_COOKIE);
 
         let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
             "remote@127.0.0.1".to_string(),
@@ -787,7 +1073,7 @@ mod tests {
         let addr = listener.local_addr().unwrap_or_else(|error| {
             panic!("failed to inspect local listener: {error}");
         });
-        let accepted = tokio::spawn(async move { listener.accept().await });
+        let remote_stream = spawn_responder_handoff(listener, "remote@127.0.0.1");
 
         let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
             "remote@127.0.0.1".to_string(),
@@ -805,9 +1091,9 @@ mod tests {
             .await
             .unwrap_or_else(|error| panic!("connect failed: {error}"));
 
-        let Ok(Ok((remote_stream, _))) = accepted.await else {
-            panic!("listener did not accept test connection");
-        };
+        let remote_stream = remote_stream
+            .await
+            .expect("responder did not complete handshake");
         drop(remote_stream);
 
         for _ in 0..8 {

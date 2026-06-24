@@ -12,6 +12,7 @@ mod node;
 pub mod pg;
 pub mod remote_link;
 pub mod resolver;
+pub mod sender;
 
 pub use connection::ConnectionManager;
 pub use node::{DEFAULT_NODE_NAME, Node};
@@ -25,18 +26,46 @@ use tokio::runtime::Runtime;
 
 pub use resolver::{NodeResolver, ResolveError, ResolveFuture, Resolver, StaticResolver};
 
+/// Default distribution authentication cookie used when none is configured.
+pub const DEFAULT_COOKIE: &str = "beamr-cookie";
+
 /// Configuration for beamr distribution services.
 #[derive(Clone)]
 pub struct DistributionConfig {
     /// Resolver used to map node names to distribution listen addresses.
     pub resolver: Resolver,
+    /// Shared secret presented in the OTP handshake challenge/response. Both
+    /// peers must agree on this value or the handshake is rejected.
+    pub cookie: String,
 }
 
 /// Synchronous net-kernel facade used by native BIFs.
+///
+/// Owns a multi-thread tokio [`Runtime`] (shared across clones via `Arc`) used to
+/// drive blocking `connect_node` calls from synchronous BIF code. Like the
+/// outbound [`DistSender`](crate::distribution::sender), this runtime must never
+/// be dropped from within an async context — a tokio `Runtime` drop blocks and
+/// panics there. `SharedState` owns this `NetKernel`, and `SharedState` itself
+/// can drop inside a `#[tokio::test]` async context, so [`Drop`] moves the
+/// runtime drop onto a dedicated `std::thread` (see the impl below).
 #[derive(Clone)]
 pub struct NetKernel {
     connections: ConnectionManager,
     runtime: Option<Arc<Runtime>>,
+}
+
+impl Drop for NetKernel {
+    fn drop(&mut self) {
+        // Move the (potentially blocking) runtime drop OFF any async context. The
+        // `Arc` shutdown only blocks when THIS is the last reference; spawning a
+        // plain `std::thread` to own the drop guarantees that, when it is the
+        // last reference, the blocking `Runtime` shutdown runs on a non-async
+        // thread and can never panic. When other clones remain, the spawned-thread
+        // drop is just a cheap `Arc` refcount decrement.
+        if let Some(runtime) = self.runtime.take() {
+            thread::spawn(move || drop(runtime));
+        }
+    }
 }
 
 impl NetKernel {
@@ -108,6 +137,7 @@ impl Default for DistributionConfig {
     fn default() -> Self {
         Self {
             resolver: Arc::new(StaticResolver::new(HashMap::new())),
+            cookie: DEFAULT_COOKIE.to_owned(),
         }
     }
 }
@@ -117,6 +147,7 @@ impl fmt::Debug for DistributionConfig {
         formatter
             .debug_struct("DistributionConfig")
             .field("resolver", &"<node resolver>")
+            .field("cookie", &"<redacted>")
             .finish()
     }
 }

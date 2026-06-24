@@ -77,6 +77,11 @@ impl Scheduler {
         self.shared.dirty_cpu.shutdown();
         self.shared.dirty_io.shutdown();
         self.shared.file_io_ring.shutdown();
+        // Abort the distribution drain task before joining worker threads. The
+        // owned runtime is dropped later when `SharedState` drops.
+        if let Some(sender) = &self.shared.dist_sender {
+            sender.shutdown();
+        }
         self.shared.shutdown.store(true, Ordering::Release);
         self.shared.wake_condvar.notify_all();
         let mut threads = lock_or_recover(&self.threads);
