@@ -8,3 +8,6 @@ target/
 .benchmark/
 .yggdrasil-worktrees/
 erl_crash.dump
+
+# hand-driven build worktrees
+.wt-*
