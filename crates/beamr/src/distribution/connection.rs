@@ -493,18 +493,31 @@ impl ConnectionManager {
     /// Start a dedicated asynchronous TCP accept loop for this manager.
     pub async fn listen(&self, listen_addr: SocketAddr) -> io::Result<AcceptHandle> {
         let listener = TcpListener::bind(listen_addr).await?;
-        let local_addr = listener.local_addr()?;
+        Ok(self.listen_with(listener))
+    }
+
+    /// Start a dedicated asynchronous TCP accept loop on a pre-bound listener.
+    ///
+    /// Separated from [`listen`](Self::listen) so callers that must bind the
+    /// listener before the manager exists (e.g. to publish the chosen port into a
+    /// resolver) can reuse the same accept-loop spawn. The accept loop runs on the
+    /// bound runtime handle via [`ConnectionManagerInner::spawn_lifecycle`].
+    #[must_use]
+    pub fn listen_with(&self, listener: TcpListener) -> AcceptHandle {
+        let local_addr = listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
         let shutdown = Arc::new(Notify::new());
         let task_shutdown = Arc::clone(&shutdown);
         let manager = self.clone();
         let task = self.inner.spawn_lifecycle(async move {
             manager.accept_loop(listener, task_shutdown).await;
         });
-        Ok(AcceptHandle {
+        AcceptHandle {
             local_addr,
             shutdown,
             task,
-        })
+        }
     }
 
     /// Resolve `node_name`, open a TCP connection, run the OTP distribution
@@ -684,9 +697,14 @@ impl ConnectionManager {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Barrier, mpsc};
+    use std::thread;
+    use std::time::Instant;
 
     use tokio::net::TcpListener;
+    use tokio::runtime::Builder;
     use tokio::task::JoinHandle;
 
     use super::*;
@@ -1106,5 +1124,234 @@ mod tests {
 
         assert!(manager.get_connection(node).is_none());
         assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    type Resolver = Arc<dyn NodeResolver + Send + Sync>;
+
+    /// HS-0 (deterministic root-cause oracle): an inbound peer completes the TCP
+    /// connect then sends nothing. The responder's first `read_packet_async` is an
+    /// untimed `read_exact` on the pre-HS-1 code, so the `respond_handshake_async`
+    /// FUTURE never resolves — the canonical handshake hang that, multiplied
+    /// across a `>=3`-node mesh of blocking dials, wedges a cluster.
+    ///
+    /// The test drives the real responder against a silent peer under an inner
+    /// 15s bound. Pre-HS-1 the responder never returns and the bound fires
+    /// (`None`) → the test fails, demonstrating the hang. After HS-1 the responder
+    /// returns a `Timeout`/`Io` error within the 5s handshake deadline and the
+    /// test passes. A whole-test wall-clock watchdog guards against any hang
+    /// escaping the inner bound.
+    #[test]
+    fn hs0_silent_peer_handshake_terminates_and_does_not_hang() {
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_silent_peer_scenario();
+            let _ = done_tx.send(());
+        });
+        match done_rx.recv_timeout(Duration::from_secs(45)) {
+            Ok(()) => worker.join().expect("HS-0 worker thread should not panic"),
+            Err(_) => panic!(
+                "HS-0 DEADLOCK: the handshake against a silent peer never \
+                 terminated (untimed read parked forever)"
+            ),
+        }
+    }
+
+    fn run_silent_peer_scenario() {
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build handshake runtime");
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind responder listener");
+            let addr = listener.local_addr().expect("inspect listener");
+
+            // Silent peer: connect, then never send a single byte.
+            let _silent = TcpStream::connect(addr)
+                .await
+                .expect("silent peer connects");
+
+            let (mut server, _peer) = listener.accept().await.expect("accept silent peer");
+            let local = HandshakeNode::with_default_flags("server@127.0.0.1", 1)
+                .expect("server node name valid");
+
+            // Bound the responder so a pre-HS-1 hang is observable as `None`. The
+            // bound is comfortably above the 5s handshake deadline HS-1 installs.
+            let responder = crate::distribution::handshake::respond_handshake_async(
+                &mut server,
+                &local,
+                TEST_COOKIE,
+                7,
+            );
+            let outcome = tokio::time::timeout(Duration::from_secs(15), responder).await;
+
+            assert!(
+                outcome.is_ok(),
+                "respond_handshake_async did not terminate against a silent peer: \
+                 the untimed handshake read parked forever (HS-1 not in effect)"
+            );
+            assert!(
+                outcome.expect("responder must have terminated").is_err(),
+                "a silent peer must yield a handshake error, not a success"
+            );
+        });
+    }
+
+    /// HS-0 (convergence): a 3-node full mesh, every node dialing its two peers
+    /// simultaneously (barrier-released) from synchronous threads via
+    /// `runtime.block_on` — the haematite seam. Each node's accept/responder
+    /// tasks share its single worker. After HS-3 exactly one link survives per
+    /// pair (no last-writer-wins clobber) and that link is usable in both
+    /// directions. Pre-fix this can deadlock or leave mismatched half-links;
+    /// run under a hard watchdog so a hang fails the test.
+    #[test]
+    fn hs0_three_node_simultaneous_dial_mesh_forms_without_deadlock() {
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_three_node_mesh();
+            let _ = done_tx.send(());
+        });
+        match done_rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(()) => worker.join().expect("mesh worker thread should not panic"),
+            Err(_) => panic!(
+                "HS-0 DEADLOCK: 3-node simultaneous-dial mesh did not converge \
+                 within the watchdog window (connect never returned)"
+            ),
+        }
+    }
+
+    fn run_three_node_mesh() {
+        let names = ["alpha@127.0.0.1", "bravo@127.0.0.1", "charlie@127.0.0.1"];
+        // Bind every listener first so the shared resolver maps all names.
+        let mut prepared = Vec::new();
+        let mut address_map = HashMap::new();
+        for name in names {
+            let runtime = Arc::new(
+                Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build()
+                    .expect("build single-worker node runtime"),
+            );
+            let listener = runtime
+                .block_on(TcpListener::bind("127.0.0.1:0"))
+                .expect("bind node listener");
+            address_map.insert(name.to_string(), listener.local_addr().expect("addr"));
+            prepared.push((name, runtime, listener));
+        }
+        let resolver: Resolver = Arc::new(StaticResolver::new(address_map));
+
+        let mut nodes = Vec::new();
+        for (name, runtime, listener) in prepared {
+            let manager = ConnectionManager::new(
+                Arc::new(AtomTable::with_common_atoms()),
+                Arc::clone(&resolver),
+                TEST_COOKIE,
+                name,
+                1,
+            );
+            manager.set_runtime_handle(runtime.handle().clone());
+            // Count control frames this node's read loops actually deliver. A
+            // delivered frame proves the link is whole: the socket this node holds
+            // for the peer is the same one the peer reads from. The pre-HS-2/3
+            // last-writer-wins clobber can orphan one socket's reader, so a frame
+            // written to the surviving write half is never observed here.
+            let received = Arc::new(AtomicUsize::new(0));
+            let received_for_handler = Arc::clone(&received);
+            manager.register_control_frame_handler(move |_control, _payload| {
+                received_for_handler.fetch_add(1, Ordering::SeqCst);
+            });
+            let accept = runtime.block_on(async { manager.listen_with(listener) });
+            nodes.push((name, manager, runtime, accept, received));
+        }
+
+        // 3 nodes x 2 peers = 6 dialing threads, released together.
+        let barrier = Arc::new(Barrier::new(6));
+        let mut dialers = Vec::new();
+        for (name, manager, runtime, _accept, _received) in &nodes {
+            for peer in names {
+                if peer == *name {
+                    continue;
+                }
+                let manager = manager.clone();
+                let runtime = Arc::clone(runtime);
+                let barrier = Arc::clone(&barrier);
+                let peer_name = peer.to_string();
+                dialers.push(thread::spawn(move || {
+                    barrier.wait();
+                    let _ = runtime.block_on(manager.connect(&peer_name));
+                }));
+            }
+        }
+        for dialer in dialers {
+            dialer
+                .join()
+                .expect("dialer thread should not panic (connect must return)");
+        }
+
+        // Exactly one link per pair on every node. Poll: the losing inbound may
+        // still be tearing down when the winning `connect` returns.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if nodes
+                .iter()
+                .all(|(_, manager, _, _, _)| manager.connection_count() == 2)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "mesh did not converge to one link per pair: counts = {:?}",
+                nodes
+                    .iter()
+                    .map(|(_, manager, _, _, _)| manager.connection_count())
+                    .collect::<Vec<_>>()
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        // Every directed edge must carry a frame end-to-end. Each node writes one
+        // 8-byte zero header (a zero-length control+payload frame) to each peer
+        // link; each node must then OBSERVE the two frames its peers sent it. A
+        // clobbered half-link silently drops the frame, so the receiver's count
+        // stays below 2 and this fails — the deterministic pre-fix symptom.
+        for (name, manager, runtime, _accept, _received) in &nodes {
+            for peer in names {
+                if peer == *name {
+                    continue;
+                }
+                let peer_atom = manager.inner.atom_table.intern(peer);
+                let connection = manager
+                    .get_connection(peer_atom)
+                    .unwrap_or_else(|| panic!("{name} has no link to {peer}"));
+                runtime
+                    .block_on(connection.write_raw(&[0_u8; 8]))
+                    .unwrap_or_else(|error| {
+                        panic!("{name} -> {peer} surviving link not writable: {error}")
+                    });
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if nodes
+                .iter()
+                .all(|(_, _, _, _, received)| received.load(Ordering::SeqCst) >= 2)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "mesh links are not whole bidirectionally: per-node received \
+                 frame counts = {:?} (expected >= 2 each)",
+                nodes
+                    .iter()
+                    .map(|(_, _, _, _, received)| received.load(Ordering::SeqCst))
+                    .collect::<Vec<_>>()
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 }
