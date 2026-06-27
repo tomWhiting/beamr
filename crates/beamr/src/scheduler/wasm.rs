@@ -357,6 +357,23 @@ impl WasmScheduler {
             if !matches!(process.status(), ProcessStatus::Running) {
                 let _transition = process.transition_to(ProcessStatus::Running);
             }
+
+            // WR-3: native processes are driven by the cooperative native slice
+            // in the same turn as bytecode, branching on `is_native()` the way
+            // the threaded `core::execute_slice` does. Native bodies carry no
+            // bytecode module, so they must be dispatched before the
+            // async-completion / current-module bytecode path below.
+            if process.is_native() {
+                self.dispatch_native_in_turn(
+                    pid,
+                    priority,
+                    process,
+                    &mut summary,
+                    &mut yielded_next_tick,
+                );
+                continue;
+            }
+
             if let Some(reason) = self.apply_async_completion(&mut process) {
                 let x0 = process.x_reg(0);
                 let _transition = process.transition_to(ProcessStatus::Exited(reason));

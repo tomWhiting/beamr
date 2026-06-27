@@ -37,7 +37,7 @@ use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::{ExitReason, Priority, Process, ProcessStatus};
 use crate::term::Term;
 
-use super::WasmScheduler;
+use super::{WasmRunSummary, WasmScheduler};
 
 /// A native spawn requested by a handler during a slice, applied afterwards.
 struct DeferredSpawn {
@@ -254,6 +254,46 @@ impl WasmScheduler {
         }
 
         exited
+    }
+
+    /// Dispatch one native slice for a process already popped from the ready
+    /// queue inside [`WasmScheduler::run_until_idle`](super::WasmScheduler), and
+    /// fold its outcome into the turn's [`WasmRunSummary`].
+    ///
+    /// This is the WR-3 native branch: it lets native (`NativeHandler`) and
+    /// bytecode processes share a single host pump. `process` has already been
+    /// removed from `self.processes` and transitioned to `Running` by the caller;
+    /// on `Continue`/`Wait` it is re-inserted, and on `Stop` it is terminated and
+    /// its exit recorded the same way the standalone native turn records it.
+    pub(super) fn dispatch_native_in_turn(
+        &mut self,
+        pid: u64,
+        priority: Priority,
+        mut process: Process,
+        summary: &mut WasmRunSummary,
+        yielded_next_tick: &mut Vec<(u64, Priority)>,
+    ) {
+        summary.executed += 1;
+        match self.run_one_native_slice(&mut process) {
+            NativeSliceResult::Continue => {
+                let _transition = process.transition_to(ProcessStatus::Yielded);
+                self.processes.insert(pid, process);
+                yielded_next_tick.push((pid, priority));
+                summary.yielded.push(pid);
+            }
+            NativeSliceResult::Wait => {
+                let _transition = process.transition_to(ProcessStatus::Waiting);
+                self.processes.insert(pid, process);
+                self.waiting.insert(pid);
+                summary.waiting.push(pid);
+            }
+            NativeSliceResult::Stop(reason) => {
+                let result = capture_exit_result(&process);
+                process.terminate(reason);
+                self.record_native_exit(pid, reason, result);
+                summary.exited.push(pid);
+            }
+        }
     }
 
     /// Execute exactly one native slice for an already-removed `process`,

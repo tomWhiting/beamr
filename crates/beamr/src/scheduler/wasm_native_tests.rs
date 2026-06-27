@@ -78,6 +78,82 @@ fn drain_until_exit(scheduler: &mut WasmScheduler, pid: u64, max_turns: usize) -
     false
 }
 
+/// Run the unified host pump ([`WasmScheduler::run_until_idle`]) until `pid`
+/// appears in a turn's `exited` summary or `max_turns` is reached. This drives
+/// native processes through the SAME entry point the wasm host calls, proving
+/// the WR-3 native branch is wired into the real pump (not just the standalone
+/// `run_native_until_idle`).
+fn drain_run_until_idle(scheduler: &mut WasmScheduler, pid: u64, max_turns: usize) -> bool {
+    for _ in 0..max_turns {
+        let summary = scheduler.run_until_idle();
+        if summary.exited.contains(&pid) {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn native_actor_runs_through_unified_run_until_idle_pump() {
+    // WR-3: a native actor is dispatched by `run_until_idle` — the host's single
+    // pump — exactly as a bytecode process would be, with no call to the
+    // standalone native turn. It parks with no mail, wakes on a delivered
+    // message, forwards it, and exits; the forward is observable end-to-end.
+    let mut scheduler = scheduler();
+    let sink = Arc::new(Mutex::new(None));
+
+    let collector = scheduler.spawn_native_root({
+        let sink = Arc::clone(&sink);
+        Box::new(move || {
+            Box::new(Collector {
+                sink: Arc::clone(&sink),
+            })
+        })
+    });
+    let echo = scheduler.spawn_native_root(Box::new(move || {
+        Box::new(Echo {
+            reply_to: collector,
+        })
+    }));
+
+    // First unified turn: both native actors park (no mail), nothing exits.
+    let summary = scheduler.run_until_idle();
+    assert!(
+        summary.exited.is_empty(),
+        "nothing exits before a message arrives"
+    );
+    assert!(
+        summary.executed >= 1,
+        "the native actors received a slice through the unified pump"
+    );
+
+    scheduler
+        .send_owned(echo, &crate::ets::OwnedTerm::immediate(Term::small_int(99)))
+        .expect("message delivers to the parked echo actor");
+
+    assert!(
+        drain_run_until_idle(&mut scheduler, echo, 4),
+        "the echo actor exits via the unified pump after handling its message"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(echo),
+        Some(ExitReason::Normal),
+        "the echo actor stopped normally under the unified pump"
+    );
+
+    for _ in 0..4 {
+        let _summary = scheduler.run_until_idle();
+        if sink.lock().expect("sink lock").is_some() {
+            break;
+        }
+    }
+    assert_eq!(
+        *sink.lock().expect("sink lock"),
+        Some(99),
+        "the forwarded value is observable end-to-end through run_until_idle"
+    );
+}
+
 #[test]
 fn native_actor_spawns_receives_one_message_and_replies_with_captured_result() {
     let mut scheduler = scheduler();
