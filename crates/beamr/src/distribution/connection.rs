@@ -523,6 +523,18 @@ impl ConnectionManager {
         self.inner.connections.len()
     }
 
+    /// The atom table this manager keys its connection table by.
+    ///
+    /// Connections are keyed by the peer's authenticated handshake name interned
+    /// into this table, so callers that look up a connection by name (e.g.
+    /// `get_connection(atom_table().intern(peer_name))`) must intern through the
+    /// same table the manager used. Exposed for integration tests and callers that
+    /// drive the manager directly rather than through the scheduler.
+    #[must_use]
+    pub fn atom_table(&self) -> Arc<AtomTable> {
+        Arc::clone(&self.inner.atom_table)
+    }
+
     /// Look up an active distribution connection by node-name atom.
     #[must_use]
     pub fn get_connection(&self, node: Atom) -> Option<Arc<DistConnection>> {
@@ -551,8 +563,19 @@ impl ConnectionManager {
     /// treated as success, not a failure: the peer is keeping the reciprocal link,
     /// so the pair is (or is about to be) connected and the caller must not
     /// retry-storm (HS-3).
+    ///
+    /// The "already connected" early-return only fires for a LIVE link. A link
+    /// that has gone down but not yet been reaped from the table (the window
+    /// between `mark_down` flipping the flag and `connection_down` removing the
+    /// entry) must NOT be reported as connected, or a caller's reconnect attempt
+    /// would be told the peer is up and never re-dial. Skipping a down entry here
+    /// makes re-dial deterministic: `connect` runs the handshake and
+    /// `register_connection` replaces the stale entry (HS-4, §3.4).
     pub async fn connect_node(&self, node: Atom) -> bool {
-        if self.get_connection(node).is_some() {
+        if self
+            .get_connection(node)
+            .is_some_and(|connection| !connection.is_down())
+        {
             return true;
         }
         let Some(node_name) = self.inner.atom_table.resolve(node).map(str::to_owned) else {
@@ -1539,6 +1562,242 @@ mod tests {
             .expect("loser's socket should close promptly, not hang")
             .expect("reading the closed loser socket should not error");
         assert_eq!(eof, 0, "the loser's socket must be closed (EOF)");
+    }
+
+    /// Accept inbound streams on `listener` in a loop, completing the OTP
+    /// handshake advertising `name` for each, and hand every accepted (still-open)
+    /// stream back over the returned channel. Unlike [`spawn_responder_handoff`]
+    /// (single accept), this models a real peer that stays up across a re-dial: the
+    /// test can drop the first handed-back stream to simulate the link dropping,
+    /// then receive the second stream produced by the reconnect's fresh inbound.
+    fn spawn_multi_responder_handoff(
+        listener: TcpListener,
+        name: &'static str,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<TcpStream> {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _peer)) = listener.accept().await else {
+                    return;
+                };
+                let local = HandshakeNode::with_default_flags(name, 7)
+                    .expect("responder node name should be valid");
+                if crate::distribution::handshake::respond_handshake_async(
+                    &mut stream,
+                    &local,
+                    TEST_COOKIE,
+                    99,
+                )
+                .await
+                .is_ok()
+                {
+                    if sender.send(stream).is_err() {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            }
+        });
+        receiver
+    }
+
+    /// HS-4: after a distribution link drops (peer closed), a fresh `connect`
+    /// re-establishes the link, the stale table entry is replaced by a NEW
+    /// connection (not the dead one), and the new link is writable end-to-end. This
+    /// is the core reconnection-hardening contract: a dropped link can be re-dialed
+    /// deterministically and the result is a whole, usable link.
+    #[tokio::test]
+    async fn hs4_redial_after_drop_reestablishes_writable_link() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind responder listener");
+        let addr = listener.local_addr().expect("inspect listener");
+        let mut streams = spawn_multi_responder_handoff(listener, "remote@127.0.0.1");
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+
+        // First link.
+        let first = manager
+            .connect("remote@127.0.0.1")
+            .await
+            .expect("first connect should succeed");
+        let first_remote = streams.recv().await.expect("first inbound handed back");
+
+        // Drop the peer's side; our read loop observes EOF and reaps the entry.
+        drop(first_remote);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while manager.get_connection(node).is_some() {
+            assert!(Instant::now() < deadline, "dropped link was never reaped");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Re-dial: a clean re-establish, NOT a return of the dead connection.
+        let second = manager
+            .connect("remote@127.0.0.1")
+            .await
+            .expect("re-dial after drop should succeed");
+        let mut second_remote = streams.recv().await.expect("second inbound handed back");
+
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "re-dial must install a NEW connection, not resurrect the dead one"
+        );
+        assert!(first.is_down(), "the first link must be marked down");
+        assert!(!second.is_down(), "the re-dialed link must be live");
+        assert_eq!(manager.connection_count(), 1, "exactly one live link");
+        assert!(Arc::ptr_eq(
+            &second,
+            &manager
+                .get_connection(node)
+                .expect("re-dialed link must be in the table"),
+        ));
+
+        // The new link is writable end-to-end: an 8-byte zero header reaches the
+        // peer's (re-dialed) inbound socket.
+        second
+            .write_raw(&[0_u8; 8])
+            .await
+            .expect("re-dialed link must be writable");
+        let mut header = [0_u8; 8];
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            second_remote.read_exact(&mut header),
+        )
+        .await
+        .expect("re-dialed peer must receive the frame, not hang")
+        .expect("re-dialed peer read must not error");
+
+        // The `connecting` guard cleared on every dial: no stuck in-flight marker.
+        assert_eq!(
+            manager.inner.connecting.len(),
+            0,
+            "re-dial must not leak the connecting guard"
+        );
+    }
+
+    /// HS-4: `connect_node` must not report a DOWN-but-not-yet-reaped link as
+    /// connected. If it did, a caller's reconnect would be told the peer is up and
+    /// would never re-dial. With a stale down entry still in the table,
+    /// `connect_node` must run a fresh handshake and replace it.
+    #[tokio::test]
+    async fn hs4_connect_node_redials_a_down_but_unreaped_entry() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind responder listener");
+        let addr = listener.local_addr().expect("inspect listener");
+        let mut streams = spawn_multi_responder_handoff(listener, "remote@127.0.0.1");
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+
+        let first = manager
+            .connect("remote@127.0.0.1")
+            .await
+            .expect("first connect should succeed");
+        let _first_remote = streams.recv().await.expect("first inbound handed back");
+
+        // Flip the link to down WITHOUT removing it from the table: this is the
+        // narrow race window between `mark_down` and `connection_down`'s reap. We
+        // reproduce it deterministically by holding a down entry in place.
+        first.down.store(true, Ordering::Release);
+        assert!(
+            manager.get_connection(node).is_some(),
+            "the stale down entry is still in the table"
+        );
+
+        // connect_node must NOT short-circuit on the down entry; it must re-dial.
+        assert!(
+            manager.connect_node(node).await,
+            "connect_node must re-dial a down-but-unreaped entry"
+        );
+        let _second_remote = streams.recv().await.expect("re-dial inbound handed back");
+
+        assert_eq!(manager.connection_count(), 1, "exactly one live link");
+        let live = manager
+            .get_connection(node)
+            .expect("re-dialed link present");
+        assert!(!live.is_down(), "the table now holds a live re-dialed link");
+        assert!(
+            !Arc::ptr_eq(&first, &live),
+            "the dead entry must have been replaced, not reused"
+        );
+        assert_eq!(manager.inner.connecting.len(), 0);
+    }
+
+    /// HS-4: every `connect` exit path clears the `connecting` guard, so a series
+    /// of dials (success, hard failure, and benign `nok` abort) never leaves a
+    /// stuck in-flight marker that would corrupt the simultaneous-connect decider
+    /// or block a future re-dial.
+    #[tokio::test]
+    async fn hs4_connecting_guard_clears_on_every_exit_path() {
+        // Success path.
+        let ok_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ok");
+        let ok_addr = ok_listener.local_addr().expect("ok addr");
+        let _ok = spawn_responder(ok_listener, "ok@127.0.0.1", TEST_COOKIE);
+
+        // nok (benign abort) path.
+        let nok_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind nok");
+        let nok_addr = nok_listener.local_addr().expect("nok addr");
+        let _nok = spawn_nok_responder(nok_listener);
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([
+            ("ok@127.0.0.1".to_string(), ok_addr),
+            ("peer@127.0.0.1".to_string(), nok_addr),
+            // refused@ has no listener bound -> connection refused / io error path.
+        ])));
+        let manager = manager_with_resolver(resolver);
+
+        // Success.
+        manager
+            .connect("ok@127.0.0.1")
+            .await
+            .expect("ok connect should succeed");
+        assert_eq!(
+            manager.inner.connecting.len(),
+            0,
+            "success path must clear the connecting guard"
+        );
+
+        // Benign nok abort.
+        assert!(matches!(
+            manager.connect("peer@127.0.0.1").await,
+            Err(ConnectError::SimultaneousAbort)
+        ));
+        assert_eq!(
+            manager.inner.connecting.len(),
+            0,
+            "nok abort path must clear the connecting guard"
+        );
+
+        // Hard failure: unresolved name never reaches the guard, but a resolvable
+        // name with no listener exercises the TCP-connect failure exit with the
+        // guard already armed. Bind then immediately drop a listener to free a
+        // port that now refuses.
+        let dead = TcpListener::bind("127.0.0.1:0").await.expect("bind dead");
+        let dead_addr = dead.local_addr().expect("dead addr");
+        drop(dead);
+        let resolver2 = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "dead@127.0.0.1".to_string(),
+            dead_addr,
+        )])));
+        let manager2 = manager_with_resolver(resolver2);
+        let failed = manager2.connect("dead@127.0.0.1").await;
+        assert!(failed.is_err(), "connect to a refused port must fail");
+        assert_eq!(
+            manager2.inner.connecting.len(),
+            0,
+            "TCP-failure path must clear the connecting guard"
+        );
     }
 
     type Resolver = Arc<dyn NodeResolver + Send + Sync>;
