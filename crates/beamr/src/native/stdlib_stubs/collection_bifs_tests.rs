@@ -3,7 +3,7 @@
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, ProcessContext};
 use crate::process::Process;
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::boxed::{Cons, Map, write_closure, write_cons, write_map, write_tuple};
 

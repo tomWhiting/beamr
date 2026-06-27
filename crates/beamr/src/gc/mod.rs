@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 const WORD_BYTES: usize = std::mem::size_of::<u64>();
 
+#[cfg(feature = "threads")]
 use crate::io::resource::{release_fd_inner_arc, retain_fd_inner_arc};
 use crate::process::{Process, heap::HeapFull};
 use crate::term::{
@@ -289,6 +290,7 @@ pub(crate) fn release_refcounted_resources_in_young(
                     unreachable_bytes = unreachable_bytes.saturating_add(bytes);
                 }
             }
+            #[cfg(feature = "threads")]
             BoxedTag::FdResource => release_fd_inner_arc(ptr),
             _ => {}
         });
@@ -303,6 +305,7 @@ pub(crate) fn release_all_refcounted_resources(process: &mut Process) {
             BoxedTag::ProcBin => {
                 released_bytes = released_bytes.saturating_add(release_proc_bin_arc(ptr));
             }
+            #[cfg(feature = "threads")]
             BoxedTag::FdResource => release_fd_inner_arc(ptr),
             _ => {}
         });
@@ -323,6 +326,7 @@ pub(crate) fn release_all_refcounted_resources_in_compacted_sources(
                     unreachable_bytes = unreachable_bytes.saturating_add(bytes);
                 }
             }
+            #[cfg(feature = "threads")]
             BoxedTag::FdResource => release_fd_inner_arc(ptr),
             _ => {}
         });
@@ -332,6 +336,7 @@ pub(crate) fn release_all_refcounted_resources_in_compacted_sources(
 pub(crate) fn retain_refcounted_resource_arc(ptr: *const u64) {
     match BoxedHeader::tag(read_raw_word(ptr, 0)) {
         Some(BoxedTag::ProcBin) => retain_proc_bin_arc(ptr),
+        #[cfg(feature = "threads")]
         Some(BoxedTag::FdResource) => retain_fd_inner_arc(ptr),
         _ => {}
     }

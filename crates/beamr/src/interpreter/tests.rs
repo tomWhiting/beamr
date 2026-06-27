@@ -11,7 +11,7 @@ use crate::loader::{Instruction, Literal};
 use crate::module::{Module, ModuleOrigin, ModuleRegistry, ResolvedImport, ResolvedImportTarget};
 use crate::native::{Capability, CapabilitySet, ExceptionClass, NativeEntry, ProcessContext};
 use crate::process::{CodePosition, ExitReason, Process};
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 use crate::term::binary::{Binary, packed_word_count, write_binary};
 use crate::term::boxed::{Cons, Tuple};
 use crate::term::{Term, compare};

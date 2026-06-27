@@ -165,6 +165,7 @@ pub struct Process {
     code_position: Option<CodePosition>,
     current_module: Option<Arc<Module>>,
     current_mfa: Option<(Atom, Atom, u8)>,
+    #[cfg(feature = "jit")]
     jit_runtime_context: Option<JitRuntimeContext>,
     jit_status: Option<JitStatus>,
     #[cfg(feature = "telemetry")]
@@ -213,6 +214,7 @@ impl Clone for Process {
             code_position: self.code_position,
             current_module: self.current_module.clone(),
             current_mfa: self.current_mfa,
+            #[cfg(feature = "jit")]
             jit_runtime_context: self.jit_runtime_context,
             jit_status: self.jit_status,
             #[cfg(feature = "telemetry")]
@@ -277,6 +279,7 @@ impl Process {
             code_position: None,
             current_module: None,
             current_mfa: None,
+            #[cfg(feature = "jit")]
             jit_runtime_context: None,
             jit_status: None,
             #[cfg(feature = "telemetry")]
@@ -1010,12 +1013,14 @@ impl Process {
     }
 
     /// Runtime context visible to JIT helper calls for the current native invocation.
+    #[cfg(feature = "jit")]
     #[must_use]
     pub const fn jit_runtime_context(&self) -> Option<JitRuntimeContext> {
         self.jit_runtime_context
     }
 
     /// Set the transient JIT runtime context for the duration of a native invocation.
+    #[cfg(feature = "jit")]
     pub const fn set_jit_runtime_context(&mut self, context: Option<JitRuntimeContext>) {
         self.jit_runtime_context = context;
     }
@@ -1158,6 +1163,10 @@ impl Process {
         self.current_mfa = None;
     }
 
+    /// Close FD-backed resources owned by this process. The `io` subsystem only
+    /// exists in the threaded (native) build; in the cooperative/wasm build there
+    /// are no host file descriptors, so this is a no-op.
+    #[cfg(feature = "threads")]
     fn close_owned_fd_resources(&mut self) {
         let owner_pid = self.pid;
         self.heap().visit_boxed_objects(|ptr, tag, _words| {
@@ -1166,6 +1175,9 @@ impl Process {
             }
         });
     }
+
+    #[cfg(not(feature = "threads"))]
+    fn close_owned_fd_resources(&mut self) {}
 }
 
 #[cfg(test)]

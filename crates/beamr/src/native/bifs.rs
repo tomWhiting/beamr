@@ -58,18 +58,25 @@ pub fn register_gate1_bifs(
 
     crate::native::code_management_bifs::register_code_management_bifs(registry, atom_table)?;
     crate::native::dictionary_bifs::register_dictionary_bifs(registry, atom_table)?;
+    #[cfg(feature = "net")]
     crate::native::distribution_bifs::register_distribution_bifs(registry, atom_table)?;
     crate::native::etf_bifs::register_etf_bifs(registry, atom_table)?;
     crate::native::ets_bifs::register_ets_bifs(registry, atom_table)?;
     crate::native::exception_bifs::register_exception_bifs(registry, atom_table)?;
+    #[cfg(feature = "fs")]
     crate::native::file_bifs::register_file_bifs(registry, atom_table)?;
+    #[cfg(feature = "fs")]
     crate::native::file_meta_bifs::register_file_meta_bifs(registry, atom_table)?;
+    #[cfg(feature = "net")]
     crate::native::inet_bifs::register_inet_bifs(registry, atom_table)?;
 
+    #[cfg(feature = "net")]
     crate::native::tcp_bifs::register_tcp_bifs(registry, atom_table)?;
+    #[cfg(feature = "net")]
     crate::native::udp_bifs::register_udp_bifs(registry, atom_table)?;
     crate::native::process_info_bifs::register_process_info_bifs(registry, atom_table)?;
     crate::native::system_info_bifs::register_system_info_bifs(registry, atom_table)?;
+    #[cfg(feature = "net")]
     crate::distribution::pg::register_pg_bifs(registry, atom_table)?;
 
     Ok(())

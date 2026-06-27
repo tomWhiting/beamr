@@ -3,7 +3,7 @@
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, Capability, NativeFn, NativeRegistrationError};
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 
 use super::bitwise_bifs::{bif_band, bif_bnot, bif_bor, bif_bsl, bif_bsr, bif_bxor};
 use super::collection_bifs::{

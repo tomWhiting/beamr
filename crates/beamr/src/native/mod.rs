@@ -35,13 +35,14 @@
 //! build cons cells. Binary data has the same hazard: do not hold a slice borrowed
 //! from a heap binary across `alloc_binary`; either copy bytes into owned Rust
 //! memory before allocating, or re-borrow from the re-read rooted `Term` after GC.
-#[cfg(feature = "threads")]
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 pub mod actor;
 pub mod bifs;
 pub mod capability;
 pub mod code_management_bifs;
 mod context;
 pub mod dictionary_bifs;
+#[cfg(feature = "net")]
 pub mod distribution_bifs;
 pub mod etf_bifs;
 pub mod ets_bifs;
@@ -83,7 +84,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 
 use crate::atom::Atom;
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 use crate::term::Term;
 
 pub use capability::{
@@ -91,11 +92,15 @@ pub use capability::{
 };
 pub use code_management_bifs::CodeManagementFacility;
 pub use context::{
-    AionTimeoutContinuation, ExceptionClass, FileIoCompletion, FileIoContinuation, FileIoFacility,
-    NativeContinuation, ProcessContext, RemoteSpawnError, RemoteSpawnFacility, RemoteSpawnResult,
-    RootedTerms, SuspendRequest, SuspensionRegistrar, TcpIoFacility, TrampolineRequest,
-    WasmAsyncNifFacility,
+    AionTimeoutContinuation, ExceptionClass, NativeContinuation, ProcessContext, RemoteSpawnError,
+    RemoteSpawnFacility, RemoteSpawnResult, RootedTerms, SuspendRequest, SuspensionRegistrar,
+    TrampolineRequest, WasmAsyncNifFacility,
 };
+// The file/TCP completion-ring facilities are part of the host `io` subsystem
+// (FdInner / CompletionRing), which only compiles in the threaded build.
+#[cfg(feature = "threads")]
+pub use context::{FileIoCompletion, FileIoContinuation, FileIoFacility, TcpIoFacility};
+#[cfg(feature = "net")]
 pub use distribution_bifs::GlobalNameFacility;
 pub use ets_bifs::EtsFacility;
 pub use group_leader::GroupLeaderFacility;
@@ -466,7 +471,7 @@ mod tests {
         ProcessContext, UnresolvedImport, UnresolvedImportReport, lookup_native,
     };
     use crate::atom::AtomTable;
-    use crate::scheduler::dirty::DirtySchedulerKind;
+    use crate::scheduler::DirtySchedulerKind;
     use crate::term::Term;
 
     fn forty_two(_args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {

@@ -131,6 +131,7 @@ pub fn bif_link(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
                 Err(LinkError::NoCaller) => Err(badarg()),
             }
         }
+        #[cfg(feature = "net")]
         PidRef::Remote(_) => {
             let remote = target_pid.remote_pid().ok_or_else(badarg)?;
             let facility = context.distribution_control_facility().ok_or_else(badarg)?;
@@ -139,6 +140,10 @@ pub fn bif_link(args: &[Term], context: &mut ProcessContext) -> Result<Term, Ter
                 .map_err(|_| Term::atom(Atom::NOPROC))?;
             Ok(Term::atom(Atom::TRUE))
         }
+        // No distribution layer in the cooperative build: a remote pid cannot be
+        // linked because there is no node to reach it on.
+        #[cfg(not(feature = "net"))]
+        PidRef::Remote(_) => Err(Term::atom(Atom::NOPROC)),
     }
 }
 
@@ -160,6 +165,7 @@ pub fn bif_unlink(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
                 .map_err(|_| badarg())?;
             Ok(Term::atom(Atom::TRUE))
         }
+        #[cfg(feature = "net")]
         PidRef::Remote(_) => {
             let remote = target_pid.remote_pid().ok_or_else(badarg)?;
             let facility = context.distribution_control_facility().ok_or_else(badarg)?;
@@ -168,6 +174,10 @@ pub fn bif_unlink(args: &[Term], context: &mut ProcessContext) -> Result<Term, T
                 .map_err(|_| badarg())?;
             Ok(Term::atom(Atom::TRUE))
         }
+        // No distribution layer in the cooperative build: unlinking a remote pid
+        // is a no-op (there was never a live remote link).
+        #[cfg(not(feature = "net"))]
+        PidRef::Remote(_) => Ok(Term::atom(Atom::TRUE)),
     }
 }
 

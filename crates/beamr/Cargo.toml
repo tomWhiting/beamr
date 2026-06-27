@@ -69,5 +69,12 @@ telemetry = ["std", "dep:opentelemetry"]
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { version = "0.7", optional = true }
 
+# On wasm32 `getrandom` (pulled in transitively via `rand`) needs its browser
+# JS backend; without this feature the wasm build fails to find a randomness
+# source. Selecting the feature here is harmless on native targets where this
+# target stanza does not apply.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
 [build-dependencies]
 zstd = "0.13.3"

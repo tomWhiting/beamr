@@ -216,6 +216,7 @@ impl ExecError {
 
 impl Error for ExecError {}
 
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 impl From<crate::replay::ReplayMismatch> for ExecError {
     fn from(error: crate::replay::ReplayMismatch) -> Self {
         Self::ReplayMismatch(error.to_string())

@@ -14,7 +14,7 @@ use crate::atom::{Atom, AtomTable};
 use crate::native::{
     BifRegistryImpl, Capability, NativeFn, NativeRegistrationError, ProcessContext,
 };
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 use crate::term::Term;
 
 /// The Gleam `nil` atom, distinct from the BEAM empty list (`Term::NIL`).

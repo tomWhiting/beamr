@@ -29,7 +29,7 @@ pub fn bif_io_format_3(args: &[Term], context: &mut ProcessContext) -> Result<Te
         return Err(badarg());
     };
     let bytes = format_bytes(*format, *arguments, context)?;
-    context.io_sink().write(&bytes);
+    context.write_to_io_sink(&bytes);
     Ok(Term::atom(Atom::OK))
 }
 
@@ -115,7 +115,7 @@ fn next_arg(arguments: &[Term], index: &mut usize) -> Result<Term, Term> {
 
 fn write_iodata(term: Term, context: &ProcessContext) -> Result<(), Term> {
     let bytes = iodata_bytes(term)?;
-    context.io_sink().write(&bytes);
+    context.write_to_io_sink(&bytes);
     Ok(())
 }
 

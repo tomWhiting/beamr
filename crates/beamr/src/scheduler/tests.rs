@@ -2007,7 +2007,7 @@ fn dirty_resume_in_the_suspend_park_gap_is_not_lost() {
         arity: 0,
         target: crate::module::ResolvedImportTarget::Native(crate::native::NativeEntry {
             function: suspend_park_gap_native,
-            dirty_kind: Some(crate::scheduler::dirty::DirtySchedulerKind::Cpu),
+            dirty_kind: Some(crate::scheduler::DirtySchedulerKind::Cpu),
             capability: Capability::Pure,
         }),
     });
@@ -2356,7 +2356,7 @@ fn native_call_module(
     registry: &ModuleRegistry,
     name: Atom,
     function: crate::native::NativeFn,
-    dirty_kind: Option<crate::scheduler::dirty::DirtySchedulerKind>,
+    dirty_kind: Option<crate::scheduler::DirtySchedulerKind>,
 ) -> Arc<Module> {
     let mut module = test_module(
         name,
@@ -2566,7 +2566,7 @@ fn host_results_and_resumes_cannot_touch_an_in_flight_dirty_call() {
         &registry,
         module_name,
         cross_dirty_native,
-        Some(crate::scheduler::dirty::DirtySchedulerKind::Cpu),
+        Some(crate::scheduler::DirtySchedulerKind::Cpu),
     );
     let scheduler = single_thread_scheduler(&registry);
 
@@ -2997,7 +2997,7 @@ fn dirty_native_can_resuspend_as_a_gated_host_await() {
         &registry,
         module_name,
         dirty_resuspend_native,
-        Some(crate::scheduler::dirty::DirtySchedulerKind::Cpu),
+        Some(crate::scheduler::DirtySchedulerKind::Cpu),
     );
     let scheduler = single_thread_scheduler(&registry);
 
@@ -3101,7 +3101,7 @@ fn dirty_native_can_trampoline_a_closure() {
         arity: 1,
         target: crate::module::ResolvedImportTarget::Native(crate::native::NativeEntry {
             function: dirty_trampoline_native,
-            dirty_kind: Some(crate::scheduler::dirty::DirtySchedulerKind::Cpu),
+            dirty_kind: Some(crate::scheduler::DirtySchedulerKind::Cpu),
             capability: Capability::Pure,
         }),
     });

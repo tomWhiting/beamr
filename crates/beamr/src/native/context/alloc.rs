@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "threads")]
 use crate::io::resource::{FD_RESOURCE_WORDS, FdInner, write_fd_resource};
 use crate::term::Term;
 use crate::term::boxed::{
@@ -140,6 +141,7 @@ impl ProcessContext<'_> {
     }
 
     /// Allocate an FdResource on the calling process heap.
+    #[cfg(feature = "threads")]
     pub fn alloc_fd_resource(&mut self, fd_inner: Arc<FdInner>) -> Result<Term, Term> {
         let heap = self.alloc_words(FD_RESOURCE_WORDS)?;
         write_fd_resource(heap, fd_inner).ok_or_else(|| Term::atom(crate::atom::Atom::BADARG))

@@ -1,77 +1,172 @@
-pub mod dirty;
-mod execution;
-mod exit_capture;
-mod exit_tombstones;
-mod module_management;
-mod pg_propagation;
-mod process_slot;
-pub mod run_queue;
-mod spawning;
-pub mod steal;
-mod supervision_integration;
-mod suspension;
-mod test_helpers;
-mod timer_integration;
+// Cooperative-runtime modules. The single-threaded `WasmScheduler` and its
+// native-slice driver do not depend on the threaded scheduler, so they (and the
+// shared `exit_capture` term helper they reuse) build under `cooperative`.
+pub mod exit_capture;
 pub mod wasm;
 mod wasm_native;
-use self::dirty::DirtyPool;
-use self::execution::scheduler_loop;
-use self::spawning::SpawnRequest;
-use crate::atom::AtomTable;
-use crate::distribution::DistributionConfig;
-use crate::distribution::connection::ConnectionManager;
-use crate::distribution::pg::PgRegistry;
-use crate::distribution::remote_link::ControlRouter;
-use crate::distribution::sender::DistSender;
-use crate::distribution::{DEFAULT_NODE_NAME, NetKernel, Node};
+pub use exit_capture::OwnedException;
 pub use wasm::{WasmAsyncCompletion, WasmRunSummary, WasmScheduledTimer, WasmScheduler};
 
+/// Default preemption budget for a process slice, shared by both the threaded
+/// and the cooperative scheduler.
+pub const DEFAULT_REDUCTION_BUDGET: u32 = crate::process::DEFAULT_REDUCTION_BUDGET;
+
+/// Distinguishes the two BEAM-style dirty scheduler pools.
+///
+/// This is pure call-classification metadata carried on every `NativeEntry`, so
+/// it must exist in every build (the cooperative build has no dirty *pool*, but
+/// the registry types that reference this enum are platform-neutral).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DirtySchedulerKind {
+    /// CPU-bound dirty work.
+    Cpu,
+    /// IO-bound dirty work.
+    Io,
+}
+
+/// Result returned by a successful hot module load.
+///
+/// Plain metadata returned by the threaded code server. It is named in the
+/// platform-neutral `CodeManagementFacility` trait, so it is defined here (always
+/// available) even though only the threaded scheduler can produce one.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HotLoadResult {
+    pub module_name: crate::atom::Atom,
+    pub generation: u64,
+    pub had_old_version: bool,
+    pub on_load_required: bool,
+    pub on_load_succeeded: bool,
+}
+
+/// Result returned by safe or forced module purge.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PurgeResult {
+    pub module_name: crate::atom::Atom,
+    pub processes_killed: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Threaded (work-stealing, OS-thread) scheduler. Everything below requires the
+// `threads` feature: it pulls in crossbeam, the io/jit/replay/distribution
+// subsystems, and `std::thread`/`Condvar`, none of which exist on wasm32.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "threads")]
+pub mod dirty;
+#[cfg(feature = "threads")]
+mod execution;
+#[cfg(feature = "threads")]
+mod exit_tombstones;
+#[cfg(feature = "threads")]
+mod module_management;
+#[cfg(feature = "threads")]
+mod pg_propagation;
+#[cfg(feature = "threads")]
+mod process_slot;
+#[cfg(feature = "threads")]
+pub mod run_queue;
+#[cfg(feature = "threads")]
+mod spawning;
+#[cfg(feature = "threads")]
+pub mod steal;
+#[cfg(feature = "threads")]
+mod supervision_integration;
+#[cfg(feature = "threads")]
+mod suspension;
+#[cfg(feature = "threads")]
+mod test_helpers;
+#[cfg(feature = "threads")]
+mod timer_integration;
+#[cfg(feature = "threads")]
+use self::dirty::DirtyPool;
+#[cfg(feature = "threads")]
+use self::execution::scheduler_loop;
+#[cfg(feature = "threads")]
+use self::spawning::SpawnRequest;
+#[cfg(feature = "threads")]
+use crate::atom::AtomTable;
+#[cfg(feature = "threads")]
+use crate::distribution::DistributionConfig;
+#[cfg(feature = "threads")]
+use crate::distribution::connection::ConnectionManager;
+#[cfg(feature = "threads")]
+use crate::distribution::pg::PgRegistry;
+#[cfg(feature = "threads")]
+use crate::distribution::remote_link::ControlRouter;
+#[cfg(feature = "threads")]
+use crate::distribution::sender::DistSender;
+#[cfg(feature = "threads")]
+use crate::distribution::{DEFAULT_NODE_NAME, NetKernel, Node};
+
+#[cfg(feature = "threads")]
 use crate::error::ExecError;
+#[cfg(feature = "threads")]
 use crate::ets::copy::OwnedTerm;
+#[cfg(feature = "threads")]
 use crate::ets::{EtsRegistry, EtsTable, EtsTableId, EtsTableMetadata};
+#[cfg(feature = "threads")]
 use crate::hook::Hook;
+#[cfg(feature = "threads")]
 use crate::io::{
     CompletionRing, CompletionRingIoFacility, IoCompletion, IoCompletionBridge, IoFacility, IoOp,
     IoSink, IoWakeTarget, NullSink, PendingIoRegistry, RingConfig, StandardIoServer, create_ring,
 };
+#[cfg(feature = "threads")]
 use crate::jit::{DEFAULT_JIT_THRESHOLD, JitCache, JitProfiler};
+#[cfg(feature = "threads")]
 use crate::module::ModuleRegistry;
+#[cfg(feature = "threads")]
 use crate::namespace::NamespaceId;
+#[cfg(feature = "threads")]
 use crate::native::{
     AllCapabilitiesPolicy, BifRegistryImpl, CapabilityPolicy, FileIoCompletion, FileIoContinuation,
     ProcessInfoItem, ProcessInfoStatus, ProcessInfoValue, ProcessMonitorInfo,
 };
+#[cfg(feature = "threads")]
 use crate::process::registry::ProcessTable;
+#[cfg(feature = "threads")]
 use crate::process::{ExitReason, Process, ProcessStatus};
+#[cfg(feature = "threads")]
 use crate::replay::{ReplayDriver, ReplayLog};
+#[cfg(feature = "threads")]
 use crate::supervision::link::LinkSet;
+#[cfg(feature = "threads")]
 use crate::supervision::monitor::MonitorSet;
+#[cfg(feature = "threads")]
 use crate::term::Term;
+#[cfg(feature = "threads")]
 use crate::timer::TimerWheel;
+#[cfg(feature = "threads")]
 use crossbeam_queue::SegQueue;
+#[cfg(feature = "threads")]
 use dashmap::{DashMap, DashSet};
-pub use exit_capture::OwnedException;
-pub use module_management::{HotLoadResult, PurgeResult};
+#[cfg(feature = "threads")]
 use process_slot::{ProcessMetadata, ProcessSlot};
+#[cfg(feature = "threads")]
 use run_queue::{PriorityStealers, RunQueue};
+#[cfg(feature = "threads")]
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+#[cfg(feature = "threads")]
 use std::sync::{Arc, Condvar, Mutex};
+#[cfg(feature = "threads")]
 use std::thread::JoinHandle;
+#[cfg(feature = "threads")]
 use std::time::Duration;
-#[cfg(feature = "telemetry")]
+#[cfg(all(feature = "threads", feature = "telemetry"))]
 use std::time::Instant;
-pub const DEFAULT_REDUCTION_BUDGET: u32 = crate::process::DEFAULT_REDUCTION_BUDGET;
 
+#[cfg(feature = "threads")]
 enum ReplayMode {
     Live,
     Replay(ReplayLog),
 }
 
+#[cfg(feature = "threads")]
 #[derive(Default)]
 struct ReplayDisabledRing {
     next_op_id: AtomicU64,
 }
 
+#[cfg(feature = "threads")]
 impl CompletionRing for ReplayDisabledRing {
     fn submit(&self, _op: IoOp) -> u64 {
         self.next_op_id.fetch_add(1, Ordering::Relaxed)
@@ -88,6 +183,7 @@ impl CompletionRing for ReplayDisabledRing {
     fn shutdown(&self) {}
 }
 
+#[cfg(feature = "threads")]
 #[derive(Clone, Default)]
 pub struct SchedulerConfig {
     pub thread_count: Option<usize>,
@@ -109,6 +205,7 @@ pub struct SchedulerConfig {
     pub nif_private_data: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
+#[cfg(feature = "threads")]
 impl std::fmt::Debug for SchedulerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SchedulerConfig")
@@ -129,6 +226,7 @@ impl std::fmt::Debug for SchedulerConfig {
             .finish()
     }
 }
+#[cfg(feature = "threads")]
 pub(super) struct SharedState {
     shutdown: AtomicBool,
     process_table: ProcessTable,
@@ -214,6 +312,7 @@ pub(super) struct SharedState {
     park_gap_hook: Mutex<Option<ParkGapHook>>,
 }
 
+#[cfg(feature = "threads")]
 #[cfg(feature = "telemetry")]
 pub(super) struct TelemetryMetricState {
     sample_interval: Duration,
@@ -222,6 +321,7 @@ pub(super) struct TelemetryMetricState {
     scheduler_idle_nanos: AtomicU64,
 }
 
+#[cfg(feature = "threads")]
 #[cfg(feature = "telemetry")]
 impl TelemetryMetricState {
     fn new(sample_interval: Duration) -> Self {
@@ -234,6 +334,7 @@ impl TelemetryMetricState {
     }
 }
 
+#[cfg(feature = "threads")]
 impl SharedState {
     /// Insert an exit tombstone for `pid`, evicting the oldest tombstone (and
     /// its paired satellite entries) if the bounded store is over capacity.
@@ -430,6 +531,7 @@ impl SharedState {
     }
 }
 
+#[cfg(feature = "threads")]
 #[derive(Default)]
 struct WaitSet {
     waiting: std::collections::HashMap<u64, usize>,
@@ -438,6 +540,7 @@ struct WaitSet {
 
 /// Test-only injection points inside the park sequences of `run_process`,
 /// used to drive deliver/resume interleavings deterministically.
+#[cfg(feature = "threads")]
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ParkGap {
@@ -449,19 +552,24 @@ pub(super) enum ParkGap {
     SuspendStored,
 }
 
+#[cfg(feature = "threads")]
 #[cfg(test)]
 type ParkGapHook = Box<dyn Fn(&SharedState, ParkGap, u64) + Send + Sync>;
+#[cfg(feature = "threads")]
 pub(super) struct ScheduledProcess(Process);
 // SAFETY: Process is not Send at the public API boundary. The scheduler is the
 // sole owner of process execution, storing each body behind a mutex-protected
 // ProcessSlot. Workers take exclusive ownership before executing a time slice.
+#[cfg(feature = "threads")]
 unsafe impl Send for ScheduledProcess {}
+#[cfg(feature = "threads")]
 pub struct Scheduler {
     shared: Arc<SharedState>,
     threads: Mutex<Vec<JoinHandle<()>>>,
     inject_queues: Vec<Arc<SegQueue<SpawnRequest>>>,
     worker_names: Vec<String>,
 }
+#[cfg(feature = "threads")]
 impl Scheduler {
     /// Allocate and register an ETS table owned by a process.
     ///
@@ -1018,11 +1126,13 @@ impl Scheduler {
         self.shared.idle_parks.load(Ordering::Acquire)
     }
 }
+#[cfg(feature = "threads")]
 impl Drop for Scheduler {
     fn drop(&mut self) {
         self.shutdown();
     }
 }
+#[cfg(feature = "threads")]
 fn configured_thread_count(override_count: Option<usize>) -> usize {
     override_count
         .filter(|count| *count > 0)
@@ -1030,6 +1140,7 @@ fn configured_thread_count(override_count: Option<usize>) -> usize {
             std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
         })
 }
+#[cfg(feature = "threads")]
 fn process_namespace(shared: &SharedState, pid: u64) -> Option<NamespaceId> {
     let entry = shared.process_bodies.get(&pid)?;
     match &*lock_or_recover(&entry) {
@@ -1038,6 +1149,7 @@ fn process_namespace(shared: &SharedState, pid: u64) -> Option<NamespaceId> {
         ProcessSlot::Absent => None,
     }
 }
+#[cfg(feature = "threads")]
 fn process_trap_exit(shared: &SharedState, pid: u64) -> Option<bool> {
     let entry = shared.process_bodies.get(&pid)?;
     match &*lock_or_recover(&entry) {
@@ -1046,6 +1158,7 @@ fn process_trap_exit(shared: &SharedState, pid: u64) -> Option<bool> {
         ProcessSlot::Absent => None,
     }
 }
+#[cfg(feature = "threads")]
 fn process_is_native(shared: &SharedState, pid: u64) -> Option<bool> {
     let entry = shared.process_bodies.get(&pid)?;
     match &*lock_or_recover(&entry) {
@@ -1055,6 +1168,7 @@ fn process_is_native(shared: &SharedState, pid: u64) -> Option<bool> {
         ProcessSlot::Executing(_) | ProcessSlot::Absent => None,
     }
 }
+#[cfg(feature = "threads")]
 fn process_links_contain(shared: &SharedState, pid: u64, linked_pid: u64) -> bool {
     let Some(entry) = shared.process_bodies.get(&pid) else {
         return false;
@@ -1066,6 +1180,7 @@ fn process_links_contain(shared: &SharedState, pid: u64, linked_pid: u64) -> boo
     }
 }
 
+#[cfg(feature = "threads")]
 impl SharedState {
     pub(super) fn process_info(&self, pid: u64, item: ProcessInfoItem) -> Option<ProcessInfoValue> {
         self.process_table.get(pid)?;
@@ -1078,6 +1193,7 @@ impl SharedState {
     }
 }
 
+#[cfg(feature = "threads")]
 fn process_info_from_process(process: &Process, item: ProcessInfoItem) -> Option<ProcessInfoValue> {
     if matches!(process.status(), ProcessStatus::Exited(_)) {
         return None;
@@ -1108,6 +1224,7 @@ fn process_info_from_process(process: &Process, item: ProcessInfoItem) -> Option
     })
 }
 
+#[cfg(feature = "threads")]
 fn process_info_from_metadata(
     metadata: &ProcessMetadata,
     item: ProcessInfoItem,
@@ -1136,6 +1253,7 @@ fn process_info_from_metadata(
     })
 }
 
+#[cfg(feature = "threads")]
 fn status_from_process(status: ProcessStatus) -> Option<ProcessInfoStatus> {
     match status {
         ProcessStatus::New | ProcessStatus::Running | ProcessStatus::Yielded => {
@@ -1147,6 +1265,7 @@ fn status_from_process(status: ProcessStatus) -> Option<ProcessInfoStatus> {
     }
 }
 
+#[cfg(feature = "threads")]
 pub(super) fn namespace_registry(
     shared: &SharedState,
     namespace: NamespaceId,
@@ -1156,12 +1275,14 @@ pub(super) fn namespace_registry(
         .get(&namespace)
         .map(|entry| Arc::clone(entry.value()))
 }
+#[cfg(feature = "threads")]
 pub(super) fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[cfg(feature = "threads")]
 impl Scheduler {
     /// Enqueue an immediate atom message into a live process mailbox and wake
     /// the process if it is parked.
@@ -1193,6 +1314,7 @@ impl Scheduler {
     }
 }
 
+#[cfg(feature = "threads")]
 impl IoWakeTarget for SharedState {
     fn wake_with_io_result(&self, pid: u64, term: Term) {
         // Identity-resolved at publish time: the bridge completes the
@@ -1232,7 +1354,9 @@ impl IoWakeTarget for SharedState {
     }
 }
 
+#[cfg(feature = "threads")]
 #[cfg(test)]
 mod supervision_tests;
+#[cfg(feature = "threads")]
 #[cfg(test)]
 mod tests;

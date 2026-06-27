@@ -128,12 +128,17 @@ pub(crate) fn call_native_entry(
     };
     if let Some(svc) = ctx.services {
         context.set_atom_table(svc.atom_table.clone());
+        #[cfg(feature = "net")]
         context.set_local_node(svc.local_node);
+        #[cfg(feature = "net")]
         context.set_net_kernel(svc.net_kernel.clone());
+        #[cfg(feature = "net")]
         context.set_distribution_send_facility(svc.distribution_send.clone());
         context.set_spawn_facility(svc.spawn_facility.clone());
         context.set_link_facility(svc.link_facility.clone());
+        #[cfg(feature = "net")]
         context.set_distribution_control_facility(svc.distribution_control_facility.clone());
+        #[cfg(feature = "net")]
         context.set_global_name_facility(svc.global_name_facility.clone());
         context.set_group_leader_facility(svc.group_leader_facility.clone());
         context.set_supervision_facility(svc.supervision_facility.clone());
@@ -141,12 +146,17 @@ pub(crate) fn call_native_entry(
         context.set_code_management_facility(svc.code_management_facility.clone());
         context.set_system_info_facility(svc.system_info_facility.clone());
         context.set_ets_facility(svc.ets_facility.clone());
+        #[cfg(feature = "net")]
         context.set_pg_facility(svc.pg_facility.clone());
+        #[cfg(feature = "threads")]
         context.set_io_facility(svc.io_facility.clone());
         context.set_io_message_facility(svc.io_message_facility.clone());
+        #[cfg(feature = "threads")]
         context.set_file_io_facility(svc.file_io_facility.clone());
+        #[cfg(feature = "threads")]
         context.set_tcp_io_facility(svc.tcp_io_facility.clone());
         context.set_replay_driver(svc.replay_driver.clone());
+        #[cfg(feature = "threads")]
         if let Some(sink) = &svc.io_sink {
             context.set_io_sink(Arc::clone(sink));
         }

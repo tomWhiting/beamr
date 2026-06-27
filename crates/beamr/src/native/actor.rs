@@ -46,10 +46,17 @@
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+#[cfg(feature = "threads")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "threads")]
 use std::time::Duration;
 
 use crate::native::native_process::{NativeContext, NativeHandler, NativeOutcome};
+// The external-driver request/reply path (`SenderHandle`/`spawn_actor`) owns the
+// threaded `Scheduler` and blocks on a crossbeam channel; neither exists on
+// wasm32. Under `cooperative` only the platform-neutral actor traits compile;
+// the cooperative spawn/call surface arrives in WR-2/WR-6.
+#[cfg(feature = "threads")]
 use crate::scheduler::Scheduler;
 use crate::term::Term;
 use crate::term::boxed::Tuple;
@@ -64,12 +71,15 @@ const TAG_REPLY: i64 = 2;
 
 /// Default time a [`SenderHandle::call`] waits for the correlated reply before
 /// giving up with [`ActorError::Timeout`].
+#[cfg(feature = "threads")]
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Monotonic source of unique call refs. A ref correlates a reply with the
 /// in-flight call that produced it, so concurrent calls never cross replies.
+#[cfg(feature = "threads")]
 static NEXT_REF: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(feature = "threads")]
 fn next_ref() -> u64 {
     NEXT_REF.fetch_add(1, Ordering::Relaxed)
 }
@@ -314,6 +324,7 @@ impl std::fmt::Display for ActorError {
 impl std::error::Error for ActorError {}
 
 /// A spawned actor: its `u64` pid plus a typed [`SenderHandle`].
+#[cfg(feature = "threads")]
 pub struct ActorRef<A: Actor> {
     /// The actor's process id.
     pub pid: u64,
@@ -321,6 +332,7 @@ pub struct ActorRef<A: Actor> {
     pub sender: SenderHandle<A>,
 }
 
+#[cfg(feature = "threads")]
 impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
@@ -336,12 +348,14 @@ impl<A: Actor> Clone for ActorRef<A> {
 /// not inside a slice) to [`SenderHandle::call`] the actor (blocking
 /// request/reply) or [`SenderHandle::cast`] it (fire-and-forget). Never `call`
 /// from inside a handler — it deadlocks the worker thread (module docs).
+#[cfg(feature = "threads")]
 pub struct SenderHandle<A: Actor> {
     scheduler: Arc<Scheduler>,
     pid: u64,
     _marker: PhantomData<fn() -> A>,
 }
 
+#[cfg(feature = "threads")]
 impl<A: Actor> Clone for SenderHandle<A> {
     fn clone(&self) -> Self {
         Self {
@@ -352,6 +366,7 @@ impl<A: Actor> Clone for SenderHandle<A> {
     }
 }
 
+#[cfg(feature = "threads")]
 impl<A: Actor> SenderHandle<A> {
     /// Build a handle for an existing actor `pid` (e.g. a child from
     /// [`ActorContext::spawn_child`]).
@@ -429,6 +444,7 @@ impl<A: Actor> SenderHandle<A> {
 /// native spawn, so a supervisor can restart it by re-invoking `factory`. The
 /// returned [`ActorRef::sender`] is the typed handle an external driver uses to
 /// [`SenderHandle::call`] / [`SenderHandle::cast`] the actor.
+#[cfg(feature = "threads")]
 pub fn spawn_actor<A, F>(scheduler: &Arc<Scheduler>, factory: F) -> Result<ActorRef<A>, ActorError>
 where
     A: Actor,
@@ -447,6 +463,7 @@ where
     })
 }
 
+#[cfg(feature = "threads")]
 #[path = "actor_clients.rs"]
 mod clients;
 

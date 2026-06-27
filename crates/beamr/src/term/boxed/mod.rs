@@ -7,6 +7,7 @@
 
 mod accessors;
 
+#[cfg(feature = "threads")]
 pub use crate::io::resource::FdResource;
 pub use accessors::{
     BigInt, Closure, Cons, ExternalPid, ExternalReference, Float, Map, ProcBin, Reference,

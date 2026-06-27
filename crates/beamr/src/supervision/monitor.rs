@@ -8,9 +8,10 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "net")]
+use crate::distribution::control_monitor::RemotePid;
 use crate::{
     atom::Atom,
-    distribution::control_monitor::RemotePid,
     process::{ExitReason, Monitor, Process},
     term::{Term, boxed},
 };
@@ -215,6 +216,7 @@ pub fn enqueue_down_message_pub(
 }
 
 /// Enqueue a DOWN message whose PID element is an external PID.
+#[cfg(feature = "net")]
 pub fn enqueue_remote_down_message_pub(
     watcher: &mut Process,
     reference: Reference,
@@ -226,6 +228,7 @@ pub fn enqueue_remote_down_message_pub(
     }
 }
 
+#[cfg(feature = "net")]
 fn enqueue_remote_down_message(
     watcher: &mut Process,
     reference: Reference,

@@ -1,5 +1,6 @@
 //! Message passing and receive opcode handlers.
 
+#[cfg(feature = "net")]
 use crate::distribution::control::{DistributionSendError, DistributionSendFacility};
 use crate::error::ExecError;
 use crate::interpreter::InstructionOutcome;
@@ -18,7 +19,7 @@ use crate::term::pid_ref::PidRef;
 pub fn send(
     process: &mut Process,
     receiver: Option<&mut Process>,
-    distribution: Option<&dyn DistributionSendFacility>,
+    #[cfg(feature = "net")] distribution: Option<&dyn DistributionSendFacility>,
     replay_driver: Option<&Arc<Mutex<ReplayDriver>>>,
     local_send: Option<&dyn LocalSendFacility>,
 ) -> Result<InstructionOutcome, ExecError> {
@@ -26,14 +27,22 @@ pub fn send(
     let target = PidRef::new(target_term).ok_or(ExecError::Badarg)?;
     let message = process.x_reg(1);
     if !target.is_local() {
-        let facility = distribution.ok_or(ExecError::NoConnection)?;
-        facility
-            .send_remote(target_term, message)
-            .map_err(distribution_send_error)?;
-        #[cfg(feature = "telemetry")]
-        crate::telemetry::metrics::record_message_sent();
-        process.set_x_reg(0, message);
-        return Ok(InstructionOutcome::Continue);
+        // Remote PIDs only exist when the distribution layer is compiled in. In a
+        // cooperative/wasm build there is no distribution, so a remote target has
+        // no connection to deliver over.
+        #[cfg(feature = "net")]
+        {
+            let facility = distribution.ok_or(ExecError::NoConnection)?;
+            facility
+                .send_remote(target_term, message)
+                .map_err(distribution_send_error)?;
+            #[cfg(feature = "telemetry")]
+            crate::telemetry::metrics::record_message_sent();
+            process.set_x_reg(0, message);
+            return Ok(InstructionOutcome::Continue);
+        }
+        #[cfg(not(feature = "net"))]
+        return Err(ExecError::NoConnection);
     }
     let target_pid = target.pid_number();
     if let Some(receiver) = receiver.filter(|receiver| receiver.pid() == target_pid) {
@@ -175,6 +184,7 @@ fn send_to_self(
     Ok(())
 }
 
+#[cfg(feature = "net")]
 fn distribution_send_error(error: DistributionSendError) -> ExecError {
     match error {
         DistributionSendError::NoConnection => ExecError::NoConnection,

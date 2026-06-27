@@ -11,7 +11,14 @@ authors.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-beamr = { version = "0.9.0", path = "../beamr", features = ["json"] }
+# The wasm host seam drives the cooperative single-threaded runtime. Default
+# features (threads/net/fs/jit/embedded) pull tokio/io-uring/cranelift and the
+# zstd C build, none of which compile for wasm32 — so opt out of them and select
+# only the cooperative runtime plus the JSON term codec the host bridge uses.
+beamr = { version = "0.9.0", path = "../beamr", default-features = false, features = [
+    "cooperative",
+    "json",
+] }
 js-sys = "0.3.100"
 serde-wasm-bindgen = "0.6.5"
 serde_json = "1.0.150"

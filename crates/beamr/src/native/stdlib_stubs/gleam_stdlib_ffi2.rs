@@ -47,7 +47,7 @@ fn write_print_args(
     if newline {
         bytes.push(b'\n');
     }
-    context.io_sink().write(&bytes);
+    context.write_to_io_sink(&bytes);
     Ok(Term::atom(Atom::NIL))
 }
 
