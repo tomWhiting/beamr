@@ -22,7 +22,7 @@ pub fn bif_logger_warning(args: &[Term], context: &mut ProcessContext) -> Result
     } else {
         format!("[warning] {format_term:?} {args_term:?}\n")
     };
-    context.io_sink().write(message.as_bytes());
+    context.write_to_io_sink(message.as_bytes());
 
     Ok(Term::atom(Atom::OK))
 }

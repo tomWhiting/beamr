@@ -260,6 +260,7 @@ impl ExitReason {
 }
 
 /// Transient runtime context installed while the interpreter is inside native JIT code.
+#[cfg(feature = "jit")]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct JitRuntimeContext {
     /// Current module for import-table resolution.
@@ -270,6 +271,7 @@ pub struct JitRuntimeContext {
     pub jit_cache: *const crate::jit::JitCache,
 }
 
+#[cfg(feature = "jit")]
 impl JitRuntimeContext {
     /// Creates a runtime context from borrowed interpreter dispatch state.
     #[must_use]

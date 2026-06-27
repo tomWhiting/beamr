@@ -7,16 +7,22 @@ use crate::error::ExecError;
 use crate::gc::{GcError, ensure_space};
 use crate::interpreter::InstructionOutcome;
 use crate::interpreter::NativeServices;
+#[cfg(feature = "jit")]
 use crate::jit::JitCache;
+#[cfg(feature = "jit")]
 use crate::jit::ir_common::JIT_DEOPT_SENTINEL;
+#[cfg(feature = "jit")]
 use crate::jit::ir_exceptions::{
     JIT_STATUS_DEOPT, JIT_STATUS_EXCEPTION, JIT_STATUS_YIELD, JitReturn,
 };
+#[cfg(feature = "jit")]
 use crate::jit::runtime::JIT_YIELD_SENTINEL;
 use crate::loader::decode::compact::Operand;
 use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
 use crate::native::ExceptionClass;
-use crate::process::{CodePosition, ExitReason, JitRuntimeContext, JitStatus, Process};
+#[cfg(feature = "jit")]
+use crate::process::JitRuntimeContext;
+use crate::process::{CodePosition, ExitReason, JitStatus, Process};
 use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
 use crate::timer::TimerWheel;
@@ -24,6 +30,7 @@ use crate::timer::TimerWheel;
 /// JIT dispatch services shared by local and external call handlers.
 #[derive(Copy, Clone)]
 pub struct JitDispatchContext<'a> {
+    #[cfg(feature = "jit")]
     pub jit_cache: Option<&'a JitCache>,
     pub registry: Option<&'a ModuleRegistry>,
 }
@@ -34,6 +41,7 @@ pub struct ExtCallContext<'a> {
     pub services: Option<&'a NativeServices>,
     pub registry: Option<&'a ModuleRegistry>,
     pub atom_table: Option<&'a AtomTable>,
+    #[cfg(feature = "jit")]
     pub jit_cache: Option<&'a JitCache>,
 }
 
@@ -106,7 +114,27 @@ pub fn call(
             .push_frame(module.name, return_ip, caller_module, 0)
             .map_err(ExecError::from)?;
     }
-    if let Some(outcome) = dispatch_local_jit(
+    if let Some(outcome) =
+        try_dispatch_local_jit(process, module, target, arity, save_return, jit_ctx)?
+    {
+        return Ok(outcome);
+    }
+    jump_with_reduction(process, module.name, target)
+}
+
+/// JIT entry for a local call. With `jit` the compiled body may run; without it
+/// this is a no-op (consuming `jit_ctx`) so the interpreter always falls through
+/// to the bytecode path.
+#[cfg(feature = "jit")]
+fn try_dispatch_local_jit(
+    process: &mut Process,
+    module: &Module,
+    target: usize,
+    arity: u8,
+    save_return: bool,
+    jit_ctx: JitDispatchContext<'_>,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    dispatch_local_jit(
         process,
         module,
         target,
@@ -114,10 +142,19 @@ pub fn call(
         save_return,
         jit_ctx.jit_cache,
         jit_ctx.registry,
-    )? {
-        return Ok(outcome);
-    }
-    jump_with_reduction(process, module.name, target)
+    )
+}
+
+#[cfg(not(feature = "jit"))]
+fn try_dispatch_local_jit(
+    _process: &mut Process,
+    _module: &Module,
+    _target: usize,
+    _arity: u8,
+    _save_return: bool,
+    _jit_ctx: JitDispatchContext<'_>,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    Ok(None)
 }
 
 pub fn call_ext(
@@ -486,7 +523,7 @@ fn call_external_target(
                     .push_frame(module.name, return_ip, caller_module, 0)
                     .map_err(ExecError::from)?;
             }
-            if let Some(outcome) = dispatch_external_jit(
+            if let Some(outcome) = try_dispatch_external_jit(
                 process,
                 target_mod.as_ref(),
                 instruction_pointer,
@@ -525,7 +562,7 @@ fn call_external_target(
                     .push_frame(module.name, return_ip, caller_module, 0)
                     .map_err(ExecError::from)?;
             }
-            if let Some(outcome) = dispatch_external_jit(
+            if let Some(outcome) = try_dispatch_external_jit(
                 process,
                 target_mod.as_ref(),
                 instruction_pointer,
@@ -578,8 +615,10 @@ fn call_external_target(
     }
 }
 
+#[cfg(feature = "jit")]
 type RawJitFn = extern "C" fn(*mut u64, *mut Process) -> JitReturn;
 
+#[cfg(feature = "jit")]
 fn dispatch_local_jit(
     process: &mut Process,
     module: &Module,
@@ -608,6 +647,44 @@ fn dispatch_local_jit(
     invoke_jit(process, module, native, registry, jit_cache)
 }
 
+/// JIT entry for an external call. With `jit` the compiled body may run; without
+/// it this is a no-op (consuming `ctx`) so the interpreter always falls through
+/// to the bytecode path.
+#[cfg(not(feature = "jit"))]
+fn try_dispatch_external_jit(
+    _process: &mut Process,
+    _target_module: &Module,
+    _target_ip: usize,
+    _function: Atom,
+    _arity: u8,
+    _save_return: bool,
+    _ctx: &ExtCallContext<'_>,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    Ok(None)
+}
+
+#[cfg(feature = "jit")]
+fn try_dispatch_external_jit(
+    process: &mut Process,
+    target_module: &Module,
+    target_ip: usize,
+    function: Atom,
+    arity: u8,
+    save_return: bool,
+    ctx: &ExtCallContext<'_>,
+) -> Result<Option<InstructionOutcome>, ExecError> {
+    dispatch_external_jit(
+        process,
+        target_module,
+        target_ip,
+        function,
+        arity,
+        save_return,
+        ctx,
+    )
+}
+
+#[cfg(feature = "jit")]
 fn dispatch_external_jit(
     process: &mut Process,
     target_module: &Module,
@@ -635,6 +712,7 @@ fn dispatch_external_jit(
     invoke_jit(process, target_module, native, ctx.registry, ctx.jit_cache)
 }
 
+#[cfg(feature = "jit")]
 fn invoke_jit(
     process: &mut Process,
     module: &Module,
@@ -657,6 +735,7 @@ fn invoke_jit(
     outcome
 }
 
+#[cfg(feature = "jit")]
 fn call_native(
     process: &mut Process,
     native: crate::jit::NativeCode,

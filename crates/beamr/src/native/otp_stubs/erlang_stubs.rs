@@ -175,9 +175,17 @@ pub fn bif_connect_node(args: &[Term], context: &mut ProcessContext) -> Result<T
         return Err(badarg());
     };
     let node = node.as_atom().ok_or_else(badarg)?;
+    // The distribution layer (`net`) does not exist in the cooperative/wasm
+    // build, so there is no node to connect to.
+    #[cfg(feature = "net")]
     let connected = context
         .net_kernel()
         .is_some_and(|net_kernel| net_kernel.connect_node(node));
+    #[cfg(not(feature = "net"))]
+    let connected = {
+        let _ = (node, &context);
+        false
+    };
     Ok(Term::atom(if connected { Atom::TRUE } else { Atom::FALSE }))
 }
 

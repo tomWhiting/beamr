@@ -5,7 +5,7 @@
 
 use crate::atom::{Atom, AtomTable};
 use crate::native::{BifRegistryImpl, Capability, NativeRegistrationError, ProcessContext};
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::binary::Binary;
 use crate::term::boxed::{Cons, ProcBin, SubBinary};
@@ -194,7 +194,7 @@ mod tests {
     use super::register_meridian_ffi;
     use crate::atom::AtomTable;
     use crate::native::BifRegistryImpl;
-    use crate::scheduler::dirty::DirtySchedulerKind;
+    use crate::scheduler::DirtySchedulerKind;
 
     #[test]
     fn register_meridian_ffi_marks_blocking_io_nifs_dirty() {

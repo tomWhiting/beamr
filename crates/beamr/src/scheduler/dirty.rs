@@ -23,14 +23,7 @@ pub const DEFAULT_DIRTY_QUEUE_DEPTH: usize = 1024;
 /// Default number of IO dirty scheduler threads.
 pub const DEFAULT_DIRTY_IO_THREADS: usize = 10;
 
-/// Distinguishes the two BEAM-style dirty scheduler pools.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum DirtySchedulerKind {
-    /// CPU-bound dirty work.
-    Cpu,
-    /// IO-bound dirty work.
-    Io,
-}
+pub use crate::scheduler::DirtySchedulerKind;
 
 /// Minimal oneshot result channel used by dirty jobs.
 pub mod oneshot {

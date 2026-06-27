@@ -11,11 +11,16 @@ use std::sync::{Arc, Mutex};
 
 use crate::atom::AtomTable;
 use crate::capability::{CapabilityAuditSink, ViolationHandler};
+#[cfg(feature = "net")]
 use crate::distribution::control::DistributionSendFacility;
+#[cfg(feature = "net")]
 use crate::distribution::remote_link::DistributionControlFacility;
+#[cfg(feature = "net")]
 use crate::distribution::{NetKernel, Node};
 use crate::error::ExecError;
+#[cfg(feature = "threads")]
 use crate::io::{IoFacility, IoSink};
+#[cfg(feature = "jit")]
 use crate::jit::JitCache;
 use crate::module::{Module, ModuleRegistry};
 use crate::native::code_management_bifs::CodeManagementFacility;
@@ -27,10 +32,12 @@ use crate::native::process_info_bifs::ProcessInfoFacility;
 use crate::native::spawn::SpawnFacility;
 use crate::native::supervision::SupervisionFacility;
 use crate::native::system_info_bifs::SystemInfoFacility;
-use crate::native::{FileIoFacility, NativeEntry, RemoteSpawnFacility, TcpIoFacility};
+#[cfg(feature = "threads")]
+use crate::native::{FileIoFacility, TcpIoFacility};
+use crate::native::{NativeEntry, RemoteSpawnFacility};
 use crate::process::{CodePosition, ExitReason, Process};
 use crate::replay::ReplayDriver;
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 use crate::term::Term;
 use crate::timer::TimerWheel;
 
@@ -41,10 +48,13 @@ pub struct NativeServices {
     /// Atom table used for BEAM term ordering and atom conversion BIFs.
     pub atom_table: Option<Arc<AtomTable>>,
     /// Local node identity for node-aware BIFs.
+    #[cfg(feature = "net")]
     pub local_node: Option<Node>,
     /// Net-kernel facade for distribution connection BIFs.
+    #[cfg(feature = "net")]
     pub net_kernel: Option<Arc<NetKernel>>,
     /// Distribution send facility for remote PID messaging.
+    #[cfg(feature = "net")]
     pub distribution_send: Option<Arc<dyn DistributionSendFacility>>,
     /// Local send facility for cross-process local PID messaging via the scheduler.
     pub local_send: Option<Arc<dyn crate::native::local_send::LocalSendFacility>>,
@@ -57,8 +67,10 @@ pub struct NativeServices {
     /// Link facility for link management BIFs.
     pub link_facility: Option<Arc<dyn LinkFacility>>,
     /// Distribution control facility for remote link lifecycle BIFs.
+    #[cfg(feature = "net")]
     pub distribution_control_facility: Option<Arc<dyn DistributionControlFacility>>,
     /// Global name facility for `global:*_name` BIFs.
+    #[cfg(feature = "net")]
     pub global_name_facility: Option<Arc<dyn crate::native::GlobalNameFacility>>,
     /// Group-leader facility for process metadata BIFs.
     pub group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
@@ -67,6 +79,7 @@ pub struct NativeServices {
     /// Process information facility for process_info/1,2 BIFs.
     pub process_info_facility: Option<Arc<dyn ProcessInfoFacility>>,
     /// Output sink for `io` module BIFs.
+    #[cfg(feature = "threads")]
     pub io_sink: Option<Arc<dyn IoSink>>,
     /// Code management facility for hot-loading BIFs.
     pub code_management_facility: Option<Arc<dyn CodeManagementFacility>>,
@@ -75,16 +88,21 @@ pub struct NativeServices {
     /// ETS facility for shared table storage BIFs.
     pub ets_facility: Option<Arc<dyn EtsFacility>>,
     /// PG facility for process group BIFs.
+    #[cfg(feature = "net")]
     pub pg_facility: Option<Arc<dyn crate::distribution::pg::PgFacility>>,
     /// Async I/O facility for process-side ring submissions.
+    #[cfg(feature = "threads")]
     pub io_facility: Option<Arc<dyn IoFacility>>,
     /// IO message facility for group-leader protocol BIFs.
     pub io_message_facility: Option<Arc<dyn IoMessageFacility>>,
     /// Completion-ring backed facility for file BIFs.
+    #[cfg(feature = "threads")]
     pub file_io_facility: Option<Arc<dyn FileIoFacility>>,
     /// Active-mode TCP read-loop facility for socket option BIFs.
+    #[cfg(feature = "threads")]
     pub tcp_io_facility: Option<Arc<dyn TcpIoFacility>>,
     /// Shared JIT cache used for mixed interpreter/native dispatch.
+    #[cfg(feature = "jit")]
     pub jit_cache: Option<Arc<JitCache>>,
     /// Replay driver used to replace nondeterministic native decisions.
     pub replay_driver: Option<Arc<Mutex<ReplayDriver>>>,

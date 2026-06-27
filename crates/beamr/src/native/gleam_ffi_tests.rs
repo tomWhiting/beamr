@@ -10,7 +10,7 @@ use crate::native::supervision::{
 use crate::native::{BifRegistryImpl, ProcessContext};
 use crate::process::ExitReason;
 use crate::process::Process;
-use crate::scheduler::dirty::DirtySchedulerKind;
+use crate::scheduler::DirtySchedulerKind;
 use crate::term::Term;
 use crate::term::boxed::Tuple;
 

@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use crate::atom::AtomTable;
 use crate::error::ExecError;
 use crate::interpreter::{InstructionOutcome, NativeServices};
+#[cfg(feature = "jit")]
 use crate::jit::JitCache;
 use crate::loader::Instruction;
 use crate::loader::decode::Operand;
@@ -36,6 +37,7 @@ struct DispatchCtx<'a> {
     registry: Option<&'a ModuleRegistry>,
     services: Option<&'a NativeServices>,
     atom_table: Option<&'a AtomTable>,
+    #[cfg(feature = "jit")]
     jit_cache: Option<&'a JitCache>,
 }
 
@@ -70,6 +72,7 @@ pub fn dispatch_with_timer_services(
             registry,
             services: None,
             atom_table: None,
+            #[cfg(feature = "jit")]
             jit_cache: None,
         },
     )
@@ -95,6 +98,7 @@ pub fn dispatch_with_services(
             registry,
             services: Some(services),
             atom_table: services.atom_table.as_deref(),
+            #[cfg(feature = "jit")]
             jit_cache: services.jit_cache.as_deref(),
         },
     )
@@ -126,6 +130,7 @@ pub fn dispatch_with_receiver(
             registry,
             services: None,
             atom_table: None,
+            #[cfg(feature = "jit")]
             jit_cache: None,
         },
     )
@@ -195,6 +200,7 @@ fn dispatch_common(
             next_ip,
             true,
             core::JitDispatchContext {
+                #[cfg(feature = "jit")]
                 jit_cache: ctx.jit_cache,
                 registry: ctx.registry,
             },
@@ -207,6 +213,7 @@ fn dispatch_common(
             next_ip,
             false,
             core::JitDispatchContext {
+                #[cfg(feature = "jit")]
                 jit_cache: ctx.jit_cache,
                 registry: ctx.registry,
             },
@@ -217,6 +224,7 @@ fn dispatch_common(
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                #[cfg(feature = "jit")]
                 jit_cache: ctx.jit_cache,
             };
             core::call_ext(process, module, arity, import, next_ip, true, &ext)
@@ -227,6 +235,7 @@ fn dispatch_common(
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                #[cfg(feature = "jit")]
                 jit_cache: ctx.jit_cache,
             };
             core::call_ext(process, module, arity, import, next_ip, false, &ext)
@@ -246,6 +255,7 @@ fn dispatch_common(
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                #[cfg(feature = "jit")]
                 jit_cache: ctx.jit_cache,
             };
             core::call_ext_last(process, module, arity, import, deallocate, &ext)
@@ -320,6 +330,7 @@ fn dispatch_common(
         Instruction::Send => messaging::send(
             process,
             ctx.receiver,
+            #[cfg(feature = "net")]
             ctx.services
                 .and_then(|services| services.distribution_send.as_deref()),
             ctx.services
@@ -377,6 +388,7 @@ fn dispatch_common(
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                #[cfg(feature = "jit")]
                 jit_cache: ctx.jit_cache,
             };
             closures::call_fun(process, module, arity, next_ip, &ext)
@@ -391,6 +403,7 @@ fn dispatch_common(
                 services: ctx.services,
                 registry: ctx.registry,
                 atom_table: ctx.atom_table,
+                #[cfg(feature = "jit")]
                 jit_cache: ctx.jit_cache,
             };
             closures::call_fun2(process, module, func, arity, next_ip, &ext)

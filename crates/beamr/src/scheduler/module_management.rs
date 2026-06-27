@@ -11,22 +11,7 @@ use crate::native::CodeManagementFacility;
 use super::spawning::drain_pending_spawns;
 use super::{Scheduler, SharedState, namespace_registry};
 
-/// Result returned by a successful hot module load.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct HotLoadResult {
-    pub module_name: Atom,
-    pub generation: u64,
-    pub had_old_version: bool,
-    pub on_load_required: bool,
-    pub on_load_succeeded: bool,
-}
-
-/// Result returned by safe or forced module purge.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct PurgeResult {
-    pub module_name: Atom,
-    pub processes_killed: usize,
-}
+pub use super::{HotLoadResult, PurgeResult};
 
 impl Scheduler {
     /// Hot-load a BEAM module, running on_load before committing when required.

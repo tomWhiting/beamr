@@ -9,10 +9,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::atom::AtomTable;
+#[cfg(feature = "net")]
 use crate::distribution::control::DistributionSendFacility;
+#[cfg(feature = "net")]
 use crate::distribution::pg::PgFacility;
+#[cfg(feature = "net")]
 use crate::distribution::remote_link::DistributionControlFacility;
+#[cfg(feature = "threads")]
 use crate::io::resource::FdInner;
+#[cfg(feature = "threads")]
 use crate::io::{
     CompletionRing, IoCompletion, IoError, IoFacility, IoOp, IoSink, NullSink, ResultMode,
 };
@@ -27,6 +32,7 @@ use crate::term::Term;
 use crate::term::compare;
 use crate::timer::{TimerRef, TimerWheel};
 
+#[cfg(feature = "net")]
 use super::distribution_bifs::GlobalNameFacility;
 use super::ets_bifs::EtsFacility;
 use super::group_leader::GroupLeaderFacility;
@@ -132,6 +138,7 @@ impl NativeContinuation {
 }
 
 /// File I/O continuation data used when a suspended file BIF resumes.
+#[cfg(feature = "threads")]
 #[derive(Clone, Debug)]
 pub enum FileIoContinuation {
     /// `erlang:open_file/2` completion.
@@ -187,6 +194,7 @@ pub enum FileIoContinuation {
 }
 
 /// Completion facility used by file BIFs to submit ring work and retrieve resume completions.
+#[cfg(feature = "threads")]
 pub trait FileIoFacility: Send + Sync {
     /// Submit an operation for `pid`, tagged with the BIF continuation metadata.
     fn submit_file_io(&self, pid: u64, op: IoOp, continuation: FileIoContinuation) -> u64;
@@ -205,6 +213,7 @@ pub trait FileIoFacility: Send + Sync {
 }
 
 /// File I/O completion delivered back to a suspended process.
+#[cfg(feature = "threads")]
 #[derive(Debug)]
 pub struct FileIoCompletion {
     /// Operation id returned by the ring.
@@ -216,6 +225,7 @@ pub struct FileIoCompletion {
 }
 
 /// Active TCP read-loop submission facility used by socket option BIFs.
+#[cfg(feature = "threads")]
 pub trait TcpIoFacility: Send + Sync {
     /// Start an active TCP read loop for `socket` using `buf_len` read buffers.
     fn submit_active_tcp_read(&self, socket: Arc<FdInner>, buf_len: usize) -> Option<u64>;
@@ -319,8 +329,11 @@ pub trait WasmAsyncNifFacility {
 pub struct ProcessContext<'process> {
     pid: Option<u64>,
     current_native: Option<NativeKey>,
+    #[cfg(feature = "net")]
     local_node: Option<crate::distribution::Node>,
+    #[cfg(feature = "net")]
     net_kernel: Option<Arc<crate::distribution::NetKernel>>,
+    #[cfg(feature = "net")]
     distribution_send: Option<Arc<dyn DistributionSendFacility>>,
     process: Option<&'process mut Process>,
     detached_allocations: Vec<Box<[u64]>>,
@@ -330,7 +343,9 @@ pub struct ProcessContext<'process> {
     spawn_facility: Option<Arc<dyn SpawnFacility>>,
     remote_spawn_facility: Option<Arc<dyn RemoteSpawnFacility>>,
     link_facility: Option<Arc<dyn LinkFacility>>,
+    #[cfg(feature = "net")]
     distribution_control_facility: Option<Arc<dyn DistributionControlFacility>>,
+    #[cfg(feature = "net")]
     global_name_facility: Option<Arc<dyn GlobalNameFacility>>,
     group_leader_facility: Option<Arc<dyn GroupLeaderFacility>>,
     supervision_facility: Option<Arc<dyn SupervisionFacility>>,
@@ -340,11 +355,16 @@ pub struct ProcessContext<'process> {
     select_facility: Option<Arc<dyn SelectFacility>>,
     system_info_facility: Option<Arc<dyn SystemInfoFacility>>,
     ets_facility: Option<Arc<dyn EtsFacility>>,
+    #[cfg(feature = "net")]
     pg_facility: Option<Arc<dyn PgFacility>>,
+    #[cfg(feature = "threads")]
     io_facility: Option<Arc<dyn IoFacility>>,
     io_message_facility: Option<Arc<dyn IoMessageFacility>>,
+    #[cfg(feature = "threads")]
     file_io_facility: Option<Arc<dyn FileIoFacility>>,
+    #[cfg(feature = "threads")]
     tcp_io_facility: Option<Arc<dyn TcpIoFacility>>,
+    #[cfg(feature = "threads")]
     io_sink: Arc<dyn IoSink>,
     exception_class: ExceptionClass,
     exception_stacktrace: Term,
@@ -359,95 +379,105 @@ pub struct ProcessContext<'process> {
 
 impl fmt::Debug for ProcessContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProcessContext")
-            .field("pid", &self.pid)
-            .field("current_native", &self.current_native)
-            .field("local_node", &self.local_node)
-            .field("net_kernel", &self.net_kernel.as_ref().map(|_| ".."))
-            .field(
-                "distribution_send",
-                &self.distribution_send.as_ref().map(|_| ".."),
-            )
-            .field("process_heap", &self.process.as_ref().map(|_| ".."))
-            .field("live_x", &self.live_x)
-            .field("timers", &self.timers)
-            .field("atom_table", &self.atom_table.as_ref().map(|_| ".."))
-            .field(
-                "spawn_facility",
-                &self.spawn_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "remote_spawn_facility",
-                &self.remote_spawn_facility.as_ref().map(|_| ".."),
-            )
-            .field("link_facility", &self.link_facility.as_ref().map(|_| ".."))
-            .field(
-                "distribution_control_facility",
-                &self.distribution_control_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "global_name_facility",
-                &self.global_name_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "group_leader_facility",
-                &self.group_leader_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "supervision_facility",
-                &self.supervision_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "code_management_facility",
-                &self.code_management_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "process_info_facility",
-                &self.process_info_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "registry_facility",
-                &self.registry_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "select_facility",
-                &self.select_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "system_info_facility",
-                &self.system_info_facility.as_ref().map(|_| ".."),
-            )
-            .field("ets_facility", &self.ets_facility.as_ref().map(|_| ".."))
-            .field("pg_facility", &self.pg_facility.as_ref().map(|_| ".."))
-            .field("io_facility", &self.io_facility.as_ref().map(|_| ".."))
-            .field(
-                "io_message_facility",
-                &self.io_message_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "file_io_facility",
-                &self.file_io_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "tcp_io_facility",
-                &self.tcp_io_facility.as_ref().map(|_| ".."),
-            )
-            .field("io_sink", &"..")
-            .field("exception_class", &self.exception_class)
-            .field("shutdown_requested", &self.shutdown_requested)
-            .field("trampoline", &self.trampoline)
-            .field("suspend", &self.suspend)
-            .field("exception_stacktrace", &self.exception_stacktrace)
-            .field("replay_driver", &self.replay_driver.as_ref().map(|_| ".."))
-            .field(
-                "wasm_async_nif_facility",
-                &self.wasm_async_nif_facility.as_ref().map(|_| ".."),
-            )
-            .field(
-                "nif_private_data",
-                &self.nif_private_data.as_ref().map(|_| ".."),
-            )
-            .finish()
+        let mut d = f.debug_struct("ProcessContext");
+        d.field("pid", &self.pid);
+        d.field("current_native", &self.current_native);
+        #[cfg(feature = "net")]
+        d.field("local_node", &self.local_node);
+        #[cfg(feature = "net")]
+        d.field("net_kernel", &self.net_kernel.as_ref().map(|_| ".."));
+        #[cfg(feature = "net")]
+        d.field(
+            "distribution_send",
+            &self.distribution_send.as_ref().map(|_| ".."),
+        );
+        d.field("process_heap", &self.process.as_ref().map(|_| ".."));
+        d.field("live_x", &self.live_x);
+        d.field("timers", &self.timers);
+        d.field("atom_table", &self.atom_table.as_ref().map(|_| ".."));
+        d.field(
+            "spawn_facility",
+            &self.spawn_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "remote_spawn_facility",
+            &self.remote_spawn_facility.as_ref().map(|_| ".."),
+        );
+        d.field("link_facility", &self.link_facility.as_ref().map(|_| ".."));
+        #[cfg(feature = "net")]
+        d.field(
+            "distribution_control_facility",
+            &self.distribution_control_facility.as_ref().map(|_| ".."),
+        );
+        #[cfg(feature = "net")]
+        d.field(
+            "global_name_facility",
+            &self.global_name_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "group_leader_facility",
+            &self.group_leader_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "supervision_facility",
+            &self.supervision_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "code_management_facility",
+            &self.code_management_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "process_info_facility",
+            &self.process_info_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "registry_facility",
+            &self.registry_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "select_facility",
+            &self.select_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "system_info_facility",
+            &self.system_info_facility.as_ref().map(|_| ".."),
+        );
+        d.field("ets_facility", &self.ets_facility.as_ref().map(|_| ".."));
+        #[cfg(feature = "net")]
+        d.field("pg_facility", &self.pg_facility.as_ref().map(|_| ".."));
+        #[cfg(feature = "threads")]
+        d.field("io_facility", &self.io_facility.as_ref().map(|_| ".."));
+        d.field(
+            "io_message_facility",
+            &self.io_message_facility.as_ref().map(|_| ".."),
+        );
+        #[cfg(feature = "threads")]
+        d.field(
+            "file_io_facility",
+            &self.file_io_facility.as_ref().map(|_| ".."),
+        );
+        #[cfg(feature = "threads")]
+        d.field(
+            "tcp_io_facility",
+            &self.tcp_io_facility.as_ref().map(|_| ".."),
+        );
+        #[cfg(feature = "threads")]
+        d.field("io_sink", &"..");
+        d.field("exception_class", &self.exception_class);
+        d.field("shutdown_requested", &self.shutdown_requested);
+        d.field("trampoline", &self.trampoline);
+        d.field("suspend", &self.suspend);
+        d.field("exception_stacktrace", &self.exception_stacktrace);
+        d.field("replay_driver", &self.replay_driver.as_ref().map(|_| ".."));
+        d.field(
+            "wasm_async_nif_facility",
+            &self.wasm_async_nif_facility.as_ref().map(|_| ".."),
+        );
+        d.field(
+            "nif_private_data",
+            &self.nif_private_data.as_ref().map(|_| ".."),
+        );
+        d.finish()
     }
 }
 
@@ -464,8 +494,11 @@ impl<'process> ProcessContext<'process> {
         Self {
             pid: None,
             current_native: None,
+            #[cfg(feature = "net")]
             local_node: None,
+            #[cfg(feature = "net")]
             net_kernel: None,
+            #[cfg(feature = "net")]
             distribution_send: None,
             process: None,
             detached_allocations: Vec::new(),
@@ -475,7 +508,9 @@ impl<'process> ProcessContext<'process> {
             spawn_facility: None,
             remote_spawn_facility: None,
             link_facility: None,
+            #[cfg(feature = "net")]
             distribution_control_facility: None,
+            #[cfg(feature = "net")]
             global_name_facility: None,
             group_leader_facility: None,
             supervision_facility: None,
@@ -485,11 +520,16 @@ impl<'process> ProcessContext<'process> {
             select_facility: None,
             system_info_facility: None,
             ets_facility: None,
+            #[cfg(feature = "net")]
             pg_facility: None,
+            #[cfg(feature = "threads")]
             io_facility: None,
             io_message_facility: None,
+            #[cfg(feature = "threads")]
             file_io_facility: None,
+            #[cfg(feature = "threads")]
             tcp_io_facility: None,
+            #[cfg(feature = "threads")]
             io_sink: Arc::new(NullSink),
             exception_class: ExceptionClass::Error,
             exception_stacktrace: Term::NIL,
@@ -509,8 +549,11 @@ impl<'process> ProcessContext<'process> {
         Self {
             pid: Some(pid),
             current_native: None,
+            #[cfg(feature = "net")]
             local_node: None,
+            #[cfg(feature = "net")]
             net_kernel: None,
+            #[cfg(feature = "net")]
             distribution_send: None,
             process: None,
             detached_allocations: Vec::new(),
@@ -520,7 +563,9 @@ impl<'process> ProcessContext<'process> {
             spawn_facility: None,
             remote_spawn_facility: None,
             link_facility: None,
+            #[cfg(feature = "net")]
             distribution_control_facility: None,
+            #[cfg(feature = "net")]
             global_name_facility: None,
             group_leader_facility: None,
             supervision_facility: None,
@@ -530,11 +575,16 @@ impl<'process> ProcessContext<'process> {
             select_facility: None,
             system_info_facility: None,
             ets_facility: None,
+            #[cfg(feature = "net")]
             pg_facility: None,
+            #[cfg(feature = "threads")]
             io_facility: None,
             io_message_facility: None,
+            #[cfg(feature = "threads")]
             file_io_facility: None,
+            #[cfg(feature = "threads")]
             tcp_io_facility: None,
+            #[cfg(feature = "threads")]
             io_sink: Arc::new(NullSink),
             exception_class: ExceptionClass::Error,
             exception_stacktrace: Term::NIL,
@@ -604,34 +654,40 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Return the immutable local node identity when provided by the runtime.
+    #[cfg(feature = "net")]
     #[must_use]
     pub fn local_node(&self) -> Option<crate::distribution::Node> {
         self.local_node
     }
 
     /// Set the immutable local node identity for node-aware BIFs.
+    #[cfg(feature = "net")]
     pub fn set_local_node(&mut self, node: Option<crate::distribution::Node>) {
         self.local_node = node;
     }
 
     /// Return the net-kernel distribution facade, if one has been configured.
+    #[cfg(feature = "net")]
     #[must_use]
     pub fn net_kernel(&self) -> Option<&crate::distribution::NetKernel> {
         self.net_kernel.as_deref()
     }
 
     /// Set the net-kernel distribution facade for distribution BIFs.
+    #[cfg(feature = "net")]
     pub fn set_net_kernel(&mut self, net_kernel: Option<Arc<crate::distribution::NetKernel>>) {
         self.net_kernel = net_kernel;
     }
 
     /// Return the distribution send facility, if one has been configured.
+    #[cfg(feature = "net")]
     #[must_use]
     pub fn distribution_send_facility(&self) -> Option<&dyn DistributionSendFacility> {
         self.distribution_send.as_deref()
     }
 
     /// Set the distribution send facility for remote PID messaging.
+    #[cfg(feature = "net")]
     pub fn set_distribution_send_facility(
         &mut self,
         facility: Option<Arc<dyn DistributionSendFacility>>,
@@ -656,11 +712,16 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Cancel any file I/O operation tracked for the attached process.
+    #[cfg(feature = "threads")]
     pub fn cancel_pending_file_io_for_current_process(&self) {
         if let (Some(pid), Some(facility)) = (self.pid, self.file_io_facility.as_ref()) {
             facility.cancel_pending_file_io_for_pid(pid);
         }
     }
+
+    /// Cancel any tracked file I/O — a no-op in the cooperative build (no host io).
+    #[cfg(not(feature = "threads"))]
+    pub fn cancel_pending_file_io_for_current_process(&self) {}
 
     /// Set the calling process id.
     pub fn set_pid(&mut self, pid: Option<u64>) {
@@ -848,12 +909,14 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Return the distribution control facility, if one has been configured.
+    #[cfg(feature = "net")]
     #[must_use]
     pub fn distribution_control_facility(&self) -> Option<&dyn DistributionControlFacility> {
         self.distribution_control_facility.as_deref()
     }
 
     /// Set the distribution control facility for remote link lifecycle BIFs.
+    #[cfg(feature = "net")]
     pub fn set_distribution_control_facility(
         &mut self,
         facility: Option<Arc<dyn DistributionControlFacility>>,
@@ -862,12 +925,14 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Return the global name facility, if one has been configured.
+    #[cfg(feature = "net")]
     #[must_use]
     pub fn global_name_facility(&self) -> Option<&dyn GlobalNameFacility> {
         self.global_name_facility.as_deref()
     }
 
     /// Set the global name facility for `global:*_name` BIFs.
+    #[cfg(feature = "net")]
     pub fn set_global_name_facility(&mut self, facility: Option<Arc<dyn GlobalNameFacility>>) {
         self.global_name_facility = facility;
     }
@@ -1077,12 +1142,14 @@ impl<'process> ProcessContext<'process> {
     // --- PG facility ---
 
     /// Return the pg facility, if one has been configured.
+    #[cfg(feature = "net")]
     #[must_use]
     pub fn pg_facility(&self) -> Option<&dyn PgFacility> {
         self.pg_facility.as_deref()
     }
 
     /// Set the pg facility for process group BIFs.
+    #[cfg(feature = "net")]
     pub fn set_pg_facility(&mut self, facility: Option<Arc<dyn PgFacility>>) {
         self.pg_facility = facility;
     }
@@ -1090,12 +1157,14 @@ impl<'process> ProcessContext<'process> {
     // --- I/O facility ---
 
     /// Return the async I/O facility, if one has been configured.
+    #[cfg(feature = "threads")]
     #[must_use]
     pub fn io_facility(&self) -> Option<&dyn IoFacility> {
         self.io_facility.as_deref()
     }
 
     /// Set the async I/O facility for I/O BIFs.
+    #[cfg(feature = "threads")]
     pub fn set_io_facility(&mut self, facility: Option<Arc<dyn IoFacility>>) {
         self.io_facility = facility;
     }
@@ -1114,6 +1183,7 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Submit an I/O operation for the attached pid and request suspension.
+    #[cfg(feature = "threads")]
     pub fn submit_io_and_suspend(&mut self, op: IoOp, mode: ResultMode) -> Result<(), IoError> {
         let pid = self.pid.ok_or(IoError::MissingPid)?;
         if self.io_facility.is_none() {
@@ -1136,12 +1206,14 @@ impl<'process> ProcessContext<'process> {
     // --- File I/O facility ---
 
     /// Return the file I/O facility, if one has been configured.
+    #[cfg(feature = "threads")]
     #[must_use]
     pub fn file_io_facility(&self) -> Option<&dyn FileIoFacility> {
         self.file_io_facility.as_deref()
     }
 
     /// Set the file I/O facility for completion-ring backed file BIFs.
+    #[cfg(feature = "threads")]
     pub fn set_file_io_facility(&mut self, facility: Option<Arc<dyn FileIoFacility>>) {
         self.file_io_facility = facility;
     }
@@ -1149,17 +1221,20 @@ impl<'process> ProcessContext<'process> {
     // --- TCP I/O facility ---
 
     /// Return the TCP I/O facility, if one has been configured.
+    #[cfg(feature = "threads")]
     #[must_use]
     pub fn tcp_io_facility(&self) -> Option<&dyn TcpIoFacility> {
         self.tcp_io_facility.as_deref()
     }
 
     /// Set the TCP I/O facility for active-mode socket BIFs.
+    #[cfg(feature = "threads")]
     pub fn set_tcp_io_facility(&mut self, facility: Option<Arc<dyn TcpIoFacility>>) {
         self.tcp_io_facility = facility;
     }
 
     /// Submit a file I/O operation and suspend the calling process until completion.
+    #[cfg(feature = "threads")]
     pub fn submit_file_io(
         &mut self,
         op: IoOp,
@@ -1169,6 +1244,7 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Submit a file I/O operation and suspend the calling process until completion or timeout.
+    #[cfg(feature = "threads")]
     pub fn submit_file_io_with_timeout(
         &mut self,
         op: IoOp,
@@ -1193,6 +1269,7 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Associate an already-submitted file I/O operation with this process.
+    #[cfg(feature = "threads")]
     pub fn track_submitted_file_io(
         &mut self,
         op_id: u64,
@@ -1210,12 +1287,14 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Take the completion used to resume the currently executing file BIF.
+    #[cfg(feature = "threads")]
     pub fn take_file_io_completion(&self) -> Option<FileIoCompletion> {
         let pid = self.pid?;
         self.file_io_facility.as_ref()?.take_file_io_completion(pid)
     }
 
     /// Return the completion ring backing file I/O resources.
+    #[cfg(feature = "threads")]
     #[must_use]
     pub fn file_completion_ring(&self) -> Option<&dyn CompletionRing> {
         self.file_io_facility
@@ -1330,15 +1409,29 @@ impl<'process> ProcessContext<'process> {
     }
 
     /// Return the configured output sink for `io` module BIFs.
+    #[cfg(feature = "threads")]
     #[must_use]
     pub fn io_sink(&self) -> &dyn IoSink {
         self.io_sink.as_ref()
     }
 
     /// Set the output sink for `io` module BIFs.
+    #[cfg(feature = "threads")]
     pub fn set_io_sink(&mut self, sink: Arc<dyn IoSink>) {
         self.io_sink = sink;
     }
+
+    /// Write `bytes` to the configured output sink for `io` module BIFs.
+    ///
+    /// In the cooperative/wasm build there is no host output sink, so this is a
+    /// no-op (browser hosts surface `io:*` output through other channels).
+    #[cfg(feature = "threads")]
+    pub fn write_to_io_sink(&self, bytes: &[u8]) {
+        self.io_sink.write(bytes);
+    }
+
+    #[cfg(not(feature = "threads"))]
+    pub fn write_to_io_sink(&self, _bytes: &[u8]) {}
 
     /// Request runtime shutdown after the current BIF returns.
     pub fn request_shutdown(&mut self) {
