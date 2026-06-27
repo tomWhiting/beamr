@@ -17,7 +17,8 @@ use tokio::task::JoinHandle;
 
 use crate::atom::{Atom, AtomTable};
 use crate::distribution::handshake::{
-    HandshakeError, HandshakeNode, initiate_handshake_async, respond_handshake_async,
+    HandshakeError, HandshakeNode, SimultaneousDecision, initiate_handshake_async,
+    respond_handshake_async_with,
 };
 use crate::distribution::resolver::NodeResolver;
 
@@ -37,6 +38,11 @@ pub enum ConnectError {
     ConnectionRefused,
     /// Resolution succeeded but the TCP connect did not finish before the configured timeout.
     Timeout,
+    /// The responder answered the simultaneous-connect tie-break with `nok`: the
+    /// peer is keeping the reciprocal (its own outbound) link, so this outbound is
+    /// a benign abort, NOT a failure. The caller should treat the pair as
+    /// connected via the reciprocal link and must not retry-storm (HS-3, §3.2).
+    SimultaneousAbort,
     /// TCP connection failed for an I/O reason other than refusal.
     Io(String),
 }
@@ -47,6 +53,8 @@ impl fmt::Display for ConnectError {
             Self::ResolveFailure => formatter.write_str("distribution node resolution failed"),
             Self::ConnectionRefused => formatter.write_str("distribution TCP connection refused"),
             Self::Timeout => formatter.write_str("distribution TCP connection timed out"),
+            Self::SimultaneousAbort => formatter
+                .write_str("distribution outbound aborted by simultaneous-connect tie-break"),
             Self::Io(error) => write!(formatter, "distribution TCP connection failed: {error}"),
         }
     }
@@ -251,6 +259,11 @@ impl Drop for AcceptHandle {
 
 struct ConnectionManagerInner {
     connections: DashMap<Atom, Arc<DistConnection>>,
+    /// Peer-name atoms with an in-flight OUTBOUND dial (the `Connecting` state,
+    /// DISTRIBUTION-HANDSHAKE-DESIGN.md §3.1). Recorded before the outbound
+    /// handshake awaits so a concurrent inbound responder can detect the
+    /// simultaneous case and apply the name-comparison tie-break (HS-3, §3.2).
+    connecting: DashMap<Atom, ()>,
     atom_table: Arc<AtomTable>,
     resolver: Arc<dyn NodeResolver + Send + Sync>,
     connect_timeout: Duration,
@@ -310,6 +323,30 @@ impl ConnectionManagerInner {
     fn gen_challenge(&self) -> u32 {
         rand::random::<u32>()
     }
+
+    /// Decide the OTP status an inbound responder should emit for a peer whose
+    /// advertised name is `peer_name` (HS-3, D1 — OTP verbatim).
+    ///
+    /// With no competing local outbound to that peer, continue normally. If a
+    /// local outbound dial to the same peer name is in flight, break the tie by
+    /// literal name comparison: the lower-named node's OUTBOUND survives, so the
+    /// responder on the higher-named node continues this inbound
+    /// (`ContinueSimultaneous`, when `peer_name > local_name`) and the responder
+    /// on the lower-named node rejects it (`Reject`, when `local_name > peer_name`)
+    /// to keep its own outbound. Distinct cluster members have unique names, so
+    /// equality cannot occur; if it ever did, `Continue` plus the install-time
+    /// dedup (HS-2) is the backstop.
+    fn decide_inbound_status(&self, peer_name: &str) -> SimultaneousDecision {
+        let peer_atom = self.atom_table.intern(peer_name);
+        if !self.connecting.contains_key(&peer_atom) {
+            return SimultaneousDecision::Continue;
+        }
+        match peer_name.cmp(self.local_node_name.as_str()) {
+            std::cmp::Ordering::Greater => SimultaneousDecision::ContinueSimultaneous,
+            std::cmp::Ordering::Less => SimultaneousDecision::Reject,
+            std::cmp::Ordering::Equal => SimultaneousDecision::Continue,
+        }
+    }
 }
 
 impl ConnectionManagerInner {
@@ -327,6 +364,30 @@ impl ConnectionManagerInner {
             self.connection_down_hook
                 .invoke(ConnectionDownEvent { node, reason });
         }
+    }
+}
+
+/// RAII marker that records an in-flight outbound dial in the manager's
+/// `connecting` set and clears it on drop, on every `connect` exit path (HS-3).
+struct ConnectingGuard {
+    inner: Arc<ConnectionManagerInner>,
+    peer: Atom,
+}
+
+impl ConnectingGuard {
+    fn new(inner: &Arc<ConnectionManagerInner>, peer_name: &str) -> Self {
+        let peer = inner.atom_table.intern(peer_name);
+        inner.connecting.insert(peer, ());
+        Self {
+            inner: Arc::clone(inner),
+            peer,
+        }
+    }
+}
+
+impl Drop for ConnectingGuard {
+    fn drop(&mut self) {
+        self.inner.connecting.remove(&self.peer);
     }
 }
 
@@ -373,6 +434,7 @@ impl ConnectionManager {
         Self {
             inner: Arc::new(ConnectionManagerInner {
                 connections: DashMap::new(),
+                connecting: DashMap::new(),
                 atom_table,
                 resolver,
                 connect_timeout,
@@ -484,6 +546,11 @@ impl ConnectionManager {
     }
 
     /// Idempotently connect to a node-name atom, returning `false` for transport failures.
+    ///
+    /// A simultaneous-connect `nok` abort ([`ConnectError::SimultaneousAbort`]) is
+    /// treated as success, not a failure: the peer is keeping the reciprocal link,
+    /// so the pair is (or is about to be) connected and the caller must not
+    /// retry-storm (HS-3).
     pub async fn connect_node(&self, node: Atom) -> bool {
         if self.get_connection(node).is_some() {
             return true;
@@ -491,7 +558,10 @@ impl ConnectionManager {
         let Some(node_name) = self.inner.atom_table.resolve(node).map(str::to_owned) else {
             return false;
         };
-        self.connect(&node_name).await.is_ok()
+        matches!(
+            self.connect(&node_name).await,
+            Ok(_) | Err(ConnectError::SimultaneousAbort)
+        )
     }
 
     /// Manually disconnect an active node and emit the connection-down hook once.
@@ -583,6 +653,13 @@ impl ConnectionManager {
         let peer_addr = stream.peer_addr().unwrap_or(addr);
 
         let local = self.inner.handshake_node()?;
+        // Mark this peer name as having an in-flight outbound BEFORE the handshake
+        // awaits, so a concurrent inbound responder can detect the simultaneous
+        // case and apply the tie-break (HS-3). The guard clears the mark on every
+        // exit path. The dialed `node_name` is the peer's authenticated name in a
+        // by-name cluster mesh (haematite FullMesh), which is what the peer
+        // advertises and what its responder compares against.
+        let _connecting = ConnectingGuard::new(&self.inner, node_name);
         // Bound the whole handshake so a stalled or malicious peer can never park
         // this call forever; `connect` is now guaranteed to return within
         // handshake_timeout (HS-1). On elapse the stream is dropped, closing the
@@ -599,6 +676,12 @@ impl ConnectionManager {
         .await
         {
             Ok(Ok(result)) => result,
+            Ok(Err(HandshakeError::BadStatus(status))) if status == "nok" => {
+                // The peer kept the reciprocal link via the tie-break. Benign:
+                // drop our stream and report a non-failure abort so the caller
+                // does not retry-storm.
+                return Err(ConnectError::SimultaneousAbort);
+            }
             Ok(Err(error)) => return Err(ConnectError::Io(error.to_string())),
             Err(_) => return Err(ConnectError::Io(HandshakeError::Timeout.to_string())),
         };
@@ -763,14 +846,19 @@ impl ConnectionManager {
             };
             // Bound the responder so a stalled or malicious peer can never park
             // this spawned task forever; on elapse the stream is dropped, closing
-            // the TCP connection (HS-1).
+            // the TCP connection (HS-1). The decider resolves a simultaneous
+            // connect by the name-comparison tie-break against the local outbound
+            // state (HS-3); on `nok` the responder aborts and the reciprocal
+            // outbound is the survivor.
+            let decider = |peer_name: &str| manager.inner.decide_inbound_status(peer_name);
             let outcome = tokio::time::timeout(
                 manager.inner.handshake_timeout,
-                respond_handshake_async(
+                respond_handshake_async_with(
                     &mut stream,
                     &local,
                     &manager.inner.cookie,
                     manager.inner.gen_challenge(),
+                    decider,
                 ),
             )
             .await;
@@ -1264,6 +1352,128 @@ mod tests {
 
         assert!(manager.get_connection(node).is_none());
         assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// HS-3 (tie-break direction, D1): with a competing local outbound recorded,
+    /// the responder emits `nok` when the local name is greater than the peer's,
+    /// and `ok_simultaneous` when the peer's name is greater — matching OTP's
+    /// literal name comparison. Drives the real accept loop so it exercises the
+    /// production decider (`decide_inbound_status`), forcing the `connecting`
+    /// marker that signals an in-flight outbound.
+    #[tokio::test]
+    async fn hs3_responder_rejects_when_local_name_is_greater() {
+        // local = "zeta..." (greater); inbound peer = "alpha..." (lesser).
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::new()));
+        let manager = ConnectionManager::new(
+            Arc::new(AtomTable::with_common_atoms()),
+            resolver,
+            TEST_COOKIE,
+            "zeta@127.0.0.1",
+            1,
+        );
+        let accept = manager
+            .listen("127.0.0.1:0".parse().expect("parse listen addr"))
+            .await
+            .expect("start accept loop");
+
+        // Simulate an in-flight local outbound to the inbound peer's name so the
+        // decider sees the simultaneous case.
+        let peer_atom = manager.inner.atom_table.intern("alpha@127.0.0.1");
+        manager.inner.connecting.insert(peer_atom, ());
+
+        let mut client = TcpStream::connect(accept.local_addr())
+            .await
+            .expect("inbound peer connects");
+        let client_node = HandshakeNode::with_default_flags("alpha@127.0.0.1", 5)
+            .expect("client node name valid");
+        let result = crate::distribution::handshake::initiate_handshake_async(
+            &mut client,
+            &client_node,
+            TEST_COOKIE,
+            42,
+        )
+        .await;
+
+        // local(zeta) > peer(alpha) => responder sends `nok`, the initiator sees
+        // a BadStatus("nok") abort, and no inbound link is registered.
+        assert_eq!(
+            result.expect_err("initiator must see the nok rejection"),
+            HandshakeError::BadStatus("nok".into())
+        );
+        assert!(
+            manager.get_connection(peer_atom).is_none(),
+            "a rejected inbound must not register a connection"
+        );
+        drop(accept);
+    }
+
+    /// Spawn a one-shot responder on `listener` that always answers the status
+    /// step with `nok`, modelling a peer that keeps its reciprocal outbound.
+    fn spawn_nok_responder(listener: TcpListener) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let Ok((mut stream, _peer)) = listener.accept().await else {
+                return;
+            };
+            let local = HandshakeNode::with_default_flags("peer@127.0.0.1", 9)
+                .expect("responder node valid");
+            let _ = crate::distribution::handshake::respond_handshake_async_with(
+                &mut stream,
+                &local,
+                TEST_COOKIE,
+                3,
+                |_peer_name| SimultaneousDecision::Reject,
+            )
+            .await;
+        })
+    }
+
+    /// HS-3 (benign abort): an outbound `connect` that receives `nok` returns
+    /// `ConnectError::SimultaneousAbort` (not an Io failure), and `connect_node`
+    /// folds that into success so the caller does not retry-storm.
+    #[tokio::test]
+    async fn hs3_outbound_nok_is_a_benign_simultaneous_abort() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind nok responder");
+        let addr = listener.local_addr().expect("inspect listener");
+        let _responder = spawn_nok_responder(listener);
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "peer@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+
+        let outcome = manager.connect("peer@127.0.0.1").await.map(|_| ());
+        assert!(
+            matches!(outcome, Err(ConnectError::SimultaneousAbort)),
+            "nok must surface as a benign SimultaneousAbort, got {outcome:?}"
+        );
+        assert_eq!(manager.connection_count(), 0);
+    }
+
+    /// HS-3: `connect_node` treats a `nok` simultaneous abort as success.
+    #[tokio::test]
+    async fn hs3_connect_node_treats_nok_abort_as_success() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind nok responder");
+        let addr = listener.local_addr().expect("inspect listener");
+        let _responder = spawn_nok_responder(listener);
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "peer@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let node = manager.inner.atom_table.intern("peer@127.0.0.1");
+
+        assert!(
+            manager.connect_node(node).await,
+            "connect_node must treat a nok abort as success (no retry-storm)"
+        );
+        // The abort registers no connection; the reciprocal inbound is the link.
+        assert_eq!(manager.connection_count(), 0);
     }
 
     /// HS-2: two simultaneous installs for the same peer name must leave exactly

@@ -112,6 +112,33 @@ impl std::ops::BitAnd for DistributionFlags {
     }
 }
 
+/// Responder decision for the OTP setup-handshake status (`s`) packet, used to
+/// resolve a simultaneous connect (DISTRIBUTION-HANDSHAKE-DESIGN.md HS-3, D1).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SimultaneousDecision {
+    /// No competing local outbound to this peer: continue normally (`ok`).
+    Continue,
+    /// A competing local outbound exists and the peer's name is greater than the
+    /// local name: continue THIS inbound and abort the local outbound
+    /// (`ok_simultaneous`). The lower-named node's outbound is the survivor.
+    ContinueSimultaneous,
+    /// A competing local outbound exists and the local name is greater than the
+    /// peer's name: reject this inbound; the local outbound is the survivor
+    /// (`nok`).
+    Reject,
+}
+
+impl SimultaneousDecision {
+    /// OTP `s`-packet status string this decision emits.
+    const fn status(self) -> &'static str {
+        match self {
+            Self::Continue => "ok",
+            Self::ContinueSimultaneous => "ok_simultaneous",
+            Self::Reject => "nok",
+        }
+    }
+}
+
 /// Local node metadata sent in handshake name and challenge packets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandshakeNode {
@@ -394,13 +421,41 @@ pub async fn initiate_handshake_async<S: AsyncRead + AsyncWrite + Unpin>(
 /// Runs the inbound OTP 23+ distribution handshake over an async stream.
 ///
 /// Async twin of [`respond_handshake`]: identical packet order (N→s→N→r→a) and
-/// reuse of every pure codec helper, differing only in the async framing.
+/// reuse of every pure codec helper, differing only in the async framing. Always
+/// answers the status step with `ok`; callers that must resolve a simultaneous
+/// connect use [`respond_handshake_async_with`].
 pub async fn respond_handshake_async<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     local: &HandshakeNode,
     cookie: &str,
     challenge: u32,
 ) -> Result<HandshakeResult, HandshakeError> {
+    respond_handshake_async_with(stream, local, cookie, challenge, |_peer_name| {
+        SimultaneousDecision::Continue
+    })
+    .await
+}
+
+/// Inbound async handshake that consults `decide_status` after authenticating the
+/// peer's name, to resolve a simultaneous connect (HS-3, D1).
+///
+/// `decide_status` is given the peer's advertised name and returns the OTP status
+/// to emit. On [`SimultaneousDecision::Reject`] the responder writes `nok` and
+/// returns `BadStatus("nok")` without running the challenge — the initiator's
+/// reciprocal outbound is the survivor. `Continue`/`ContinueSimultaneous` both
+/// proceed to the challenge exactly as before; the only wire difference is the
+/// status byte, keeping the exchange OTP-`s`-packet compatible.
+pub async fn respond_handshake_async_with<S, F>(
+    stream: &mut S,
+    local: &HandshakeNode,
+    cookie: &str,
+    challenge: u32,
+    decide_status: F,
+) -> Result<HandshakeResult, HandshakeError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnOnce(&str) -> SimultaneousDecision,
+{
     let remote = parse_name_packet_payload(&read_packet_async(stream).await?, false)?;
     let negotiated_flags = match DistributionFlags::negotiate(local.flags, remote.flags) {
         Ok(flags) => flags,
@@ -410,7 +465,13 @@ pub async fn respond_handshake_async<S: AsyncRead + AsyncWrite + Unpin>(
         }
     };
 
-    write_packet_async(stream, &encode_status("ok")?).await?;
+    let decision = decide_status(&remote.name);
+    write_packet_async(stream, &encode_status(decision.status())?).await?;
+    if decision == SimultaneousDecision::Reject {
+        // The reciprocal local outbound wins; do not run the challenge. The
+        // initiator treats this `nok` as a benign abort.
+        return Err(HandshakeError::BadStatus("nok".into()));
+    }
     write_packet_async(stream, &encode_name(local, Some(challenge))?).await?;
 
     let reply = parse_challenge_reply_payload(&read_packet_async(stream).await?)?;
@@ -859,6 +920,95 @@ mod tests {
             responder_result.negotiated_flags(),
             DistributionFlags::offered()
         );
+    }
+
+    #[tokio::test]
+    async fn responder_ok_simultaneous_completes_handshake() {
+        use super::{SimultaneousDecision, respond_handshake_async_with};
+        use tokio::net::{TcpListener, TcpStream};
+
+        // The ContinueSimultaneous decision emits `ok_simultaneous` instead of
+        // `ok`; the initiator accepts it (is_success_status) and the full
+        // challenge/auth still runs, so the link completes normally (HS-3).
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("inspect listener address");
+
+        let responder_node = HandshakeNode::with_default_flags("right@localhost", 2)
+            .expect("responder node name should be valid");
+        let responder = tokio::spawn(async move {
+            let (mut stream, _peer) = listener.accept().await.expect("accept inbound stream");
+            respond_handshake_async_with(
+                &mut stream,
+                &responder_node,
+                COOKIE,
+                RESPONDER_CHALLENGE,
+                |_peer_name| SimultaneousDecision::ContinueSimultaneous,
+            )
+            .await
+        });
+
+        let local = HandshakeNode::with_default_flags("left@localhost", 1)
+            .expect("local node name should be valid");
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("connect to responder");
+        let initiator_result =
+            initiate_handshake_async(&mut client, &local, COOKIE, INITIATOR_CHALLENGE)
+                .await
+                .expect("initiator should accept ok_simultaneous and complete");
+        let responder_result = responder
+            .await
+            .expect("responder task should not panic")
+            .expect("responder handshake should succeed");
+
+        assert_eq!(initiator_result.remote_name(), "right@localhost");
+        assert_eq!(responder_result.remote_name(), "left@localhost");
+    }
+
+    #[tokio::test]
+    async fn responder_reject_emits_nok_and_aborts_before_challenge() {
+        use super::{SimultaneousDecision, respond_handshake_async_with};
+        use tokio::net::{TcpListener, TcpStream};
+
+        // The Reject decision emits `nok` and returns BadStatus("nok") without
+        // running the challenge; the initiator sees the nok abort (HS-3, D1).
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("inspect listener address");
+
+        let responder_node = HandshakeNode::with_default_flags("right@localhost", 2)
+            .expect("responder node name should be valid");
+        let responder = tokio::spawn(async move {
+            let (mut stream, _peer) = listener.accept().await.expect("accept inbound stream");
+            respond_handshake_async_with(
+                &mut stream,
+                &responder_node,
+                COOKIE,
+                RESPONDER_CHALLENGE,
+                |_peer_name| SimultaneousDecision::Reject,
+            )
+            .await
+        });
+
+        let local = HandshakeNode::with_default_flags("left@localhost", 1)
+            .expect("local node name should be valid");
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("connect to responder");
+        let initiator_error =
+            initiate_handshake_async(&mut client, &local, COOKIE, INITIATOR_CHALLENGE)
+                .await
+                .expect_err("initiator should see the nok rejection");
+        let responder_error = responder
+            .await
+            .expect("responder task should not panic")
+            .expect_err("responder should report the nok rejection");
+
+        assert_eq!(initiator_error, HandshakeError::BadStatus("nok".into()));
+        assert_eq!(responder_error, HandshakeError::BadStatus("nok".into()));
     }
 
     #[tokio::test]
