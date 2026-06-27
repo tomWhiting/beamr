@@ -17,11 +17,16 @@ use tokio::task::JoinHandle;
 
 use crate::atom::{Atom, AtomTable};
 use crate::distribution::handshake::{
-    HandshakeNode, initiate_handshake_async, respond_handshake_async,
+    HandshakeError, HandshakeNode, initiate_handshake_async, respond_handshake_async,
 };
 use crate::distribution::resolver::NodeResolver;
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Default whole-handshake deadline. Mirrors [`DEFAULT_CONNECT_TIMEOUT`]: any
+/// finite value removes the deadlock; 5s tolerates a loaded peer without wedging
+/// a cluster (DISTRIBUTION-HANDSHAKE-DESIGN.md D3).
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Error returned while creating an outbound distribution TCP connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -249,6 +254,11 @@ struct ConnectionManagerInner {
     atom_table: Arc<AtomTable>,
     resolver: Arc<dyn NodeResolver + Send + Sync>,
     connect_timeout: Duration,
+    /// Whole-handshake deadline applied around the OTP exchange on both the
+    /// outbound `connect` and the inbound accept-side responder. Bounds a stalled
+    /// or malicious peer so `connect` always returns and no responder task parks
+    /// forever (DISTRIBUTION-HANDSHAKE-DESIGN.md HS-1, D3).
+    handshake_timeout: Duration,
     connection_down_hook: ConnectionDownHook,
     control_frame_handler: RwLock<Option<Arc<ControlFrameHandler>>>,
     /// Shared handshake secret. Both peers must agree on this value or the OTP
@@ -366,6 +376,7 @@ impl ConnectionManager {
                 atom_table,
                 resolver,
                 connect_timeout,
+                handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
                 connection_down_hook: ConnectionDownHook::new(),
                 control_frame_handler: RwLock::new(None),
                 cookie: cookie.into(),
@@ -394,6 +405,27 @@ impl ConnectionManager {
     #[must_use]
     pub fn connect_timeout(&self) -> Duration {
         self.inner.connect_timeout
+    }
+
+    /// Return the configured whole-handshake deadline.
+    #[must_use]
+    pub fn handshake_timeout(&self) -> Duration {
+        self.inner.handshake_timeout
+    }
+
+    /// Override the whole-handshake deadline on a freshly-built manager.
+    ///
+    /// Builder-style: must be called before the manager is cloned or any
+    /// connection is started, while its `inner` is still uniquely owned. Returns
+    /// `self` unchanged if the manager has already been shared (a clone exists),
+    /// since the deadline is read by in-flight handshakes and cannot be mutated
+    /// race-free afterward.
+    #[must_use]
+    pub fn with_handshake_timeout(mut self, handshake_timeout: Duration) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.handshake_timeout = handshake_timeout;
+        }
+        self
     }
 
     /// Return a clone of the connection-down callback slot.
@@ -551,17 +583,28 @@ impl ConnectionManager {
         let peer_addr = stream.peer_addr().unwrap_or(addr);
 
         let local = self.inner.handshake_node()?;
-        let result = initiate_handshake_async(
-            &mut stream,
-            &local,
-            &self.inner.cookie,
-            self.inner.gen_challenge(),
+        // Bound the whole handshake so a stalled or malicious peer can never park
+        // this call forever; `connect` is now guaranteed to return within
+        // handshake_timeout (HS-1). On elapse the stream is dropped, closing the
+        // TCP connection.
+        let result = match tokio::time::timeout(
+            self.inner.handshake_timeout,
+            initiate_handshake_async(
+                &mut stream,
+                &local,
+                &self.inner.cookie,
+                self.inner.gen_challenge(),
+            ),
         )
         .await
-        .map_err(|error| ConnectError::Io(error.to_string()))?;
-        // Drop the stream here on the (already-handled) error paths above closes
-        // the TCP connection; on success the authenticated remote name becomes
-        // the connection-table key.
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => return Err(ConnectError::Io(error.to_string())),
+            Err(_) => return Err(ConnectError::Io(HandshakeError::Timeout.to_string())),
+        };
+        // Dropping the stream on the error paths above closes the TCP connection;
+        // on success the authenticated remote name becomes the connection-table
+        // key.
         let node = self.inner.atom_table.intern(result.remote_name());
         Ok(self.register_connection(node, peer_addr, stream))
     }
@@ -675,19 +718,25 @@ impl ConnectionManager {
                 Ok(local) => local,
                 Err(_) => return,
             };
-            match respond_handshake_async(
-                &mut stream,
-                &local,
-                &manager.inner.cookie,
-                manager.inner.gen_challenge(),
+            // Bound the responder so a stalled or malicious peer can never park
+            // this spawned task forever; on elapse the stream is dropped, closing
+            // the TCP connection (HS-1).
+            let outcome = tokio::time::timeout(
+                manager.inner.handshake_timeout,
+                respond_handshake_async(
+                    &mut stream,
+                    &local,
+                    &manager.inner.cookie,
+                    manager.inner.gen_challenge(),
+                ),
             )
-            .await
-            {
-                Ok(result) => {
+            .await;
+            match outcome {
+                Ok(Ok(result)) => {
                     let node = manager.inner.atom_table.intern(result.remote_name());
                     manager.register_connection(node, peer_addr, stream);
                 }
-                Err(_) => {
+                Ok(Err(_)) | Err(_) => {
                     drop(stream);
                 }
             }
@@ -932,6 +981,54 @@ mod tests {
         drop(client);
     }
 
+    /// HS-1: an outbound `connect` to a peer that accepts the TCP connection but
+    /// never speaks the handshake must return a handshake-timeout error within the
+    /// configured handshake deadline, not hang. This is the bounded-return
+    /// contract that lets the haematite-side retry above the seam make progress.
+    #[tokio::test]
+    async fn connect_returns_timeout_when_peer_never_handshakes() {
+        // A bare listener that accepts then stays silent (no responder).
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("failed to bind local listener: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("failed to inspect local listener: {error}"));
+        let _silent_accept = tokio::spawn(async move {
+            // Accept and hold the stream open without ever writing a handshake byte.
+            if let Ok((stream, _peer)) = listener.accept().await {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                drop(stream);
+            }
+        });
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "silent@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager =
+            manager_with_resolver(resolver).with_handshake_timeout(Duration::from_secs(1));
+
+        let started = std::time::Instant::now();
+        let result =
+            tokio::time::timeout(Duration::from_secs(15), manager.connect("silent@127.0.0.1"))
+                .await;
+
+        let outcome = result
+            .expect("connect must return within the handshake deadline, not hang")
+            .map(|_connection| ());
+        assert!(
+            matches!(outcome, Err(ConnectError::Io(_))),
+            "a non-speaking peer must surface as a connect error, got {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "connect should return near the 1s handshake deadline, took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(manager.connection_count(), 0);
+    }
+
     #[tokio::test]
     async fn connect_node_is_idempotent_and_lists_node() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -1129,17 +1226,19 @@ mod tests {
     type Resolver = Arc<dyn NodeResolver + Send + Sync>;
 
     /// HS-0 (deterministic root-cause oracle): an inbound peer completes the TCP
-    /// connect then sends nothing. The responder's first `read_packet_async` is an
-    /// untimed `read_exact` on the pre-HS-1 code, so the `respond_handshake_async`
-    /// FUTURE never resolves — the canonical handshake hang that, multiplied
-    /// across a `>=3`-node mesh of blocking dials, wedges a cluster.
+    /// connect then sends nothing, so the accept-side responder's first read sits
+    /// on an untimed `read_exact`. Pre-HS-1 that responder task never resolves and
+    /// the silent peer's socket stays open forever — the canonical handshake hang
+    /// that, multiplied across a `>=3`-node mesh of blocking dials, wedges a
+    /// cluster. After HS-1 the responder hits the whole-handshake deadline, the
+    /// server drops the stream, and the silent peer observes EOF.
     ///
-    /// The test drives the real responder against a silent peer under an inner
-    /// 15s bound. Pre-HS-1 the responder never returns and the bound fires
-    /// (`None`) → the test fails, demonstrating the hang. After HS-1 the responder
-    /// returns a `Timeout`/`Io` error within the 5s handshake deadline and the
-    /// test passes. A whole-test wall-clock watchdog guards against any hang
-    /// escaping the inner bound.
+    /// The oracle drives the REAL `ConnectionManager` accept loop (so it exercises
+    /// the production timeout path, not a test-local wrapper) with a short
+    /// handshake deadline, then reads the silent peer's socket under an inner
+    /// bound. Pre-HS-1 the read never returns and the bound fires → failure,
+    /// demonstrating the hang. Post-HS-1 the read returns EOF promptly → pass. A
+    /// whole-test wall-clock watchdog guards against any hang escaping the bound.
     #[test]
     fn hs0_silent_peer_handshake_terminates_and_does_not_hang() {
         let (done_tx, done_rx) = mpsc::channel();
@@ -1150,8 +1249,8 @@ mod tests {
         match done_rx.recv_timeout(Duration::from_secs(45)) {
             Ok(()) => worker.join().expect("HS-0 worker thread should not panic"),
             Err(_) => panic!(
-                "HS-0 DEADLOCK: the handshake against a silent peer never \
-                 terminated (untimed read parked forever)"
+                "HS-0 DEADLOCK: a silent peer's inbound handshake never terminated \
+                 (untimed read parked the responder forever)"
             ),
         }
     }
@@ -1163,39 +1262,48 @@ mod tests {
             .build()
             .expect("build handshake runtime");
         runtime.block_on(async {
-            let listener = TcpListener::bind("127.0.0.1:0")
+            let resolver: Resolver = Arc::new(StaticResolver::new(HashMap::new()));
+            // Short handshake deadline so the post-fix path resolves quickly; the
+            // pre-fix path has no deadline at all and hangs regardless.
+            let manager = ConnectionManager::new(
+                Arc::new(AtomTable::with_common_atoms()),
+                resolver,
+                TEST_COOKIE,
+                "server@127.0.0.1",
+                1,
+            )
+            .with_handshake_timeout(Duration::from_secs(2));
+            let accept = manager
+                .listen("127.0.0.1:0".parse().expect("parse listen addr"))
                 .await
-                .expect("bind responder listener");
-            let addr = listener.local_addr().expect("inspect listener");
+                .expect("start accept loop");
 
-            // Silent peer: connect, then never send a single byte.
-            let _silent = TcpStream::connect(addr)
+            // Silent peer: connect, then never send a single byte. The accept loop
+            // spawns a responder that blocks on the first handshake read.
+            let mut silent = TcpStream::connect(accept.local_addr())
                 .await
                 .expect("silent peer connects");
 
-            let (mut server, _peer) = listener.accept().await.expect("accept silent peer");
-            let local = HandshakeNode::with_default_flags("server@127.0.0.1", 1)
-                .expect("server node name valid");
+            // Pre-HS-1 the responder never times out, so the server never closes
+            // the socket and this read blocks forever (caught by the inner bound).
+            // Post-HS-1 the responder hits the deadline, the server drops the
+            // stream, and this read returns EOF (Ok(0)).
+            let mut byte = [0_u8; 1];
+            let read = tokio::time::timeout(Duration::from_secs(15), silent.read(&mut byte)).await;
 
-            // Bound the responder so a pre-HS-1 hang is observable as `None`. The
-            // bound is comfortably above the 5s handshake deadline HS-1 installs.
-            let responder = crate::distribution::handshake::respond_handshake_async(
-                &mut server,
-                &local,
-                TEST_COOKIE,
-                7,
+            let read = read.expect(
+                "silent peer's socket was never closed: the inbound responder \
+                 parked on an untimed handshake read (HS-1 not in effect)",
             );
-            let outcome = tokio::time::timeout(Duration::from_secs(15), responder).await;
+            assert_eq!(
+                read.expect("reading the closed socket should not error"),
+                0,
+                "expected EOF after the responder timed out and dropped the stream"
+            );
 
-            assert!(
-                outcome.is_ok(),
-                "respond_handshake_async did not terminate against a silent peer: \
-                 the untimed handshake read parked forever (HS-1 not in effect)"
-            );
-            assert!(
-                outcome.expect("responder must have terminated").is_err(),
-                "a silent peer must yield a handshake error, not a success"
-            );
+            // No connection should have been registered for the silent peer.
+            assert_eq!(manager.connection_count(), 0);
+            drop(accept);
         });
     }
 

@@ -228,6 +228,13 @@ pub enum HandshakeError {
     },
     /// The MD5 challenge response or challenge ack did not match the cookie.
     DigestMismatch,
+    /// The handshake did not complete within its whole-handshake deadline.
+    ///
+    /// A stalled or malicious peer can leave a handshake read awaiting bytes that
+    /// never arrive; the connection manager bounds the whole exchange so the
+    /// outbound `connect` always returns and the accept-side responder task can
+    /// never park forever (DISTRIBUTION-HANDSHAKE-DESIGN.md HS-1).
+    Timeout,
 }
 
 impl fmt::Display for HandshakeError {
@@ -264,6 +271,9 @@ impl fmt::Display for HandshakeError {
                 negotiated.bits()
             ),
             Self::DigestMismatch => formatter.write_str("distribution handshake digest mismatch"),
+            Self::Timeout => {
+                formatter.write_str("distribution handshake timed out before completion")
+            }
         }
     }
 }
