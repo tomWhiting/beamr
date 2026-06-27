@@ -53,6 +53,10 @@ required-features = ["jit", "threads"]
 [features]
 default = ["std", "threads", "net", "fs", "jit", "embedded"]
 std = []
+# Cooperative single-threaded runtime (WR-0 spike). Brings in only the
+# lock-free SegQueue mailbox dependency; no tokio/crossbeam-channel/-deque,
+# no io-uring, no num_cpus. Intended for wasm32 where OS threads are absent.
+cooperative = ["std", "dep:crossbeam-queue"]
 threads = ["std", "dep:crossbeam-channel", "dep:crossbeam-deque", "dep:crossbeam-queue", "dep:io-uring", "dep:num_cpus", "dep:tokio"]
 net = ["std", "dep:libc", "dep:rustix", "dep:tokio"]
 fs = ["std", "dep:libc", "dep:rustix"]

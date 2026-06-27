@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::atom::{Atom, AtomTable};
 use crate::error::ExecError;
@@ -72,6 +72,12 @@ pub struct WasmScheduler {
     pending_timer_cancellations: Vec<u64>,
     pub(super) async_results: BTreeMap<u64, WasmAsyncCompletion>,
     wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
+    /// Shared pid counter used by the cooperative native path (WR-0). It is an
+    /// `Arc<Mutex<…>>` so the `Send + Sync` cooperative `SpawnFacility` can
+    /// allocate child pids from inside a slice; uncontended (single thread).
+    pub(super) shared_next_pid: Arc<Mutex<u64>>,
+    /// Exit reasons captured by the cooperative native path.
+    pub(super) native_exit_reasons: BTreeMap<u64, ExitReason>,
 }
 
 impl WasmScheduler {
@@ -99,6 +105,8 @@ impl WasmScheduler {
             pending_timer_cancellations: Vec::new(),
             async_results: BTreeMap::new(),
             wasm_async_nif_facility: None,
+            shared_next_pid: Arc::new(Mutex::new(1)),
+            native_exit_reasons: BTreeMap::new(),
         }
     }
 
@@ -442,6 +450,35 @@ impl WasmScheduler {
             .collect()
     }
 
+    /// Allocate the next pid from the shared counter used by both the native
+    /// root spawn and the cooperative spawn facility.
+    pub(super) fn alloc_pid(&self) -> u64 {
+        let mut guard = self
+            .shared_next_pid
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let pid = *guard;
+        *guard = guard.saturating_add(1);
+        pid
+    }
+
+    /// Total number of ready-queued processes across all priorities.
+    pub(super) fn ready_len(&self) -> usize {
+        self.ready.len()
+    }
+
+    /// Record a cooperative native-process exit (reason + captured x(0) result).
+    pub(super) fn record_native_exit(&mut self, pid: u64, reason: ExitReason, result: OwnedTerm) {
+        self.native_exit_reasons.insert(pid, reason);
+        self.exit_results.insert(pid, result);
+    }
+
+    /// Return the exit reason recorded for a cooperative native process, if any.
+    #[must_use]
+    pub fn native_exit_reason(&self, pid: u64) -> Option<ExitReason> {
+        self.native_exit_reasons.get(&pid).copied()
+    }
+
     fn native_services(&self) -> NativeServices {
         NativeServices {
             atom_table: Some(Arc::clone(&self.atom_table)),
@@ -514,7 +551,7 @@ pub(super) struct ReadyQueues {
 }
 
 impl ReadyQueues {
-    fn push(&mut self, pid: u64, priority: Priority) {
+    pub(super) fn push(&mut self, pid: u64, priority: Priority) {
         match priority {
             Priority::Max => self.max.push_back(pid),
             Priority::High => self.high.push_back(pid),
@@ -531,7 +568,7 @@ impl ReadyQueues {
             .or_else(|| self.low.pop_front())
     }
 
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.max.len() + self.high.len() + self.normal.len() + self.low.len()
     }
 }
