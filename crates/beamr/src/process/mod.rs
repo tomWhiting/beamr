@@ -24,7 +24,9 @@ use crate::native::NativeContinuation;
 use crate::native::native_process::NativeBody;
 use crate::process::heap::Heap;
 use crate::process::stack::Stack;
-use crate::term::{Term, boxed::BoxedTag, compare};
+#[cfg(feature = "threads")]
+use crate::term::boxed::BoxedTag;
+use crate::term::{Term, compare};
 
 /// Default number of reductions assigned to a fresh process time slice.
 pub const DEFAULT_REDUCTION_BUDGET: u32 = 4000;

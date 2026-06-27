@@ -22,7 +22,9 @@ use crate::module::{Module, ModuleRegistry, ResolvedImportTarget};
 use crate::native::ExceptionClass;
 #[cfg(feature = "jit")]
 use crate::process::JitRuntimeContext;
-use crate::process::{CodePosition, ExitReason, JitStatus, Process};
+#[cfg(feature = "jit")]
+use crate::process::JitStatus;
+use crate::process::{CodePosition, ExitReason, Process};
 use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
 use crate::timer::TimerWheel;

@@ -57,6 +57,10 @@ pub fn binary_op(
 /// to a match tail (`<<_, Rest/binary>> = Bin, byte_size(Rest)`) is emitted
 /// as the gc_bif on the context register itself instead of materializing
 /// the tail sub-binary, so those BIFs must measure the context's remainder.
+///
+/// Only the `threads`-gated `gate3_bifs` (`byte_size`/`bit_size`) call this, so
+/// gate it the same way to stay dead-code-free in the cooperative build.
+#[cfg(feature = "threads")]
 pub(crate) fn match_context_remaining_bits(term: crate::term::Term) -> Option<usize> {
     matching::MatchContext::new(term).map(matching::MatchContext::remaining_bits)
 }

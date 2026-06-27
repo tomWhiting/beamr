@@ -296,6 +296,9 @@ impl<'a> NativeContext<'a> {
 
     /// Take any replay-determinism error recorded by [`Self::send`] during the
     /// slice, so the caller can terminate the process deterministically.
+    ///
+    /// Only the `threads`-gated scheduler `execution` path reads this.
+    #[cfg(feature = "threads")]
     pub(crate) fn take_replay_error(&mut self) -> Option<ExecError> {
         self.replay_error.take()
     }

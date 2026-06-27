@@ -44,7 +44,9 @@
 //! [`Term::as_small_int`], as the facade's own envelopes do. (References
 //! round-trip faithfully and may be sent as terms.)
 
+#[cfg(feature = "threads")]
 use std::marker::PhantomData;
+#[cfg(feature = "threads")]
 use std::sync::Arc;
 #[cfg(feature = "threads")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -285,6 +287,7 @@ impl Incoming {
 }
 
 /// Decode a `{2, ref, reply}` reply envelope into its ref and reply payload.
+#[cfg(feature = "threads")]
 fn decode_reply(term: Term) -> Option<(i64, Term)> {
     let tuple = Tuple::new(term)?;
     if tuple.get(0)?.as_small_int()? != TAG_REPLY {

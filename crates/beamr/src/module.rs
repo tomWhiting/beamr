@@ -417,6 +417,9 @@ impl ModuleRegistry {
     ///
     /// This is only for force purge after the scheduler has terminated every
     /// process that was running or pinned to old code.
+    ///
+    /// Only the `threads`-gated scheduler `module_management` path calls this.
+    #[cfg(feature = "threads")]
     pub(crate) fn force_remove_old(&self, name: Atom) -> Result<(), PurgeError> {
         let mut entry = self
             .modules
