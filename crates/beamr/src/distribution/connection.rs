@@ -609,12 +609,57 @@ impl ConnectionManager {
         Ok(self.register_connection(node, peer_addr, stream))
     }
 
+    /// Install an authenticated link, deduplicating against an existing `Up`
+    /// connection for the same peer name (HS-2).
+    ///
+    /// Two simultaneous handshakes (one inbound, one outbound) for the same pair
+    /// can both reach this point. A blind `insert` would clobber the first link's
+    /// `Arc<DistConnection>` in the table while leaving its read task running on an
+    /// orphaned socket. Instead this uses the entry API to atomically check for a
+    /// live existing link: if one is present, the newcomer is the loser — its
+    /// stream is dropped (closing the TCP connection) and its read task is never
+    /// spawned, and the existing survivor is returned. A stale entry whose
+    /// connection has already gone down is replaced (the reconnect path). This
+    /// guarantees the invariant: at most one live `Up` connection per peer name.
     fn register_connection(
         &self,
         node: Atom,
         peer_addr: SocketAddr,
         stream: TcpStream,
     ) -> Arc<DistConnection> {
+        use dashmap::mapref::entry::Entry;
+
+        match self.inner.connections.entry(node) {
+            Entry::Occupied(mut occupied) => {
+                if !occupied.get().is_down() {
+                    // A live link already won this pair. Drop the loser's stream
+                    // (closing its TCP connection) and do NOT spawn its reader.
+                    drop(stream);
+                    return Arc::clone(occupied.get());
+                }
+                // The existing entry is a dead link awaiting reap; replace it.
+                let (connection, read_half) = self.build_connection(node, peer_addr, stream);
+                occupied.insert(Arc::clone(&connection));
+                self.spawn_read_lifecycle(Arc::clone(&connection), read_half);
+                connection
+            }
+            Entry::Vacant(vacant) => {
+                let (connection, read_half) = self.build_connection(node, peer_addr, stream);
+                vacant.insert(Arc::clone(&connection));
+                self.spawn_read_lifecycle(Arc::clone(&connection), read_half);
+                connection
+            }
+        }
+    }
+
+    /// Split a stream into a [`DistConnection`] and its read half, without
+    /// touching the connection table. Shared by both `register_connection` arms.
+    fn build_connection(
+        &self,
+        node: Atom,
+        peer_addr: SocketAddr,
+        stream: TcpStream,
+    ) -> (Arc<DistConnection>, OwnedReadHalf) {
         let (read_half, write_half) = stream.into_split();
         let connection = Arc::new(DistConnection::new(
             node,
@@ -622,9 +667,7 @@ impl ConnectionManager {
             write_half,
             Arc::downgrade(&self.inner),
         ));
-        self.inner.connections.insert(node, Arc::clone(&connection));
-        self.spawn_read_lifecycle(Arc::clone(&connection), read_half);
-        connection
+        (connection, read_half)
     }
 
     /// Register a pre-connected standard stream for native BIF unit tests.
@@ -1221,6 +1264,71 @@ mod tests {
 
         assert!(manager.get_connection(node).is_none());
         assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// HS-2: two simultaneous installs for the same peer name must leave exactly
+    /// one live link, and the loser's socket must be closed (its reader is never
+    /// spawned, so it cannot linger as an orphan on a half-link). The winner is
+    /// the first-installed connection; the second install returns that same Arc
+    /// and drops its own stream, which the loser's peer observes as EOF.
+    #[tokio::test]
+    async fn hs2_two_simultaneous_installs_keep_exactly_one_no_orphan_reader() {
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::new()));
+        let manager = manager_with_resolver(resolver);
+        let node = manager.inner.atom_table.intern("peer@127.0.0.1");
+
+        // Two independent connected socket pairs standing in for the inbound and
+        // outbound halves of a simultaneous connect. The client ends let us
+        // observe whether each server end stays open or is closed.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind helper listener");
+        let addr = listener.local_addr().expect("inspect helper listener");
+
+        let mut client_first = TcpStream::connect(addr)
+            .await
+            .expect("client_first connects");
+        let (server_first, _) = listener.accept().await.expect("accept server_first");
+        let mut client_second = TcpStream::connect(addr)
+            .await
+            .expect("client_second connects");
+        let (server_second, _) = listener.accept().await.expect("accept server_second");
+
+        let winner = manager.register_connection(node, addr, server_first);
+        let returned = manager.register_connection(node, addr, server_second);
+
+        // Exactly one table entry, and the second install returned the winner.
+        assert_eq!(manager.connection_count(), 1);
+        assert!(
+            Arc::ptr_eq(&winner, &returned),
+            "the second install must return the existing survivor, not a new link"
+        );
+        assert!(Arc::ptr_eq(
+            &winner,
+            &manager
+                .get_connection(node)
+                .expect("survivor must be in the table"),
+        ));
+
+        // The winner's socket stays open: a write reaches its peer.
+        winner
+            .write_raw(&[0_u8; 8])
+            .await
+            .expect("winner link must remain writable");
+        let mut header = [0_u8; 8];
+        client_first
+            .read_exact(&mut header)
+            .await
+            .expect("winner's peer must receive the keepalive frame");
+
+        // The loser's socket was closed (stream dropped, no reader spawned), so
+        // its peer observes EOF rather than a live, orphaned half-link.
+        let mut byte = [0_u8; 1];
+        let eof = tokio::time::timeout(Duration::from_secs(5), client_second.read(&mut byte))
+            .await
+            .expect("loser's socket should close promptly, not hang")
+            .expect("reading the closed loser socket should not error");
+        assert_eq!(eof, 0, "the loser's socket must be closed (EOF)");
     }
 
     type Resolver = Arc<dyn NodeResolver + Send + Sync>;
