@@ -51,6 +51,10 @@ pub struct OwnedException {
 impl OwnedException {
     /// Captures `exception` together with pre-resolved raise-time frames used
     /// when the exception itself carries no stacktrace term.
+    ///
+    /// Only the `threads`-gated scheduler `execution` path captures frame-bearing
+    /// exceptions; the cooperative build never reaches this constructor.
+    #[cfg(feature = "threads")]
     pub(super) fn capture_with_frames(exception: Exception, frames: Vec<CapturedFrame>) -> Self {
         Self {
             class: capture_term(exception.class),

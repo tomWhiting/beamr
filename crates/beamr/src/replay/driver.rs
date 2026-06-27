@@ -74,6 +74,9 @@ impl ReplayLog {
         }
     }
 
+    /// Only the `net`+`fs`-gated on-disk log loader (`replay::file`) builds a
+    /// `ReplayLog` from its decoded parts.
+    #[cfg(all(feature = "net", feature = "fs"))]
     pub(crate) fn from_parts(
         events: Vec<ReplayEvent>,
         decoded_heaps: Arc<[Heap]>,

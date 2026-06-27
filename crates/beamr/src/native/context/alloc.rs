@@ -5,6 +5,7 @@
 //! `_prereserved` variants assume `ensure_heap_space` was already called and
 //! cannot collect.
 
+#[cfg(feature = "threads")]
 use std::sync::Arc;
 
 #[cfg(feature = "threads")]
