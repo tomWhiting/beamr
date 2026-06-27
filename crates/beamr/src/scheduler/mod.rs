@@ -13,6 +13,7 @@ mod suspension;
 mod test_helpers;
 mod timer_integration;
 pub mod wasm;
+mod wasm_native;
 use self::dirty::DirtyPool;
 use self::execution::scheduler_loop;
 use self::spawning::SpawnRequest;
