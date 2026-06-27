@@ -120,7 +120,8 @@ pub enum SimultaneousDecision {
     Continue,
     /// A competing local outbound exists and the peer's name is greater than the
     /// local name: continue THIS inbound and abort the local outbound
-    /// (`ok_simultaneous`). The lower-named node's outbound is the survivor.
+    /// (`ok_simultaneous`). The responder here is the lower-named node, so the
+    /// surviving link is the higher-named peer's outbound.
     ContinueSimultaneous,
     /// A competing local outbound exists and the local name is greater than the
     /// peer's name: reject this inbound; the local outbound is the survivor

@@ -329,10 +329,10 @@ impl ConnectionManagerInner {
     ///
     /// With no competing local outbound to that peer, continue normally. If a
     /// local outbound dial to the same peer name is in flight, break the tie by
-    /// literal name comparison: the lower-named node's OUTBOUND survives, so the
-    /// responder on the higher-named node continues this inbound
+    /// literal name comparison: the higher-named node's OUTBOUND survives, so the
+    /// responder on the lower-named node continues this inbound
     /// (`ContinueSimultaneous`, when `peer_name > local_name`) and the responder
-    /// on the lower-named node rejects it (`Reject`, when `local_name > peer_name`)
+    /// on the higher-named node rejects it (`Reject`, when `local_name > peer_name`)
     /// to keep its own outbound. Distinct cluster members have unique names, so
     /// equality cannot occur; if it ever did, `Continue` plus the install-time
     /// dedup (HS-2) is the backstop.
