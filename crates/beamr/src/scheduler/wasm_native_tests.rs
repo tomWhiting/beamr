@@ -837,3 +837,251 @@ fn abnormal_link_exit_cascades_transitively_through_a_nontrapping_chain() {
         "the grandchild died from the TRANSITIVE cascade through the child"
     );
 }
+
+// ---------------------------------------------------------------------------
+// WR-7: async host I/O via the async-NIF seam on the cooperative scheduler.
+// ---------------------------------------------------------------------------
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::native::{NativeKey, ProcessContext, WasmAsyncNifFacility};
+
+/// MFA key the WR-7 test handler names when starting host async work. The
+/// values are arbitrary; the fake facility matches on this exact key.
+const ASYNC_MFA: NativeKey = (Atom::OK, Atom::ERROR, 1);
+
+/// A fake [`WasmAsyncNifFacility`] standing in for a browser host (no real I/O).
+///
+/// `start_async_nif` records the call (so the test can assert the SAME seam the
+/// bytecode path uses actually fired) and returns `Ok(NIL)` WITHOUT resolving —
+/// it does not call `complete_async`. The test plays the host: it later calls
+/// `scheduler.complete_async(pid, …)` itself, exactly as the real
+/// `spawn_local`/`JsFuture` host callback would on Promise settlement. Single
+/// threaded, so it records through `Rc<RefCell<…>>` (the facility is held as an
+/// `Rc`, never crossing a thread).
+struct FakeHost {
+    started: Rc<RefCell<Vec<(NativeKey, usize)>>>,
+}
+
+impl WasmAsyncNifFacility for FakeHost {
+    fn start_async_nif(
+        &self,
+        mfa: NativeKey,
+        args: &[Term],
+        context: &mut ProcessContext<'_>,
+    ) -> Result<Term, Term> {
+        // The seam hands us the running process's pid; record it so the test can
+        // confirm the host was driven against the right process.
+        let _pid = context.pid();
+        self.started.borrow_mut().push((mfa, args.len()));
+        Ok(Term::NIL)
+    }
+}
+
+/// A native handler that starts one host async op and parks pending completion,
+/// then resumes on the delivered `{ok, Value}` / `{error, Reason}` mailbox
+/// message. `started` records that `start_async` succeeded; `outcome` records
+/// the resumed result as `(is_ok, value)`.
+struct AsyncCaller {
+    started_ok: Arc<Mutex<Option<bool>>>,
+    outcome: Arc<Mutex<Option<(bool, i64)>>>,
+    issued: bool,
+}
+
+impl NativeHandler for AsyncCaller {
+    fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        if !self.issued {
+            self.issued = true;
+            let started = ctx.start_async(ASYNC_MFA, &[Term::small_int(5)]).is_ok();
+            *self.started_ok.lock().expect("started lock") = Some(started);
+            // After a successful start we MUST park pending the host completion.
+            return NativeOutcome::Wait;
+        }
+        // Resumed: the completion was delivered as `{tag, Value}`.
+        let Some(message) = ctx.recv() else {
+            return NativeOutcome::Wait;
+        };
+        let tuple = crate::term::boxed::Tuple::new(message)
+            .expect("the async completion is delivered as a {tag, Value} tuple");
+        let is_ok = tuple.get(0).and_then(Term::as_atom) == Some(Atom::OK);
+        let value = tuple
+            .get(1)
+            .and_then(Term::as_small_int)
+            .expect("completion payload is a small int in this test");
+        *self.outcome.lock().expect("outcome lock") = Some((is_ok, value));
+        NativeOutcome::Stop(ExitReason::Normal)
+    }
+}
+
+#[test]
+fn native_handler_starts_host_async_op_suspends_and_resumes_on_completion() {
+    // WR-7: a NativeHandler starts host async work through the SAME
+    // `WasmAsyncNifFacility` the bytecode async-NIF path uses, then suspends.
+    // Pumping turns does NOT resolve it (no host completion yet). The test, as
+    // the host, calls `complete_async`; pumping then resumes the handler, which
+    // observes the async result delivered to its mailbox as `{ok, Value}`.
+    let mut scheduler = scheduler();
+    let started = Rc::new(RefCell::new(Vec::new()));
+    let facility: Rc<dyn WasmAsyncNifFacility> = Rc::new(FakeHost {
+        started: Rc::clone(&started),
+    });
+    scheduler.set_wasm_async_nif_facility(Some(facility));
+
+    let started_ok = Arc::new(Mutex::new(None));
+    let outcome = Arc::new(Mutex::new(None));
+    let pid = scheduler.spawn_native_root({
+        let started_ok = Arc::clone(&started_ok);
+        let outcome = Arc::clone(&outcome);
+        Box::new(move || {
+            Box::new(AsyncCaller {
+                started_ok: Arc::clone(&started_ok),
+                outcome: Arc::clone(&outcome),
+                issued: false,
+            })
+        })
+    });
+
+    // Turn 1: the handler starts the host op and parks. It must report waiting
+    // (not exited), and the host seam must have fired exactly once with our MFA.
+    let summary = scheduler.run_until_idle();
+    assert!(
+        summary.waiting.contains(&pid),
+        "the handler parked pending the async completion"
+    );
+    assert!(
+        !summary.exited.contains(&pid),
+        "the handler did NOT exit/return a value yet"
+    );
+    assert!(scheduler.waiting.contains(&pid), "process is parked");
+    assert_eq!(
+        *started_ok.lock().expect("started lock"),
+        Some(true),
+        "start_async succeeded through the installed host facility"
+    );
+    assert_eq!(
+        *started.borrow(),
+        vec![(ASYNC_MFA, 1usize)],
+        "the SAME async-NIF seam fired once with the handler's MFA and one arg"
+    );
+
+    // Pumping more turns must NOT resolve it: no host completion has arrived, so
+    // the process stays parked and produces no outcome.
+    for _ in 0..3 {
+        let summary = scheduler.run_until_idle();
+        assert!(
+            !summary.exited.contains(&pid),
+            "no completion => the handler stays suspended across turns"
+        );
+    }
+    assert_eq!(
+        *outcome.lock().expect("outcome lock"),
+        None,
+        "the handler has observed no result before the host completes the op"
+    );
+    assert!(
+        scheduler.waiting.contains(&pid),
+        "still parked before completion"
+    );
+
+    // Act as the host: complete the async op with `{ok, 5}`.
+    let completed = scheduler.complete_async(
+        pid,
+        WasmAsyncCompletion::Ok(crate::ets::OwnedTerm::immediate(Term::small_int(5))),
+    );
+    assert!(completed, "complete_async wakes the parked native process");
+
+    // Pump: the handler resumes and observes the delivered completion.
+    assert!(
+        drain_run_until_idle(&mut scheduler, pid, 4),
+        "the handler resumes and exits after the completion is delivered"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(pid),
+        Some(ExitReason::Normal),
+        "the resumed handler stopped normally"
+    );
+    assert_eq!(
+        *outcome.lock().expect("outcome lock"),
+        Some((true, 5)),
+        "the handler resumed and observed the async result as {{ok, 5}}"
+    );
+}
+
+#[test]
+fn native_async_rejection_is_delivered_as_error_completion() {
+    // WR-7 (rejection path): a host rejection is delivered to a parked native
+    // handler as `{error, Reason}`, the same pid-keyed `complete_async` seam,
+    // and the handler resumes observing it.
+    let mut scheduler = scheduler();
+    let started = Rc::new(RefCell::new(Vec::new()));
+    let facility: Rc<dyn WasmAsyncNifFacility> = Rc::new(FakeHost {
+        started: Rc::clone(&started),
+    });
+    scheduler.set_wasm_async_nif_facility(Some(facility));
+
+    let started_ok = Arc::new(Mutex::new(None));
+    let outcome = Arc::new(Mutex::new(None));
+    let pid = scheduler.spawn_native_root({
+        let started_ok = Arc::clone(&started_ok);
+        let outcome = Arc::clone(&outcome);
+        Box::new(move || {
+            Box::new(AsyncCaller {
+                started_ok: Arc::clone(&started_ok),
+                outcome: Arc::clone(&outcome),
+                issued: false,
+            })
+        })
+    });
+
+    // Park the handler on the async op.
+    let summary = scheduler.run_until_idle();
+    assert!(summary.waiting.contains(&pid), "handler parked on the op");
+
+    // Host rejects with `{error, 7}`.
+    let completed = scheduler.complete_async(
+        pid,
+        WasmAsyncCompletion::Error(crate::ets::OwnedTerm::immediate(Term::small_int(7))),
+    );
+    assert!(completed, "complete_async wakes the parked native process");
+
+    assert!(
+        drain_run_until_idle(&mut scheduler, pid, 4),
+        "the handler resumes after the rejection is delivered"
+    );
+    assert_eq!(
+        *outcome.lock().expect("outcome lock"),
+        Some((false, 7)),
+        "the handler observed the rejection as {{error, 7}}"
+    );
+}
+
+#[test]
+fn start_async_without_facility_errors_and_does_not_park() {
+    // WR-7 negative: with no host facility installed, `start_async` returns Err
+    // (undef). The handler is given a `start_async` that fails; this asserts the
+    // seam fails closed rather than silently parking forever.
+    let mut scheduler = scheduler();
+    let started_ok = Arc::new(Mutex::new(None));
+    let outcome = Arc::new(Mutex::new(None));
+    let _pid = scheduler.spawn_native_root({
+        let started_ok = Arc::clone(&started_ok);
+        let outcome = Arc::clone(&outcome);
+        Box::new(move || {
+            Box::new(AsyncCaller {
+                started_ok: Arc::clone(&started_ok),
+                outcome: Arc::clone(&outcome),
+                issued: false,
+            })
+        })
+    });
+
+    // The handler still returns Wait after the failed start (its control flow),
+    // but the key assertion is that start_async reported failure.
+    let _summary = scheduler.run_until_idle();
+    assert_eq!(
+        *started_ok.lock().expect("started lock"),
+        Some(false),
+        "start_async fails closed when no WasmAsyncNifFacility is installed"
+    );
+}
