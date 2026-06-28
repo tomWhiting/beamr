@@ -785,6 +785,190 @@ fn put_tuple2_survives_heap_exhaustion_via_gc_and_grow() {
     assert_eq!(tuple.get(99), Some(Term::small_int(99)));
 }
 
+// Assert the X register `reg` still holds a `len`-element cons list of
+// descending integers `len-1 .. 0` (the shape produced by repeatedly consing
+// `0..len` onto NIL). A heap-allocated term is used deliberately: had the
+// in-opcode GC cleared this high register to NIL (the bug), `Cons::new` would
+// fail and the walk would observe NIL instead of the live list.
+fn assert_high_reg_list(process: &Process, reg: u16, len: i64) {
+    let mut cursor = process.x_reg(reg);
+    for expected in (0..len).rev() {
+        let cons = Cons::new(cursor).expect("high register still holds live cons");
+        assert_eq!(cons.head(), Term::small_int(expected));
+        cursor = cons.tail();
+    }
+    assert_eq!(cursor, Term::NIL);
+}
+
+// Build a `len`-element cons list (descending integers) into register `dest`.
+fn build_list_into(code: &mut Vec<Instruction>, dest: u32, len: i64) {
+    code.push(Instruction::Move {
+        source: Operand::Atom(None),
+        destination: Operand::X(dest),
+    });
+    for i in 0..len {
+        code.push(Instruction::PutList {
+            head: Operand::Integer(i),
+            tail: Operand::X(dest),
+            destination: Operand::X(dest),
+        });
+    }
+}
+
+#[test]
+fn put_list_preserves_high_live_x_register_across_in_opcode_gc() {
+    // A live, heap-allocated term sits in X registers ABOVE the old hardcoded
+    // live=256 boundary (X(300) and X(900)). When put_list's defensive
+    // ensure_space fires a minor GC, those registers must be traced and
+    // preserved. Under the old live=256, minor GC would NIL X[256..1024],
+    // corrupting both. Under the reverted own-operands regression they would
+    // also be cleared, since put_list does not name them.
+    let mut code = Vec::new();
+    code.push(Instruction::TestHeap {
+        heap_need: Operand::Unsigned(4),
+        live: Operand::Unsigned(0),
+    });
+    // Seed two live lists into high registers (they live on the young heap).
+    build_list_into(&mut code, 300, 8);
+    build_list_into(&mut code, 900, 8);
+    // Now build 200 more cons cells via put_list. The undersized TestHeap
+    // reservation forces put_list's ensure_space to collect mid-build, while
+    // X(300)/X(900) are still live.
+    code.push(Instruction::Move {
+        source: Operand::Atom(None),
+        destination: Operand::X(0),
+    });
+    for i in 0..200 {
+        code.push(Instruction::PutList {
+            head: Operand::Integer(i),
+            tail: Operand::X(0),
+            destination: Operand::X(0),
+        });
+    }
+    code.push(Instruction::Return);
+    let module = module(Atom::OK, code);
+    let mut process = Process::new(1, 233);
+
+    let result = run(&mut process, &module);
+    assert_eq!(result, Ok(ExecutionResult::Exited(ExitReason::Normal)));
+
+    // The opcode's own result is correct.
+    let mut cursor = process.x_reg(0);
+    for expected in (0..200).rev() {
+        let cons = Cons::new(cursor).expect("list element is cons");
+        assert_eq!(cons.head(), Term::small_int(expected));
+        cursor = cons.tail();
+    }
+    assert_eq!(cursor, Term::NIL);
+    // And the high live registers survived the in-opcode GC.
+    assert_high_reg_list(&process, 300, 8);
+    assert_high_reg_list(&process, 900, 8);
+}
+
+#[test]
+fn put_tuple2_preserves_high_live_x_register_across_in_opcode_gc() {
+    // As above but the GC fires inside put_tuple2.
+    let elements: Vec<Operand> = (0..100).map(Operand::Integer).collect();
+    let mut code = vec![Instruction::TestHeap {
+        heap_need: Operand::Unsigned(220),
+        live: Operand::Unsigned(0),
+    }];
+    build_list_into(&mut code, 300, 8);
+    build_list_into(&mut code, 900, 8);
+    // Burn most of the nursery so put_tuple2's alloc forces a collection.
+    code.push(Instruction::Move {
+        source: Operand::Atom(None),
+        destination: Operand::X(0),
+    });
+    for i in 0..110 {
+        code.push(Instruction::PutList {
+            head: Operand::Integer(i),
+            tail: Operand::X(0),
+            destination: Operand::X(0),
+        });
+    }
+    code.push(Instruction::PutTuple2 {
+        destination: Operand::X(1),
+        elements: Operand::List(elements),
+    });
+    code.push(Instruction::Return);
+    let module = module(Atom::OK, code);
+    let mut process = Process::new(1, 233);
+
+    let result = run(&mut process, &module);
+    assert_eq!(result, Ok(ExecutionResult::Exited(ExitReason::Normal)));
+
+    let tuple = Tuple::new(process.x_reg(1)).expect("put_tuple2 creates tuple");
+    assert_eq!(tuple.arity(), 100);
+    assert_eq!(tuple.get(0), Some(Term::small_int(0)));
+    assert_eq!(tuple.get(99), Some(Term::small_int(99)));
+    assert_high_reg_list(&process, 300, 8);
+    assert_high_reg_list(&process, 900, 8);
+}
+
+#[test]
+fn update_record_preserves_high_live_x_register_across_in_opcode_gc() {
+    // As above but the GC fires inside update_record. Note update_record names
+    // only X(0)/X(1) in its operands, so under the reverted own-operands
+    // regression X(300)/X(900) would be cleared; only full-width rooting keeps
+    // them.
+    let mut code = vec![Instruction::TestHeap {
+        heap_need: Operand::Unsigned(220),
+        live: Operand::Unsigned(0),
+    }];
+    build_list_into(&mut code, 300, 8);
+    build_list_into(&mut code, 900, 8);
+    // Build the source record into X(0).
+    code.push(Instruction::PutTuple2 {
+        destination: Operand::X(0),
+        elements: Operand::List(vec![
+            Operand::Atom(Some(Atom::OK)),
+            Operand::Integer(1),
+            Operand::Integer(2),
+        ]),
+    });
+    code.push(Instruction::Move {
+        source: Operand::Integer(99),
+        destination: Operand::X(2),
+    });
+    // Burn the rest of the nursery so update_record's alloc forces a collection.
+    code.push(Instruction::Move {
+        source: Operand::Atom(None),
+        destination: Operand::X(3),
+    });
+    for i in 0..110 {
+        code.push(Instruction::PutList {
+            head: Operand::Integer(i),
+            tail: Operand::X(3),
+            destination: Operand::X(3),
+        });
+    }
+    code.push(Instruction::UpdateRecord {
+        operands: vec![
+            Operand::Atom(Some(Atom::OK)),
+            Operand::Unsigned(3),
+            Operand::X(0),
+            Operand::X(1),
+            Operand::Unsigned(2),
+            Operand::X(2),
+        ],
+    });
+    code.push(Instruction::Return);
+    let module = module(Atom::OK, code);
+    let mut process = Process::new(1, 233);
+
+    let result = run(&mut process, &module);
+    assert_eq!(result, Ok(ExecutionResult::Exited(ExitReason::Normal)));
+
+    let tuple = Tuple::new(process.x_reg(1)).expect("update_record creates tuple");
+    assert_eq!(tuple.arity(), 3);
+    assert_eq!(tuple.get(0), Some(Term::atom(Atom::OK)));
+    assert_eq!(tuple.get(1), Some(Term::small_int(99)));
+    assert_eq!(tuple.get(2), Some(Term::small_int(2)));
+    assert_high_reg_list(&process, 300, 8);
+    assert_high_reg_list(&process, 900, 8);
+}
+
 #[test]
 fn update_record_copies_tuple_and_applies_pairs() {
     let module = module(
