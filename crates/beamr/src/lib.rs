@@ -55,9 +55,15 @@ pub mod timer;
 pub use native::actor::{Actor, ActorContext, ActorError, ActorMessage};
 // The external-driver request/reply handles (`ActorRef`/`SenderHandle`) and
 // `spawn_actor` own the threaded `Scheduler` and block on a channel, so they are
-// threaded-only for now; the cooperative spawn/`call_async` surface lands in a
-// later WASM-runtime increment (WR-2/WR-6).
+// threaded-only.
 #[cfg(feature = "threads")]
 pub use native::actor::{ActorRef, SenderHandle, spawn_actor};
+// The cooperative actor surface (WR-6): `spawn_actor_cooperative` +
+// `CoopActorRef`/`CoopSenderHandle` bound to the single-threaded `WasmScheduler`,
+// with a non-blocking, host-pumpable `call_async` returning a `CallFuture`. Built
+// wherever the `WasmScheduler` exists (the wasm `cooperative` build, and the
+// `threads` build so the native test gate covers it).
+#[cfg(any(feature = "threads", feature = "cooperative"))]
+pub use native::actor::{CallFuture, CoopActorRef, CoopSenderHandle, spawn_actor_cooperative};
 #[cfg(any(feature = "threads", feature = "cooperative"))]
 pub use native::native_process::{NativeContext, NativeHandler, NativeOutcome};
