@@ -1085,3 +1085,122 @@ fn start_async_without_facility_errors_and_does_not_park() {
         "start_async fails closed when no WasmAsyncNifFacility is installed"
     );
 }
+
+// ---------------------------------------------------------------------------
+// WR-10: the host-pump idle predicate (`has_pending_work`).
+//
+// This is the pure decision the WR-10 `requestAnimationFrame` pump makes each
+// frame to decide whether to keep driving turns / reschedule itself, or yield
+// the browser until an external event re-enqueues a process. It is exercised
+// here natively (no browser) because it is plain scheduler state, exactly the
+// "drain until idle" core factored out of the rAF closure.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn has_pending_work_tracks_ready_processes_then_clears_when_drained() {
+    // A fresh scheduler is idle. Spawning a runnable native actor makes it have
+    // pending work; after the actor is driven to exit, the scheduler is idle
+    // again — so a pump that yielded on `!has_pending_work()` is correct.
+    let mut scheduler = scheduler();
+    assert!(
+        !scheduler.has_pending_work(),
+        "a fresh scheduler has no pending work"
+    );
+
+    let collector = Arc::new(Mutex::new(None));
+    // Echo replies to a Collector and stops; spawn the Echo runnable so it is
+    // ready immediately. Use a self-stopping handler so the queue drains.
+    let sink = Arc::clone(&collector);
+    let collector_pid = scheduler.spawn_native_root(Box::new(move || {
+        Box::new(Collector {
+            sink: Arc::clone(&sink),
+        })
+    }));
+    let echo = scheduler.spawn_native_root({
+        Box::new(move || {
+            Box::new(Echo {
+                reply_to: collector_pid,
+            })
+        })
+    });
+
+    assert!(
+        scheduler.has_pending_work(),
+        "freshly spawned runnable actors are pending work"
+    );
+
+    // Wake the echo with a message so it runs, replies, and stops. The reply
+    // wakes the Collector, which is then driven (it drains the reply and parks
+    // again). Pumping to quiescence empties the ready queue.
+    assert!(scheduler.send(echo, Term::small_int(7)));
+    assert!(
+        drain_until_exit(&mut scheduler, echo, 8),
+        "the echo actor runs and exits"
+    );
+    // Drive the woken Collector to re-park (drain its delivered reply), the way
+    // a real pump loop runs turns until quiescent.
+    for _ in 0..4 {
+        if !scheduler.has_pending_work() {
+            break;
+        }
+        let _summary = scheduler.run_until_idle();
+    }
+    assert_eq!(
+        *collector.lock().expect("collector lock"),
+        Some(7),
+        "the collector received the echoed reply"
+    );
+
+    // Both processes are now parked (Wait) with empty mailboxes and no armed
+    // timer, so the scheduler is NOT pending work: it is blocked on external
+    // sends, which are the host's cue to pump again — not a reason to spin rAF.
+    assert!(
+        !scheduler.has_pending_work(),
+        "a scheduler whose processes are parked-waiting with no armed timer is idle"
+    );
+}
+
+#[test]
+fn has_pending_work_is_true_while_a_native_deliver_timer_is_armed() {
+    // A parked actor with an armed `Deliver` self-tick IS pending work: a later
+    // pump tick will fire the timer, deliver the message, and wake it. The pump
+    // must therefore keep rescheduling (off the wasm clock) while the wheel is
+    // non-empty, and only yield once the timer has fired and drained.
+    let mut scheduler = scheduler();
+    let sink = Arc::new(Mutex::new(None));
+    let delay = std::time::Duration::from_secs(10);
+
+    let ticker = scheduler.spawn_native_root({
+        let sink = Arc::clone(&sink);
+        Box::new(move || {
+            Box::new(SelfTicker {
+                delay,
+                tick_value: 99,
+                sink: Arc::clone(&sink),
+                armed: false,
+            })
+        })
+    });
+
+    // First turn: the actor arms its self-tick and parks. The ready queue is now
+    // empty, but a Deliver timer is armed — so there is still pending work.
+    let _exited = scheduler.run_native_until_idle();
+    assert!(
+        scheduler.has_pending_work(),
+        "an armed Deliver timer keeps the scheduler pending even with an empty ready queue"
+    );
+
+    // Fire the timer deterministically; the actor wakes, runs, and exits.
+    let start = web_time::Instant::now();
+    let woken = scheduler.tick_native_timers_at(start + delay + std::time::Duration::from_secs(5));
+    assert_eq!(woken, vec![ticker], "the expired self-tick wakes the actor");
+    assert!(
+        drain_until_exit(&mut scheduler, ticker, 4),
+        "the woken actor runs and exits"
+    );
+
+    assert!(
+        !scheduler.has_pending_work(),
+        "once the timer has fired and the actor exited, the scheduler is idle"
+    );
+}
