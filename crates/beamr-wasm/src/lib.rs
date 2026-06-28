@@ -296,48 +296,193 @@ impl WasmVm {
     }
 
     fn sync_host_timers(&mut self) -> Result<(), JsValue> {
-        let cancellations = self
-            .scheduler
-            .borrow_mut()
-            .take_pending_timer_cancellations();
-        for timer_id in cancellations {
-            self.clear_host_timer(timer_id);
-        }
-        let schedules = self.scheduler.borrow_mut().take_pending_timer_schedules();
-        for schedule in schedules {
-            self.schedule_host_timer(schedule.pid, schedule.timer_id, schedule.milliseconds)?;
-        }
-        Ok(())
+        sync_host_timers_inner(&self.scheduler, &self.timer_handles)
     }
 
-    fn schedule_host_timer(
-        &mut self,
-        pid: u64,
-        timer_id: u64,
-        milliseconds: u64,
-    ) -> Result<(), JsValue> {
-        self.clear_host_timer(timer_id);
+    /// Drive one cooperative pump turn WITHOUT touching the browser scheduler:
+    /// run the scheduler to quiescence (which first ticks native `Deliver`
+    /// timers off `web_time::Instant::now()`), reflect any newly-armed or
+    /// cancelled receive-timers into host `setTimeout`s, and report whether the
+    /// scheduler still has pending work.
+    ///
+    /// This is the pure per-frame body shared by [`WasmVm::run_step`]-style
+    /// manual driving and the [`WasmVm::start_pump`] `requestAnimationFrame`
+    /// loop. It is additive: `run_step` is unchanged and still works for manual
+    /// and test driving. Returning `bool` (not a JSON summary) keeps it cheap to
+    /// call every frame; hosts that want the summary use `run_step`.
+    pub fn pump_once(&mut self) -> Result<bool, JsValue> {
+        pump_turn(&self.scheduler, &self.timer_handles)
+    }
+
+    /// Start a `requestAnimationFrame`-driven host pump that drives the
+    /// cooperative runtime to quiescence each frame, then yields the browser and
+    /// reschedules itself for the next frame while work remains. Returns a
+    /// [`PumpHandle`]; dropping it (or calling [`PumpHandle::stop`]) cancels the
+    /// pump.
+    ///
+    /// The pump runs `pump_once` each frame. When a frame leaves the scheduler
+    /// with no pending work (no ready process, no armed native timer) the pump
+    /// still reschedules ONE more frame and then stops driving rAF, because the
+    /// events that re-enqueue a parked process — an inbound `send`/`cast`, a
+    /// `timer_fired` host callback, or an async completion — each already wake
+    /// the target; a host that delivers such an event simply calls `start_pump`
+    /// (or keeps a pump running) to resume. This avoids burning a
+    /// `requestAnimationFrame` slot every frame on an idle VM.
+    ///
+    /// Borrow discipline: the rAF closure captures only cloned `Rc`s (the
+    /// scheduler and the host-timer map) and a shared stop flag — never `&mut
+    /// self`. Each turn's scheduler access is a scoped `borrow_mut` inside
+    /// `pump_once`/`sync_host_timers_inner` that is dropped before the closure
+    /// reschedules itself, so no borrow is ever held across the rAF callback.
+    pub fn start_pump(&mut self) -> Result<PumpHandle, JsValue> {
         let scheduler = Rc::clone(&self.scheduler);
-        let handles = Rc::clone(&self.timer_handles);
-        let callback = Closure::<dyn FnMut()>::new(move || {
-            handles.borrow_mut().remove(&timer_id);
-            let _fired = scheduler.borrow_mut().timer_fired(pid, timer_id);
-        });
-        let handle = set_timeout(&callback, milliseconds)?;
-        self.timer_handles.borrow_mut().insert(
-            timer_id,
-            HostTimer {
-                handle,
-                _callback: callback,
-            },
-        );
-        Ok(())
-    }
+        let timer_handles = Rc::clone(&self.timer_handles);
+        let running = Rc::new(RefCell::new(true));
 
-    fn clear_host_timer(&mut self, timer_id: u64) {
-        if let Some(timer) = self.timer_handles.borrow_mut().remove(&timer_id) {
-            clear_timeout(timer.handle);
-        }
+        // The closure must reschedule itself, so it needs a handle to itself.
+        // The standard wasm-bindgen pattern: an `Rc<RefCell<Option<Closure>>>`
+        // the closure reads to re-request the next frame.
+        let frame: FrameCell = Rc::new(RefCell::new(None));
+        let frame_for_closure = Rc::clone(&frame);
+        let running_for_closure = Rc::clone(&running);
+
+        let closure = Closure::<dyn FnMut()>::new(move || {
+            if !*running_for_closure.borrow() {
+                return;
+            }
+            // Drive one turn; a pump-turn failure stops the pump rather than
+            // panicking across the rAF boundary.
+            let pending = match pump_turn(&scheduler, &timer_handles) {
+                Ok(pending) => pending,
+                Err(_) => {
+                    *running_for_closure.borrow_mut() = false;
+                    return;
+                }
+            };
+            // Reschedule the next frame while work remains. When idle, drop the
+            // self-reference so the closure is freed and rAF is no longer
+            // requested until the host restarts the pump.
+            if pending {
+                if let Some(callback) = frame_for_closure.borrow().as_ref() {
+                    let _id = request_animation_frame(callback);
+                }
+            } else {
+                *running_for_closure.borrow_mut() = false;
+            }
+        });
+
+        let first_id = request_animation_frame(&closure)?;
+        *frame.borrow_mut() = Some(closure);
+
+        Ok(PumpHandle {
+            running,
+            frame,
+            last_id: first_id,
+        })
+    }
+}
+
+/// Shared cell holding the pump's self-rescheduling animation-frame closure.
+/// The closure reads it to re-request the next frame; [`PumpHandle::stop`]
+/// clears it to release the `Closure` and its captured `Rc`s.
+type FrameCell = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+
+/// Handle to a running [`WasmVm::start_pump`] loop. Dropping it stops the pump.
+#[wasm_bindgen]
+pub struct PumpHandle {
+    running: Rc<RefCell<bool>>,
+    frame: FrameCell,
+    last_id: i32,
+}
+
+#[wasm_bindgen]
+impl PumpHandle {
+    /// Stop the pump: clear the run flag, cancel the most recently requested
+    /// animation frame, and release the self-rescheduling closure. Idempotent.
+    pub fn stop(&mut self) {
+        *self.running.borrow_mut() = false;
+        cancel_animation_frame(self.last_id);
+        let _dropped = self.frame.borrow_mut().take();
+    }
+}
+
+impl Drop for PumpHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// One cooperative pump turn: run the scheduler to quiescence (it first ticks
+/// native `Deliver` timers off the wasm clock), reflect pending receive-timer
+/// schedules/cancellations into host `setTimeout`s, and report whether pending
+/// work remains. Shared by the manual `pump_once` and the rAF pump.
+fn pump_turn(
+    scheduler: &Rc<RefCell<WasmScheduler>>,
+    timer_handles: &Rc<RefCell<BTreeMap<u64, HostTimer>>>,
+) -> Result<bool, JsValue> {
+    let _summary = scheduler.borrow_mut().run_until_idle();
+    sync_host_timers_inner(scheduler, timer_handles)?;
+    let pending = scheduler.borrow().has_pending_work();
+    Ok(pending)
+}
+
+/// Drain the scheduler's pending receive-timer cancellations and schedules,
+/// reflecting each into a host `setTimeout`/`clearTimeout`.
+///
+/// Free function (over the shared `Rc`s rather than `&mut WasmVm`) so both the
+/// `&mut self` entry points and the WR-10 `requestAnimationFrame` pump closure —
+/// which cannot capture `&mut self` — drive the identical bridge logic. Every
+/// scheduler borrow is scoped (`take_*` returns owned `Vec`s, then the borrow is
+/// dropped) so no `borrow_mut` is held across the per-timer host calls.
+fn sync_host_timers_inner(
+    scheduler: &Rc<RefCell<WasmScheduler>>,
+    timer_handles: &Rc<RefCell<BTreeMap<u64, HostTimer>>>,
+) -> Result<(), JsValue> {
+    let cancellations = scheduler.borrow_mut().take_pending_timer_cancellations();
+    for timer_id in cancellations {
+        clear_host_timer(timer_handles, timer_id);
+    }
+    let schedules = scheduler.borrow_mut().take_pending_timer_schedules();
+    for schedule in schedules {
+        schedule_host_timer(
+            scheduler,
+            timer_handles,
+            schedule.pid,
+            schedule.timer_id,
+            schedule.milliseconds,
+        )?;
+    }
+    Ok(())
+}
+
+fn schedule_host_timer(
+    scheduler: &Rc<RefCell<WasmScheduler>>,
+    timer_handles: &Rc<RefCell<BTreeMap<u64, HostTimer>>>,
+    pid: u64,
+    timer_id: u64,
+    milliseconds: u64,
+) -> Result<(), JsValue> {
+    clear_host_timer(timer_handles, timer_id);
+    let scheduler = Rc::clone(scheduler);
+    let handles = Rc::clone(timer_handles);
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        handles.borrow_mut().remove(&timer_id);
+        let _fired = scheduler.borrow_mut().timer_fired(pid, timer_id);
+    });
+    let handle = set_timeout(&callback, milliseconds)?;
+    timer_handles.borrow_mut().insert(
+        timer_id,
+        HostTimer {
+            handle,
+            _callback: callback,
+        },
+    );
+    Ok(())
+}
+
+fn clear_host_timer(timer_handles: &Rc<RefCell<BTreeMap<u64, HostTimer>>>, timer_id: u64) {
+    if let Some(timer) = timer_handles.borrow_mut().remove(&timer_id) {
+        clear_timeout(timer.handle);
     }
 }
 
@@ -717,6 +862,35 @@ fn clear_timeout(handle: i32) {
     }
 }
 
+/// Request one animation frame for `callback`, returning the request id.
+///
+/// Resolved off the JS global (`globalThis.requestAnimationFrame`) rather than a
+/// hard `web_sys::Window` dependency so the seam also works in a Worker/Node host
+/// that polyfills rAF. A missing or non-function global surfaces as an `Err`
+/// (never a panic across the wasm boundary), so [`WasmVm::start_pump`] fails
+/// cleanly in an environment without rAF.
+fn request_animation_frame(callback: &Closure<dyn FnMut()>) -> Result<i32, JsValue> {
+    let global = js_sys::global();
+    let raf = Reflect::get(&global, &JsValue::from_str("requestAnimationFrame"))?
+        .dyn_into::<Function>()
+        .map_err(|_| JsValue::from_str("global requestAnimationFrame is not a function"))?;
+    let id = raf.call1(&global, callback.as_ref().unchecked_ref())?;
+    id.as_f64()
+        .and_then(|value| i32::try_from(value as i64).ok())
+        .ok_or_else(|| JsValue::from_str("requestAnimationFrame did not return a numeric id"))
+}
+
+/// Cancel a previously requested animation frame. A missing or non-function
+/// global is ignored (best-effort), exactly like [`clear_timeout`].
+fn cancel_animation_frame(id: i32) {
+    let global = js_sys::global();
+    if let Ok(cancel) = Reflect::get(&global, &JsValue::from_str("cancelAnimationFrame"))
+        && let Ok(cancel) = cancel.dyn_into::<Function>()
+    {
+        let _ignored = cancel.call1(&global, &JsValue::from_f64(f64::from(id)));
+    }
+}
+
 // wasm-bindgen types abort when constructed outside a wasm runtime, so this
 // suite only runs on the wasm32 target (e.g. via `wasm-pack test`).
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -780,6 +954,68 @@ mod tests {
             .expect("reply has a result field")
             .as_f64();
         assert_eq!(result, Some(42.0), "JS handler replied with n + 1");
+
+        drop(handler);
+    }
+
+    // WR-10: the host pump. `pump_once` is the pure per-frame body; this drives
+    // it manually (the deterministic, runner-executable shape) to prove the same
+    // logic the rAF closure runs makes progress without hand-calling `run_step`.
+    //
+    // NOTE: a `#[wasm_bindgen_test]` — it needs a browser/Node wasm runner and
+    // CANNOT execute headless here. It is compile-gated. The rAF loop itself
+    // (`start_pump`/`PumpHandle`) is browser-only: rAF does not fire under a
+    // bare wasm test harness, so the executable proof of the pump's PURE logic
+    // is the native `has_pending_work` scheduler tests in `beamr`, which exercise
+    // the identical idle predicate `pump_once`/`start_pump` branch on.
+    #[wasm_bindgen_test]
+    async fn pump_once_drives_an_actor_call_to_completion() {
+        let mut vm = WasmVm::new().expect("VM constructs");
+
+        let handler = Closure::<dyn FnMut(JsValue) -> JsValue>::new(|request: JsValue| {
+            let n = Reflect::get(&request, &JsValue::from_str("n"))
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0);
+            let reply = Object::new();
+            let _set = Reflect::set(
+                &reply,
+                &JsValue::from_str("result"),
+                &JsValue::from_f64(n + 1.0),
+            );
+            reply.into()
+        });
+        let handler_fn = handler.as_ref().unchecked_ref::<Function>().clone();
+        let pid = vm.spawn_actor(handler_fn);
+
+        let request = Object::new();
+        let _set = Reflect::set(&request, &JsValue::from_str("n"), &JsValue::from_f64(7.0));
+        let promise = vm
+            .call(pid, request.into())
+            .expect("call returns a Promise");
+
+        // Drive turns via the pump body instead of run_step until the VM is idle.
+        for _ in 0..16 {
+            let pending = vm.pump_once().expect("pump_once succeeds");
+            if !pending {
+                break;
+            }
+        }
+
+        let value = JsFuture::from(promise)
+            .await
+            .expect("the call Promise resolves after pumping");
+        let result = Reflect::get(&value, &JsValue::from_str("result"))
+            .expect("reply has a result field")
+            .as_f64();
+        assert_eq!(result, Some(8.0), "pump_once drove the actor reply (n + 1)");
+
+        // start_pump returns a usable handle in a runtime with rAF; stopping it
+        // is idempotent.
+        if let Ok(mut pump) = vm.start_pump() {
+            pump.stop();
+            pump.stop();
+        }
 
         drop(handler);
     }

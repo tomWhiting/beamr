@@ -30,6 +30,12 @@ num_cpus = { version = "1.17.0", optional = true }
 opentelemetry = { version = "0.32.0", optional = true }
 rand = "0.10.1"
 unicode-segmentation = "1.12"
+# Portable monotonic clock. On native targets `web_time::Instant` is a
+# re-export of `std::time::Instant` (zero behavior change); on
+# `wasm32-unknown-unknown` it is backed by `performance.now()`, so the
+# cooperative native timer wheel no longer panics on the missing wasm time
+# source. Used ONLY in the timer wheel + cooperative scheduler timer seam.
+web-time = "1.1.0"
 rustix = { version = "1.1.4", features = ["fs", "net"], optional = true }
 serde_json = { version = "1.0.150", optional = true }
 tokio = { version = "1.52.3", features = ["net", "io-util", "time", "rt", "rt-multi-thread", "macros", "sync"], optional = true }

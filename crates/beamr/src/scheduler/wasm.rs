@@ -371,8 +371,11 @@ impl WasmScheduler {
     /// instant) is [`WasmScheduler::tick_native_timers_at`].
     ///
     /// When no native timers are pending this returns immediately WITHOUT
-    /// reading the wall clock, so the common timer-free turn never touches
-    /// `Instant::now()` (which is unavailable on bare `wasm32-unknown-unknown`).
+    /// reading the wall clock, an early-out that predates the `web_time` clock
+    /// base. The clock the wheel reads when timers ARE pending is
+    /// `web_time::Instant::now()` (WR-10), which is `performance.now()`-backed on
+    /// `wasm32-unknown-unknown` and a re-export of `std::time::Instant::now()` on
+    /// native — so this no longer panics in the browser when a timer is armed.
     pub fn tick_native_timers(&mut self) -> Vec<u64> {
         let expired = {
             let mut wheel = lock_timers(&self.native_timers);
@@ -392,7 +395,7 @@ impl WasmScheduler {
     /// rescheduled actor receives the delivered message — with no browser and no
     /// wall-clock dependency, exactly as the threaded `expire_timers_for_test`
     /// seam does for the threaded scheduler.
-    pub fn tick_native_timers_at(&mut self, now: std::time::Instant) -> Vec<u64> {
+    pub fn tick_native_timers_at(&mut self, now: web_time::Instant) -> Vec<u64> {
         let expired = lock_timers(&self.native_timers).tick_at(now);
         self.deliver_expired_native_timers(expired)
     }
@@ -570,6 +573,26 @@ impl WasmScheduler {
     /// Total number of ready-queued processes across all priorities.
     pub(super) fn ready_len(&self) -> usize {
         self.ready.len()
+    }
+
+    /// Whether the scheduler still has work that a host pump can make progress
+    /// on by continuing to drive turns: a process is ready to run, or a native
+    /// `Deliver` timer is armed (a later tick will deliver its message and wake
+    /// the target).
+    ///
+    /// This is the WR-10 host-pump idle predicate. It deliberately does NOT
+    /// count processes parked in `waiting` with no armed timer: those are blocked
+    /// on an external event (an inbound `send`/`cast`, a `timer_fired`, or an
+    /// async completion) that the host delivers, each of which re-enqueues the
+    /// process and is the host's cue to pump again — so a pump loop that yielded
+    /// the browser on `!has_pending_work()` is correctly restarted by those
+    /// entry points, not by spinning `requestAnimationFrame` while idle.
+    #[must_use]
+    pub fn has_pending_work(&self) -> bool {
+        if self.ready.len() != 0 {
+            return true;
+        }
+        !lock_timers(&self.native_timers).is_empty()
     }
 
     /// Record a cooperative native-process exit (reason + captured x(0) result).
