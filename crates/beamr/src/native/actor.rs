@@ -48,9 +48,9 @@
 use std::marker::PhantomData;
 #[cfg(feature = "threads")]
 use std::sync::Arc;
-#[cfg(feature = "threads")]
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "threads")]
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 use std::time::Duration;
 
 use crate::native::native_process::{NativeContext, NativeHandler, NativeOutcome};
@@ -73,15 +73,17 @@ const TAG_REPLY: i64 = 2;
 
 /// Default time a [`SenderHandle::call`] waits for the correlated reply before
 /// giving up with [`ActorError::Timeout`].
-#[cfg(feature = "threads")]
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Monotonic source of unique call refs. A ref correlates a reply with the
 /// in-flight call that produced it, so concurrent calls never cross replies.
-#[cfg(feature = "threads")]
+/// Shared by the threaded blocking `call` and the cooperative `call_async` so
+/// both correlation schemes draw from one ref space.
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 static NEXT_REF: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(feature = "threads")]
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 fn next_ref() -> u64 {
     NEXT_REF.fetch_add(1, Ordering::Relaxed)
 }
@@ -287,7 +289,7 @@ impl Incoming {
 }
 
 /// Decode a `{2, ref, reply}` reply envelope into its ref and reply payload.
-#[cfg(feature = "threads")]
+#[cfg(any(feature = "threads", feature = "cooperative"))]
 fn decode_reply(term: Term) -> Option<(i64, Term)> {
     let tuple = Tuple::new(term)?;
     if tuple.get(0)?.as_small_int()? != TAG_REPLY {
@@ -469,6 +471,21 @@ where
 #[cfg(feature = "threads")]
 #[path = "actor_clients.rs"]
 mod clients;
+
+// Cooperative (single-threaded / wasm) actor surface: `spawn_actor_cooperative`,
+// `CoopActorRef`/`CoopSenderHandle`, non-blocking `cast`, and the host-pumpable
+// `call_async` future. Bound to the cooperative `WasmScheduler` (not the threaded
+// `Arc<Scheduler>`), additive to and disjoint from the threaded surface above.
+//
+// It is built whenever the `WasmScheduler` exists — under `cooperative` (the wasm
+// target) AND under `threads` (so the native `cargo test --lib` gate compiles and
+// runs the WR-6 cooperative tests against the same scheduler the wasm host drives).
+#[cfg(any(feature = "threads", feature = "cooperative"))]
+#[path = "actor_cooperative.rs"]
+mod cooperative;
+
+#[cfg(any(feature = "threads", feature = "cooperative"))]
+pub use cooperative::{CallFuture, CoopActorRef, CoopSenderHandle, spawn_actor_cooperative};
 
 #[cfg(test)]
 #[path = "actor_tests.rs"]
