@@ -39,7 +39,7 @@ use crate::process::{ExitReason, Priority, Process, ProcessStatus};
 use crate::supervision::link;
 use crate::term::Term;
 
-use super::{WasmRunSummary, WasmScheduler};
+use super::{WasmAsyncCompletion, WasmRunSummary, WasmScheduler};
 
 /// A native spawn requested by a handler during a slice, applied afterwards.
 struct DeferredSpawn {
@@ -206,6 +206,48 @@ impl WasmScheduler {
         pid
     }
 
+    /// Deliver an async-NIF completion to a parked NATIVE process as a mailbox
+    /// message and wake it (WR-7).
+    ///
+    /// Called by [`WasmScheduler::complete_async`](super::WasmScheduler) when the
+    /// target is native. The completion payload is wrapped on the target's own
+    /// heap as `{ok, Value}` (fulfilment) or `{error, Reason}` (rejection) — the
+    /// same shape a Gleam/Erlang caller expects from an async result — pushed
+    /// through the standard owner-side mailbox path, and the process woken. The
+    /// resumed handler reads it with
+    /// [`NativeContext::recv`](crate::native::native_process::NativeContext::recv).
+    /// Returns whether the process was woken (false if it was not parked, e.g. a
+    /// duplicate completion); the message is still enqueued so it is never lost.
+    pub(super) fn deliver_native_async_completion(
+        &mut self,
+        pid: u64,
+        completion: WasmAsyncCompletion,
+    ) -> bool {
+        let (tag, payload) = match completion {
+            WasmAsyncCompletion::Ok(term) => (Atom::OK, term),
+            WasmAsyncCompletion::Error(term) => (Atom::ERROR, term),
+        };
+        let was_waiting = self.waiting.contains(&pid);
+        let Some(process) = self.processes.get_mut(&pid) else {
+            return false;
+        };
+        // Build `{tag, Value}` on the target heap, then deliver it. A heap-full
+        // target drops the completion (BEAM delivery is best-effort) but is still
+        // woken explicitly so it can make progress rather than hang.
+        match copy_payload_into_tuple(process, tag, payload) {
+            Some(envelope) => {
+                process.mailbox_mut().push_owned(envelope);
+                // Cancels any receive timer and wakes the process if it was parked,
+                // exactly as a normal local send / timer delivery does.
+                self.after_successful_enqueue(pid);
+            }
+            None => {
+                let _woken = self.wake(pid);
+            }
+        }
+        was_waiting
+    }
+
     /// Run one cooperative turn that understands native processes.
     ///
     /// Native processes run their [`NativeHandler`] for one slice via the
@@ -332,8 +374,14 @@ impl WasmScheduler {
         // driver stays `None`: replay is `threads`-gated and not part of the
         // cooperative wasm runtime (design §8 open question 3).
         let timers = Arc::clone(&self.native_timers);
+        // WR-7: hand the slice the scheduler's installed async-NIF host bridge so
+        // a `NativeHandler` can `start_async` host work (fetch/OPFS/JS) through the
+        // SAME `WasmAsyncNifFacility` the bytecode async-NIF path uses; `None` when
+        // no host facility is installed (the handler's `start_async` then errors).
+        let async_facility = self.wasm_async_nif_facility.clone();
         let outcome = {
             let mut context = NativeContext::new(process, local_send, spawn, None, Some(timers));
+            context.set_wasm_async_nif_facility(async_facility);
             handler.handle(&mut context)
         };
 
@@ -464,6 +512,20 @@ impl WasmScheduler {
 /// Exit result for a process killed by link propagation (it produced no x(0)).
 fn undefined_result() -> OwnedTerm {
     OwnedTerm::immediate(Term::atom(Atom::UNDEFINED))
+}
+
+/// Build `{tag, Value}` on `process`'s heap from an owned async-completion
+/// `payload`, copying the payload into the heap first (WR-7 native delivery).
+/// Returns `None` when the heap cannot fit the copied payload or the tuple,
+/// matching the best-effort drop semantics of mailbox delivery.
+fn copy_payload_into_tuple(process: &mut Process, tag: Atom, payload: OwnedTerm) -> Option<Term> {
+    let value = payload.copy_to_heap(process.heap_mut()).ok()?;
+    let elements = [Term::atom(tag), value];
+    // A tuple of arity N needs N + 1 heap words (1 header + N elements), exactly
+    // as `NativeContext::alloc_tuple` sizes its allocation.
+    let words = 1usize.checked_add(elements.len())?;
+    let slice = process.heap_mut().alloc_slice(words).ok()?;
+    crate::term::boxed::write_tuple(slice, &elements)
 }
 
 /// Move a schedulable native process to `Running`, mirroring the threaded

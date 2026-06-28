@@ -15,11 +15,13 @@
 //! the duration of one slice only; sends route through the existing
 //! [`LocalSendFacility`], and spawns through the existing [`SpawnFacility`].
 
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::error::ExecError;
 use crate::native::local_send::{LocalSendError, LocalSendFacility, LocalSendRequest};
 use crate::native::spawn::{SpawnError, SpawnFacility};
+use crate::native::{NativeKey, ProcessContext, WasmAsyncNifFacility};
 use crate::process::{ExitReason, Process};
 use crate::replay::ReplayDriver;
 use crate::term::Term;
@@ -101,6 +103,14 @@ pub struct NativeContext<'a> {
     replay_driver: Option<Arc<Mutex<ReplayDriver>>>,
     timers: Option<Arc<Mutex<TimerWheel>>>,
     replay_error: Option<ExecError>,
+    /// Single-threaded host bridge for WASM async native functions (WR-7).
+    ///
+    /// `None` for the threaded runtime and for unit contexts that never start
+    /// host async work; populated by the cooperative native slice from the
+    /// scheduler's installed facility so a `NativeHandler` can start the SAME
+    /// host async op the bytecode async-NIF path uses (see
+    /// [`NativeContext::start_async`]).
+    wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
 }
 
 impl<'a> NativeContext<'a> {
@@ -123,7 +133,19 @@ impl<'a> NativeContext<'a> {
             replay_driver,
             timers,
             replay_error: None,
+            wasm_async_nif_facility: None,
         }
+    }
+
+    /// Install the single-threaded WASM async-NIF host bridge for this slice
+    /// (WR-7), enabling [`NativeContext::start_async`]. Called by the
+    /// cooperative native slice when the scheduler has a facility installed; the
+    /// threaded path never sets it (it has no `WasmAsyncNifFacility`).
+    pub(crate) fn set_wasm_async_nif_facility(
+        &mut self,
+        facility: Option<Rc<dyn WasmAsyncNifFacility>>,
+    ) {
+        self.wasm_async_nif_facility = facility;
     }
 
     /// PID of the running native process.
@@ -292,6 +314,47 @@ impl<'a> NativeContext<'a> {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .cancel(reference)
+    }
+
+    /// Start host async work through the SAME async-NIF seam the bytecode path
+    /// uses, then park this process pending completion (WR-7).
+    ///
+    /// `mfa` names a host async native (the key the host registered with its
+    /// [`WasmAsyncNifFacility`]); `args` are immediate/heap terms rooted on this
+    /// process's heap. The facility starts the host operation (e.g. a browser
+    /// `fetch`/OPFS Promise) bound to this process's pid and arranges a later
+    /// [`crate::scheduler::WasmScheduler::complete_async`] callback. The handler
+    /// MUST return [`NativeOutcome::Wait`] after a successful `start_async`: the
+    /// completion is delivered into this process's mailbox on a later turn (the
+    /// scheduler converts the pid-keyed completion into a `{ok, Value}` /
+    /// `{error, Reason}` message), and the handler reads it with
+    /// [`NativeContext::recv`] when it next runs — exactly the wake-on-message
+    /// resume model `call_async` uses.
+    ///
+    /// Returns `Ok(())` when the host op was started (now park), or `Err(reason)`
+    /// when no facility is installed or the host rejected synchronously (in which
+    /// case the process is NOT parked and the handler should handle `reason`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's error term, or an `undef` atom when no
+    /// [`WasmAsyncNifFacility`] is installed.
+    pub fn start_async(&mut self, mfa: NativeKey, args: &[Term]) -> Result<(), Term> {
+        let Some(facility) = self.wasm_async_nif_facility.clone() else {
+            return Err(Term::atom(crate::atom::Atom::UNDEF));
+        };
+        // Build a process context over the running process so the SAME
+        // `start_async_nif` the bytecode async-NIF path calls can start the host
+        // op bound to this pid. The bytecode path's `request_suspend` lands on
+        // this transient context (the native slice parks via `NativeOutcome::Wait`
+        // instead, so that suspend marker is intentionally not consulted here).
+        let mut context = ProcessContext::new();
+        context.attach_process(self.process, 0);
+        context.set_current_native(Some(mfa));
+        context.set_wasm_async_nif_facility(Some(facility.clone()));
+        let result = facility.start_async_nif(mfa, args, &mut context);
+        context.detach_process();
+        result.map(|_started| ())
     }
 
     /// Take any replay-determinism error recorded by [`Self::send`] during the

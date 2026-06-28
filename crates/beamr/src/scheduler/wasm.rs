@@ -72,7 +72,7 @@ pub struct WasmScheduler {
     pending_timer_schedules: Vec<WasmScheduledTimer>,
     pending_timer_cancellations: Vec<u64>,
     pub(super) async_results: BTreeMap<u64, WasmAsyncCompletion>,
-    wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
+    pub(super) wasm_async_nif_facility: Option<Rc<dyn WasmAsyncNifFacility>>,
     /// Shared pid counter used by the cooperative native path (WR-0). It is an
     /// `Arc<Mutex<…>>` so the `Send + Sync` cooperative `SpawnFacility` can
     /// allocate child pids from inside a slice; uncontended (single thread).
@@ -174,9 +174,21 @@ impl WasmScheduler {
     }
 
     /// Record an async NIF completion and wake the suspended process.
+    ///
+    /// The bytecode async-NIF path stores the completion in `async_results`,
+    /// where the next bytecode slice injects it into `x(0)` and advances past the
+    /// NIF (see [`WasmScheduler::apply_async_completion`]). A NATIVE process has
+    /// no `x(0)`/instruction pointer, so for a native target the completion is
+    /// delivered as a mailbox message instead — `{ok, Value}` on success or
+    /// `{error, Reason}` on rejection — which the parked handler reads via
+    /// [`NativeContext::recv`](crate::native::native_process::NativeContext::recv)
+    /// when it resumes (WR-7). Both paths share the same pid-keyed `wake`.
     pub fn complete_async(&mut self, pid: u64, completion: WasmAsyncCompletion) -> bool {
-        if !self.processes.contains_key(&pid) {
+        let Some(process) = self.processes.get(&pid) else {
             return false;
+        };
+        if process.is_native() {
+            return self.deliver_native_async_completion(pid, completion);
         }
         self.async_results.insert(pid, completion);
         self.wake(pid)
@@ -336,7 +348,7 @@ impl WasmScheduler {
         self.after_successful_enqueue(pid);
     }
 
-    fn after_successful_enqueue(&mut self, pid: u64) {
+    pub(super) fn after_successful_enqueue(&mut self, pid: u64) {
         if let Some(process) = self.processes.get_mut(&pid)
             && let Some(timer_id) = process.receive_timer_ref()
         {
