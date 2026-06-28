@@ -336,12 +336,20 @@ impl NativeHandler for SelfTicker {
 fn native_actor_self_tick_is_delivered_when_the_timer_fires() {
     // WR-4: a native actor schedules a self-Deliver timer and parks. Advancing
     // the cooperative timer past the delay reschedules the actor and delivers
-    // the timer message; before the delay nothing is delivered. Driven entirely
-    // through the deterministic `tick_native_timers_at` seam — no browser, no
-    // wall-clock dependency.
+    // the timer message; before the delay nothing is delivered. The firing is
+    // driven through the deterministic `tick_native_timers_at` seam.
+    //
+    // The delay is deliberately large (10s) relative to the test's real
+    // runtime: the timer's deadline is anchored to the wall clock at schedule
+    // time (inside the handler's `send_after`), and `run_native_until_idle`
+    // also ticks pending native timers off the wall clock once per turn. A
+    // 10s delay guarantees neither of those wall-clock anchors can reach the
+    // deadline during the (sub-second) test window, so the explicit
+    // `tick_native_timers_at` calls are the sole firing source and the
+    // assertion margins (seconds) dwarf any scheduling jitter.
     let mut scheduler = scheduler();
     let sink = Arc::new(Mutex::new(None));
-    let delay = std::time::Duration::from_millis(50);
+    let delay = std::time::Duration::from_secs(10);
 
     let ticker = scheduler.spawn_native_root({
         let sink = Arc::clone(&sink);
@@ -367,9 +375,11 @@ fn native_actor_self_tick_is_delivered_when_the_timer_fires() {
 
     let start = std::time::Instant::now();
 
-    // Advance to just before the delay: the timer must NOT fire, and the actor
-    // must remain parked (no wake, no delivery).
-    let woken_early = scheduler.tick_native_timers_at(start + std::time::Duration::from_millis(49));
+    // Advance well short of the delay: the timer must NOT fire, and the actor
+    // must remain parked (no wake, no delivery). 5s < 10s by a margin that
+    // dwarfs the (sub-second) gap between this `start` and the handler's
+    // schedule-time anchor.
+    let woken_early = scheduler.tick_native_timers_at(start + std::time::Duration::from_secs(5));
     assert!(
         woken_early.is_empty(),
         "the self-tick must not fire before its delay"
@@ -381,9 +391,10 @@ fn native_actor_self_tick_is_delivered_when_the_timer_fires() {
         "still no tick before the delay elapses"
     );
 
-    // Advance past the delay: the timer fires, delivers its message, and wakes
-    // the parked actor.
-    let woken = scheduler.tick_native_timers_at(start + std::time::Duration::from_millis(50));
+    // Advance comfortably past the delay: the timer fires, delivers its
+    // message, and wakes the parked actor. start + 10s + 5s slack is past the
+    // deadline (schedule_instant + 10s, with schedule_instant <= start).
+    let woken = scheduler.tick_native_timers_at(start + delay + std::time::Duration::from_secs(5));
     assert_eq!(
         woken,
         vec![ticker],
@@ -700,5 +711,129 @@ fn linked_non_trapping_process_survives_normal_link_exit() {
         scheduler.native_exit_reason(bystander),
         None,
         "a Normal link exit does not kill a non-trapping survivor"
+    );
+}
+
+/// A link-chain node for the transitive-cascade test. On its first slice a node
+/// at `depth` spawns a linked child at `depth + 1` (until `max_depth`), records
+/// the child's pid into `pids[depth + 1]`, and parks. Only the head
+/// (`crash_on_message`) ever stops itself — on `CMD_CRASH` it `Stop(Error)`s, so
+/// every other node can die ONLY by link propagation cascading down the chain.
+struct ChainNode {
+    depth: usize,
+    max_depth: usize,
+    started: bool,
+    pids: Arc<Vec<Mutex<Option<u64>>>>,
+    crash_on_message: bool,
+}
+
+impl NativeHandler for ChainNode {
+    fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        if !self.started {
+            self.started = true;
+            let child_depth = self.depth + 1;
+            if child_depth < self.max_depth {
+                let max_depth = self.max_depth;
+                let pids = Arc::clone(&self.pids);
+                let factory: NativeHandlerFactory = Box::new(move || {
+                    Box::new(ChainNode {
+                        depth: child_depth,
+                        max_depth,
+                        started: false,
+                        pids: Arc::clone(&pids),
+                        crash_on_message: false,
+                    })
+                });
+                let child = ctx
+                    .spawn_native(factory, Some(ctx.self_pid()))
+                    .expect("chain node spawns its linked child");
+                *self.pids[child_depth].lock().expect("chain pid lock") = Some(child);
+            }
+            return NativeOutcome::Wait;
+        }
+        if self.crash_on_message && ctx.recv().and_then(Term::as_small_int) == Some(CMD_CRASH) {
+            return NativeOutcome::Stop(ExitReason::Error);
+        }
+        NativeOutcome::Wait
+    }
+}
+
+#[test]
+fn abnormal_link_exit_cascades_transitively_through_a_nontrapping_chain() {
+    // WR-5: link propagation is TRANSITIVE. A head crashes abnormally; its
+    // linked non-trapping child dies, and THAT death must continue the cascade
+    // to the grandchild — matching the threaded `process_exited` worklist. A
+    // per-target (non-cascading) propagation would leave the grandchild alive,
+    // which is exactly the regression this test guards against.
+    let mut scheduler = scheduler();
+    const DEPTH: usize = 3;
+    let pids: Arc<Vec<Mutex<Option<u64>>>> =
+        Arc::new((0..DEPTH).map(|_| Mutex::new(None)).collect());
+
+    let head = scheduler.spawn_native_root({
+        let pids = Arc::clone(&pids);
+        Box::new(move || {
+            Box::new(ChainNode {
+                depth: 0,
+                max_depth: DEPTH,
+                started: false,
+                pids: Arc::clone(&pids),
+                crash_on_message: true,
+            })
+        })
+    });
+    *pids[0].lock().expect("chain pid lock") = Some(head);
+
+    // Settle the chain: head spawns child (depth 1), which spawns grandchild
+    // (depth 2); each links to its parent and parks. One turn per level.
+    for _ in 0..=DEPTH {
+        let _settle = scheduler.run_native_until_idle();
+    }
+    let child = pids[1]
+        .lock()
+        .expect("chain pid lock")
+        .expect("a child pid");
+    let grandchild = pids[2]
+        .lock()
+        .expect("chain pid lock")
+        .expect("a grandchild pid");
+    assert_eq!(
+        scheduler.native_exit_reason(child),
+        None,
+        "the child is alive before the crash"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(grandchild),
+        None,
+        "the grandchild is alive before the crash"
+    );
+
+    // Crash the head: the abnormal link signal must cascade head -> child ->
+    // grandchild, all three exiting with Error (Error has no Kill->Killed remap).
+    scheduler
+        .send_owned(
+            head,
+            &crate::ets::OwnedTerm::immediate(Term::small_int(CMD_CRASH)),
+        )
+        .expect("the crash trigger delivers to the head");
+    assert!(
+        drain_until_exit(&mut scheduler, head, 4),
+        "the head exits after receiving its crash trigger"
+    );
+
+    assert_eq!(
+        scheduler.native_exit_reason(head),
+        Some(ExitReason::Error),
+        "the head crashed abnormally"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(child),
+        Some(ExitReason::Error),
+        "the directly-linked child died from the head's abnormal exit"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(grandchild),
+        Some(ExitReason::Error),
+        "the grandchild died from the TRANSITIVE cascade through the child"
     );
 }

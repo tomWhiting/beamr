@@ -163,7 +163,11 @@ pub const fn terminal_reason(signal: ExitReason) -> ExitReason {
     }
 }
 
-fn should_die_from_signal(target: &Process, reason: ExitReason) -> bool {
+/// Whether an incoming link exit signal terminates `target`: an untrappable
+/// `Kill` always does; any other abnormal reason does unless `target` is
+/// trapping exits; a `Normal` exit never does. Shared with the cooperative wasm
+/// scheduler's native link propagation so both paths agree by construction.
+pub(crate) fn should_die_from_signal(target: &Process, reason: ExitReason) -> bool {
     reason == ExitReason::Kill || (reason != ExitReason::Normal && !target.trap_exit())
 }
 
