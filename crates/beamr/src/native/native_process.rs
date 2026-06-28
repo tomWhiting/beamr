@@ -248,6 +248,22 @@ impl<'a> NativeContext<'a> {
         crate::term::boxed::write_tuple(slice, elements)
     }
 
+    /// Deep-copy a self-contained [`crate::ets::OwnedTerm`] graph onto this
+    /// process's heap and return the rooted term, or `None` when the heap is
+    /// full or the copy fails.
+    ///
+    /// This is the delivery primitive a dynamic [`crate::native::actor::Actor`]
+    /// uses when its `Call`/`Reply`/`Cast` payload is carried as an opaque,
+    /// already-detached term graph (e.g. a host value marshalled outside a slice)
+    /// rather than rebuilt element by element with [`Self::alloc_tuple`]. It
+    /// reuses the same `copy_term_to_heap` deep-copier ETS delivery uses, so the
+    /// resulting term is rooted on this heap and valid for the rest of the slice;
+    /// the native slice performs no GC, so no rooting of the argument is required.
+    #[must_use]
+    pub fn alloc_owned_term(&mut self, owned: &crate::ets::OwnedTerm) -> Option<Term> {
+        owned.copy_to_heap(self.process.heap_mut()).ok()
+    }
+
     /// Spawn a native child from `factory`, optionally linking it to this
     /// process, delegating to the same [`SpawnFacility`] the scheduler uses.
     pub fn spawn_native(

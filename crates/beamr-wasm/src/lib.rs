@@ -12,6 +12,7 @@ use beamr::loader::{UnresolvedImport, load_module_with_origin};
 use beamr::module::{ModuleOrigin, ModuleRegistry};
 use beamr::native::bifs::register_gate1_bifs;
 
+use beamr::ets::OwnedTerm;
 use beamr::native::etf_bifs::register_etf_bifs;
 use beamr::native::exception_bifs::register_exception_bifs;
 use beamr::native::process_bifs::register_gate2_bifs;
@@ -22,6 +23,7 @@ use beamr::native::{
 use beamr::scheduler::{WasmAsyncCompletion, WasmRunSummary, WasmScheduler};
 use beamr::term::json::term_to_value;
 use beamr::term::{Term, format::format_term};
+use beamr::{CoopSenderHandle, DynActor, ReplyFn, WireTerm, spawn_actor_cooperative};
 use convert::{
     js_value_to_owned_term, js_value_to_term_in_context, term_to_js_value, terms_from_json_array,
     terms_to_js_array,
@@ -49,6 +51,7 @@ pub struct WasmVm {
     timer_handles: Rc<RefCell<BTreeMap<u64, HostTimer>>>,
     async_bridge: Rc<HostAsyncNifs>,
     js_callbacks: Rc<HostJsCallbacks>,
+    actor_handlers: Rc<HostActorHandlers>,
 }
 
 #[wasm_bindgen]
@@ -82,6 +85,7 @@ impl WasmVm {
         scheduler
             .borrow_mut()
             .set_wasm_async_nif_facility(Some(facility));
+        let actor_handlers = Rc::new(HostActorHandlers::new());
         Ok(Self {
             atom_table,
             module_registry,
@@ -90,6 +94,7 @@ impl WasmVm {
             timer_handles: Rc::new(RefCell::new(BTreeMap::new())),
             async_bridge,
             js_callbacks,
+            actor_handlers,
         })
     }
 
@@ -210,6 +215,68 @@ impl WasmVm {
             .map(|term| self.term_to_json_or_fallback(term.root()))
             .unwrap_or(Value::Null);
         json_to_js(&value)
+    }
+
+    /// Spawn a cooperative actor whose request/reply logic is a JavaScript
+    /// function, returning its `u64` pid.
+    ///
+    /// `handler` is `reply = handler(request)`: the VM marshals each inbound
+    /// request term to a `JsValue` (the term codec), calls `handler`, and marshals
+    /// the returned value back to a reply term. The actor is a first-class beamr
+    /// process (pid, mailbox, supervision) driven by the cooperative `call_async`
+    /// surface, so [`WasmVm::call`] returns a real `Promise` over its reply. The
+    /// handler must return synchronously (it computes a value, not a `Promise`);
+    /// host *async* work belongs on the async-NIF seam ([`WasmVm::register_async_nif`]).
+    ///
+    /// The handler runs on the host thread during a pumped turn, so it stays alive
+    /// for the actor's lifetime in a per-VM registry rather than crossing the
+    /// `Send` actor boundary (a JS `Function` is `!Send`); the actor carries only a
+    /// small registry id.
+    pub fn spawn_actor(&mut self, handler: Function) -> u64 {
+        let handler_id = self.actor_handlers.register(handler);
+        let atom_table = Arc::clone(&self.atom_table);
+        let reply: ReplyFn = Arc::new(move |request: &OwnedTerm| {
+            invoke_actor_handler(handler_id, request, &atom_table)
+        });
+        let actor = spawn_actor_cooperative::<DynActor, _>(&self.scheduler, move || {
+            DynActor::new(Arc::clone(&reply))
+        });
+        actor.pid
+    }
+
+    /// Send `request` to an actor by pid and return a `Promise` that resolves with
+    /// the actor's reply value (or rejects on timeout / a marshalling failure).
+    ///
+    /// The request value is marshalled to a term, sent through the cooperative
+    /// `call_async` path (ref-correlated, so concurrent calls never cross
+    /// replies), and the resulting host-pumpable `CallFuture` is wrapped as a JS
+    /// `Promise` via `future_to_promise`. The Promise resolves only as the host
+    /// keeps pumping [`WasmVm::run_step`]: each pump advances the transient call
+    /// client, and the reply (or its timeout self-tick) wakes the future.
+    pub fn call(&mut self, pid: u64, request: JsValue) -> Result<Promise, JsValue> {
+        let owned = js_value_to_owned_term(request, &self.atom_table)?;
+        let handle = CoopSenderHandle::<DynActor>::attach(&self.scheduler, pid);
+        let future = handle.call_async(WireTerm::new(owned));
+        let atom_table = Arc::clone(&self.atom_table);
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            match future.await {
+                Ok(reply) => term_to_js_value(reply.owned().root(), atom_table.as_ref()),
+                Err(error) => Err(JsValue::from_str(&error.to_string())),
+            }
+        }))
+    }
+
+    /// Send a fire-and-forget message to an actor by pid (non-blocking).
+    ///
+    /// The value is marshalled to a term and cast through the cooperative path; it
+    /// reaches the actor's cast handler on a later pumped turn. A cast to a dead
+    /// pid is silently dropped, exactly like a BEAM send.
+    pub fn cast(&mut self, pid: u64, message: JsValue) -> Result<(), JsValue> {
+        let owned = js_value_to_owned_term(message, &self.atom_table)?;
+        let handle = CoopSenderHandle::<DynActor>::attach(&self.scheduler, pid);
+        handle
+            .cast(WireTerm::new(owned))
+            .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     /// Called by tests or custom hosts to drive an already-fired timer manually.
@@ -423,6 +490,99 @@ enum HostCallbackArguments {
     Positional,
 }
 
+// Process-global registry of JavaScript actor handlers (`reply = handler(request)`).
+//
+// A JS `Function` is `!Send`, but [`beamr::DynActor`]'s reply transform must be
+// `Send + Sync` to be captured by the restart-capable spawn factory. The transform
+// therefore captures only a `u64` handler id (and the `Send + Sync` atom table)
+// and dispatches through this thread-local, where the live `Function` is held —
+// so nothing `!Send` ever crosses the actor boundary. The wasm runtime is
+// single-threaded; the thread-local is reached only on the host thread during a
+// pumped turn, so the `RefCell` is never contended. Ids are drawn from a global
+// monotonic counter, so they are unique across every VM in this thread.
+thread_local! {
+    static ACTOR_HANDLERS: RefCell<BTreeMap<u64, Function>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+static NEXT_ACTOR_HANDLER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Per-VM owner of the handler ids it registered, so a dropped VM removes its JS
+/// handlers from the thread-local registry (no leak across VM lifetimes).
+struct HostActorHandlers {
+    ids: RefCell<Vec<u64>>,
+}
+
+impl HostActorHandlers {
+    fn new() -> Self {
+        Self {
+            ids: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Store `handler` in the thread-local registry and return its global id.
+    fn register(&self, handler: Function) -> u64 {
+        let id = NEXT_ACTOR_HANDLER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        ACTOR_HANDLERS.with(|handlers| {
+            handlers.borrow_mut().insert(id, handler);
+        });
+        self.ids.borrow_mut().push(id);
+        id
+    }
+}
+
+impl Drop for HostActorHandlers {
+    fn drop(&mut self) {
+        ACTOR_HANDLERS.with(|handlers| {
+            let mut handlers = handlers.borrow_mut();
+            for id in self.ids.borrow().iter() {
+                handlers.remove(id);
+            }
+        });
+    }
+}
+
+/// Run the registered JS handler `id` over `request`, marshalling request and
+/// reply through the term codec.
+///
+/// Returns the reply term graph. A missing handler, a marshalling failure, or a
+/// JS exception is surfaced as an `{error, Reason}` reply term (never a panic
+/// across the actor boundary), so the awaiting `Promise` still resolves with an
+/// inspectable value.
+fn invoke_actor_handler(id: u64, request: &OwnedTerm, atom_table: &Arc<AtomTable>) -> OwnedTerm {
+    let handler = ACTOR_HANDLERS.with(|handlers| handlers.borrow().get(&id).cloned());
+    let Some(handler) = handler else {
+        return error_reply_term(atom_table, "actor handler is not registered");
+    };
+    let request_value = match term_to_js_value(request.root(), atom_table.as_ref()) {
+        Ok(value) => value,
+        Err(_) => return error_reply_term(atom_table, "failed to marshal request to JavaScript"),
+    };
+    let reply_value = match handler.call1(&JsValue::UNDEFINED, &request_value) {
+        Ok(value) => value,
+        Err(_) => return error_reply_term(atom_table, "actor handler threw an exception"),
+    };
+    match js_value_to_owned_term(reply_value, atom_table) {
+        Ok(owned) => owned,
+        Err(_) => error_reply_term(atom_table, "failed to marshal reply from JavaScript"),
+    }
+}
+
+/// Build an `{error, <<reason>>}` owned reply term graph for a handler failure.
+fn error_reply_term(atom_table: &Arc<AtomTable>, reason: &str) -> OwnedTerm {
+    let mut context = beamr::native::ProcessContext::new();
+    context.set_atom_table(Some(Arc::clone(atom_table)));
+    let error_atom = Term::atom(beamr::atom::Atom::ERROR);
+    let reason_term = context
+        .alloc_binary(reason.as_bytes())
+        .unwrap_or(error_atom);
+    let tuple = context
+        .alloc_tuple(&[error_atom, reason_term])
+        .unwrap_or(error_atom);
+    context
+        .take_detached_result(tuple)
+        .unwrap_or_else(|| OwnedTerm::immediate(error_atom))
+}
+
 struct HostWasmFacility {
     async_nifs: Rc<HostAsyncNifs>,
     js_callbacks: Rc<HostJsCallbacks>,
@@ -562,10 +722,65 @@ fn clear_timeout(handle: i32) {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    use js_sys::Object;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
     #[test]
     fn create_vm_initializes() {
         let vm = WasmVm::new();
         assert!(vm.is_ok());
+    }
+
+    // End-to-end WR-8: a JS host spawns an actor whose reply is computed by a
+    // JavaScript function, then `await`s a request/reply as a real `Promise` over
+    // the cooperative `CallFuture`.
+    //
+    // NOTE: this is a `#[wasm_bindgen_test]`; it requires a browser/Node wasm
+    // runner (`wasm-pack test` / `wasm-bindgen-test-runner`) and CANNOT be
+    // executed headless in this environment. It is compile-gated here (the seam's
+    // executable proof is the native `beamr` test of the same `call_async` logic).
+    #[wasm_bindgen_test]
+    async fn await_vm_call_resolves_with_js_handler_reply() {
+        let mut vm = WasmVm::new().expect("VM constructs");
+
+        // JS handler: given request `{ n }`, reply with `{ result: n + 1 }`.
+        let handler = Closure::<dyn FnMut(JsValue) -> JsValue>::new(|request: JsValue| {
+            let n = Reflect::get(&request, &JsValue::from_str("n"))
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0);
+            let reply = Object::new();
+            let _set = Reflect::set(
+                &reply,
+                &JsValue::from_str("result"),
+                &JsValue::from_f64(n + 1.0),
+            );
+            reply.into()
+        });
+        let handler_fn = handler.as_ref().unchecked_ref::<Function>().clone();
+
+        let pid = vm.spawn_actor(handler_fn);
+
+        let request = Object::new();
+        let _set = Reflect::set(&request, &JsValue::from_str("n"), &JsValue::from_f64(41.0));
+        let promise = vm
+            .call(pid, request.into())
+            .expect("call returns a Promise");
+
+        // Pump the cooperative scheduler so the transient call client sends the
+        // request, the actor runs the JS handler, and the reply resolves the slot.
+        for _ in 0..8 {
+            let _summary = vm.run_step().expect("run_step succeeds");
+        }
+
+        let value = JsFuture::from(promise)
+            .await
+            .expect("the call Promise resolves with the actor's reply");
+        let result = Reflect::get(&value, &JsValue::from_str("result"))
+            .expect("reply has a result field")
+            .as_f64();
+        assert_eq!(result, Some(42.0), "JS handler replied with n + 1");
+
+        drop(handler);
     }
 }

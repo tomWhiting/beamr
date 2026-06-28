@@ -364,6 +364,7 @@ fn check_depth(depth: usize) -> Result<(), JsValue> {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    use wasm_bindgen::JsCast;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn atom_table() -> Arc<AtomTable> {
