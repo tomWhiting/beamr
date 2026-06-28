@@ -18,7 +18,9 @@ use super::*;
 use crate::atom::{Atom, AtomTable};
 use crate::module::ModuleRegistry;
 use crate::native::BifRegistryImpl;
-use crate::native::native_process::{NativeContext, NativeHandler, NativeOutcome};
+use crate::native::native_process::{
+    NativeContext, NativeHandler, NativeHandlerFactory, NativeOutcome,
+};
 use crate::process::ExitReason;
 use crate::term::Term;
 
@@ -287,5 +289,416 @@ fn handler_spawns_child_and_sends_it_a_message_cooperatively() {
         *sink.lock().expect("sink lock"),
         Some(7),
         "the cooperatively-spawned child received and forwarded the message"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WR-4: native timers on the cooperative scheduler.
+// ---------------------------------------------------------------------------
+
+/// A native actor that, on its first slice (no mail), schedules a self-tick
+/// `delay` in the future carrying `tick_value`, then parks. When the tick is
+/// delivered it records the value into `sink` and stops normally. This proves a
+/// `NativeContext::schedule` `Deliver` timer is honoured cooperatively: the
+/// scheduler reschedules the parked actor when the timer fires and delivers the
+/// scheduled message to its mailbox.
+struct SelfTicker {
+    delay: std::time::Duration,
+    tick_value: i64,
+    sink: Arc<Mutex<Option<i64>>>,
+    armed: bool,
+}
+
+impl NativeHandler for SelfTicker {
+    fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        // Drain any delivered tick first.
+        if let Some(message) = ctx.recv() {
+            if let Some(value) = message.as_small_int()
+                && let Ok(mut guard) = self.sink.lock()
+            {
+                *guard = Some(value);
+            }
+            return NativeOutcome::Stop(ExitReason::Normal);
+        }
+        if !self.armed {
+            self.armed = true;
+            let reference = ctx.schedule(self.delay, Term::small_int(self.tick_value));
+            assert!(
+                reference.is_some(),
+                "the cooperative scheduler supplies a real timer wheel"
+            );
+        }
+        NativeOutcome::Wait
+    }
+}
+
+#[test]
+fn native_actor_self_tick_is_delivered_when_the_timer_fires() {
+    // WR-4: a native actor schedules a self-Deliver timer and parks. Advancing
+    // the cooperative timer past the delay reschedules the actor and delivers
+    // the timer message; before the delay nothing is delivered. Driven entirely
+    // through the deterministic `tick_native_timers_at` seam — no browser, no
+    // wall-clock dependency.
+    let mut scheduler = scheduler();
+    let sink = Arc::new(Mutex::new(None));
+    let delay = std::time::Duration::from_millis(50);
+
+    let ticker = scheduler.spawn_native_root({
+        let sink = Arc::clone(&sink);
+        Box::new(move || {
+            Box::new(SelfTicker {
+                delay,
+                tick_value: 1234,
+                sink: Arc::clone(&sink),
+                armed: false,
+            })
+        })
+    });
+
+    // First turn: the actor arms its self-tick and parks. Nothing exits, nothing
+    // is delivered yet.
+    let exited = scheduler.run_native_until_idle();
+    assert!(exited.is_empty(), "the ticker parks after arming its timer");
+    assert_eq!(
+        *sink.lock().expect("sink lock"),
+        None,
+        "no tick before the delay elapses"
+    );
+
+    let start = std::time::Instant::now();
+
+    // Advance to just before the delay: the timer must NOT fire, and the actor
+    // must remain parked (no wake, no delivery).
+    let woken_early = scheduler.tick_native_timers_at(start + std::time::Duration::from_millis(49));
+    assert!(
+        woken_early.is_empty(),
+        "the self-tick must not fire before its delay"
+    );
+    let _early_turn = scheduler.run_native_until_idle();
+    assert_eq!(
+        *sink.lock().expect("sink lock"),
+        None,
+        "still no tick before the delay elapses"
+    );
+
+    // Advance past the delay: the timer fires, delivers its message, and wakes
+    // the parked actor.
+    let woken = scheduler.tick_native_timers_at(start + std::time::Duration::from_millis(50));
+    assert_eq!(
+        woken,
+        vec![ticker],
+        "the expired self-tick wakes exactly the scheduling actor"
+    );
+
+    // Run the woken actor: it receives the delivered tick and stops normally.
+    assert!(
+        drain_until_exit(&mut scheduler, ticker, 4),
+        "the rescheduled actor runs and exits after receiving its self-tick"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(ticker),
+        Some(ExitReason::Normal),
+        "the ticker stopped normally after handling its tick"
+    );
+    assert_eq!(
+        *sink.lock().expect("sink lock"),
+        Some(1234),
+        "the scheduled timer message was delivered to the actor's mailbox"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WR-5: supervision + restart on the cooperative scheduler.
+// ---------------------------------------------------------------------------
+
+/// Command discriminants exchanged as small-integer messages so the tests need
+/// no atom-table coordination.
+const CMD_CRASH: i64 = 1;
+const CMD_WORK: i64 = 2;
+
+/// A supervised worker child. On `CMD_CRASH` it crashes (`Stop(Error)`); on
+/// `CMD_WORK` it records `pid`-tagged proof into `sink` and stops normally.
+struct Worker {
+    sink: Arc<Mutex<Vec<i64>>>,
+}
+
+impl NativeHandler for Worker {
+    fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        match ctx.recv().and_then(Term::as_small_int) {
+            Some(CMD_CRASH) => NativeOutcome::Stop(ExitReason::Error),
+            Some(CMD_WORK) => {
+                if let Ok(mut guard) = self.sink.lock() {
+                    guard.push(CMD_WORK);
+                }
+                NativeOutcome::Stop(ExitReason::Normal)
+            }
+            _ => NativeOutcome::Wait,
+        }
+    }
+}
+
+/// A supervisor that traps exits, spawns a linked child, and crashes it; when it
+/// receives the child's `{'EXIT', child, error}` link signal it asserts the
+/// signal shape, restarts the child via the SAME factory, sends the restarted
+/// child `CMD_WORK`, and stops. `restarts` counts how many times the supervisor
+/// restarted the child so the test can assert the restart happened.
+struct Supervisor {
+    sink: Arc<Mutex<Vec<i64>>>,
+    restarts: Arc<Mutex<u32>>,
+    started: bool,
+    child_pid: Arc<Mutex<Option<u64>>>,
+}
+
+impl Supervisor {
+    fn child_factory(sink: Arc<Mutex<Vec<i64>>>) -> NativeHandlerFactory {
+        Box::new(move || {
+            Box::new(Worker {
+                sink: Arc::clone(&sink),
+            })
+        })
+    }
+}
+
+impl NativeHandler for Supervisor {
+    fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        if !self.started {
+            self.started = true;
+            ctx.set_trap_exit(true);
+            let child = ctx
+                .spawn_native(
+                    Self::child_factory(Arc::clone(&self.sink)),
+                    Some(ctx.self_pid()),
+                )
+                .expect("supervisor spawns its linked child");
+            *self.child_pid.lock().expect("child pid lock") = Some(child);
+            ctx.send(child, Term::small_int(CMD_CRASH));
+            return NativeOutcome::Wait;
+        }
+
+        // Woken by the linked child's exit signal: it must be a trapped
+        // `{'EXIT', child, error}` tuple (link semantics for a trapping process).
+        let Some(message) = ctx.recv() else {
+            return NativeOutcome::Wait;
+        };
+        let tuple = crate::term::boxed::Tuple::new(message)
+            .expect("a trapping supervisor receives the EXIT signal as a tuple");
+        assert_eq!(tuple.arity(), 3, "EXIT signal is a 3-tuple");
+        assert_eq!(
+            tuple.get(0).and_then(Term::as_atom),
+            Some(Atom::EXIT),
+            "first element is the 'EXIT' atom"
+        );
+        assert_eq!(
+            tuple.get(2).and_then(Term::as_atom),
+            Some(Atom::ERROR),
+            "the reported reason is the child's crash reason"
+        );
+
+        // Restart the child via the retained factory and give it real work.
+        let child = ctx
+            .spawn_native(
+                Self::child_factory(Arc::clone(&self.sink)),
+                Some(ctx.self_pid()),
+            )
+            .expect("supervisor restarts the child via the factory");
+        *self.child_pid.lock().expect("child pid lock") = Some(child);
+        *self.restarts.lock().expect("restart counter lock") += 1;
+        ctx.send(child, Term::small_int(CMD_WORK));
+        NativeOutcome::Stop(ExitReason::Normal)
+    }
+}
+
+#[test]
+fn supervisor_restarts_crashed_supervised_child_via_factory() {
+    // WR-5: a trapping supervisor spawns a linked child, the child crashes
+    // (`Stop(Error)`), the supervisor observes the `{'EXIT', child, error}` link
+    // signal, restarts the child through the SAME factory, and the restarted
+    // child receives `CMD_WORK` and runs. All cooperative, single-threaded.
+    let mut scheduler = scheduler();
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let restarts = Arc::new(Mutex::new(0));
+    let child_pid = Arc::new(Mutex::new(None));
+
+    let supervisor = scheduler.spawn_native_root({
+        let sink = Arc::clone(&sink);
+        let restarts = Arc::clone(&restarts);
+        let child_pid = Arc::clone(&child_pid);
+        Box::new(move || {
+            Box::new(Supervisor {
+                sink: Arc::clone(&sink),
+                restarts: Arc::clone(&restarts),
+                started: false,
+                child_pid: Arc::clone(&child_pid),
+            })
+        })
+    });
+
+    // First turn: the supervisor parks (no mail).
+    let _first = scheduler.run_native_until_idle();
+    // Poke it so it runs its start slice: traps, spawns+links the child, crashes it.
+    scheduler
+        .send_owned(
+            supervisor,
+            &crate::ets::OwnedTerm::immediate(Term::atom(Atom::OK)),
+        )
+        .expect("trigger delivers to the supervisor");
+
+    // Drive turns: child crashes -> EXIT signal wakes the supervisor -> it
+    // restarts the child and stops. The supervisor exits normally.
+    assert!(
+        drain_until_exit(&mut scheduler, supervisor, 12),
+        "the supervisor exits after observing the crash and restarting"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(supervisor),
+        Some(ExitReason::Normal),
+        "the supervisor stopped normally after restarting the child"
+    );
+    assert_eq!(
+        *restarts.lock().expect("restart counter lock"),
+        1,
+        "the supervisor restarted the child exactly once via the factory"
+    );
+
+    // Drain further turns so the restarted child handles its CMD_WORK.
+    for _ in 0..12 {
+        let _exited = scheduler.run_native_until_idle();
+        if !sink.lock().expect("sink lock").is_empty() {
+            break;
+        }
+    }
+    assert_eq!(
+        *sink.lock().expect("sink lock"),
+        vec![CMD_WORK],
+        "the restarted child received its message and ran"
+    );
+
+    // The restarted child is a distinct, live, non-native-exited process: it ran
+    // to a Normal stop only AFTER restart, never as the crashed original.
+    let restarted = child_pid
+        .lock()
+        .expect("child pid lock")
+        .expect("a child pid");
+    assert_eq!(
+        scheduler.native_exit_reason(restarted),
+        Some(ExitReason::Normal),
+        "the restarted child stopped normally after doing its work"
+    );
+}
+
+/// A non-trapping process that simply parks forever (until killed by a link
+/// signal). It never stops on its own, so any exit it shows is link-driven.
+struct Bystander;
+
+impl NativeHandler for Bystander {
+    fn handle(&mut self, _ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        NativeOutcome::Wait
+    }
+}
+
+/// A linker that, on its start slice, spawns a linked non-trapping bystander and
+/// then crashes itself (`Stop(Error)`), so the bystander must die by link
+/// propagation (it does not trap exits).
+struct Linker {
+    bystander_pid: Arc<Mutex<Option<u64>>>,
+}
+
+impl NativeHandler for Linker {
+    fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        let bystander = ctx
+            .spawn_native(Box::new(|| Box::new(Bystander)), Some(ctx.self_pid()))
+            .expect("linker spawns its linked bystander");
+        *self.bystander_pid.lock().expect("bystander pid lock") = Some(bystander);
+        NativeOutcome::Stop(ExitReason::Error)
+    }
+}
+
+#[test]
+fn linked_non_trapping_process_dies_on_abnormal_link_exit() {
+    // WR-5 link semantics: a non-supervised, non-trapping linked process dies
+    // with the terminal reason when its link partner exits abnormally — it does
+    // NOT receive an EXIT message (that is the trapping case, proven above).
+    let mut scheduler = scheduler();
+    let bystander_pid = Arc::new(Mutex::new(None));
+
+    let linker = scheduler.spawn_native_root({
+        let bystander_pid = Arc::clone(&bystander_pid);
+        Box::new(move || {
+            Box::new(Linker {
+                bystander_pid: Arc::clone(&bystander_pid),
+            })
+        })
+    });
+
+    // The linker spawns+links the bystander and crashes in the same slice.
+    assert!(
+        drain_until_exit(&mut scheduler, linker, 4),
+        "the linker exits after spawning and crashing"
+    );
+    assert_eq!(
+        scheduler.native_exit_reason(linker),
+        Some(ExitReason::Error),
+        "the linker crashed abnormally"
+    );
+
+    // The linked bystander was killed by the abnormal link signal, with the
+    // terminal reason for an Error exit (Error has no Kill->Killed remap).
+    let bystander = bystander_pid
+        .lock()
+        .expect("bystander pid lock")
+        .expect("a bystander pid");
+    assert_eq!(
+        scheduler.native_exit_reason(bystander),
+        Some(ExitReason::Error),
+        "the non-trapping bystander died from the abnormal link exit"
+    );
+}
+
+#[test]
+fn linked_non_trapping_process_survives_normal_link_exit() {
+    // A linker variant that exits Normally instead of crashing.
+    struct NormalLinker {
+        bystander_pid: Arc<Mutex<Option<u64>>>,
+    }
+    impl NativeHandler for NormalLinker {
+        fn handle(&mut self, ctx: &mut NativeContext<'_>) -> NativeOutcome {
+            let bystander = ctx
+                .spawn_native(Box::new(|| Box::new(Bystander)), Some(ctx.self_pid()))
+                .expect("linker spawns its linked bystander");
+            *self.bystander_pid.lock().expect("bystander pid lock") = Some(bystander);
+            NativeOutcome::Stop(ExitReason::Normal)
+        }
+    }
+
+    // WR-5 link semantics: a `Normal` exit of a link partner never kills a
+    // non-trapping survivor (matching `should_die_from_signal`).
+    let mut scheduler = scheduler();
+    let bystander_pid = Arc::new(Mutex::new(None));
+
+    let linker = scheduler.spawn_native_root({
+        let bystander_pid = Arc::clone(&bystander_pid);
+        Box::new(move || {
+            Box::new(NormalLinker {
+                bystander_pid: Arc::clone(&bystander_pid),
+            })
+        })
+    });
+
+    assert!(
+        drain_until_exit(&mut scheduler, linker, 4),
+        "the linker exits normally after spawning"
+    );
+    // Pump a few more turns; the bystander must NOT have exited.
+    for _ in 0..4 {
+        let _exited = scheduler.run_native_until_idle();
+    }
+    let bystander = bystander_pid
+        .lock()
+        .expect("bystander pid lock")
+        .expect("a bystander pid");
+    assert_eq!(
+        scheduler.native_exit_reason(bystander),
+        None,
+        "a Normal link exit does not kill a non-trapping survivor"
     );
 }

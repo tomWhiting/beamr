@@ -19,6 +19,7 @@ use crate::native::{BifRegistryImpl, CapabilitySet, WasmAsyncNifFacility};
 use crate::process::heap::DEFAULT_HEAP_SIZE;
 use crate::process::{CodePosition, ExitReason, Priority, Process, ProcessStatus};
 use crate::term::Term;
+use crate::timer::TimerWheel;
 
 /// Receive timer scheduled by the WASM scheduler and awaiting a host timeout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +79,16 @@ pub struct WasmScheduler {
     pub(super) shared_next_pid: Arc<Mutex<u64>>,
     /// Exit reasons captured by the cooperative native path.
     pub(super) native_exit_reasons: BTreeMap<u64, ExitReason>,
+    /// Shared timer wheel for cooperative native `Deliver` timers (WR-4).
+    ///
+    /// `NativeContext::send_after`/`schedule` build `TimerKind::Deliver` entries
+    /// carrying a message payload; the existing host-`setTimeout` bridge only
+    /// carries `(pid, timer_id)` for receive-timeout label jumps and cannot
+    /// deliver a message, so native timers run on the passive wheel ticked once
+    /// per cooperative turn (see [`WasmScheduler::tick_native_timers`]). It is an
+    /// `Arc<Mutex<…>>` so the `Send + Sync` [`NativeContext`] can hold it;
+    /// uncontended on the single host thread.
+    pub(super) native_timers: Arc<Mutex<TimerWheel>>,
 }
 
 impl WasmScheduler {
@@ -107,6 +118,7 @@ impl WasmScheduler {
             wasm_async_nif_facility: None,
             shared_next_pid: Arc::new(Mutex::new(1)),
             native_exit_reasons: BTreeMap::new(),
+            native_timers: Arc::new(Mutex::new(TimerWheel::new())),
         }
     }
 
@@ -336,9 +348,73 @@ impl WasmScheduler {
         }
     }
 
+    /// Drain native `Deliver` timers that expired by wall-clock now, delivering
+    /// each timer's message to its target mailbox and waking the target.
+    ///
+    /// Returns the pids woken by an expiring timer. This is the host-facing
+    /// entry point; [`WasmScheduler::run_until_idle`] calls it at the start of
+    /// every turn so a parked native actor whose self-tick has come due is
+    /// runnable in the same turn. The deterministic counterpart used by tests
+    /// (and the seam a browser host drives with a `performance.now()`-derived
+    /// instant) is [`WasmScheduler::tick_native_timers_at`].
+    ///
+    /// When no native timers are pending this returns immediately WITHOUT
+    /// reading the wall clock, so the common timer-free turn never touches
+    /// `Instant::now()` (which is unavailable on bare `wasm32-unknown-unknown`).
+    pub fn tick_native_timers(&mut self) -> Vec<u64> {
+        let expired = {
+            let mut wheel = lock_timers(&self.native_timers);
+            if wheel.is_empty() {
+                return Vec::new();
+            }
+            wheel.tick()
+        };
+        self.deliver_expired_native_timers(expired)
+    }
+
+    /// Deterministic variant of [`WasmScheduler::tick_native_timers`]: expire
+    /// every native `Deliver` timer due at `now` and deliver it.
+    ///
+    /// Tests drive the cooperative timer path through this seam — schedule a
+    /// self-tick from a native handler, advance `now` past the delay, and the
+    /// rescheduled actor receives the delivered message — with no browser and no
+    /// wall-clock dependency, exactly as the threaded `expire_timers_for_test`
+    /// seam does for the threaded scheduler.
+    pub fn tick_native_timers_at(&mut self, now: std::time::Instant) -> Vec<u64> {
+        let expired = lock_timers(&self.native_timers).tick_at(now);
+        self.deliver_expired_native_timers(expired)
+    }
+
+    /// Route a drained set of expired timers: `Deliver` timers push their
+    /// message into the target mailbox and wake it; `ReceiveTimeout` timers are
+    /// never produced by the native path (it only schedules `Deliver`) and are
+    /// ignored defensively. Returns the woken pids.
+    fn deliver_expired_native_timers(
+        &mut self,
+        expired: Vec<crate::timer::ExpiredTimer>,
+    ) -> Vec<u64> {
+        let mut woken = Vec::new();
+        for timer in expired {
+            if timer.kind != crate::timer::TimerKind::Deliver {
+                continue;
+            }
+            let pid = timer.target_pid;
+            let Some(process) = self.processes.get_mut(&pid) else {
+                continue;
+            };
+            process.mailbox_mut().push_owned(timer.message);
+            self.after_successful_enqueue(pid);
+            woken.push(pid);
+        }
+        woken
+    }
+
     /// Execute at most one ready-queue snapshot. Processes that yield are
     /// requeued for the next host-driven turn, preserving cooperative fairness.
     pub fn run_until_idle(&mut self) -> WasmRunSummary {
+        // WR-4: expire any native `Deliver` timers due now so a parked actor
+        // whose self-tick has come due is runnable within this same turn.
+        let _woken = self.tick_native_timers();
         let mut summary = WasmRunSummary::default();
         let budget = self.ready.len();
         let mut yielded_next_tick = Vec::new();
@@ -541,6 +617,15 @@ impl WasmScheduler {
             }
         }
     }
+}
+
+/// Lock the native timer wheel, recovering from poisoning (which cannot occur
+/// without a panic across the uncontended single-threaded lock, but must be
+/// handled to keep the cooperative path panic-free).
+fn lock_timers(timers: &Mutex<TimerWheel>) -> std::sync::MutexGuard<'_, TimerWheel> {
+    timers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn send_error_to_exec(error: SendError) -> ExecError {
