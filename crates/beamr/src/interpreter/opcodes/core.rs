@@ -24,7 +24,7 @@ use crate::native::ExceptionClass;
 use crate::process::JitRuntimeContext;
 #[cfg(feature = "jit")]
 use crate::process::JitStatus;
-use crate::process::{CodePosition, ExitReason, Process};
+use crate::process::{CodePosition, ExitReason, Process, X_REG_COUNT};
 use crate::term::Term;
 use crate::term::boxed::{Tuple, write_cons, write_tuple};
 use crate::timer::TimerWheel;
@@ -324,7 +324,16 @@ pub fn put_list(
     tail: &Operand,
     destination: &Operand,
 ) -> Result<InstructionOutcome, ExecError> {
-    ensure_space(process, 2, 256).map_err(gc_error_to_exec)?;
+    // These opcodes carry no compiler-emitted live operand in this VM's
+    // bytecode (verified in loader/decode/instruction.rs PutList/PutTuple2/
+    // UpdateRecord and code.rs ops 69/164/181 — none parse a Live field).
+    // This in-opcode `ensure_space` is a defensive safety net: under correct
+    // codegen a preceding test_heap/allocate has already reserved the heap, so
+    // it normally never collects. When it does, we have no live information, so
+    // we conservatively root the full register file (`X_REG_COUNT`). Passing a
+    // smaller live count would let minor GC clear (NIL) live registers above
+    // that index — see Process::clear_dead_x_regs / gc::minor.
+    ensure_space(process, 2, X_REG_COUNT).map_err(gc_error_to_exec)?;
     let head = read_term(process, module, head)?;
     let tail = read_term(process, module, tail)?;
     let ptr = process.heap_mut().alloc(2).map_err(ExecError::from)?;
@@ -347,7 +356,9 @@ pub fn put_tuple2(
         .len()
         .checked_add(1)
         .ok_or(ExecError::InvalidOperand("tuple size"))?;
-    ensure_space(process, words, 256).map_err(gc_error_to_exec)?;
+    // No live operand exists for put_tuple2 (see put_list above); conservatively
+    // root the full register file on the safety-net collection.
+    ensure_space(process, words, X_REG_COUNT).map_err(gc_error_to_exec)?;
     let mut values = Vec::with_capacity(element_operands.len());
     for operand in element_operands {
         values.push(read_term(process, module, operand)?);
@@ -385,7 +396,11 @@ pub fn update_record(
         .checked_add(1)
         .ok_or(ExecError::InvalidOperand("update_record tuple size"))?;
 
-    ensure_space(process, words, 256).map_err(gc_error_to_exec)?;
+    // No live operand exists for update_record (see put_list above).
+    // Conservatively root the full register file: deriving live_x from
+    // parsed.source/updates/destination would under-count the true live set and
+    // clear live registers the instruction does not name (a known regression).
+    ensure_space(process, words, X_REG_COUNT).map_err(gc_error_to_exec)?;
 
     let source_term = read_term(process, module, parsed.source)?;
     let tuple = Tuple::new(source_term).ok_or(ExecError::Badarg)?;

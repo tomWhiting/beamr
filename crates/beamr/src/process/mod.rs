@@ -119,6 +119,15 @@ pub struct SuspensionRecord {
     pub continuation: ResumeContinuation,
 }
 
+/// Number of X registers in a process register file.
+///
+/// This is the fixed width of [`Process`]'s `x_regs` array. Opcodes whose
+/// bytecode carries no compiler-emitted live count (e.g. `put_list`,
+/// `put_tuple2`, `update_record`) must pass this full width to
+/// [`crate::gc::ensure_space`] so a defensive in-opcode collection roots every
+/// register and never clears a live one.
+pub(crate) const X_REG_COUNT: usize = 1024;
+
 /// One isolated BEAM-style process.
 ///
 /// The `Rc` marker intentionally makes `Process` neither [`Send`] nor [`Sync`]:
@@ -154,7 +163,7 @@ pub struct Process {
     receive_timer_ref: Option<u64>,
     suspension: Option<SuspensionRecord>,
     next_suspension_call_id: u64,
-    x_regs: [Term; 1024],
+    x_regs: [Term; X_REG_COUNT],
     float_regs: [f64; 16],
     native_continuations: Vec<PendingNativeContinuation>,
     /// Explicit GC roots registered by native code for terms it must keep
@@ -270,7 +279,7 @@ impl Process {
             receive_timer_ref: None,
             suspension: None,
             next_suspension_call_id: 0,
-            x_regs: [Term::NIL; 1024],
+            x_regs: [Term::NIL; X_REG_COUNT],
             float_regs: [0.0; 16],
             native_continuations: Vec::new(),
             native_roots: Vec::new(),
@@ -804,12 +813,12 @@ impl Process {
 
     /// Read all X registers.
     #[must_use]
-    pub const fn x_regs(&self) -> &[Term; 1024] {
+    pub const fn x_regs(&self) -> &[Term; X_REG_COUNT] {
         &self.x_regs
     }
 
     /// Mutable access to all X registers.
-    pub fn x_regs_mut(&mut self) -> &mut [Term; 1024] {
+    pub fn x_regs_mut(&mut self) -> &mut [Term; X_REG_COUNT] {
         &mut self.x_regs
     }
 
@@ -1155,7 +1164,7 @@ impl Process {
         self.receive_timeout = None;
         self.receive_timer_ref = None;
         self.suspension = None;
-        self.x_regs = [Term::NIL; 1024];
+        self.x_regs = [Term::NIL; X_REG_COUNT];
         self.float_regs = [0.0; 16];
         self.native_continuations.clear();
         self.native_roots.clear();
