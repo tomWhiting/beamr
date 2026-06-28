@@ -487,6 +487,16 @@ mod cooperative;
 #[cfg(any(feature = "threads", feature = "cooperative"))]
 pub use cooperative::{CallFuture, CoopActorRef, CoopSenderHandle, spawn_actor_cooperative};
 
+// Dynamic, term-carrying actor for untyped hosts (WR-8): the same `Actor` whose
+// `Call`/`Reply`/`Cast` are opaque term graphs, driven by the cooperative
+// `call_async`/`CallFuture` surface above. Built whenever that surface is.
+#[cfg(any(feature = "threads", feature = "cooperative"))]
+#[path = "actor_dynamic.rs"]
+mod dynamic;
+
+#[cfg(any(feature = "threads", feature = "cooperative"))]
+pub use dynamic::{DynActor, ReplyFn, WireTerm};
+
 #[cfg(test)]
 #[path = "actor_tests.rs"]
 mod tests;

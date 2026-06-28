@@ -65,5 +65,10 @@ pub use native::actor::{ActorRef, SenderHandle, spawn_actor};
 // `threads` build so the native test gate covers it).
 #[cfg(any(feature = "threads", feature = "cooperative"))]
 pub use native::actor::{CallFuture, CoopActorRef, CoopSenderHandle, spawn_actor_cooperative};
+// The dynamic, term-carrying actor (WR-8): an `Actor` whose `Call`/`Reply`/`Cast`
+// are opaque term graphs, so an untyped host (`beamr-wasm`) can spawn one and
+// drive it over the cooperative `call_async`/`CallFuture` surface above.
+#[cfg(any(feature = "threads", feature = "cooperative"))]
+pub use native::actor::{DynActor, ReplyFn, WireTerm};
 #[cfg(any(feature = "threads", feature = "cooperative"))]
 pub use native::native_process::{NativeContext, NativeHandler, NativeOutcome};
