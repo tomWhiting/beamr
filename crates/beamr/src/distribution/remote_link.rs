@@ -126,3 +126,125 @@ fn local_remote_pid(local_node: Atom, pid_number: u64) -> RemotePid {
         serial: 0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::atom::AtomTable;
+
+    fn remote_pid(node: Atom, pid_number: u64, serial: u64) -> RemotePid {
+        RemotePid {
+            node,
+            pid_number,
+            serial,
+        }
+    }
+
+    #[test]
+    fn send_link_buffers_link_control_with_local_from_and_given_target() {
+        let atoms = AtomTable::with_common_atoms();
+        let local_node = atoms.intern("a@host");
+        let target_node = atoms.intern("b@host");
+        let router = ControlRouter::new();
+        let target = remote_pid(target_node, 99, 3);
+
+        router.send_link(local_node, 42, target);
+
+        let messages = router.messages();
+        assert_eq!(messages.len(), 1);
+        let message = messages[0];
+        assert_eq!(message.op, ControlOp::Link);
+        // `from` is reconstructed as the LOCAL node + caller pid, serial 0.
+        assert_eq!(message.from.node, local_node);
+        assert_eq!(message.from.pid_number, 42);
+        assert_eq!(message.from.serial, 0);
+        // `to` is the supplied target verbatim (node/pid/serial preserved).
+        assert_eq!(message.to, target);
+        assert_eq!(message.reason, None);
+    }
+
+    #[test]
+    fn send_unlink_buffers_unlink_control_with_no_reason() {
+        let atoms = AtomTable::with_common_atoms();
+        let local_node = atoms.intern("a@host");
+        let target_node = atoms.intern("b@host");
+        let router = ControlRouter::new();
+        let target = remote_pid(target_node, 7, 1);
+
+        router.send_unlink(local_node, 5, target);
+
+        let messages = router.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].op, ControlOp::Unlink);
+        assert_eq!(messages[0].from.node, local_node);
+        assert_eq!(messages[0].from.pid_number, 5);
+        assert_eq!(messages[0].to, target);
+        assert_eq!(messages[0].reason, None);
+    }
+
+    #[test]
+    fn send_exit_buffers_exit_control_carrying_the_reason() {
+        let atoms = AtomTable::with_common_atoms();
+        let local_node = atoms.intern("a@host");
+        let target_node = atoms.intern("b@host");
+        let router = ControlRouter::new();
+        let target = remote_pid(target_node, 11, 0);
+
+        router.send_exit(local_node, 8, target, ExitReason::Kill);
+
+        let messages = router.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].op, ControlOp::Exit);
+        assert_eq!(messages[0].from.node, local_node);
+        assert_eq!(messages[0].from.pid_number, 8);
+        assert_eq!(messages[0].to, target);
+        assert_eq!(messages[0].reason, Some(ExitReason::Kill));
+    }
+
+    #[test]
+    fn messages_are_recorded_in_send_order() {
+        let atoms = AtomTable::with_common_atoms();
+        let local_node = atoms.intern("a@host");
+        let target_node = atoms.intern("b@host");
+        let router = ControlRouter::new();
+        let first = remote_pid(target_node, 1, 0);
+        let second = remote_pid(target_node, 2, 0);
+        let third = remote_pid(target_node, 3, 0);
+
+        router.send_link(local_node, 100, first);
+        router.send_exit(local_node, 100, second, ExitReason::Error);
+        router.send_unlink(local_node, 100, third);
+
+        let messages = router.messages();
+        let ops: Vec<ControlOp> = messages.iter().map(|message| message.op).collect();
+        assert_eq!(
+            ops,
+            vec![ControlOp::Link, ControlOp::Exit, ControlOp::Unlink],
+            "controls must be buffered in the order they were sent"
+        );
+        let targets: Vec<u64> = messages
+            .iter()
+            .map(|message| message.to.pid_number)
+            .collect();
+        assert_eq!(targets, vec![1, 2, 3], "target ordering is preserved");
+    }
+
+    #[test]
+    fn router_shares_buffer_across_clones() {
+        // ControlRouter is Clone with a shared Arc<Mutex<…>> buffer: a control
+        // recorded through one handle is visible through a clone.
+        let atoms = AtomTable::with_common_atoms();
+        let local_node = atoms.intern("a@host");
+        let target_node = atoms.intern("b@host");
+        let router = ControlRouter::new();
+        let clone = router.clone();
+
+        router.send_link(local_node, 1, remote_pid(target_node, 9, 0));
+
+        assert_eq!(
+            clone.messages().len(),
+            1,
+            "a clone observes controls recorded through the original handle"
+        );
+    }
+}

@@ -1204,3 +1204,250 @@ fn has_pending_work_is_true_while_a_native_deliver_timer_is_armed() {
         "once the timer has fired and the actor exited, the scheduler is idle"
     );
 }
+
+// ---------------------------------------------------------------------------
+// run_until_idle run-loop direct coverage: priority drain order, summary
+// counts across re-yields, has_pending_work / exit_results consistency, and
+// interleaving with tick_native_timers. These drive the unified host pump
+// (run_until_idle, wasm.rs ~L429) and the ReadyQueues (~L683) through native
+// actors so the assertions are deterministic and need no bytecode module.
+// ---------------------------------------------------------------------------
+
+/// A native actor that yields cooperatively `remaining` times (each slice
+/// returns [`NativeOutcome::Continue`], re-queuing the process for a later turn)
+/// and then stops normally. Used to drive multi-slice re-yield accounting.
+struct Yielder {
+    remaining: u32,
+}
+
+impl NativeHandler for Yielder {
+    fn handle(&mut self, _ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        if self.remaining == 0 {
+            return NativeOutcome::Stop(ExitReason::Normal);
+        }
+        self.remaining -= 1;
+        NativeOutcome::Continue
+    }
+}
+
+/// A native actor that records the order in which it first runs into a shared
+/// log (tagged by `id`), then stops. Spawning several at distinct priorities and
+/// running one unified turn proves the ReadyQueues drain Max > High > Normal > Low.
+struct OrderRecorder {
+    id: i64,
+    order: Arc<Mutex<Vec<i64>>>,
+}
+
+impl NativeHandler for OrderRecorder {
+    fn handle(&mut self, _ctx: &mut NativeContext<'_>) -> NativeOutcome {
+        if let Ok(mut guard) = self.order.lock() {
+            guard.push(self.id);
+        }
+        NativeOutcome::Stop(ExitReason::Normal)
+    }
+}
+
+#[test]
+fn run_until_idle_drains_ready_queue_in_priority_order() {
+    use crate::process::Priority;
+
+    let mut scheduler = scheduler();
+    let order = Arc::new(Mutex::new(Vec::new()));
+
+    // Spawn four recorders, then override each one's priority before the first
+    // turn so the ready queue holds one process per priority band.
+    let spawn_recorder = |scheduler: &mut WasmScheduler, id: i64| -> u64 {
+        let order = Arc::clone(&order);
+        scheduler.spawn_native_root(Box::new(move || {
+            Box::new(OrderRecorder {
+                id,
+                order: Arc::clone(&order),
+            })
+        }))
+    };
+    let low = spawn_recorder(&mut scheduler, 1);
+    let normal = spawn_recorder(&mut scheduler, 2);
+    let high = spawn_recorder(&mut scheduler, 3);
+    let max = spawn_recorder(&mut scheduler, 4);
+
+    // spawn_native_root enqueues each at Normal; drain those entries and re-push
+    // with explicit priorities so the pop order is exercised across all bands.
+    while scheduler.ready.pop().is_some() {}
+    for (pid, priority) in [
+        (low, Priority::Low),
+        (normal, Priority::Normal),
+        (high, Priority::High),
+        (max, Priority::Max),
+    ] {
+        scheduler
+            .processes
+            .get_mut(&pid)
+            .expect("spawned process is retained")
+            .set_priority(priority);
+        scheduler.ready.push(pid, priority);
+    }
+
+    let summary = scheduler.run_until_idle();
+
+    assert_eq!(
+        summary.exited.len(),
+        4,
+        "all four recorders exit in one turn"
+    );
+    assert_eq!(
+        *order.lock().expect("order lock"),
+        vec![4, 3, 2, 1],
+        "ready queue drains Max > High > Normal > Low"
+    );
+}
+
+#[test]
+fn run_until_idle_summary_counts_executed_and_yielded_across_reyields() {
+    // A single yielder that re-yields twice then stops. Each turn runs exactly
+    // one slice (budget = ready len at turn start); a yielding slice is counted
+    // in `executed` and `yielded` and re-queued for the next turn, and only the
+    // final slice exits. This pins the WasmRunSummary accounting (wasm.rs ~L493).
+    let mut scheduler = scheduler();
+    let pid = scheduler.spawn_native_root(Box::new(|| Box::new(Yielder { remaining: 2 })));
+
+    // Turn 1: one slice, yields (remaining 2 -> 1), re-queued.
+    let turn1 = scheduler.run_until_idle();
+    assert_eq!(turn1.executed, 1, "exactly one slice ran in turn 1");
+    assert_eq!(turn1.yielded, vec![pid], "the yielding slice is reported");
+    assert!(
+        turn1.exited.is_empty(),
+        "nothing exits while still yielding"
+    );
+    assert!(
+        scheduler.has_pending_work(),
+        "a re-queued yielder leaves pending work"
+    );
+
+    // Turn 2: one slice, yields again (1 -> 0), re-queued.
+    let turn2 = scheduler.run_until_idle();
+    assert_eq!(turn2.executed, 1);
+    assert_eq!(turn2.yielded, vec![pid]);
+    assert!(turn2.exited.is_empty());
+
+    // Turn 3: one slice, remaining 0 -> stops normally.
+    let turn3 = scheduler.run_until_idle();
+    assert_eq!(
+        turn3.executed, 1,
+        "the final slice still counts as executed"
+    );
+    assert!(turn3.yielded.is_empty(), "the final slice does not yield");
+    assert_eq!(turn3.exited, vec![pid], "the final slice exits");
+    assert!(
+        !scheduler.has_pending_work(),
+        "no ready work and no armed timer once the yielder exits"
+    );
+}
+
+#[test]
+fn run_until_idle_exit_results_and_pending_work_consistent_after_mid_round_exit() {
+    // Two native actors share one turn: one yields (re-queued, still pending),
+    // one stops (recorded in exit_results). After the turn, exit_results reflects
+    // exactly the exited actor and has_pending_work reflects the survivor.
+    let mut scheduler = scheduler();
+    let stopper = scheduler.spawn_native_root(Box::new(|| Box::new(Yielder { remaining: 0 })));
+    let survivor = scheduler.spawn_native_root(Box::new(|| Box::new(Yielder { remaining: 5 })));
+
+    let summary = scheduler.run_until_idle();
+
+    assert!(
+        summary.exited.contains(&stopper),
+        "the zero-remaining actor exits this turn"
+    );
+    assert!(
+        !summary.exited.contains(&survivor),
+        "the still-yielding actor does not exit this turn"
+    );
+
+    let recorded: Vec<u64> = scheduler
+        .exit_results()
+        .into_iter()
+        .map(|(pid, _term)| pid)
+        .collect();
+    assert!(
+        recorded.contains(&stopper),
+        "exit_results records the exited native actor"
+    );
+    assert!(
+        !recorded.contains(&survivor),
+        "exit_results does not record a live actor"
+    );
+    assert!(
+        scheduler.has_pending_work(),
+        "the re-queued survivor keeps the scheduler pending"
+    );
+
+    // The exited actor's result is takeable exactly once.
+    assert!(
+        scheduler.take_exit_result(stopper).is_some(),
+        "the exited actor's captured result is retrievable"
+    );
+    assert!(
+        scheduler.take_exit_result(stopper).is_none(),
+        "a result is taken at most once"
+    );
+}
+
+#[test]
+fn run_until_idle_interleaves_native_timer_delivery_with_a_ready_process() {
+    // run_until_idle ticks native Deliver timers at the start of every turn
+    // (wasm.rs ~L432) BEFORE draining the ready queue. With a parked self-ticker
+    // whose timer is due and a separate ready yielder, a single turn both
+    // delivers the timer (waking the ticker) and runs the ready process.
+    let mut scheduler = scheduler();
+    let sink = Arc::new(Mutex::new(None));
+    let delay = std::time::Duration::from_secs(10);
+
+    let ticker = scheduler.spawn_native_root({
+        let sink = Arc::clone(&sink);
+        Box::new(move || {
+            Box::new(SelfTicker {
+                delay,
+                tick_value: 77,
+                sink: Arc::clone(&sink),
+                armed: false,
+            })
+        })
+    });
+
+    // First turn arms the ticker's timer and parks it.
+    let _arm = scheduler.run_until_idle();
+    assert!(
+        scheduler.has_pending_work(),
+        "the armed Deliver timer keeps work pending"
+    );
+
+    // Make the timer due, then spawn a fresh ready yielder. One unified turn must
+    // both deliver the due timer (waking the ticker) and run the ready yielder.
+    let start = web_time::Instant::now();
+    let woken = scheduler.tick_native_timers_at(start + delay + std::time::Duration::from_secs(5));
+    assert_eq!(woken, vec![ticker], "the due self-tick wakes the ticker");
+
+    let yielder = scheduler.spawn_native_root(Box::new(|| Box::new(Yielder { remaining: 0 })));
+    let summary = scheduler.run_until_idle();
+
+    // Both the ready yielder and the timer-woken ticker run and exit in the same
+    // unified turn: the yielder from the ready queue, the ticker because it was
+    // re-queued by the just-fired Deliver timer.
+    assert!(
+        summary.exited.contains(&yielder),
+        "the ready yielder runs and exits in the interleaved turn"
+    );
+    assert!(
+        summary.exited.contains(&ticker),
+        "the timer-woken ticker also runs and exits in the same turn"
+    );
+    assert_eq!(
+        *sink.lock().expect("sink lock"),
+        Some(77),
+        "the interleaved timer delivery reached the ticker's mailbox"
+    );
+    assert!(
+        !scheduler.has_pending_work(),
+        "with both actors exited and no armed timer, the scheduler is idle"
+    );
+}

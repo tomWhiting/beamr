@@ -460,6 +460,136 @@ async fn pg_join_broadcasts_to_every_connected_node() {
     node_c.shutdown();
 }
 
+/// Down -> up -> rejoin reconnection contract: A and B share pg membership over
+/// a live link; B loses A (connection-down purges A's remote members); A then
+/// re-dials B and joins afresh. The post-reconnect view must match a FRESH join
+/// — the newly joined member is visible, and the pre-down member is NOT silently
+/// resurrected from stale state.
+#[tokio::test]
+async fn reconnection_down_up_rejoin_reestablishes_membership_without_stale_resurrection() {
+    let resolver = Arc::new(DynamicResolver::default());
+    let atom_table = Arc::new(AtomTable::with_common_atoms());
+    let node_a = scheduler(
+        "a@127.0.0.1",
+        Arc::clone(&resolver),
+        Arc::clone(&atom_table),
+    );
+    let node_b = scheduler(
+        "b@127.0.0.1",
+        Arc::clone(&resolver),
+        Arc::clone(&atom_table),
+    );
+
+    let listen_a = node_a
+        .distribution_connections()
+        .listen("127.0.0.1:0".parse().expect("address parses"))
+        .await
+        .expect("node A listens");
+    let listen_b = node_b
+        .distribution_connections()
+        .listen("127.0.0.1:0".parse().expect("address parses"))
+        .await
+        .expect("node B listens");
+    resolver.insert("a@127.0.0.1", listen_a.local_addr());
+    resolver.insert("b@127.0.0.1", listen_b.local_addr());
+
+    let a_node_atom = node_a.local_node().name;
+    let b_node_atom = node_b.local_node().name;
+
+    // Phase 1 — UP: A connects to B and joins a member; B observes it.
+    node_a
+        .distribution_connections()
+        .connect("b@127.0.0.1")
+        .await
+        .expect("A connects to B (initial)");
+
+    let scope = node_a.pg_registry().default_scope();
+    let group = atom_table.intern("rejoin");
+    let pre_down_pid = 100_u64;
+    node_a.pg_registry().join(scope, group, pre_down_pid);
+
+    let pre_down_member = RemoteMember {
+        node: a_node_atom,
+        pid_number: pre_down_pid,
+        serial: 0,
+    };
+    let registry_b = node_b.pg_registry();
+    assert!(
+        eventually(|| registry_b
+            .remote_members(scope, group)
+            .contains(&pre_down_member))
+        .await,
+        "B observes A's member while the link is up"
+    );
+
+    // Phase 2 — DOWN: B drops A. The connection-down hook purges A's remote
+    // members and B no longer lists A as connected.
+    assert!(
+        node_b
+            .distribution_connections()
+            .disconnect_node(a_node_atom),
+        "B disconnects A"
+    );
+    assert!(
+        eventually(|| registry_b.remote_members(scope, group).is_empty()).await,
+        "B purges A's remote members on node-down"
+    );
+    assert!(
+        eventually(|| !node_b
+            .distribution_connections()
+            .connected_nodes()
+            .contains(&a_node_atom))
+        .await,
+        "B no longer lists A as connected after the drop"
+    );
+
+    // Phase 3 — REJOIN: A re-dials B and joins a NEW member. The fresh link must
+    // re-establish membership exactly as a first-time join would.
+    node_a
+        .distribution_connections()
+        .connect("b@127.0.0.1")
+        .await
+        .expect("A re-dials B after the drop");
+    // The re-dial reinstates the link in both directions' connection tables.
+    assert!(
+        eventually(|| node_a
+            .distribution_connections()
+            .connected_nodes()
+            .contains(&b_node_atom))
+        .await,
+        "A lists B as connected again after the re-dial"
+    );
+
+    let rejoin_pid = 200_u64;
+    node_a.pg_registry().join(scope, group, rejoin_pid);
+    let rejoin_member = RemoteMember {
+        node: a_node_atom,
+        pid_number: rejoin_pid,
+        serial: 0,
+    };
+    assert!(
+        eventually(|| registry_b
+            .remote_members(scope, group)
+            .contains(&rejoin_member))
+        .await,
+        "B observes the post-reconnect join (membership re-established like a fresh join)"
+    );
+
+    // The pre-down member must NOT have been resurrected from stale state: the
+    // purge was real and the rejoin carried only the new member.
+    assert!(
+        !registry_b
+            .remote_members(scope, group)
+            .contains(&pre_down_member),
+        "the pre-down member must stay purged, not silently resurrected on reconnect"
+    );
+
+    listen_a.shutdown();
+    listen_b.shutdown();
+    node_a.shutdown();
+    node_b.shutdown();
+}
+
 /// A local leave (e.g. from `remove_pid_from_all_scopes` on process exit) is
 /// transmitted to the peer and removes the corresponding remote member there.
 #[tokio::test]

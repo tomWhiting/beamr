@@ -87,7 +87,7 @@ use crate::atom::AtomTable;
 #[cfg(feature = "threads")]
 use crate::distribution::DistributionConfig;
 #[cfg(feature = "threads")]
-use crate::distribution::connection::ConnectionManager;
+use crate::distribution::connection::{ConnectionManager, HeartbeatConfig};
 #[cfg(feature = "threads")]
 use crate::distribution::pg::PgRegistry;
 #[cfg(feature = "threads")]
@@ -733,13 +733,18 @@ impl Scheduler {
             .unwrap_or(DEFAULT_NODE_NAME)
             .to_owned();
         let dist_local_creation = config.creation.unwrap_or(0);
+        // Enable the proactive net-tick with production defaults so an idle link
+        // to a silently-partitioned peer (no FIN/RST) is detected within the
+        // liveness deadline and the existing connection-down / pg-purge /
+        // monitor-DOWN machinery fires, instead of the link hanging "up" forever.
         let distribution_connections = ConnectionManager::new(
             Arc::clone(&atom_table),
             Arc::clone(&distribution.resolver),
             distribution.cookie.clone(),
             dist_local_node_name,
             dist_local_creation,
-        );
+        )
+        .with_heartbeat(HeartbeatConfig::with_defaults());
         // Build the async outbound distribution sender (skipped under replay,
         // which has no runtime). Bind its owned runtime handle to the connection
         // manager so the read/accept tasks are driven in production, where there

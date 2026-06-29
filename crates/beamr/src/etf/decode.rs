@@ -948,4 +948,215 @@ mod tests {
             Err(DecodeError::TrailingBytes)
         );
     }
+
+    #[test]
+    fn list_header_claiming_huge_length_with_short_buffer_returns_truncated_not_oom() {
+        // Allocation-bomb guard: a LIST_EXT header declares u32::MAX elements but
+        // the buffer holds none. The decoder must NOT pre-allocate a Vec for
+        // billions of elements; it bounds the claim against the heap budget first
+        // (SizeLimitExceeded) or runs out of input (Truncated). Either typed error
+        // is acceptable — what matters is it never tries to reserve gigabytes.
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 64);
+        process.heap_mut().set_max_capacity(64);
+        let mut ctx = context(&mut process);
+        let bytes = [tags::VERSION, tags::LIST_EXT, 0xff, 0xff, 0xff, 0xff];
+
+        let result = decode_term(&bytes, &mut ctx, &atoms);
+        assert!(
+            matches!(
+                result,
+                Err(DecodeError::SizeLimitExceeded) | Err(DecodeError::Truncated)
+            ),
+            "huge list claim must be bounded, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn binary_header_claiming_huge_length_with_short_buffer_returns_bounded_error() {
+        // Same allocation-bomb guard for BINARY_EXT: a 4 GiB length with an empty
+        // body must be rejected by the heap-word budget (or input bounds), never
+        // pre-allocated.
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 64);
+        process.heap_mut().set_max_capacity(64);
+        let mut ctx = context(&mut process);
+        let bytes = [tags::VERSION, tags::BINARY_EXT, 0xff, 0xff, 0xff, 0xff];
+
+        let result = decode_term(&bytes, &mut ctx, &atoms);
+        assert!(
+            matches!(
+                result,
+                Err(DecodeError::SizeLimitExceeded) | Err(DecodeError::Truncated)
+            ),
+            "huge binary claim must be bounded, got {result:?}"
+        );
+    }
+}
+
+/// Property-based hardening for the ETF wire decoder, which parses bytes
+/// received from untrusted distribution peers. The decoder's contract is that
+/// for *any* input it returns `Ok` or a typed [`DecodeError`] — it must never
+/// panic, never overflow, and never pre-allocate an unbounded amount of memory.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::atom::Atom;
+    use crate::etf::encode::encode_term;
+    use crate::process::Process;
+    use crate::term::compare::exact_eq;
+    use proptest::prelude::*;
+
+    fn context(process: &mut Process) -> ProcessContext<'_> {
+        let mut context = ProcessContext::new();
+        context.attach_process(process, 0);
+        context
+    }
+
+    /// A small grammar of [`Term`] shapes the encoder can serialise, built so an
+    /// arbitrary instance can be allocated on a process heap and round-tripped
+    /// through `encode_term` -> `decode_term`.
+    #[derive(Clone, Debug)]
+    enum TermSpec {
+        SmallInt(i64),
+        Atom(&'static str),
+        Nil,
+        Float(f64),
+        Binary(Vec<u8>),
+        Tuple(Vec<TermSpec>),
+        List(Vec<TermSpec>),
+    }
+
+    fn term_spec() -> impl Strategy<Value = TermSpec> {
+        let leaf = prop_oneof![
+            // SMALL_INTEGER_EXT / INTEGER_EXT range (stays a small int, no bigint).
+            (-1_000_000_i64..1_000_000).prop_map(TermSpec::SmallInt),
+            prop_oneof![
+                Just("ok"),
+                Just("error"),
+                Just("undefined"),
+                Just("true"),
+                Just("false"),
+            ]
+            .prop_map(TermSpec::Atom),
+            Just(TermSpec::Nil),
+            any::<f64>()
+                .prop_filter("finite", |value| value.is_finite())
+                .prop_map(TermSpec::Float),
+            proptest::collection::vec(any::<u8>(), 0..32).prop_map(TermSpec::Binary),
+        ];
+        leaf.prop_recursive(4, 32, 6, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..6).prop_map(TermSpec::Tuple),
+                proptest::collection::vec(inner, 0..6).prop_map(TermSpec::List),
+            ]
+        })
+    }
+
+    fn build(spec: &TermSpec, ctx: &mut ProcessContext<'_>, atoms: &AtomTable) -> Option<Term> {
+        match spec {
+            TermSpec::SmallInt(value) => Term::try_small_int(*value),
+            TermSpec::Atom(name) => Some(Term::atom(atoms.intern(name))),
+            TermSpec::Nil => Some(Term::NIL),
+            TermSpec::Float(value) => ctx.alloc_float(*value).ok(),
+            TermSpec::Binary(bytes) => ctx.alloc_binary(bytes).ok(),
+            TermSpec::Tuple(items) => {
+                let elements = items
+                    .iter()
+                    .map(|item| build(item, ctx, atoms))
+                    .collect::<Option<Vec<_>>>()?;
+                ctx.alloc_tuple(&elements).ok()
+            }
+            TermSpec::List(items) => {
+                let elements = items
+                    .iter()
+                    .map(|item| build(item, ctx, atoms))
+                    .collect::<Option<Vec<_>>>()?;
+                ctx.alloc_list(&elements).ok()
+            }
+        }
+    }
+
+    proptest! {
+        /// The decoder is total over arbitrary bytes: for any slice it returns
+        /// `Ok` or a typed `DecodeError` and never panics, overflows, or hangs on
+        /// an allocation bomb. This is the core untrusted-peer-bytes invariant.
+        #[test]
+        fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let atoms = AtomTable::with_common_atoms();
+            let mut process = Process::new(1, 256);
+            process.heap_mut().set_max_capacity(256);
+            let mut ctx = context(&mut process);
+            // The only contract: this returns without panicking. Ok or Err both fine.
+            let _result = decode_term(&bytes, &mut ctx, &atoms);
+        }
+
+        /// A version-prefixed arbitrary tail also never panics — exercises the
+        /// real tag-dispatch arms with structurally plausible-but-untrusted input.
+        #[test]
+        fn version_prefixed_arbitrary_bytes_never_panic(
+            tag in any::<u8>(),
+            rest in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let atoms = AtomTable::with_common_atoms();
+            let mut process = Process::new(1, 256);
+            process.heap_mut().set_max_capacity(256);
+            let mut ctx = context(&mut process);
+            let mut bytes = vec![tags::VERSION, tag];
+            bytes.extend_from_slice(&rest);
+            let _result = decode_term(&bytes, &mut ctx, &atoms);
+        }
+
+        /// Round-trip: any encoder-producible term survives
+        /// `encode_term` -> `decode_term` as a structurally equal term.
+        #[test]
+        fn encode_decode_round_trips(spec in term_spec()) {
+            let atoms = AtomTable::with_common_atoms();
+            let mut build_process = Process::new(1, 4096);
+            let mut build_ctx = context(&mut build_process);
+            let Some(original) = build(&spec, &mut build_ctx, &atoms) else {
+                // Heap exhausted while building the source term — nothing to assert.
+                return Ok(());
+            };
+            let Ok(bytes) = encode_term(original, &atoms) else {
+                // Encoder rejected this shape; round-trip is vacuous.
+                return Ok(());
+            };
+
+            let mut decode_process = Process::new(2, 4096);
+            decode_process.heap_mut().set_max_capacity(4096);
+            let mut decode_ctx = context(&mut decode_process);
+            let decoded = decode_term(&bytes, &mut decode_ctx, &atoms)
+                .expect("a term the encoder produced must decode");
+            prop_assert!(
+                exact_eq(decoded, original),
+                "round-trip mismatch for {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_input_is_typed_error_not_panic() {
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 64);
+        let mut ctx = context(&mut process);
+        assert_eq!(
+            decode_term(&[], &mut ctx, &atoms),
+            Err(DecodeError::Truncated)
+        );
+    }
+
+    #[test]
+    fn single_atom_round_trips_under_property_builder() {
+        // Sanity anchor for the proptest builder/round-trip path.
+        let atoms = AtomTable::with_common_atoms();
+        let mut process = Process::new(1, 256);
+        let mut ctx = context(&mut process);
+        let term = build(&TermSpec::Atom("ok"), &mut ctx, &atoms).expect("atom builds");
+        let bytes = encode_term(term, &atoms).expect("encode");
+        let mut decode_process = Process::new(2, 256);
+        let mut decode_ctx = context(&mut decode_process);
+        let decoded = decode_term(&bytes, &mut decode_ctx, &atoms).expect("decode");
+        assert!(exact_eq(decoded, Term::atom(Atom::OK)));
+    }
 }

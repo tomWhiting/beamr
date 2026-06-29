@@ -3,9 +3,9 @@
 use std::fmt;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,6 +28,24 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// finite value removes the deadlock; 5s tolerates a loaded peer without wedging
 /// a cluster (DISTRIBUTION-HANDSHAKE-DESIGN.md D3).
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Idle-link liveness keepalive frame: the 8-byte all-zero header the data-frame
+/// read loop already accepts as `control_len = 0, payload_len = 0` — a no-op that
+/// invokes no control handler. Each peer's periodic net-tick writes this so the
+/// other side's read loop refreshes its last-inbound timestamp, letting a
+/// silently-partitioned (black-holed) peer be detected by a missed deadline
+/// rather than only by a TCP FIN/RST.
+const KEEPALIVE_FRAME: [u8; 8] = [0_u8; 8];
+
+/// Default proactive net-tick interval: how often an idle link emits a keepalive
+/// and checks the inbound-liveness deadline.
+const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Default inbound-liveness deadline: a link with no inbound bytes (data frame
+/// OR keepalive) for this long is marked down. Comfortably larger than the
+/// interval so a healthy peer's keepalives always refresh liveness in time and
+/// no healthy idle link is ever spuriously downed.
+const DEFAULT_HEARTBEAT_DEADLINE: Duration = Duration::from_secs(45);
 
 /// Error returned while creating an outbound distribution TCP connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,6 +95,11 @@ pub enum ConnectionDownReason {
     WriteTimeout,
     /// The local node explicitly closed the connection.
     ManualDisconnect,
+    /// The proactive net-tick observed no inbound traffic (data frame or
+    /// keepalive) within the configured liveness deadline: the peer is silently
+    /// partitioned (no FIN/RST), so the link is marked down so the existing
+    /// down-hook / pg-purge / monitor-DOWN machinery fires.
+    HeartbeatTimeout,
 }
 
 /// Event emitted when a connection is removed from the active connection table.
@@ -146,6 +169,33 @@ impl ConnectionDownHook {
     }
 }
 
+/// Proactive net-tick (heartbeat) configuration for idle distribution links.
+///
+/// When enabled, each connection runs a periodic task that (1) writes a
+/// [`KEEPALIVE_FRAME`] so the peer's read loop refreshes its liveness clock, and
+/// (2) marks the link down if no inbound bytes have arrived within `deadline`.
+/// `deadline` MUST exceed `interval` (by a comfortable margin) so a healthy
+/// peer's own keepalives always refresh liveness before the deadline and no
+/// healthy idle link is spuriously downed. Disabled by default.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HeartbeatConfig {
+    /// How often an idle link emits a keepalive and checks the deadline.
+    pub interval: Duration,
+    /// Inbound-idle duration after which the link is marked down.
+    pub deadline: Duration,
+}
+
+impl HeartbeatConfig {
+    /// Sane production defaults: 15s tick, 45s deadline.
+    #[must_use]
+    pub fn with_defaults() -> Self {
+        Self {
+            interval: DEFAULT_HEARTBEAT_INTERVAL,
+            deadline: DEFAULT_HEARTBEAT_DEADLINE,
+        }
+    }
+}
+
 /// Active distribution TCP connection shared by distribution subsystems.
 pub struct DistConnection {
     node: Atom,
@@ -153,6 +203,12 @@ pub struct DistConnection {
     writer: Mutex<OwnedWriteHalf>,
     down: AtomicBool,
     manager: Weak<ConnectionManagerInner>,
+    /// Monotonic base for this connection's inbound-liveness clock.
+    created_at: Instant,
+    /// Milliseconds since `created_at` at which inbound bytes were last observed
+    /// by the read loop (any data frame OR keepalive). Read by the net-tick to
+    /// detect a silently-partitioned peer via a missed deadline.
+    last_inbound_millis: AtomicU64,
 }
 
 impl DistConnection {
@@ -168,7 +224,30 @@ impl DistConnection {
             writer: Mutex::new(writer),
             down: AtomicBool::new(false),
             manager,
+            created_at: Instant::now(),
+            last_inbound_millis: AtomicU64::new(0),
         }
+    }
+
+    /// Record that inbound bytes were just observed, refreshing liveness.
+    fn note_inbound_activity(&self) {
+        let elapsed = u64::try_from(self.created_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.last_inbound_millis.store(elapsed, Ordering::Release);
+    }
+
+    /// Whether no inbound bytes have been observed for at least `deadline`.
+    fn inbound_idle_for(&self, deadline: Duration) -> bool {
+        let last = self.last_inbound_millis.load(Ordering::Acquire);
+        let now = u64::try_from(self.created_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let deadline_millis = u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX);
+        now.saturating_sub(last) >= deadline_millis
+    }
+
+    /// Mark this connection down because the net-tick observed no inbound
+    /// liveness within the deadline (silent partition). Drives the same
+    /// connection-down path a read error would.
+    fn mark_down_heartbeat_timeout(self: &Arc<Self>) {
+        self.mark_down(ConnectionDownReason::HeartbeatTimeout);
     }
 
     /// Node-name atom used as this connection's table key.
@@ -288,6 +367,11 @@ struct ConnectionManagerInner {
     /// exists. When unset (e.g. `#[tokio::test]`), the tasks fall back to the
     /// ambient runtime via bare `tokio::spawn`.
     runtime_handle: RwLock<Option<Handle>>,
+    /// Proactive net-tick configuration. When `Some`, every established link runs
+    /// a heartbeat task (keepalive + inbound-liveness deadline). `None` disables
+    /// the net-tick (links are then only marked down on read EOF/error or a write
+    /// timeout, the pre-net-tick behaviour).
+    heartbeat: Option<HeartbeatConfig>,
 }
 
 impl ConnectionManagerInner {
@@ -445,8 +529,24 @@ impl ConnectionManager {
                 local_node_name: local_node_name.into(),
                 local_creation,
                 runtime_handle: RwLock::new(None),
+                heartbeat: None,
             }),
         }
+    }
+
+    /// Enable the proactive net-tick (heartbeat) on a freshly-built manager.
+    ///
+    /// Builder-style: must be called before the manager is cloned or any
+    /// connection is started, while `inner` is still uniquely owned (the config
+    /// is read by per-connection lifecycle tasks at spawn time). Returns `self`
+    /// unchanged if the manager has already been shared. `config.deadline` should
+    /// exceed `config.interval` so healthy idle links are never spuriously downed.
+    #[must_use]
+    pub fn with_heartbeat(mut self, config: HeartbeatConfig) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.heartbeat = Some(config);
+        }
+        self
     }
 
     /// Bind a tokio runtime handle for the read/accept lifecycle tasks.
@@ -790,6 +890,9 @@ impl ConnectionManager {
     }
 
     fn spawn_read_lifecycle(&self, connection: Arc<DistConnection>, mut read_half: OwnedReadHalf) {
+        // A fresh link is live now; seed its inbound clock and start its net-tick.
+        connection.note_inbound_activity();
+        self.spawn_heartbeat(Arc::clone(&connection));
         let manager = Arc::clone(&self.inner);
         self.inner.spawn_lifecycle(async move {
             loop {
@@ -800,6 +903,9 @@ impl ConnectionManager {
                         break;
                     }
                     Ok(_) => {
+                        // Any inbound bytes (data frame OR keepalive) refresh the
+                        // net-tick liveness clock for this link.
+                        connection.note_inbound_activity();
                         let control_len =
                             u32::from_be_bytes([header[0], header[1], header[2], header[3]])
                                 as usize;
@@ -830,6 +936,41 @@ impl ConnectionManager {
                         break;
                     }
                 }
+            }
+        });
+    }
+
+    /// Spawn the proactive net-tick for `connection` when heartbeats are enabled.
+    ///
+    /// Every `interval` the task: (1) writes a [`KEEPALIVE_FRAME`] (via
+    /// `write_raw`, which itself marks the link down on a write error), and (2)
+    /// marks the link down via the existing connection-down path if no inbound
+    /// bytes have arrived within `deadline` — catching a silently-partitioned
+    /// peer that never sends a FIN/RST. The task exits once the connection is
+    /// down (whether from the heartbeat, a read error, or a manual disconnect),
+    /// so it does not outlive the link. No-op when heartbeats are disabled.
+    fn spawn_heartbeat(&self, connection: Arc<DistConnection>) {
+        let Some(config) = self.inner.heartbeat else {
+            return;
+        };
+        self.inner.spawn_lifecycle(async move {
+            let mut ticker = tokio::time::interval(config.interval);
+            // The first tick fires immediately; skip it so the seeded inbound
+            // clock is never compared against a zero-elapsed deadline.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                if connection.is_down() {
+                    break;
+                }
+                if connection.inbound_idle_for(config.deadline) {
+                    connection.mark_down_heartbeat_timeout();
+                    break;
+                }
+                // Best-effort keepalive: a write error already drives mark_down
+                // inside write_raw, so a failure here simply ends the task on the
+                // next is_down() check.
+                let _ = connection.write_raw(&KEEPALIVE_FRAME).await;
             }
         });
     }
@@ -924,6 +1065,25 @@ mod tests {
             "local@127.0.0.1",
             1,
         )
+    }
+
+    /// A connection manager with the proactive net-tick enabled at test-scale
+    /// timings: a short interval and a deadline a few intervals long so a
+    /// silently-partitioned peer is detected within a bounded test window while a
+    /// healthy peer's keepalives still refresh liveness in time.
+    fn manager_with_heartbeat(
+        resolver: Arc<StaticResolver>,
+        interval: Duration,
+        deadline: Duration,
+    ) -> ConnectionManager {
+        ConnectionManager::new(
+            Arc::new(AtomTable::with_common_atoms()),
+            resolver,
+            TEST_COOKIE,
+            "local@127.0.0.1",
+            1,
+        )
+        .with_heartbeat(HeartbeatConfig { interval, deadline })
     }
 
     /// Accept a single inbound stream on `listener` and respond to the OTP
@@ -2038,5 +2198,169 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    /// Part B CONTRACT (the bug): WITHOUT the proactive net-tick, a link to a
+    /// silently-partitioned (black-holed) peer — one whose socket stays open but
+    /// sends nothing and no TCP FIN/RST arrives — is NEVER marked down. The read
+    /// loop blocks in `read_exact` forever, so `connected_nodes()` keeps listing
+    /// a dead peer and the connection-down hook (pg-purge / monitor-DOWN) never
+    /// fires. This pins the gap the net-tick closes.
+    #[tokio::test]
+    async fn without_net_tick_black_holed_peer_is_never_marked_down() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind responder listener");
+        let addr = listener.local_addr().expect("inspect listener");
+        let handoff = spawn_responder_handoff(listener, "remote@127.0.0.1");
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        let manager = manager_with_resolver(resolver);
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+
+        let connection = manager
+            .connect("remote@127.0.0.1")
+            .await
+            .expect("connect should succeed");
+        // Hold the peer's accepted stream open WITHOUT ever reading or writing it:
+        // a silent partition (no FIN/RST). The peer task has already returned.
+        let _black_holed_peer = handoff.await.expect("peer hands back its open stream");
+
+        // Over a window many times longer than any plausible net-tick deadline,
+        // the link stays up: no heartbeat means no proactive liveness check.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(
+            !connection.is_down(),
+            "without a net-tick, a black-holed link is never detected as down"
+        );
+        assert!(
+            manager.connected_nodes().contains(&node),
+            "without a net-tick, connected_nodes keeps listing the dead peer"
+        );
+    }
+
+    /// Part B FIX: WITH the proactive net-tick enabled, a link to a
+    /// silently-partitioned peer is marked down within a bounded deadline via the
+    /// EXISTING `mark_down` path — so `connected_nodes()` drops it and the
+    /// connection-down hook fires, exactly as a real read EOF would. The black-
+    /// holed peer never sends a keepalive, so the inbound-liveness deadline lapses.
+    #[tokio::test]
+    async fn net_tick_marks_black_holed_peer_down_within_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind responder listener");
+        let addr = listener.local_addr().expect("inspect listener");
+        let handoff = spawn_responder_handoff(listener, "remote@127.0.0.1");
+
+        let resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            addr,
+        )])));
+        // Test-scale net-tick: 50ms interval, 200ms deadline.
+        let manager = manager_with_heartbeat(
+            resolver,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        );
+        let node = manager.inner.atom_table.intern("remote@127.0.0.1");
+
+        // Observe the connection-down hook firing for the black-holed peer.
+        let down_fired = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&down_fired);
+        manager.register_connection_down(move |event| {
+            if event.reason == ConnectionDownReason::HeartbeatTimeout {
+                observed.store(true, Ordering::SeqCst);
+            }
+        });
+
+        let connection = manager
+            .connect("remote@127.0.0.1")
+            .await
+            .expect("connect should succeed");
+        // Hold the peer's stream open but silent — never read, never write.
+        let _black_holed_peer = handoff.await.expect("peer hands back its open stream");
+
+        // Within a bounded window (a few deadlines) the net-tick must mark the
+        // link down and reap it from the table.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !connection.is_down() {
+            assert!(
+                Instant::now() < deadline,
+                "net-tick must mark a black-holed link down within the deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        // The down path reaped the table entry and fired the hook.
+        while manager.connected_nodes().contains(&node) {
+            assert!(
+                Instant::now() < deadline,
+                "the downed link must be removed from connected_nodes"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            down_fired.load(Ordering::SeqCst),
+            "the connection-down hook must fire with HeartbeatTimeout"
+        );
+    }
+
+    /// No false nodedowns: WITH the net-tick enabled on BOTH peers, a healthy but
+    /// otherwise idle link (no application traffic) stays up indefinitely, because
+    /// each side's periodic keepalive refreshes the other's inbound-liveness clock
+    /// well within the deadline. This guards against the net-tick spuriously
+    /// downing quiet-but-live links.
+    #[tokio::test]
+    async fn net_tick_keeps_healthy_idle_link_up() {
+        // Build a REAL peer manager (also heartbeat-enabled) so both sides emit
+        // keepalives, modelling a healthy bidirectional idle link. The remote
+        // binds its own listener on an ephemeral port via `listen`.
+        let remote = ConnectionManager::new(
+            Arc::new(AtomTable::with_common_atoms()),
+            Arc::new(StaticResolver::new(std::collections::HashMap::new())),
+            TEST_COOKIE,
+            "remote@127.0.0.1",
+            7,
+        )
+        .with_heartbeat(HeartbeatConfig {
+            interval: Duration::from_millis(50),
+            deadline: Duration::from_millis(200),
+        });
+        let accept = remote
+            .listen("127.0.0.1:0".parse().expect("listen address parses"))
+            .await
+            .expect("remote node listens");
+        let remote_addr = accept.local_addr();
+
+        let local_resolver = Arc::new(StaticResolver::new(std::collections::HashMap::from([(
+            "remote@127.0.0.1".to_string(),
+            remote_addr,
+        )])));
+        let local = manager_with_heartbeat(
+            local_resolver,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        );
+
+        let node = local.inner.atom_table.intern("remote@127.0.0.1");
+        let connection = local
+            .connect("remote@127.0.0.1")
+            .await
+            .expect("connect should succeed");
+
+        // Over a window many deadlines long, both keepalives keep the link live.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(
+            !connection.is_down(),
+            "a healthy idle link with bidirectional keepalives must stay up"
+        );
+        assert!(
+            local.connected_nodes().contains(&node),
+            "a healthy idle link must remain in connected_nodes"
+        );
+
+        accept.shutdown();
     }
 }
