@@ -1690,9 +1690,16 @@ fn mailbox_send_wakes_waiting_process_event_driven() {
     .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
     let pid = 42;
     scheduler.shared.process_table.spawn_with_pid(pid);
+    // Park the pid under a scheduler index NO live worker owns. `wake_process`
+    // preserves the stored index when it moves the pid `waiting -> woken`, and
+    // `drain_woken` only consumes `woken` entries whose index matches the
+    // draining worker. Pinning to an unowned index leaves the woken transition
+    // observable from this test thread instead of racing the worker's drain — a
+    // race that otherwise flakes this assertion under a loaded parallel suite.
+    let unowned_scheduler_index = scheduler.thread_count();
     {
         let mut wait_set = lock_or_recover(&scheduler.shared.wait_set);
-        wait_set.waiting.insert(pid, 0);
+        wait_set.waiting.insert(pid, unowned_scheduler_index);
     }
     let mailbox = Mailbox::new();
     let sender = mailbox
