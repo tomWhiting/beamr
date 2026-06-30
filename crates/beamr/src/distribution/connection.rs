@@ -1030,13 +1030,16 @@ impl ConnectionManager {
         let manager = Arc::clone(&self.inner);
         let shutdown = Arc::clone(&connection.shutdown);
         self.inner.spawn_lifecycle(async move {
-            // A single long-lived `Notified` future, registered before the first
-            // read. `notify_waiters` wakes already-registered waiters, so creating
-            // it up front (and re-polling it via `&mut` each iteration) closes the
-            // lost-wakeup window a per-iteration `notified()` would leave between
-            // the down-check and the await.
+            // A single long-lived `Notified` future, re-polled via `&mut` each
+            // iteration so `notify_waiters` (which wakes only already-registered
+            // waiters) is never missed mid-loop. `enable()` registers the waiter
+            // NOW rather than on first poll inside the select below — otherwise a
+            // `notify_waiters` racing the first iteration (after the `is_down`
+            // check, before the first poll) would be lost and the read loop would
+            // park until peer EOF instead of dropping a displaced link promptly.
             let notified = shutdown.notified();
             tokio::pin!(notified);
+            notified.as_mut().enable();
             loop {
                 let mut header = [0_u8; 8];
                 // Race the header read against a shutdown so a retired link (e.g.
