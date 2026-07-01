@@ -521,10 +521,7 @@ impl SharedState {
 
     #[cfg(feature = "telemetry")]
     fn add_scheduler_duration(&self, counter: &AtomicU64, duration: Duration) {
-        let nanos = match u64::try_from(duration.as_nanos()) {
-            Ok(value) => value,
-            Err(_) => u64::MAX,
-        };
+        let nanos = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
         let _previous = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_add(nanos))
         });

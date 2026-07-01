@@ -332,6 +332,8 @@ fn make_shared_state() -> Arc<SharedState> {
         replay_driver: None,
         replay_mode: false,
         nif_private_data: None,
+        #[cfg(feature = "telemetry")]
+        telemetry_metrics: TelemetryMetricState::new(std::time::Duration::from_millis(100)),
     })
 }
 
