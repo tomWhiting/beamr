@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity};
-use opentelemetry::trace::{Span, TraceContextExt};
+use opentelemetry::trace::TraceContextExt;
 use opentelemetry::{Context, InstrumentationScope, Key};
 
 use crate::atom::{Atom, AtomTable};
@@ -238,10 +238,7 @@ fn string_attr(key: &'static str, value: impl Into<opentelemetry::StringValue>) 
 }
 
 fn pid_to_i64(pid: u64) -> i64 {
-    match i64::try_from(pid) {
-        Ok(value) => value,
-        Err(_) => i64::MAX,
-    }
+    i64::try_from(pid).unwrap_or(i64::MAX)
 }
 
 fn atom_name(atom_table: &AtomTable, atom: Atom) -> String {
@@ -278,7 +275,7 @@ mod tests {
 
     fn attr_i64(log: &opentelemetry_sdk::logs::SdkLogRecord, key: &str) -> Option<i64> {
         log.attributes_iter().find_map(|(attribute_key, value)| {
-            (attribute_key == &Key::from_static_str(key)).then(|| match value {
+            (attribute_key == &Key::new(key.to_owned())).then_some(match value {
                 AnyValue::Int(value) => Some(*value),
                 _ => None,
             })?
@@ -287,7 +284,7 @@ mod tests {
 
     fn attr_string(log: &opentelemetry_sdk::logs::SdkLogRecord, key: &str) -> Option<String> {
         log.attributes_iter().find_map(|(attribute_key, value)| {
-            (attribute_key == &Key::from_static_str(key)).then(|| match value {
+            (attribute_key == &Key::new(key.to_owned())).then(|| match value {
                 AnyValue::String(value) => Some(value.to_string()),
                 _ => None,
             })?
@@ -296,6 +293,7 @@ mod tests {
 
     #[test]
     fn lifecycle_helpers_emit_process_events_with_attributes() {
+        let _guard = crate::telemetry::test_lock::guard();
         let (exporter, provider) = install_test_provider();
         let atom_table = AtomTable::with_common_atoms();
         let module = atom_table.intern("demo_module");
@@ -363,6 +361,7 @@ mod tests {
 
     #[test]
     fn crash_event_records_error_severity_and_exception_details() {
+        let _guard = crate::telemetry::test_lock::guard();
         let (exporter, provider) = install_test_provider();
         let atom_table = AtomTable::with_common_atoms();
         let badarg = atom_table.intern("badarg");
@@ -398,8 +397,9 @@ mod tests {
 
     #[test]
     fn supervision_tree_can_be_reconstructed_from_event_stream() {
+        let _guard = crate::telemetry::test_lock::guard();
         let (exporter, provider) = install_test_provider();
-        let mut atom_table = AtomTable::new();
+        let atom_table = AtomTable::new();
         let supervisor = atom_table.intern("supervisor");
         let worker = atom_table.intern("worker");
         let start = atom_table.intern("start_link");

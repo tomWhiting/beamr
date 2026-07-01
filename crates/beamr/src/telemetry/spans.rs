@@ -297,7 +297,7 @@ mod tests {
     use super::*;
     use opentelemetry::Key;
     use opentelemetry::global;
-    use opentelemetry::trace::TraceContextExt;
+
     use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
@@ -313,7 +313,7 @@ mod tests {
 
     fn attr_i64(span: &opentelemetry_sdk::trace::SpanData, key: &str) -> Option<i64> {
         span.attributes.iter().find_map(|attribute| {
-            (attribute.key == Key::from_static_str(key)).then(|| match &attribute.value {
+            (attribute.key == Key::new(key.to_owned())).then_some(match &attribute.value {
                 opentelemetry::Value::I64(value) => Some(*value),
                 _ => None,
             })?
@@ -322,7 +322,7 @@ mod tests {
 
     fn attr_bool(span: &opentelemetry_sdk::trace::SpanData, key: &str) -> Option<bool> {
         span.attributes.iter().find_map(|attribute| {
-            (attribute.key == Key::from_static_str(key)).then(|| match &attribute.value {
+            (attribute.key == Key::new(key.to_owned())).then_some(match &attribute.value {
                 opentelemetry::Value::Bool(value) => Some(*value),
                 _ => None,
             })?
@@ -331,6 +331,7 @@ mod tests {
 
     #[test]
     fn message_send_and_receive_spans_record_attributes_and_link_context() {
+        let _guard = crate::telemetry::test_lock::guard();
         let (exporter, provider) = install_test_provider();
         let trace_context = record_message_send_context(10, 20, Term::small_int(123));
         record_message_receive(

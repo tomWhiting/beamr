@@ -43,7 +43,11 @@ zstd = { version = "0.13.3", optional = true }
 
 [dev-dependencies]
 criterion = "0.8.2"
-opentelemetry_sdk = "0.32.1"
+# The in-memory exporters (`InMemory{Span,Metric,Log}Exporter`) used by the
+# telemetry tests live behind opentelemetry_sdk's own `testing` feature; the
+# SDK's `#[cfg(test)]` does not apply when it is compiled as our dependency,
+# so the feature must be selected explicitly here.
+opentelemetry_sdk = { version = "0.32.1", features = ["testing"] }
 proptest = "1.11.0"
 
 [[bench]]

@@ -8,7 +8,7 @@ use std::task::{Context, Poll, Wake, Waker};
 #[cfg(feature = "telemetry")]
 use opentelemetry::Key;
 #[cfg(feature = "telemetry")]
-use opentelemetry::trace::{TraceContextExt, Tracer};
+use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
 #[cfg(feature = "telemetry")]
@@ -260,6 +260,12 @@ fn wait_until(deadline_ms: u64, mut predicate: impl FnMut() -> bool) {
 
 #[cfg(feature = "telemetry")]
 fn install_telemetry_test_provider() -> (InMemorySpanExporter, SdkTracerProvider) {
+    // Install the W3C trace-context propagator so injected/extracted carriers
+    // actually carry the parent span; without it the global propagator is a
+    // no-op and `start_process_trace_context` cannot nest under its parent.
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -271,7 +277,7 @@ fn install_telemetry_test_provider() -> (InMemorySpanExporter, SdkTracerProvider
 #[cfg(feature = "telemetry")]
 fn span_attr_i64(span: &opentelemetry_sdk::trace::SpanData, key: &'static str) -> Option<i64> {
     span.attributes.iter().find_map(|attribute| {
-        (attribute.key == Key::from_static_str(key)).then(|| match &attribute.value {
+        (attribute.key == Key::from_static_str(key)).then_some(match &attribute.value {
             opentelemetry::Value::I64(value) => Some(*value),
             _ => None,
         })?
@@ -415,10 +421,7 @@ fn metric_has_pid_gauge_at_least(
     let Some(metric) = find_metric(metrics, name) else {
         return false;
     };
-    let pid_i64 = match i64::try_from(pid) {
-        Ok(value) => value,
-        Err(_) => i64::MAX,
-    };
+    let pid_i64 = i64::try_from(pid).unwrap_or(i64::MAX);
     match metric.data() {
         AggregatedMetrics::U64(MetricData::Gauge(gauge)) => gauge.data_points().any(|point| {
             point.value() >= minimum
@@ -615,6 +618,7 @@ fn hook_records_reduction_yield_metadata_and_can_suspend_then_resume() {
 #[cfg(feature = "telemetry")]
 #[test]
 fn execute_slice_emits_telemetry_span_with_mfa_reductions_and_outcome() {
+    let _guard = crate::telemetry::test_lock::guard();
     let (exporter, provider) = install_telemetry_test_provider();
     let atoms = Arc::new(AtomTable::new());
     let module_name = atoms.intern("telemetry_slice");
@@ -659,9 +663,14 @@ fn execute_slice_emits_telemetry_span_with_mfa_reductions_and_outcome() {
     };
     provider.force_flush().expect("spans flush");
     let spans = exporter.get_finished_spans().expect("finished spans");
+    // Other scheduler tests running concurrently emit execution-slice spans
+    // into the shared global tracer provider, so match on this test's own pid.
     let span = spans
         .iter()
-        .find(|span| span.name.as_ref() == "beamr.scheduler.execute_slice")
+        .find(|span| {
+            span.name.as_ref() == "beamr.scheduler.execute_slice"
+                && span_attr_i64(span, "process.pid") == Some(44)
+        })
         .expect("execution-slice span emitted");
 
     assert_eq!(span_attr_i64(span, "process.pid"), Some(44));
@@ -686,6 +695,7 @@ fn execute_slice_emits_telemetry_span_with_mfa_reductions_and_outcome() {
 #[cfg(feature = "telemetry")]
 #[test]
 fn spawned_process_trace_context_nests_process_and_slice_under_workflow_span() {
+    let _guard = crate::telemetry::test_lock::guard();
     let (exporter, provider) = install_telemetry_test_provider();
     let atoms = Arc::new(AtomTable::new());
     let module_name = atoms.intern("telemetry_workflow_slice");
@@ -780,6 +790,7 @@ fn spawned_process_trace_context_nests_process_and_slice_under_workflow_span() {
 #[cfg(feature = "telemetry")]
 #[test]
 fn execute_slice_emits_vm_health_and_process_metrics() {
+    let _guard = crate::telemetry::test_lock::guard();
     let (exporter, provider) = install_metric_test_provider();
     let atoms = Arc::new(AtomTable::new());
     let module_name = atoms.intern("telemetry_metrics_slice");
@@ -813,6 +824,10 @@ fn execute_slice_emits_vm_health_and_process_metrics() {
     .unwrap_or_else(|error| panic!("scheduler starts: {error}"));
     scheduler.shutdown();
 
+    // Register the process in the scheduler's table so the alive-process
+    // gauge (`process_count() == process_table.len()`) reflects a real live
+    // process rather than zero.
+    scheduler.shared.process_table.spawn_with_pid(55);
     let mut process = Process::new(55, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
         module: module_name,
@@ -1209,6 +1224,8 @@ fn execute_slice_resumes_yielded_process_with_pinned_module_version() {
         replay_driver: None,
         replay_mode: false,
         nif_private_data: None,
+        #[cfg(feature = "telemetry")]
+        telemetry_metrics: TelemetryMetricState::new(std::time::Duration::from_millis(100)),
     });
     let mut process = Process::new(1, DEFAULT_HEAP_SIZE);
     process.set_code_position(Some(CodePosition {
@@ -1579,6 +1596,8 @@ fn tombstone_after_wait_store_prevents_wait_parking() {
         replay_driver: None,
         replay_mode: false,
         nif_private_data: None,
+        #[cfg(feature = "telemetry")]
+        telemetry_metrics: TelemetryMetricState::new(std::time::Duration::from_millis(100)),
     });
     let pid = 1;
     shared.process_table.spawn_with_pid(pid);

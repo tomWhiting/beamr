@@ -1,6 +1,5 @@
 //! OpenTelemetry metric helpers for VM health and per-process scheduler state.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -100,9 +99,24 @@ impl Instruments {
     }
 }
 
-fn instruments() -> &'static Instruments {
-    static INSTRUMENTS: OnceLock<Instruments> = OnceLock::new();
-    INSTRUMENTS.get_or_init(Instruments::new)
+#[cfg(not(test))]
+fn instruments() -> std::sync::Arc<Instruments> {
+    use std::sync::{Arc, OnceLock};
+    static INSTRUMENTS: OnceLock<Arc<Instruments>> = OnceLock::new();
+    Arc::clone(INSTRUMENTS.get_or_init(|| Arc::new(Instruments::new())))
+}
+
+// In test builds the process-global meter provider is swapped by individual
+// tests, but an OpenTelemetry `Meter` snapshots its provider at creation time
+// (see `global::meter` docs). Caching `Instruments` in a `OnceLock` would bind
+// every metric to whichever provider happened to be global on the first call
+// (typically the no-op default installed before any test sets its provider),
+// so a metrics test's recordings would silently go nowhere. Rebuild against
+// the current global provider each call under test to keep tests isolated;
+// production keeps the zero-overhead cached path above.
+#[cfg(test)]
+fn instruments() -> std::sync::Arc<Instruments> {
+    std::sync::Arc::new(Instruments::new())
 }
 
 /// Record a VM health snapshot.
@@ -149,10 +163,7 @@ pub(crate) fn record_message_dropped(reason: &'static str) {
 
 /// Record sampled process state at a scheduler slice boundary.
 pub(crate) fn record_process_slice(pid: u64, reductions: u32, message_queue_len: usize) {
-    let pid_value = match i64::try_from(pid) {
-        Ok(value) => value,
-        Err(_) => i64::MAX,
-    };
+    let pid_value = i64::try_from(pid).unwrap_or(i64::MAX);
     let attributes = [KeyValue::new("pid", pid_value)];
     let instruments = instruments();
     instruments
@@ -205,8 +216,5 @@ fn active_workflows() -> &'static AtomicU64 {
 }
 
 fn usize_to_u64(value: usize) -> u64 {
-    match u64::try_from(value) {
-        Ok(value) => value,
-        Err(_) => u64::MAX,
-    }
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
