@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- `Scheduler::spawn_link_closure(parent_pid, closure_term)`: spawn a linked child process that runs a zero-arity closure (thunk). Unlike the `args: Vec<Term>` spawn entrypoints — whose argument terms are NOT heap-copied and require the caller to keep any backing heap alive — the closure's environment (free variables) is deep-copied into the child's own heap via the mailbox copy machinery before the child becomes runnable, so the caller's heap may be collected, mutated, or freed the moment the call returns. The child heap doubles on `HeapFull` up to a 2^26-word cap. Target resolution matches `call_fun` (generation match with unique-id validation, unique-id fallback across generations, old-generation fallback); export funs (`fun m:f/0`) resolve through the export table; native-entry funs are not spawnable. The link is established atomically at spawn (no unlinked window) and the child does not trap exits. Built for Aion's in-VM activity tier (linked activity child processes running SDK-supplied thunks).
+
 ## 0.6.0
 
 ### Correctness

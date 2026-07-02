@@ -266,6 +266,50 @@ impl Scheduler {
         .map_err(|_| ExecError::Badarg)
     }
 
+    /// Spawn a linked child process that runs a zero-arity closure (thunk).
+    ///
+    /// The closure's environment (its free variables) is DEEP-COPIED into the
+    /// child's own heap through the mailbox copy machinery before the child
+    /// becomes runnable, so the child never aliases the caller's heap: the
+    /// caller may GC, mutate, or exit immediately after this returns. This is
+    /// deliberately different from the `args: Vec<Term>` spawn entrypoints,
+    /// whose argument terms are NOT heap-copied and require the caller to keep
+    /// any backing heap alive.
+    ///
+    /// The closure must be a zero-arity fun. Its target resolves through the
+    /// parent's namespace registry exactly as `call_fun` resolves it
+    /// (generation match with unique-id validation, unique-id fallback across
+    /// generations, old-generation fallback); export funs (`fun m:f/0`)
+    /// resolve through the module export table. Funs whose target is a native
+    /// (BIF/NIF) entry are not spawnable — they have no bytecode entry IP.
+    ///
+    /// The child is linked to `parent_pid` atomically at spawn (no unlinked
+    /// window) and does not trap exits: an abnormal parent exit kills the
+    /// child, and an abnormal child exit signals the parent.
+    ///
+    /// # Errors
+    ///
+    /// - [`ExecError::Badarg`] when `parent_pid` is not live.
+    /// - [`ExecError::Badfun`] when the term is not a closure or its module
+    ///   cannot be resolved.
+    /// - [`ExecError::Badarity`] when the closure's arity is not zero.
+    /// - [`ExecError::HeapFull`] when the environment exceeds the child-heap
+    ///   doubling cap.
+    pub fn spawn_link_closure(
+        &self,
+        parent_pid: u64,
+        closure_term: Term,
+    ) -> Result<u64, ExecError> {
+        let parent_namespace = self
+            .process_namespace(parent_pid)
+            .ok_or(ExecError::Badarg)?;
+        let facility = supervision_integration::SchedulerSpawnFacility {
+            shared: Arc::clone(&self.shared),
+            namespace_id: parent_namespace,
+        };
+        facility.spawn_closure_linked(parent_pid, closure_term)
+    }
+
     /// Spawn a linked process eligible for the dirty scheduler pool.
     ///
     /// The dirty pool integration is scaffolded; this uses normal linked-spawn

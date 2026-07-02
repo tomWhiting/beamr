@@ -331,7 +331,14 @@ impl MailboxSender {
     }
 }
 
-fn copy_term(term: Term, heap: &mut Heap) -> Result<Term, SendError> {
+/// Deep-copy `term` into `heap`, returning the copied root term.
+///
+/// This is the mailbox-send copy machinery (structural deep copy with
+/// off-heap binary sharing), exposed crate-internally so other owners of a
+/// destination heap — closure spawning copies a thunk's environment into a
+/// fresh child process heap — reuse the exact same copy semantics instead of
+/// reimplementing them.
+pub(crate) fn copy_term(term: Term, heap: &mut Heap) -> Result<Term, SendError> {
     if term.is_list() {
         copy_cons(term, heap)
     } else if term.is_boxed() {

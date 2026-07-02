@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 # features (threads/net/fs/jit/embedded) pull tokio/io-uring/cranelift and the
 # zstd C build, none of which compile for wasm32 — so opt out of them and select
 # only the cooperative runtime plus the JSON term codec the host bridge uses.
-beamr = { version = "0.11.0", path = "../beamr", default-features = false, features = [
+beamr = { version = "0.12.0", path = "../beamr", default-features = false, features = [
     "cooperative",
     "json",
 ] }
